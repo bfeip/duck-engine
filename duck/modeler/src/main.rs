@@ -24,7 +24,7 @@ use winit::{
 };
 
 use duck_engine_viewer::winit_support;
-use duck_engine_viewer::Viewer;
+use duck_engine_viewer::SurfacedViewer;
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode};
 use duck_engine_viewer::common::{
     Vector3, InnerSpace
@@ -53,7 +53,7 @@ struct ViewerState<'a> {
     egui_winit: egui_winit::State,
     egui_ctx: egui::Context,
     ui: ModelerUi,
-    viewer: Viewer<'a>,
+    viewer: SurfacedViewer<'a>,
     window: Arc<Window>,
 
     construction_options: Rc<RefCell<ConstructionOptions>>,
@@ -71,7 +71,7 @@ impl ViewerState<'static> {
                 ).expect("Failed to create window"),
         );
 
-        let mut viewer = Viewer::from_window(Arc::clone(&window)).await;
+        let mut viewer = SurfacedViewer::from_window(Arc::clone(&window)).await;
 
         let egui_ctx = egui::Context::default();
         egui_extras::install_image_loaders(&egui_ctx);

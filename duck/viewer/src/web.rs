@@ -21,7 +21,7 @@ use web_sys::HtmlCanvasElement;
 use crate::event::{DeviceEvent, Event};
 use crate::input::{ElementState, Key, KeyEvent, MouseButton, MouseScrollDelta, NamedKey, PhysicalKey, TouchPhase};
 use crate::import_export::LoadHandle;
-use crate::viewer::Viewer;
+use crate::viewer::SurfacedViewer;
 
 use std::sync::{Arc, Mutex};
 
@@ -35,7 +35,7 @@ pub enum LoadStatus {
 
 #[wasm_bindgen]
 pub struct WebViewer {
-    viewer: Viewer<'static>,
+    viewer: SurfacedViewer<'static>,
     pending_load: Option<LoadHandle>,
 }
 
@@ -51,7 +51,7 @@ impl WebViewer {
         console_error_panic_hook::set_once();
         console_log::init_with_level(log::Level::Info).ok();
 
-        let viewer = Viewer::from_canvas(canvas).await;
+        let viewer = SurfacedViewer::from_canvas(canvas).await;
         Ok(WebViewer {
             viewer,
             pending_load: None,

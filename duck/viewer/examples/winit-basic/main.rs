@@ -6,13 +6,13 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use duck_engine_viewer::{Viewer, winit_support};
+use duck_engine_viewer::{SurfacedViewer, winit_support};
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode, TransformOperator};
 
 /// Application state for the winit event loop
 struct App<'a> {
     window: Option<Arc<Window>>,
-    viewer: Option<Viewer<'a>>,
+    viewer: Option<SurfacedViewer<'a>>,
 }
 
 impl<'a> App<'a> {
@@ -25,7 +25,7 @@ impl<'a> App<'a> {
 
         // Create viewer with the window
         let size = window.inner_size();
-        let mut viewer = pollster::block_on(Viewer::new(
+        let mut viewer = pollster::block_on(SurfacedViewer::new(
             Arc::clone(&window),
             size.width,
             size.height,

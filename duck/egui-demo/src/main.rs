@@ -26,7 +26,7 @@ use duck_engine_viewer::operator::{NavigationMode, NavigationOperator, Selection
 use duck_engine_viewer::common::Transform;
 use duck_engine_viewer::scene::{Light, LightType, NodePayload, Scene};
 use duck_engine_viewer::winit_support;
-use duck_engine_viewer::Viewer;
+use duck_engine_viewer::SurfacedViewer;
 
 /// Debug actions triggered by key presses
 enum DebugAction {
@@ -59,7 +59,7 @@ struct ViewerState<'a> {
     egui_renderer: egui_wgpu::Renderer,
     egui_winit: egui_winit::State,
     egui_ctx: egui::Context,
-    viewer: Viewer<'a>,
+    viewer: SurfacedViewer<'a>,
     window: Arc<Window>,
     nav_op: Arc<Mutex<NavigationOperator>>,
 }
@@ -69,7 +69,7 @@ impl ViewerState<'static> {
     /// the window's reported inner size (used on web, where it can lag).
     async fn from_window(window: Arc<Window>, size: Option<PhysicalSize<u32>>) -> Self {
         let size = size.unwrap_or(window.inner_size());
-        let mut viewer = Viewer::new(Arc::clone(&window), size.width, size.height).await;
+        let mut viewer = SurfacedViewer::new(Arc::clone(&window), size.width, size.height).await;
 
         viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Translate))));
         viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Rotate))));

@@ -14,7 +14,7 @@ use duck_engine_viewer::scene::{
     DisplayBehavior, EnvironmentMapId, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh,
     NodePayload, PointMaterial, PositionedCamera, PrimitiveType, ViewportRect,
 };
-use duck_engine_viewer::{Viewer, winit_support};
+use duck_engine_viewer::{SurfacedViewer, Viewer, winit_support};
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode, TransformOperator};
 
 const SPHERE_RADIUS: f32 = 0.4;
@@ -309,7 +309,7 @@ fn build_material_scene(viewer: &mut Viewer) {
 /// Application state for the winit event loop.
 struct App<'a> {
     window: Option<Arc<Window>>,
-    viewer: Option<Viewer<'a>>,
+    viewer: Option<SurfacedViewer<'a>>,
     env_map_id: Option<EnvironmentMapId>,
 }
 
@@ -320,7 +320,7 @@ impl<'a> App<'a> {
 
         let window = Arc::new(event_loop.create_window(window_attrs).unwrap());
         let size = window.inner_size();
-        let mut viewer = pollster::block_on(Viewer::new(
+        let mut viewer = pollster::block_on(SurfacedViewer::new(
             Arc::clone(&window),
             size.width,
             size.height,
