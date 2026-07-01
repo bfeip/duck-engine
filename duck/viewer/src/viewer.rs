@@ -440,9 +440,22 @@ impl<'a> WindowSurface<'a> {
             required_limits.max_texture_dimension_2d,
         );
 
+        // Depth formats only guarantee up to 4x MSAA in the WebGPU baseline;
+        // higher sample counts (e.g. 8x) require this adapter-specific feature
+        // to be enabled at device creation. Request it when available so the
+        // MSAA probe below can pick counts above 4.
+        let required_features = if adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+        {
+            wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        } else {
+            wgpu::Features::empty()
+        };
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits,
                 label: None,
                 memory_hints: Default::default(),
@@ -480,11 +493,18 @@ impl<'a> WindowSurface<'a> {
 
         surface.configure(&device, &config);
 
+        // MSAA must be supported by both the color target and the renderer's
+        // depth target, so probe both formats and pick the highest count both
+        // allow.
         let sample_count = if downlevel_flags.contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING) {
-            let format_flags = adapter.get_texture_format_features(surface_format).flags;
+            use crate::renderer::render_core::GpuTexture;
+            let color_flags = adapter.get_texture_format_features(surface_format).flags;
+            let depth_flags = adapter.get_texture_format_features(GpuTexture::DEPTH_FORMAT).flags;
             [8, 4, 2, 1]
                 .into_iter()
-                .find(|&n| format_flags.sample_count_supported(n))
+                .find(|&n| {
+                    color_flags.sample_count_supported(n) && depth_flags.sample_count_supported(n)
+                })
                 .unwrap_or(1)
         } else {
             1
