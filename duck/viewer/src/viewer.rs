@@ -366,28 +366,28 @@ impl Viewer {
     }
 }
 
-/// A [`Viewer`] that owns a window/canvas surface and presents to it.
-pub struct SurfacedViewer<'a> {
+/// A configured window/canvas surface paired with the GPU context created for
+/// it.
+/// 
+/// Owns the surface and its configuration; the [`Gpu`] handle is cloneable
+/// and can be shared with other renderers (e.g. an [`OffscreenViewer`] whose
+/// texture is displayed inside a UI panel on the same device).
+///
+/// This is the reusable surface + GPU bootstrap. [`SurfacedViewer`] builds its
+/// core on top of it; applications that present through their own compositor
+/// (e.g. egui) can hold a `WindowSurface` directly and drive an offscreen
+/// viewer with `gpu()`.
+pub struct WindowSurface<'a> {
     surface: wgpu::Surface<'a>,
-    surface_config: wgpu::SurfaceConfiguration,
-    core: Viewer,
+    config: wgpu::SurfaceConfiguration,
+    gpu: Gpu,
+    sample_count: u32,
+    has_compute: bool,
 }
 
-impl<'a> Deref for SurfacedViewer<'a> {
-    type Target = Viewer;
-    fn deref(&self) -> &Viewer {
-        &self.core
-    }
-}
-
-impl<'a> DerefMut for SurfacedViewer<'a> {
-    fn deref_mut(&mut self) -> &mut Viewer {
-        &mut self.core
-    }
-}
-
-impl<'a> SurfacedViewer<'a> {
-    /// Create a new viewer with the given surface target.
+impl<'a> WindowSurface<'a> {
+    /// Create and configure a surface for the given target, bootstrapping the
+    /// wgpu instance, adapter, and device/queue.
     pub async fn new<T>(surface_target: T, width: u32, height: u32) -> Self
     where
         T: Into<wgpu::SurfaceTarget<'a>>,
@@ -467,7 +467,7 @@ impl<'a> SurfacedViewer<'a> {
             .find(|mode| *mode == wgpu::PresentMode::Fifo)
             .unwrap_or(surface_caps.present_modes[0]);
 
-        let surface_config = wgpu::SurfaceConfiguration {
+        let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width,
@@ -478,11 +478,11 @@ impl<'a> SurfacedViewer<'a> {
             desired_maximum_frame_latency: 2,
         };
 
-        surface.configure(&device, &surface_config);
+        surface.configure(&device, &config);
 
         let sample_count = if downlevel_flags.contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING) {
             let format_flags = adapter.get_texture_format_features(surface_format).flags;
-            [4, 2, 1]
+            [8, 4, 2, 1]
                 .into_iter()
                 .find(|&n| format_flags.sample_count_supported(n))
                 .unwrap_or(1)
@@ -491,20 +491,97 @@ impl<'a> SurfacedViewer<'a> {
         };
         log::info!("Using {sample_count}x MSAA");
 
-        let core = Viewer::from_gpu(
-            Gpu::new(device, queue),
-            surface_format,
-            width,
-            height,
-            sample_count,
-            has_compute,
-        );
-
         Self {
             surface,
-            surface_config,
-            core,
+            config,
+            gpu: Gpu::new(device, queue),
+            sample_count,
+            has_compute,
         }
+    }
+
+    /// A clone of the shared GPU handle, for building renderers on the same
+    /// device/queue (e.g. an [`OffscreenViewer`] or an egui renderer).
+    pub fn gpu(&self) -> Gpu {
+        self.gpu.clone()
+    }
+
+    /// The surface color format (an sRGB format when available).
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+
+    /// The MSAA sample count supported for this surface format.
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
+    }
+
+    /// Whether the adapter supports compute shaders.
+    pub fn has_compute(&self) -> bool {
+        self.has_compute
+    }
+
+    /// Current surface size as (width, height).
+    pub fn size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
+    /// Reconfigure the surface to a new size. Ignores zero dimensions.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(&self.gpu.device, &self.config);
+    }
+
+    /// Acquire the next surface texture to render into and present.
+    pub fn acquire(&self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
+        self.surface.get_current_texture()
+    }
+}
+
+/// A [`Viewer`] that owns a window/canvas surface and presents to it.
+pub struct SurfacedViewer<'a> {
+    surface: WindowSurface<'a>,
+    core: Viewer,
+}
+
+impl<'a> Deref for SurfacedViewer<'a> {
+    type Target = Viewer;
+    fn deref(&self) -> &Viewer {
+        &self.core
+    }
+}
+
+impl<'a> DerefMut for SurfacedViewer<'a> {
+    fn deref_mut(&mut self) -> &mut Viewer {
+        &mut self.core
+    }
+}
+
+impl<'a> SurfacedViewer<'a> {
+    /// Create a new viewer with the given surface target.
+    pub async fn new<T>(surface_target: T, width: u32, height: u32) -> Self
+    where
+        T: Into<wgpu::SurfaceTarget<'a>>,
+    {
+        let surface = WindowSurface::new(surface_target, width, height).await;
+        Self::from_surface(surface, width, height)
+    }
+
+    /// Build a surfaced viewer around an already-configured [`WindowSurface`].
+    pub fn from_surface(surface: WindowSurface<'a>, width: u32, height: u32) -> Self {
+        let core = Viewer::from_gpu(
+            surface.gpu(),
+            surface.format(),
+            width,
+            height,
+            surface.sample_count(),
+            surface.has_compute(),
+        );
+        Self { surface, core }
     }
 
     /// Create a new viewer from a winit Window (native platforms).
@@ -529,11 +606,7 @@ impl<'a> SurfacedViewer<'a> {
     pub fn handle_event(&mut self, event: &Event) {
         if let Event::Device(DeviceEvent::Resized(physical_size)) = event {
             let (w, h) = *physical_size;
-            if w > 0 && h > 0 {
-                self.surface_config.width = w;
-                self.surface_config.height = h;
-                self.surface.configure(self.core.device(), &self.surface_config);
-            }
+            self.surface.resize(w, h);
         }
         self.core.handle_event(event);
     }
@@ -552,7 +625,7 @@ impl<'a> SurfacedViewer<'a> {
     pub fn render_scene(&mut self) -> Result<(wgpu::SurfaceTexture, wgpu::TextureView, wgpu::CommandEncoder), anyhow::Error> {
         self.core.prepare_scene()?;
 
-        let output = self.surface.get_current_texture()?;
+        let output = self.surface.acquire()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self.core.device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("Render Encoder") },
