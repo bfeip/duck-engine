@@ -21,7 +21,7 @@ pub mod selection;
 mod scene_scale;
 mod viewer;
 
-pub use viewer::{OffscreenViewer, SurfacedViewer, Viewer};
+pub use viewer::{OffscreenViewer, SurfacedViewer, Viewer, WindowSurface};
 
 #[cfg(target_arch = "wasm32")]
 pub mod web;
