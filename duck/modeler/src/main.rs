@@ -24,7 +24,9 @@ use winit::{
 };
 
 use duck_engine_viewer::winit_support;
-use duck_engine_viewer::SurfacedViewer;
+use duck_engine_viewer::{OffscreenViewer, WindowSurface};
+use duck_engine_viewer::event::Event;
+use duck_engine_viewer::input::ElementState;
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode};
 use duck_engine_viewer::common::{
     Vector3, InnerSpace
@@ -43,17 +45,31 @@ use crate::ui::ModelerUi;
 
 use document::Document;
 
-/// Owns all rendering state: the 3D viewer plus egui context and GPU renderer.
+/// Owns all rendering state: egui context + GPU renderer, the window surface
+/// egui presents to, and the [`OffscreenViewer`] that renders the 3D scene into
+/// a texture displayed inside the central panel.
 ///
 /// Field order matters: Rust drops fields in declaration order, so egui
-/// resources are released before the viewer and window. This prevents
+/// resources are released before the viewer and surface. This prevents
 /// segfaults from background threads on Wayland during shutdown.
 struct ViewerState<'a> {
     egui_renderer: egui_wgpu::Renderer,
     egui_winit: egui_winit::State,
     egui_ctx: egui::Context,
     ui: ModelerUi,
-    viewer: SurfacedViewer<'a>,
+    /// Stable egui texture id the offscreen color texture is registered under.
+    /// Re-pointed (not re-created) when the offscreen texture is resized.
+    scene_texture_id: egui::TextureId,
+    /// The central-panel image rect in physical pixels, stashed each frame for
+    /// input routing. `None` until the first frame is built.
+    viewport_rect: Option<egui::Rect>,
+    /// True while a pointer drag that began inside the viewport is in progress;
+    /// keeps routing to the viewer even if the cursor crosses a panel.
+    viewport_drag_active: bool,
+    /// Latest cursor position in physical pixels (window space).
+    last_cursor: Option<(f32, f32)>,
+    viewer: OffscreenViewer,
+    surface: WindowSurface<'a>,
     window: Arc<Window>,
 
     construction_options: Rc<RefCell<ConstructionOptions>>,
@@ -71,7 +87,16 @@ impl ViewerState<'static> {
                 ).expect("Failed to create window"),
         );
 
-        let mut viewer = SurfacedViewer::from_window(Arc::clone(&window)).await;
+        let size = window.inner_size();
+        let surface = WindowSurface::new(Arc::clone(&window), size.width, size.height).await;
+        let mut viewer = OffscreenViewer::from_gpu(
+            surface.gpu(),
+            surface.format(),
+            size.width,
+            size.height,
+            surface.sample_count(),
+            surface.has_compute(),
+        );
 
         let egui_ctx = egui::Context::default();
         egui_extras::install_image_loaders(&egui_ctx);
@@ -84,10 +109,18 @@ impl ViewerState<'static> {
             None,
             None,
         );
-        let egui_renderer = egui_wgpu::Renderer::new(
+        let mut egui_renderer = egui_wgpu::Renderer::new(
             viewer.device(),
-            viewer.surface_format(),
+            surface.format(),
             RendererOptions::default(),
+        );
+
+        // Register the offscreen scene texture once; the id is stable and
+        // re-pointed on resize via `update_egui_texture_from_wgpu_texture`.
+        let scene_texture_id = egui_renderer.register_native_texture(
+            viewer.device(),
+            viewer.texture_view(),
+            wgpu::FilterMode::Linear,
         );
 
         let construction_options = Rc::new(RefCell::new(ConstructionOptions::new()));
@@ -118,7 +151,12 @@ impl ViewerState<'static> {
             egui_winit,
             egui_ctx,
             ui: ModelerUi::default(),
+            scene_texture_id,
+            viewport_rect: None,
+            viewport_drag_active: false,
+            last_cursor: None,
             viewer,
+            surface,
             window,
             construction_options,
             document,
@@ -171,28 +209,119 @@ impl ViewerState<'static> {
 }
 
 impl<'a> ViewerState<'a> {
+    /// Handle a window event. egui always sees it first (for its own hover /
+    /// focus state); events that belong to the 3D viewport are additionally
+    /// routed to the viewer with pointer-capture semantics and viewport-local
+    /// coordinates.
     fn handle_window_event(&mut self, event: &WindowEvent) {
-        let response = self.egui_winit.on_window_event(&self.window, event);
-        if !response.consumed {
-            if let Some(app_event) = winit_support::convert_window_event(event.clone()) {
-                self.viewer.handle_event(&app_event);
-            }
+        // The surface tracks the whole window; the offscreen viewer is sized
+        // from the central panel each frame, not from the window.
+        if let WindowEvent::Resized(size) = event {
+            self.surface.resize(size.width, size.height);
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Some((position.x as f32, position.y as f32));
+        }
+
+        let _ = self.egui_winit.on_window_event(&self.window, event);
+
+        let Some(app_event) = winit_support::convert_window_event(event.clone()) else {
+            return;
+        };
+        if self.should_route_to_viewport(&app_event) {
+            let app_event = self.to_viewport_local(app_event);
+            self.viewer.handle_event(&app_event);
         }
     }
 
+    /// Raw mouse motion drives active gizmo/transform drags; only forward it
+    /// while a viewport drag is in progress.
     fn handle_device_event(&mut self, event: &DeviceEvent) {
+        if !self.viewport_drag_active {
+            return;
+        }
         if let Some(app_event) = winit_support::convert_device_event(event.clone()) {
             self.viewer.handle_event(&app_event);
+        }
+    }
+
+    /// Whether the latest cursor position sits inside the 3D viewport rect.
+    fn cursor_in_viewport(&self) -> bool {
+        match (self.viewport_rect, self.last_cursor) {
+            (Some(rect), Some((x, y))) => rect.contains(egui::pos2(x, y)),
+            _ => false,
+        }
+    }
+
+    /// Decide whether a converted event should be routed to the 3D viewer,
+    /// updating the pointer-capture flag on press/release.
+    fn should_route_to_viewport(&mut self, event: &Event) -> bool {
+        use duck_engine_viewer::event::DeviceEvent as DE;
+        match event {
+            Event::Device(DE::MouseInput { state, .. }) => match state {
+                ElementState::Pressed => {
+                    if self.cursor_in_viewport() {
+                        self.viewport_drag_active = true;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                ElementState::Released => {
+                    if self.viewport_drag_active {
+                        self.viewport_drag_active = false;
+                        true
+                    } else {
+                        false
+                    }
+                }
+            },
+            Event::Device(DE::CursorMoved { .. }) => {
+                self.viewport_drag_active
+                    || (self.cursor_in_viewport() && !self.egui_ctx.is_using_pointer())
+            }
+            Event::Device(DE::MouseWheel { .. }) => self.cursor_in_viewport(),
+            Event::Device(DE::KeyboardInput { .. }) => !self.egui_ctx.wants_keyboard_input(),
+            _ => false,
+        }
+    }
+
+    /// Translate absolute cursor coordinates from window space into the 3D
+    /// viewport's local pixel space (its top-left is the offscreen origin).
+    /// Only `CursorMoved` carries an absolute position; drags/clicks are
+    /// synthesized from it downstream, so translating it is sufficient.
+    fn to_viewport_local(&self, event: Event) -> Event {
+        use duck_engine_viewer::event::DeviceEvent as DE;
+        match (event, self.viewport_rect) {
+            (Event::Device(DE::CursorMoved { position }), Some(rect)) => {
+                Event::Device(DE::CursorMoved {
+                    position: (position.0 - rect.min.x as f64, position.1 - rect.min.y as f64),
+                })
+            }
+            (event, _) => event,
         }
     }
 
     fn handle_redraw(&mut self) {
         self.viewer.update();
 
+        // Build the egui frame: docked panels, then the central panel holding
+        // the (stable) 3D scene texture. The central image rect is captured to
+        // size the offscreen viewer and route viewport input.
         let raw_input = self.egui_winit.take_egui_input(&self.window);
         let egui_ctx = self.egui_ctx.clone();
+        let scene_texture_id = self.scene_texture_id;
+        let mut viewport_rect = None;
         let full_output = egui_ctx.run(raw_input, |ctx| {
             self.ui.show(ctx, &self.document, self.viewer.selection_mut(), &mut self.tools);
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let size = ui.available_size();
+                    let image =
+                        egui::Image::new(egui::load::SizedTexture::new(scene_texture_id, size));
+                    viewport_rect = Some(ui.add(image).rect);
+                });
         });
         self.egui_winit.handle_platform_output(&self.window, full_output.platform_output.clone());
 
@@ -200,20 +329,59 @@ impl<'a> ViewerState<'a> {
         // to selection in the same frame.
         self.tools.update(&self.viewer.scene());
 
-        match self.viewer.render_scene() {
-            Ok((output, view, mut encoder)) => {
-                self.render_egui_overlay(&full_output, &mut encoder, &view);
-                self.viewer.present(encoder, output);
+        // Reconcile the offscreen texture size with the central panel, then
+        // re-point the (stable) egui texture id at the new view.
+        let ppp = full_output.pixels_per_point;
+        self.viewport_rect = viewport_rect.map(|r| {
+            egui::Rect::from_min_size(
+                egui::pos2(r.min.x * ppp, r.min.y * ppp),
+                egui::vec2(r.width() * ppp, r.height() * ppp),
+            )
+        });
+        if let Some(rect) = self.viewport_rect {
+            let w = (rect.width().round() as u32).max(1);
+            let h = (rect.height().round() as u32).max(1);
+            if (w, h) != self.viewer.size() {
+                self.viewer.resize(w, h);
+                self.egui_renderer.update_egui_texture_from_wgpu_texture(
+                    self.viewer.device(),
+                    self.viewer.texture_view(),
+                    wgpu::FilterMode::Linear,
+                    self.scene_texture_id,
+                );
             }
-            Err(e) => log::error!("Render error: {}", e),
+        }
+
+        // Render the 3D scene into the offscreen texture (own encoder+submit).
+        if let Err(e) = self.viewer.render() {
+            log::error!("Offscreen render error: {}", e);
+        }
+
+        // Present: egui paints the whole window (including the scene image)
+        // into the surface.
+        match self.surface.acquire() {
+            Ok(output) => {
+                let view = output
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let mut encoder = self.viewer.device().create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor { label: Some("egui Encoder") },
+                );
+                self.render_egui_overlay(&full_output, ppp, &mut encoder, &view);
+                self.viewer.queue().submit(std::iter::once(encoder.finish()));
+                output.present();
+            }
+            Err(e) => log::error!("Surface acquire error: {}", e),
         }
 
         self.window.request_redraw();
     }
 
+    /// Render the full egui frame (panels + the 3D scene image) into `view`.
     fn render_egui_overlay(
         &mut self,
         full_output: &egui::FullOutput,
+        pixels_per_point: f32,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
     ) {
@@ -229,10 +397,10 @@ impl<'a> ViewerState<'a> {
 
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: {
-                let (w, h) = self.viewer.size();
+                let (w, h) = self.surface.size();
                 [w, h]
             },
-            pixels_per_point: self.window.scale_factor() as f32,
+            pixels_per_point,
         };
 
         self.egui_renderer.update_buffers(
@@ -250,7 +418,7 @@ impl<'a> ViewerState<'a> {
                     view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
