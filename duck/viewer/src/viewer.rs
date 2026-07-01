@@ -670,7 +670,8 @@ impl<'a> SurfacedViewer<'a> {
 pub struct OffscreenViewer {
     color_format: wgpu::TextureFormat,
     color_texture: wgpu::Texture,
-    color_view: wgpu::TextureView,
+    render_view: wgpu::TextureView,
+    sample_view: wgpu::TextureView,
     core: Viewer,
 }
 
@@ -703,13 +704,14 @@ impl OffscreenViewer {
         sample_count: u32,
         has_compute: bool,
     ) -> Self {
-        let (color_texture, color_view) =
+        let (color_texture, render_view, sample_view) =
             Self::create_color(&gpu.device, color_format, width, height);
         let core = Viewer::from_gpu(gpu, color_format, width, height, sample_count, has_compute);
         Self {
             color_format,
             color_texture,
-            color_view,
+            render_view,
+            sample_view,
             core,
         }
     }
@@ -735,7 +737,10 @@ impl OffscreenViewer {
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
+    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::TextureView) {
+        // The sample view uses the non-sRGB variant so samplers read the raw
+        // (gamma-encoded) bytes; for a non-sRGB `format` this is the same format.
+        let sample_format = format.remove_srgb_suffix();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Offscreen Color Target"),
             size: wgpu::Extent3d {
@@ -748,18 +753,23 @@ impl OffscreenViewer {
             dimension: wgpu::TextureDimension::D2,
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
+            view_formats: &[sample_format],
         });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        (texture, view)
+        let render_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sample_view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(sample_format),
+            ..Default::default()
+        });
+        (texture, render_view, sample_view)
     }
 
     /// Resize the offscreen target, recreating the color texture.
     pub fn resize(&mut self, width: u32, height: u32) {
-        let (texture, view) =
+        let (texture, render_view, sample_view) =
             Self::create_color(self.core.device(), self.color_format, width, height);
         self.color_texture = texture;
-        self.color_view = view;
+        self.render_view = render_view;
+        self.sample_view = sample_view;
         self.core.resize(width, height);
     }
 
@@ -773,8 +783,8 @@ impl OffscreenViewer {
         let mut encoder = self.core.device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("Offscreen Render Encoder") },
         );
-        // Disjoint field borrows: `&self.color_view` alongside `&mut self.core`.
-        self.core.render_scene_to_view(&self.color_view, &mut encoder)?;
+        // Disjoint field borrows: `&self.render_view` alongside `&mut self.core`.
+        self.core.render_scene_to_view(&self.render_view, &mut encoder)?;
         self.core.queue().submit(std::iter::once(encoder.finish()));
         Ok(())
     }
@@ -784,8 +794,9 @@ impl OffscreenViewer {
         &self.color_texture
     }
 
-    /// A view of the offscreen color texture, for sampling (e.g. egui).
+    /// A non-sRGB view of the offscreen color texture, for sampling (e.g. egui).
+    /// See the type docs for why this is not the sRGB render view.
     pub fn texture_view(&self) -> &wgpu::TextureView {
-        &self.color_view
+        &self.sample_view
     }
 }
