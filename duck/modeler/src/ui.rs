@@ -3,7 +3,7 @@
 pub(crate) mod icons;
 mod menu_bar;
 mod right_panel;
-mod scene_tab;
+mod model_tab;
 mod tool_palette;
 mod tool_panel;
 

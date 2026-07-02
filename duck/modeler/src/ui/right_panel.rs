@@ -4,34 +4,22 @@
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::document::Document;
-use crate::ui::scene_tab::SceneTab;
+use crate::ui::model_tab::ModelTab;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum RightTab {
     #[default]
-    Scene,
-    Props,
-    Material,
-    Light,
-    Snap,
+    Model,
 }
 
 impl RightTab {
-    const ALL: [RightTab; 5] = [
-        RightTab::Scene,
-        RightTab::Props,
-        RightTab::Material,
-        RightTab::Light,
-        RightTab::Snap,
+    const ALL: [RightTab; 1] = [
+        RightTab::Model,
     ];
 
     fn label(self) -> &'static str {
         match self {
-            RightTab::Scene => "Scene",
-            RightTab::Props => "Props",
-            RightTab::Material => "Material",
-            RightTab::Light => "Light",
-            RightTab::Snap => "Snap",
+            RightTab::Model => "Model",
         }
     }
 }
@@ -39,7 +27,7 @@ impl RightTab {
 #[derive(Default)]
 pub struct RightPanel {
     active_tab: RightTab,
-    scene: SceneTab,
+    model: ModelTab,
 }
 
 impl RightPanel {
@@ -62,13 +50,7 @@ impl RightPanel {
                 ui.separator();
 
                 match self.active_tab {
-                    RightTab::Scene => self.scene.show(ui, document, selection),
-                    other => {
-                        ui.add_space(16.0);
-                        ui.vertical_centered(|ui| {
-                            ui.weak(format!("{} — coming soon", other.label()));
-                        });
-                    }
+                    RightTab::Model => self.model.show(ui, document, selection),
                 }
             });
     }

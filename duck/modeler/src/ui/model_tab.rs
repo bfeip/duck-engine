@@ -1,4 +1,4 @@
-//! The Scene tab: a filter box over the list of parts in the CAD document.
+//! The model tab: a filter box over the list of parts in the CAD document.
 
 use duck_engine_viewer::scene::{NodeId, Visibility};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
@@ -6,15 +6,14 @@ use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 use crate::document::{Document, PartId, PartKind};
 use crate::ui::icons;
 
-/// The Scene tab, owning the state local to it.
+/// The model tab, owning the state local to it.
 #[derive(Default)]
-pub struct SceneTab {
+pub struct ModelTab {
     filter: String,
 }
 
-/// A render-ready snapshot of one part row, taken up front so the shared borrow of
-/// `document` is released before any row mutates the document or selection on click.
-struct SceneRow {
+/// A render-ready snapshot of one part row.
+struct ModelRow {
     part_id: PartId,
     node: NodeId,
     name: String,
@@ -23,7 +22,7 @@ struct SceneRow {
     visible: bool,
 }
 
-impl SceneTab {
+impl ModelTab {
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -40,12 +39,12 @@ impl SceneTab {
         ui.add_space(4.0);
 
         let search = self.filter.trim().to_lowercase();
-        let rows: Vec<SceneRow> = document
+        let rows: Vec<ModelRow> = document
             .parts()
             .filter(|part| search.is_empty() || part.name.to_lowercase().contains(&search))
             .filter_map(|part| {
                 let node = document.node_for_part(part.id)?;
-                Some(SceneRow {
+                Some(ModelRow {
                     part_id: part.id,
                     node,
                     name: part.name.clone(),
@@ -73,7 +72,7 @@ impl SceneTab {
 
 fn row_ui(
     ui: &mut egui::Ui,
-    row: &SceneRow,
+    row: &ModelRow,
     document: &mut Document,
     selection: &mut SelectionManager,
 ) {
