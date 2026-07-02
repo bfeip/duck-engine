@@ -18,7 +18,7 @@ impl ToolPalette {
 
         egui::SidePanel::left("tool_palette")
             .resizable(false)
-            .exact_width(56.0)
+            .exact_width(40.0)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
 
@@ -27,7 +27,7 @@ impl ToolPalette {
                     .add(
                         egui::Button::image(
                             egui::Image::from_bytes(cursor_uri, cursor_bytes)
-                                .fit_to_exact_size(egui::vec2(32.0, 32.0)),
+                                .fit_to_exact_size(egui::vec2(16.0, 16.0)),
                         )
                         .selected(selecting),
                     )
@@ -43,7 +43,7 @@ impl ToolPalette {
                         .add(
                             egui::Button::image(
                                 egui::Image::from_bytes(icon_uri, icon_bytes)
-                                    .fit_to_exact_size(egui::vec2(32.0, 32.0)),
+                                    .fit_to_exact_size(egui::vec2(16.0, 16.0)),
                             )
                             .selected(*selected),
                         )
