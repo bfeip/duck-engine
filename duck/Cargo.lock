@@ -2649,6 +2649,7 @@ dependencies = [
  "anyhow",
  "bitflags 2.11.0",
  "duck-engine-common",
+ "duck-engine-import-export",
  "duck-engine-scene",
  "duck-engine-viewer",
  "egui",
@@ -2660,6 +2661,7 @@ dependencies = [
  "log",
  "opencascade",
  "pollster 0.4.0",
+ "rfd",
  "wgpu",
  "winit",
 ]

@@ -3,6 +3,7 @@ mod cursor;
 mod document;
 mod extrude;
 mod grid;
+mod io;
 mod loft;
 mod operators;
 mod preview;
@@ -41,7 +42,7 @@ use crate::operators::{
     SphereOperator, TransformTool,
 };
 use crate::tool_manager::ToolManager;
-use crate::ui::ModelerUi;
+use crate::ui::{ModelerUi, UiAction};
 
 use document::Document;
 
@@ -302,7 +303,8 @@ impl<'a> ViewerState<'a> {
         }
     }
 
-    fn handle_redraw(&mut self) {
+    /// Returns true when the user asked to quit via the menu.
+    fn handle_redraw(&mut self) -> bool {
         self.viewer.update();
 
         // Build the egui frame: docked panels, then the central panel holding
@@ -312,8 +314,10 @@ impl<'a> ViewerState<'a> {
         let egui_ctx = self.egui_ctx.clone();
         let scene_texture_id = self.scene_texture_id;
         let mut viewport_rect = None;
+        let mut ui_actions = Vec::new();
         let full_output = egui_ctx.run(raw_input, |ctx| {
-            self.ui.show(ctx, &self.document, self.viewer.selection_mut(), &mut self.tools);
+            ui_actions =
+                self.ui.show(ctx, &self.document, self.viewer.selection_mut(), &mut self.tools);
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
@@ -328,6 +332,24 @@ impl<'a> ViewerState<'a> {
         // After egui so a panel-driven finish (e.g. boolean Apply) cedes back
         // to selection in the same frame.
         self.tools.update(&self.viewer.scene());
+
+        // UI actions run outside the frame closure: the file dialogs block.
+        for action in ui_actions {
+            match action {
+                UiAction::ImportCad => {
+                    let options = self.construction_options.borrow().geometry_options.clone();
+                    if let Err(e) = io::import_cad_dialog(&self.document, &options) {
+                        log::error!("CAD import failed: {e:#}");
+                    }
+                }
+                UiAction::ExportCad => {
+                    if let Err(e) = io::export_cad_dialog(&self.document) {
+                        log::error!("CAD export failed: {e:#}");
+                    }
+                }
+                UiAction::Quit => return true,
+            }
+        }
 
         // Reconcile the offscreen texture size with the central panel, then
         // re-point the (stable) egui texture id at the new view.
@@ -375,6 +397,7 @@ impl<'a> ViewerState<'a> {
         }
 
         self.window.request_redraw();
+        false
     }
 
     /// Render the full egui frame (panels + the 3D scene image) into `view`.
@@ -464,7 +487,9 @@ impl<'a> ApplicationHandler for App<'a> {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
                 if let Some(state) = self.state.as_mut() {
-                    state.handle_redraw();
+                    if state.handle_redraw() {
+                        event_loop.exit();
+                    }
                 }
             }
             _ => {

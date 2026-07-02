@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use duck_engine_common::{decompose_matrix, Matrix4, RgbaColor};
 use duck_engine_scene::cad::{tessellate_occ_shape, CadTessellationOptions};
 use duck_engine_scene::common::Transform;
@@ -13,7 +13,7 @@ use duck_engine_scene::{
     Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, NodePayload,
     PrimitiveType, Scene, Vertex,
 };
-use opencascade::primitives::{EdgeType, Shape};
+use opencascade::primitives::{Compound, EdgeType, Shape};
 use opencascade::xcaf::{XcafColorTool, XcafDimTolTool, XcafDocument, XcafLabel, XcafShapeTool};
 
 /// Options controlling how a CAD file is imported.
@@ -313,4 +313,159 @@ pub fn is_cad_extension(ext: &str) -> bool {
 /// Returns true if `ext` identifies a STEP file specifically.
 pub fn is_step_extension(ext: &str) -> bool {
     ext.eq_ignore_ascii_case("step") || ext.eq_ignore_ascii_case("stp")
+}
+
+// ============================================================================
+// Scene-free B-Rep loading and saving
+// ============================================================================
+
+/// A leaf part extracted from a CAD assembly, with its accumulated assembly
+/// transform (and the caller's unit scale) baked into the B-Rep shape.
+pub struct ImportedCadPart {
+    pub name: Option<String>,
+    pub shape: Shape,
+    pub color: Option<RgbaColor>,
+}
+
+/// Load a STEP or IGES file (chosen by extension) as a flat list of world-space
+/// leaf parts. `scale` is baked into each shape (e.g. `0.001` for mm→m).
+pub fn load_cad_parts(path: impl AsRef<Path>, scale: f64) -> Result<Vec<ImportedCadPart>> {
+    let path = path.as_ref();
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let doc = if is_step_extension(ext) {
+        XcafDocument::read_step(path)
+            .with_context(|| format!("Failed to read STEP file: {}", path.display()))?
+    } else if is_cad_extension(ext) {
+        XcafDocument::read_iges(path)
+            .with_context(|| format!("Failed to read IGES file: {}", path.display()))?
+    } else {
+        bail!("Unsupported CAD extension: {ext:?}");
+    };
+
+    let shape_tool = doc.shape_tool();
+    let color_tool = doc.color_tool();
+    let mut parts = Vec::new();
+    for label in shape_tool.free_shapes() {
+        collect_xcaf_parts(&label, &shape_tool, &color_tool, uniform_scale(1.0), scale, &mut parts);
+    }
+    Ok(parts)
+}
+
+/// Write `shapes` as a single compound to STEP or IGES (chosen by extension).
+/// `scale` is baked into each shape before writing (e.g. `1000.0` for m→mm).
+pub fn save_cad_shapes<'a>(
+    path: impl AsRef<Path>,
+    shapes: impl IntoIterator<Item = &'a Shape>,
+    scale: f64,
+) -> Result<()> {
+    let path = path.as_ref();
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if !is_cad_extension(ext) {
+        bail!("Unsupported CAD extension: {ext:?}");
+    }
+    let scaled: Vec<Shape> =
+        shapes.into_iter().map(|s| s.gtransform(uniform_scale(scale))).collect();
+    let compound: Shape = Compound::from_shapes(&scaled).into();
+    if is_step_extension(ext) {
+        compound
+            .write_step_to_file(path)
+            .with_context(|| format!("Failed to write STEP file: {}", path.display()))
+    } else {
+        compound
+            .write_iges_to_file(path)
+            .with_context(|| format!("Failed to write IGES file: {}", path.display()))
+    }
+}
+
+/// Depth-first collection of leaf parts. `acc` accumulates ancestor assembly
+/// locations only: `shape(label)` already carries the label's own location, so
+/// composing it here would double-apply it.
+fn collect_xcaf_parts(
+    label: &XcafLabel,
+    shape_tool: &XcafShapeTool,
+    color_tool: &XcafColorTool,
+    acc: [[f64; 4]; 4],
+    scale: f64,
+    out: &mut Vec<ImportedCadPart>,
+) {
+    let referred = shape_tool.referred_label(label);
+    let assembly = if referred.as_ref().is_some_and(|d| shape_tool.is_assembly(d)) {
+        referred.as_ref()
+    } else if shape_tool.is_assembly(label) {
+        Some(label)
+    } else {
+        None
+    };
+
+    if let Some(assembly) = assembly {
+        let world = mat_mul(&acc, &shape_tool.location_matrix(label));
+        for child in shape_tool.components(assembly) {
+            collect_xcaf_parts(&child, shape_tool, color_tool, world, scale, out);
+        }
+    } else {
+        let shape = shape_tool.shape(label);
+        let color = color_tool
+            .color_of_label(label)
+            .or_else(|| color_tool.color_of_shape(&shape))
+            .map(|(r, g, b)| RgbaColor { r, g, b, a: 1.0 });
+        // Reference labels get auto-generated "=>[entry]" names; prefer the
+        // first real name between the instance and its prototype.
+        let name = [label.name(), referred.as_ref().and_then(|d| d.name())]
+            .into_iter()
+            .flatten()
+            .find(|n| !n.starts_with("=>"));
+        let shape = shape.gtransform(mat_mul(&uniform_scale(scale), &acc));
+        out.push(ImportedCadPart { name, shape, color });
+    }
+}
+
+/// Row-major 4×4 matrix product `a · b`.
+fn mat_mul(a: &[[f64; 4]; 4], b: &[[f64; 4]; 4]) -> [[f64; 4]; 4] {
+    let mut c = [[0.0; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            c[i][j] = (0..4).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    c
+}
+
+/// Row-major uniform scale matrix.
+fn uniform_scale(s: f64) -> [[f64; 4]; 4] {
+    [
+        [s, 0.0, 0.0, 0.0],
+        [0.0, s, 0.0, 0.0],
+        [0.0, 0.0, s, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Saving with one scale and loading with its inverse must round-trip
+    /// geometry at the original size.
+    #[test]
+    fn cad_parts_round_trip_scale() {
+        let path = std::env::temp_dir().join("duck_cad_round_trip.step");
+        let shape = Shape::box_centered(2.0, 2.0, 2.0);
+        save_cad_shapes(&path, [&shape], 1000.0).unwrap();
+        let parts = load_cad_parts(&path, 0.001).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(parts.len(), 1);
+        let mesh = tessellate_occ_shape(&parts[0].shape, 0.01, 1.0, false, false).unwrap();
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        for v in mesh.vertices() {
+            for i in 0..3 {
+                min[i] = min[i].min(v.position[i]);
+                max[i] = max[i].max(v.position[i]);
+            }
+        }
+        for i in 0..3 {
+            assert!((max[i] - min[i] - 2.0).abs() < 1e-3, "extent {i}: {}", max[i] - min[i]);
+        }
+    }
 }

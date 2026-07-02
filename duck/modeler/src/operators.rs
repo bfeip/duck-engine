@@ -49,7 +49,7 @@ pub struct ConstructionOptions {
 impl ConstructionOptions {
     pub fn new() -> Self {
         let geometry_options = CadTessellationOptions {
-            tessellation_tolerance: 0.01,
+            tessellation_tolerance: 0.1,
             scale_factor: 1.0,
             face_material: FaceMaterial::new()
                 .with_base_color_factor(RgbaColor { r: 0.55, g: 0.65, b: 0.9, a: 1.0 })
@@ -64,7 +64,7 @@ impl ConstructionOptions {
         let snap = SnapEngine::with_defaults();
         Self {
             geometry_options,
-            preview_tolerance: 0.1,
+            preview_tolerance: 1.0,
             construction_plane,
             grid,
             snap

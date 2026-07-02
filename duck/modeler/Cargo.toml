@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 duck-engine-common = { path = "../common" }
+duck-engine-import-export = { path = "../import-export", features = ["cad"] }
 duck-engine-scene = { path = "../scene", features = ["cad"] }
 duck-engine-viewer = { path = "../viewer", features = ["winit-support"] }
 opencascade = { path = "../../third-party/opencascade-rs/crates/opencascade" }
@@ -22,3 +23,4 @@ winit = "0.30"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 egui-winit = "0.33"
+rfd = "0.17"
