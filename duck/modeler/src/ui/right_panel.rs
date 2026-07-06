@@ -1,25 +1,31 @@
-//! The right-hand tabbed panel (Scene / Props / Material / Light / Snap).
-//! Only the Scene tab is populated today; the others render a placeholder.
+//! The right-hand tabbed panel: the Model tab (part list) and the Scene tab
+//! (camera, construction plane, grid, and snap settings).
 
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::document::Document;
+use crate::operators::ConstructionOptions;
 use crate::ui::model_tab::ModelTab;
+use crate::ui::scene_tab::SceneTab;
+use crate::ui::UiAction;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum RightTab {
     #[default]
     Model,
+    Scene,
 }
 
 impl RightTab {
-    const ALL: [RightTab; 1] = [
+    const ALL: [RightTab; 2] = [
         RightTab::Model,
+        RightTab::Scene,
     ];
 
     fn label(self) -> &'static str {
         match self {
             RightTab::Model => "Model",
+            RightTab::Scene => "Scene",
         }
     }
 }
@@ -28,6 +34,7 @@ impl RightTab {
 pub struct RightPanel {
     active_tab: RightTab,
     model: ModelTab,
+    scene: SceneTab,
 }
 
 impl RightPanel {
@@ -35,7 +42,9 @@ impl RightPanel {
         &mut self,
         ctx: &egui::Context,
         document: &mut Document,
+        construction: &mut ConstructionOptions,
         selection: &mut SelectionManager,
+        actions: &mut Vec<UiAction>,
     ) {
         egui::SidePanel::right("right_panel")
             .resizable(true)
@@ -51,6 +60,7 @@ impl RightPanel {
 
                 match self.active_tab {
                     RightTab::Model => self.model.show(ui, document, selection),
+                    RightTab::Scene => self.scene.show(ui, document, construction, actions),
                 }
             });
     }

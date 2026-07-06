@@ -76,6 +76,9 @@ struct ViewerState<'a> {
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
     tools: ToolManager,
+    /// The construction grid currently installed in the scene; replaced when
+    /// the construction plane or grid settings change.
+    grid: Option<grid::Grid>,
 }
 
 impl ViewerState<'static> {
@@ -162,6 +165,7 @@ impl ViewerState<'static> {
             construction_options,
             document,
             tools,
+            grid: None,
         }
     }
 
@@ -200,7 +204,8 @@ impl ViewerState<'static> {
         scene.set_default_light_nodes(camera_node_id);
 
         let coptions = self.construction_options.borrow();
-        let _grid = grid::Grid::add_to_scene(&mut scene, &coptions.grid, &coptions.construction_plane);
+        self.grid =
+            Some(grid::Grid::add_to_scene(&mut scene, &coptions.grid, &coptions.construction_plane));
         drop(coptions);
 
         let scene_arc = Arc::new(Mutex::new(scene));
@@ -210,6 +215,19 @@ impl ViewerState<'static> {
 }
 
 impl<'a> ViewerState<'a> {
+    /// Replaces the scene's grid visuals to match the current construction
+    /// plane and grid settings.
+    fn rebuild_grid(&mut self) {
+        let scene = self.viewer.scene();
+        let mut scene = scene.lock().unwrap();
+        if let Some(grid) = self.grid.take() {
+            grid.remove_from_scene(&mut scene);
+        }
+        let coptions = self.construction_options.borrow();
+        self.grid =
+            Some(grid::Grid::add_to_scene(&mut scene, &coptions.grid, &coptions.construction_plane));
+    }
+
     /// Handle a window event. egui always sees it first (for its own hover /
     /// focus state); events that belong to the 3D viewport are additionally
     /// routed to the viewer with pointer-capture semantics and viewport-local
@@ -316,8 +334,13 @@ impl<'a> ViewerState<'a> {
         let mut viewport_rect = None;
         let mut ui_actions = Vec::new();
         let full_output = egui_ctx.run(raw_input, |ctx| {
-            ui_actions =
-                self.ui.show(ctx, &self.document, self.viewer.selection_mut(), &mut self.tools);
+            ui_actions = self.ui.show(
+                ctx,
+                &self.document,
+                &self.construction_options,
+                self.viewer.selection_mut(),
+                &mut self.tools,
+            );
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
@@ -347,6 +370,7 @@ impl<'a> ViewerState<'a> {
                         log::error!("CAD export failed: {e:#}");
                     }
                 }
+                UiAction::ConstructionChanged => self.rebuild_grid(),
                 UiAction::Quit => return true,
             }
         }

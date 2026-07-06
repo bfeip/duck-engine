@@ -12,6 +12,8 @@ const GRID_NORMAL: [f32; 3] = [0.0, 1.0, 0.0];
 
 /// Visual and dimensional parameters for the construction grid.
 pub struct GridConfig {
+    /// Whether the grid is drawn at all. Snapping is unaffected.
+    pub visible: bool,
     /// Full side length of the grid in world units.
     pub size: f32,
     /// Distance between adjacent minor lines in world units.
@@ -35,6 +37,7 @@ pub struct GridConfig {
 impl Default for GridConfig {
     fn default() -> Self {
         Self {
+            visible: true,
             size: 1000.0,
             minor_spacing: 5.0,
             major_every: 5,
@@ -51,13 +54,17 @@ impl Default for GridConfig {
 /// A grid installed in a scene: handles to the nodes that comprise it, so it
 /// can be removed (e.g., when the construction plane changes).
 pub struct Grid {
-    _nodes: Vec<NodeId>,
+    nodes: Vec<NodeId>,
 }
 
 impl Grid {
     /// Creates the grid meshes, materials, and inert instance nodes in `scene`,
-    /// oriented to lie on `plane`.
+    /// oriented to lie on `plane`. When the config is not visible, creates
+    /// nothing (an empty grid).
     pub fn add_to_scene(scene: &mut Scene, config: &GridConfig, plane: &Plane) -> Self {
+        if !config.visible {
+            return Self { nodes: Vec::new() };
+        }
         let transform = plane_to_transform(plane);
 
         let minor = build_grid_mesh(config, GridLayer::Minor);
@@ -89,7 +96,14 @@ impl Grid {
         })
         .collect();
 
-        Self { _nodes: nodes }
+        Self { nodes }
+    }
+
+    /// Removes the grid's nodes and their meshes/materials from `scene`.
+    pub fn remove_from_scene(self, scene: &mut Scene) {
+        for node in self.nodes {
+            scene.cleanup_node(node);
+        }
     }
 }
 

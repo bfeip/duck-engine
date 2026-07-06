@@ -4,14 +4,18 @@ pub(crate) mod icons;
 mod menu_bar;
 mod right_panel;
 mod model_tab;
+mod scene_tab;
 mod tool_palette;
 mod tool_panel;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::document::Document;
+use crate::operators::ConstructionOptions;
 use crate::tool_manager::ToolManager;
 
 use menu_bar::MenuBar;
@@ -24,6 +28,9 @@ use tool_panel::ToolPanel;
 pub enum UiAction {
     ImportCad,
     ExportCad,
+    /// The construction plane or grid settings changed; the grid visuals must
+    /// be rebuilt to match.
+    ConstructionChanged,
     Quit,
 }
 
@@ -43,6 +50,7 @@ impl ModelerUi {
         &mut self,
         ctx: &egui::Context,
         document: &Arc<Mutex<Document>>,
+        construction: &Rc<RefCell<ConstructionOptions>>,
         selection: &mut SelectionManager,
         tools: &mut ToolManager,
     ) -> Vec<UiAction> {
@@ -54,7 +62,8 @@ impl ModelerUi {
             // which may also lock the document, causing a deadlock.
             // TODO: would be better to just pass the Arc instead of locking here.
             let mut document = document.lock().unwrap();
-            self.right.show(ctx, &mut document, selection);
+            let mut construction = construction.borrow_mut();
+            self.right.show(ctx, &mut document, &mut construction, selection, &mut actions);
         }
         self.tool_panel.show(ctx, tools, selection);
         actions
