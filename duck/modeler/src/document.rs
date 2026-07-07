@@ -168,6 +168,50 @@ impl Document {
         Ok(())
     }
 
+    /// Transform the given faces (by tessellation index) of a part's B-Rep and
+    /// re-solve the body around them, then re-tessellate the part in place
+    /// (preserving its `NodeId`). The part is untouched on error.
+    ///
+    /// `transform` must be a similarity (rotation + translation + uniform
+    /// scale); a tweak the body cannot re-solve reports an error.
+    pub fn tweak_faces(
+        &mut self,
+        part: PartId,
+        face_indices: &[u32],
+        transform: Matrix4,
+        options: &CadTessellationOptions,
+    ) -> Result<()> {
+        let node = self
+            .node_for_part(part)
+            .context("tweak_faces: no node for part")?;
+
+        let tweaked = {
+            let cad_part = self.get_part(part).context("tweak_faces: part not found")?;
+            let faces: Vec<_> = face_indices
+                .iter()
+                .map(|&index| {
+                    cad_part
+                        .shape
+                        .faces()
+                        .nth(index as usize)
+                        .with_context(|| format!("tweak_faces: no face at index {index}"))
+                })
+                .collect::<Result<_>>()?;
+            let mat = matrix4_to_row_major_f64(&transform);
+            cad_part.shape.tweak_faces(faces, mat)?
+        };
+
+        {
+            let mut scene = self.scene.lock().unwrap();
+            retessellate_node(&tweaked, &mut scene, options, node)?;
+        }
+        self.get_part_mut(part)
+            .context("tweak_faces: part not found")?
+            .shape = tweaked;
+
+        Ok(())
+    }
+
     pub fn parts(&self) -> impl Iterator<Item = &CadPart> {
         self.parts.iter()
     }
@@ -204,5 +248,80 @@ impl Document {
         let part = self.part_for_node(node).and_then(|id| self.get_part(id))?;
         let target = part.shape.edges().nth(edge_index as usize)?;
         part.shape.wires().find(|wire| wire.edges().any(|e| e.is_same(&target)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duck_engine_scene::common::Vector3;
+
+    fn doc_with_box() -> (Document, PartId, NodeId) {
+        let scene = Arc::new(Mutex::new(Scene::new()));
+        let mut doc = Document::new(scene);
+        let part = doc
+            .add_part("box", opencascade::primitives::Shape::cube(2.0), &CadTessellationOptions::default())
+            .expect("box tessellates");
+        let node = doc.node_for_part(part).expect("part has a node");
+        (doc, part, node)
+    }
+
+    /// Tessellation index of the box face whose center has the largest y (the top).
+    fn top_face_index(doc: &Document, part: PartId) -> u32 {
+        let shape = &doc.get_part(part).unwrap().shape;
+        shape
+            .faces()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.center_of_mass().y.total_cmp(&b.center_of_mass().y))
+            .map(|(index, _)| index as u32)
+            .expect("box has faces")
+    }
+
+    fn max_y(doc: &Document, part: PartId) -> f64 {
+        let shape = &doc.get_part(part).unwrap().shape;
+        shape
+            .mesh()
+            .unwrap()
+            .vertices
+            .iter()
+            .map(|v| v.y)
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    #[test]
+    fn tweak_faces_resolves_brep_and_keeps_node() {
+        let (mut doc, part, node) = doc_with_box();
+        let face = top_face_index(&doc, part);
+        let transform = Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0));
+
+        doc.tweak_faces(part, &[face], transform, &CadTessellationOptions::default())
+            .expect("translating the top face up re-solves");
+
+        assert_eq!(doc.parts().count(), 1, "tweak edits the part in place");
+        assert_eq!(doc.node_for_part(part), Some(node), "node id must be preserved");
+        assert!((max_y(&doc, part) - 3.0).abs() < 1e-6, "top must land at y=3");
+    }
+
+    #[test]
+    fn tweak_faces_bad_index_leaves_part_untouched() {
+        let (mut doc, part, _) = doc_with_box();
+        let transform = Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0));
+
+        let result = doc.tweak_faces(part, &[99], transform, &CadTessellationOptions::default());
+
+        assert!(result.is_err());
+        assert!((max_y(&doc, part) - 2.0).abs() < 1e-6, "failed tweak must not modify the shape");
+    }
+
+    #[test]
+    fn tweak_faces_rejects_non_similarity_transform() {
+        let (mut doc, part, _) = doc_with_box();
+        let face = top_face_index(&doc, part);
+        let squash = Matrix4::from_nonuniform_scale(1.0, 0.5, 1.0);
+
+        let result = doc.tweak_faces(part, &[face], squash, &CadTessellationOptions::default());
+
+        assert!(result.is_err(), "non-uniform scale must be rejected");
+        assert!((max_y(&doc, part) - 2.0).abs() < 1e-6, "failed tweak must not modify the shape");
     }
 }
