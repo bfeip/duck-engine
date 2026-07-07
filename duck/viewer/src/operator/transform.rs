@@ -30,22 +30,11 @@ use crate::common::{
 use crate::common::Axis;
 
 use crate::event::{AppEvent, DeviceEvent, Event, EventContext};
-use crate::gizmo::{GizmoState, GizmoType};
+use crate::gizmo::GizmoState;
 use crate::input::{ElementState, Modifiers};
 use crate::operator::Operator;
 use crate::scene::{NodeId, Scene};
 use crate::scene_scale;
-
-impl TransformMode {
-    /// The gizmo handle set for this mode.
-    fn gizmo_type(self) -> GizmoType {
-        match self {
-            TransformMode::Translate => GizmoType::Translate,
-            TransformMode::Rotate => GizmoType::Rotate,
-            TransformMode::Scale => GizmoType::Scale,
-        }
-    }
-}
 
 /// Original transform state for a node (used for cancel/restore).
 #[derive(Debug, Clone)]

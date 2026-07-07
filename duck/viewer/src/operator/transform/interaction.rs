@@ -15,6 +15,7 @@ use crate::bindings::{InputBinding, InputMap};
 use crate::common::{
     local_axis_x, local_axis_y, local_axis_z, quaternion_from_axis_angle_safe, Axis, RgbaColor,
 };
+use crate::gizmo::GizmoType;
 use crate::input::{Key, Modifiers, MouseButton, NamedKey};
 
 /// Semantic actions for an interactive transform.
@@ -49,6 +50,15 @@ pub enum TransformMode {
 }
 
 impl TransformMode {
+    /// The gizmo handle set for this mode.
+    pub fn gizmo_type(self) -> GizmoType {
+        match self {
+            TransformMode::Translate => GizmoType::Translate,
+            TransformMode::Rotate => GizmoType::Rotate,
+            TransformMode::Scale => GizmoType::Scale,
+        }
+    }
+
     /// The keyboard key that starts a freeform transform in this mode.
     fn start_key(self) -> char {
         match self {
