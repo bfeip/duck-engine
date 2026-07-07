@@ -1,67 +1,40 @@
-//! Single-mode transform operator (translate, rotate, or scale).
+//! Single-mode transform operator (translate, rotate, or scale) for scene nodes.
 //!
 //! Each operator instance is locked to one [`TransformMode`] chosen at
 //! construction; its gizmo handle reflects that mode. Separate transform
 //! operations are separate operators.
+//!
+//! The interactive core — input bindings, axis-constraint cycling, and the
+//! mouse-delta → transform math — lives in [`TransformInteraction`]; this
+//! operator supplies the node-specific parts: pivot from the selected nodes,
+//! live preview by mutating node transforms, restore-on-cancel, and the
+//! [`AppEvent::TransformCommitted`] notification.
 
+mod annotations;
+mod interaction;
 
-use std::collections::HashMap;
+pub use annotations::TransformAnnotations;
+pub use interaction::{
+    axis_from_constraint, AxisConstraint, TransformAction, TransformInteraction, TransformMode,
+};
 
 use duck_engine_common::{
-    EuclideanSpace, InnerSpace, Matrix4, Point3, Quaternion, Rotation, SquareMatrix, Vector3,
+    EuclideanSpace, Matrix4, Point3, Quaternion, SquareMatrix, Vector3,
 };
-use duck_engine_scene::{Mesh, NodeFlags, Scene, common};
 
 use crate::common::{
-    apply_scale, centroid_of_slice, compose_rotation, decompose_matrix, local_axis_x, local_axis_y,
-    local_axis_z, quaternion_from_axis_angle_safe, rotate_position_about_pivot,
-    scale_position_about_pivot_local, scale_position_about_pivot_world, RgbaColor, Transform,
+    apply_scale, centroid_of_slice, compose_rotation, decompose_matrix,
+    rotate_position_about_pivot, scale_position_about_pivot_local, scale_position_about_pivot_world,
+    Transform,
 };
 use crate::common::Axis;
-use serde::{Deserialize, Serialize};
 
-use crate::bindings::{InputBinding, InputMap};
 use crate::event::{AppEvent, DeviceEvent, Event, EventContext};
-use crate::geom_query::{pick_all_from_ray, RayPickQuery};
-use crate::input::{ElementState, Key, Modifiers, MouseButton, NamedKey};
+use crate::gizmo::{GizmoState, GizmoType};
+use crate::input::{ElementState, Modifiers};
 use crate::operator::Operator;
-use crate::gizmo::{self, GizmoType};
-use crate::scene::{
-    DisplayBehavior, FaceMaterialId, Instance, LineMaterial, LineMaterialId, MeshId, NodeId,
-    RenderLayer,
-};
+use crate::scene::{NodeId, Scene};
 use crate::scene_scale;
-
-/// Semantic actions for the transform operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TransformAction {
-    /// Begin a freeform transform in this operator's mode.
-    StartTransform,
-    /// Cycle the axis constraint to X (world then local on repeated press).
-    ConstrainX,
-    /// Cycle the axis constraint to Y (world then local on repeated press).
-    ConstrainY,
-    /// Cycle the axis constraint to Z (world then local on repeated press).
-    ConstrainZ,
-    /// Confirm the active transform via keyboard.
-    KeyConfirm,
-    /// Cancel the active transform via keyboard.
-    KeyCancel,
-    /// Confirm the active transform via mouse click.
-    MouseConfirm,
-    /// Cancel the active transform via mouse click.
-    MouseCancel,
-    /// Drag interaction with a gizmo handle (drag start, drag, and drag end).
-    GizmoDrag,
-}
-
-/// The type of transform being performed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransformMode {
-    Translate,
-    Rotate,
-    Scale,
-}
 
 impl TransformMode {
     /// The gizmo handle set for this mode.
@@ -71,232 +44,6 @@ impl TransformMode {
             TransformMode::Rotate => GizmoType::Rotate,
             TransformMode::Scale => GizmoType::Scale,
         }
-    }
-
-    /// The keyboard key that starts a freeform transform in this mode.
-    fn start_key(self) -> char {
-        match self {
-            TransformMode::Translate => 'g',
-            TransformMode::Rotate => 'r',
-            TransformMode::Scale => 's',
-        }
-    }
-}
-
-/// Axis constraint for the transform operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AxisConstraint {
-    /// No constraint - free transform
-    None,
-    /// Constrain to world X axis
-    WorldX,
-    /// Constrain to world Y axis
-    WorldY,
-    /// Constrain to world Z axis
-    WorldZ,
-    /// Constrain to local X axis (relative to primary selection)
-    LocalX,
-    /// Constrain to local Y axis (relative to primary selection)
-    LocalY,
-    /// Constrain to local Z axis (relative to primary selection)
-    LocalZ,
-}
-
-impl AxisConstraint {
-    /// Returns the color for visual feedback (RGB = XYZ convention).
-    fn color(&self) -> Option<RgbaColor> {
-        match self {
-            AxisConstraint::None => None,
-            AxisConstraint::WorldX | AxisConstraint::LocalX => Some(RgbaColor::RED),
-            AxisConstraint::WorldY | AxisConstraint::LocalY => Some(RgbaColor::GREEN),
-            AxisConstraint::WorldZ | AxisConstraint::LocalZ => Some(RgbaColor::BLUE),
-        }
-    }
-
-    /// Returns whether this is a local axis constraint.
-    fn is_local(&self) -> bool {
-        matches!(
-            self,
-            AxisConstraint::LocalX | AxisConstraint::LocalY | AxisConstraint::LocalZ
-        )
-    }
-}
-
-/// Tracks gizmo scene resources for cleanup.
-///
-/// Gizmo nodes are parented under the annotation root node so they are grouped
-/// with other overlay content and hidden when annotations are toggled off.
-///
-struct GizmoState {
-    /// Root node for all gizmo geometry. Created when first needed.
-    root_node: Option<NodeId>,
-    /// Node IDs of the gizmo handles (one per axis: X, Y, Z).
-    node_ids: Vec<NodeId>,
-    /// Mesh IDs added to the scene for gizmo geometry.
-    mesh_ids: Vec<MeshId>,
-    /// Material IDs added to the scene for gizmo handles.
-    material_ids: Vec<FaceMaterialId>,
-    /// Which axis is currently highlighted (hovered or active).
-    highlighted_axis: Option<Axis>,
-    /// Current gizmo type being displayed.
-    current_type: Option<GizmoType>,
-}
-
-impl GizmoState {
-    fn new() -> Self {
-        Self {
-            root_node: None,
-            node_ids: Vec::new(),
-            mesh_ids: Vec::new(),
-            material_ids: Vec::new(),
-            highlighted_axis: None,
-            current_type: None,
-        }
-    }
-
-    fn has_gizmo(&self) -> bool {
-        self.current_type.is_some()
-    }
-
-    /// Build and add gizmo handles to the scene at the given pivot point.
-    ///
-    /// Handles are parented under the annotation root so they inherit annotation
-    /// visibility and stay grouped with other overlay geometry.
-    fn show(&mut self, gizmo_type: GizmoType, pivot: Point3, size: f32, ctx: &mut EventContext) {
-        let mut scene = ctx.scene.lock().unwrap();
-
-        self.hide(&mut scene);
-
-        self.root_node.get_or_insert_with(|| {
-            let id = scene.add_node(
-                None, Some("Gizmo root".to_owned()), Transform::IDENTITY, NodeFlags::DO_NOT_EXPORT
-            ).expect("Failed to create Gizmo root node");
-            // Draw the gizmo on the overlay layer; handles inherit it.
-            scene.set_node_display(id, DisplayBehavior { layer: RenderLayer::Overlay, ..Default::default() });
-            id
-        });
-
-        let handles = gizmo::build_handles(gizmo_type, size);
-        let pivot_transform = common::Transform::from_position(pivot);
-
-        for handle in handles {
-            let mesh_id = scene.add_mesh(handle.mesh);
-            let material_id = scene.add_face_material(handle.material);
-            let node_id = scene
-                .add_instance_node(
-                    self.root_node,
-                    Instance::new(mesh_id).with_face_material(material_id),
-                    None,
-                    pivot_transform,
-                    NodeFlags::DO_NOT_EXPORT
-                )
-                .expect("Failed to add gizmo node");
-
-            self.node_ids.push(node_id);
-            self.mesh_ids.push(mesh_id);
-            self.material_ids.push(material_id);
-        }
-
-        self.current_type = Some(gizmo_type);
-    }
-
-    /// Remove all gizmo geometry from the scene.
-    fn hide(&mut self, scene: &mut Scene) {
-        for &node_id in &self.node_ids {
-            scene.remove_node(node_id);
-        }
-        for &mesh_id in &self.mesh_ids {
-            scene.remove_mesh(mesh_id);
-        }
-        for &material_id in &self.material_ids {
-            scene.remove_face_material(material_id);
-        }
-
-        self.node_ids.clear();
-        self.mesh_ids.clear();
-        self.material_ids.clear();
-        self.highlighted_axis = None;
-        self.current_type = None;
-    }
-
-    /// Update the gizmo position (e.g. when pivot changes).
-    fn update_position(&self, pivot: Point3, ctx: &mut EventContext) {
-        let mut scene = ctx.scene.lock().unwrap();
-        for &node_id in &self.node_ids {
-            if scene.has_node(node_id) {
-                scene.set_node_position(node_id, pivot);
-            }
-        }
-    }
-
-    /// Pick which gizmo handle (if any) is under the given screen position.
-    fn pick_handle(&self, cursor_x: f32, cursor_y: f32, ctx: &EventContext) -> Option<Axis> {
-        if !self.has_gizmo() {
-            return None;
-        }
-
-        let ray = ctx.camera().ray_from_screen_point(cursor_x, cursor_y, ctx.size.0, ctx.size.1);
-        let scene = ctx.scene.lock().unwrap();
-        let results = pick_all_from_ray(&RayPickQuery::faces(ray), &*scene);
-
-        // Find the first hit that matches a gizmo node
-        for result in &results {
-            for (i, &node_id) in self.node_ids.iter().enumerate() {
-                if result.node_id == node_id {
-                    return Some(Axis::ALL[i]);
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Highlight a specific axis handle (or clear highlight with None).
-    fn set_highlight(&mut self, axis: Option<Axis>, ctx: &mut EventContext) {
-        if self.highlighted_axis == axis {
-            return;
-        }
-
-        let mut scene = ctx.scene.lock().unwrap();
-
-        // Restore previous highlight to normal color
-        if let Some(prev_axis) = self.highlighted_axis {
-            let idx = axis_index(prev_axis);
-            if let Some(&mat_id) = self.material_ids.get(idx)
-                && let Some(mat) = scene.get_face_material_mut(mat_id) {
-                    mat.set_base_color_factor(prev_axis.color());
-                }
-        }
-
-        // Apply highlight color to new axis
-        if let Some(new_axis) = axis {
-            let idx = axis_index(new_axis);
-            if let Some(&mat_id) = self.material_ids.get(idx)
-                && let Some(mat) = scene.get_face_material_mut(mat_id) {
-                    mat.set_base_color_factor(gizmo::highlight_color(new_axis));
-                }
-        }
-
-        self.highlighted_axis = axis;
-    }
-}
-
-/// Maps an axis to its index in the gizmo handle arrays (X=0, Y=1, Z=2).
-fn axis_index(axis: Axis) -> usize {
-    match axis {
-        Axis::X => 0,
-        Axis::Y => 1,
-        Axis::Z => 2,
-    }
-}
-
-/// Maps an axis constraint to the corresponding Axis for gizmo highlighting.
-fn axis_from_constraint(constraint: &AxisConstraint) -> Option<Axis> {
-    match constraint {
-        AxisConstraint::WorldX | AxisConstraint::LocalX => Some(Axis::X),
-        AxisConstraint::WorldY | AxisConstraint::LocalY => Some(Axis::Y),
-        AxisConstraint::WorldZ | AxisConstraint::LocalZ => Some(Axis::Z),
-        AxisConstraint::None => None,
     }
 }
 
@@ -311,29 +58,11 @@ struct OriginalTransform {
 
 /// Operator for a single transform operation (translate, rotate, or scale).
 pub struct TransformOperator {
-    /// The fixed operation this operator performs.
-    mode: TransformMode,
-
-    /// Whether a transform is currently being applied (driven by mouse motion).
-    active: bool,
-
-    /// Current axis constraint.
-    axis_constraint: AxisConstraint,
+    /// The interactive drag/constraint state machine.
+    interaction: TransformInteraction,
 
     /// Original transforms of selected nodes (for cancel/restore).
     original_transforms: Vec<OriginalTransform>,
-
-    /// The rotation of the primary selected node (for local axis transforms).
-    primary_rotation: Quaternion,
-
-    /// Accumulated mouse movement since transform started.
-    accumulated_delta: (f32, f32),
-
-    /// Center point of selection in world space (pivot point for rotation/scale).
-    pivot_world: Point3,
-
-    /// Model radius for scaling sensitivity.
-    model_radius: f32,
 
     /// Gizmo handle state (3D visual handles for this operator's mode).
     gizmo: GizmoState,
@@ -342,87 +71,25 @@ pub struct TransformOperator {
     /// The handle set is always [`TransformMode::gizmo_type`] for this mode.
     gizmo_enabled: bool,
 
-    /// Root node for transform annotations, created when needed.
-    annotation_root: Option<NodeId>,
-
-    /// Transform annotations, cleaned up after transform is complete
-    annotations: Vec<NodeId>,
-
-    /// Materials for the colored annotations (So we're not making dozens of copies)
-    annotation_axis_materials: HashMap<Axis, LineMaterialId>,
-
-    pub bindings: InputMap<TransformAction>,
+    /// Axis-constraint feedback lines.
+    annotations: TransformAnnotations,
 }
 
 impl TransformOperator {
     /// Creates a new transform operator locked to the given mode.
     pub fn new(mode: TransformMode) -> Self {
-        let bindings = InputMap::new()
-            .bind(
-                InputBinding::Key { key: Key::Character(mode.start_key()), modifiers: Modifiers::default() },
-                TransformAction::StartTransform,
-            )
-            .bind(
-                InputBinding::Key { key: Key::Character('x'), modifiers: Modifiers::default() },
-                TransformAction::ConstrainX,
-            )
-            .bind(
-                InputBinding::Key { key: Key::Character('y'), modifiers: Modifiers::default() },
-                TransformAction::ConstrainY,
-            )
-            .bind(
-                InputBinding::Key { key: Key::Character('z'), modifiers: Modifiers::default() },
-                TransformAction::ConstrainZ,
-            )
-            .bind(
-                InputBinding::Key { key: Key::Named(NamedKey::Enter), modifiers: Modifiers::default() },
-                TransformAction::KeyConfirm,
-            )
-            .bind(
-                InputBinding::Key { key: Key::Named(NamedKey::Escape), modifiers: Modifiers::default() },
-                TransformAction::KeyCancel,
-            )
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
-                TransformAction::MouseConfirm,
-            )
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
-                TransformAction::MouseCancel,
-            )
-            .bind(
-                InputBinding::MouseDragStart { button: MouseButton::Left, modifiers: Modifiers::default() },
-                TransformAction::GizmoDrag,
-            )
-            .bind(
-                InputBinding::MouseDrag { button: MouseButton::Left, modifiers: Modifiers::default() },
-                TransformAction::GizmoDrag,
-            )
-            .bind(
-                InputBinding::MouseDragEnd { button: MouseButton::Left, modifiers: Modifiers::default() },
-                TransformAction::GizmoDrag,
-            );
         Self {
-            mode,
-            active: false,
-            axis_constraint: AxisConstraint::None,
+            interaction: TransformInteraction::new(mode),
             original_transforms: Vec::new(),
-            primary_rotation: Quaternion::new(1.0, 0.0, 0.0, 0.0),
-            accumulated_delta: (0.0, 0.0),
-            pivot_world: Point3::origin(),
-            model_radius: 1.0,
             gizmo: GizmoState::new(),
             gizmo_enabled: false,
-            annotation_root: None,
-            annotations: Vec::new(),
-            annotation_axis_materials: HashMap::new(),
-            bindings,
+            annotations: TransformAnnotations::new(),
         }
     }
 
     /// Returns true if a transform operation is currently active.
     pub fn is_active(&self) -> bool {
-        self.active
+        self.interaction.is_active()
     }
 
     /// Show or hide the persistent gizmo handles. When enabled, the handles for
@@ -440,38 +107,10 @@ impl TransformOperator {
                 scene.set_node_transform(original.node_id, original.local_transform);
             }
         }
-        for id in self.annotations.drain(..) {
-            scene.remove_node(id);
-        }
+        self.annotations.clear(scene);
         self.gizmo.hide(scene);
         self.gizmo_enabled = false;
         self.reset();
-    }
-
-    /// Cycles the axis constraint for a given axis key.
-    /// None → World → Local → None
-    fn cycle_axis_constraint(&mut self, axis: char) {
-        self.axis_constraint = match (axis, &self.axis_constraint) {
-            // X axis cycling
-            ('x', AxisConstraint::None) => AxisConstraint::WorldX,
-            ('x', AxisConstraint::WorldX) => AxisConstraint::LocalX,
-            ('x', AxisConstraint::LocalX) => AxisConstraint::None,
-            ('x', _) => AxisConstraint::WorldX, // Switch from other axis
-
-            // Y axis cycling
-            ('y', AxisConstraint::None) => AxisConstraint::WorldY,
-            ('y', AxisConstraint::WorldY) => AxisConstraint::LocalY,
-            ('y', AxisConstraint::LocalY) => AxisConstraint::None,
-            ('y', _) => AxisConstraint::WorldY, // Switch from other axis
-
-            // Z axis cycling
-            ('z', AxisConstraint::None) => AxisConstraint::WorldZ,
-            ('z', AxisConstraint::WorldZ) => AxisConstraint::LocalZ,
-            ('z', AxisConstraint::LocalZ) => AxisConstraint::None,
-            ('z', _) => AxisConstraint::WorldZ, // Switch from other axis
-
-            _ => self.axis_constraint,
-        };
     }
 
     /// Handle an axis key (X/Y/Z): start the transform constrained to that axis
@@ -484,110 +123,45 @@ impl TransformOperator {
                 return false;
             }
         }
-        self.cycle_axis_constraint(axis);
+        self.interaction.cycle_axis_constraint(axis);
         self.apply_preview_transform(ctx);
-        self.update_visual_feedback(ctx);
-        let highlight = axis_from_constraint(&self.axis_constraint);
-        self.gizmo.set_highlight(highlight, ctx);
+        let highlight = axis_from_constraint(&self.interaction.axis_constraint());
+        let mut scene = ctx.scene.lock().unwrap();
+        self.annotations.update(&self.interaction, &mut scene);
+        self.gizmo.set_highlight(highlight, &mut scene);
         true
-    }
-
-    /// Get the constraint axis direction in world space.
-    fn get_constraint_axis(&self) -> Option<Vector3> {
-        match self.axis_constraint {
-            AxisConstraint::None => None,
-            AxisConstraint::WorldX => Some(Vector3::unit_x()),
-            AxisConstraint::WorldY => Some(Vector3::unit_y()),
-            AxisConstraint::WorldZ => Some(Vector3::unit_z()),
-            AxisConstraint::LocalX => Some(local_axis_x(self.primary_rotation)),
-            AxisConstraint::LocalY => Some(local_axis_y(self.primary_rotation)),
-            AxisConstraint::LocalZ => Some(local_axis_z(self.primary_rotation)),
-        }
-    }
-
-    /// Compute the translation delta based on mouse movement and constraints.
-    fn compute_translation(&self, ctx: &EventContext) -> Vector3 {
-        let camera = ctx.camera();
-        let pivot = &self.pivot_world;
-        let (width, height) = ctx.size;
-        let (dx, dy) = self.accumulated_delta;
-
-        let movement_plane = common::Plane::from_point(camera.forward(), *pivot);
-        let Point3 { x: screen_x, y: screen_y, .. } = camera.project_point_screen(*pivot, width, height);
-        let diff_ray = camera.ray_from_screen_point(screen_x + dx, screen_y + dy, width, height);
-        let new_pivot = diff_ray.intersect_plane(&movement_plane)
-            .map_or(*pivot, |intersection| intersection.1);
-        let move_vector = new_pivot - pivot;
-
-        match self.get_constraint_axis() {
-            None => {
-                move_vector
-            }
-            Some(axis) => {
-                axis * axis.dot(move_vector)
-            }
-        }
-    }
-
-    /// Compute the rotation based on mouse movement and constraints.
-    fn compute_rotation(&self, ctx: &EventContext) -> Quaternion {
-        // 0.5 degrees per pixel
-        let sensitivity = 0.5_f32.to_radians();
-        let angle = self.accumulated_delta.0 * sensitivity;
-
-        let axis = match self.get_constraint_axis() {
-            None => {
-                // Free rotation: rotate around view axis
-                ctx.camera().forward()
-            }
-            Some(axis) => axis,
-        };
-
-        quaternion_from_axis_angle_safe(axis, angle)
-    }
-
-    /// Compute the scale factor based on mouse movement and constraints.
-    fn compute_scale(&self) -> Vector3 {
-        // 0.5% change per pixel
-        let sensitivity = 0.005;
-        let factor = 1.0 + self.accumulated_delta.0 * sensitivity;
-        // Clamp to prevent negative or zero scale
-        let factor = factor.max(0.01);
-
-        match self.axis_constraint {
-            AxisConstraint::None => Vector3::new(factor, factor, factor),
-            AxisConstraint::WorldX | AxisConstraint::LocalX => Vector3::new(factor, 1.0, 1.0),
-            AxisConstraint::WorldY | AxisConstraint::LocalY => Vector3::new(1.0, factor, 1.0),
-            AxisConstraint::WorldZ | AxisConstraint::LocalZ => Vector3::new(1.0, 1.0, factor),
-        }
     }
 
     /// Apply the current transform preview to all selected nodes.
     fn apply_preview_transform(&self, ctx: &mut EventContext) {
-        if !self.active {
+        if !self.is_active() {
             return;
         }
-        let mode = self.mode;
+        let mode = self.interaction.mode();
 
         // Pre-compute camera-dependent values before locking the scene.
         // ctx.camera() acquires and releases the scene lock internally.
+        let camera = ctx.camera();
         let translation_delta = if mode == TransformMode::Translate {
-            Some(self.compute_translation(ctx))
+            Some(self.interaction.translation(&camera, ctx.size))
         } else {
             None
         };
 
         let rotation_quat = if mode == TransformMode::Rotate {
-            Some(self.compute_rotation(ctx))
+            Some(self.interaction.rotation(&camera))
         } else {
             None
         };
 
         let scale_factor = if mode == TransformMode::Scale {
-            Some(self.compute_scale())
+            Some(self.interaction.scale())
         } else {
             None
         };
+
+        let pivot_world = self.interaction.pivot();
+        let frame_rotation = self.interaction.frame_rotation();
 
         // Now apply transforms to nodes under a single scene lock.
         let mut scene = ctx.scene.lock().unwrap();
@@ -616,7 +190,7 @@ impl TransformOperator {
                     // Rotate world position around world pivot, convert to local
                     let new_world_pos = rotate_position_about_pivot(
                         orig.world_transform.position,
-                        self.pivot_world,
+                        pivot_world,
                         rotation,
                     );
                     let new_local_pos =
@@ -634,13 +208,13 @@ impl TransformOperator {
                 TransformMode::Scale => {
                     let scale = scale_factor.unwrap();
 
-                    if self.axis_constraint.is_local() {
+                    if self.interaction.axis_constraint().is_local() {
                         // Local axis: scale in local space, but use world positions for pivot
                         let new_world_pos = scale_position_about_pivot_local(
                             orig.world_transform.position,
-                            self.pivot_world,
+                            pivot_world,
                             scale,
-                            self.primary_rotation,
+                            frame_rotation,
                         );
                         let new_local_pos =
                             Point3::from_homogeneous(inv_parent * new_world_pos.to_homogeneous());
@@ -651,7 +225,7 @@ impl TransformOperator {
                         // World axis: scale world position around pivot, convert to local
                         let new_world_pos = scale_position_about_pivot_world(
                             orig.world_transform.position,
-                            self.pivot_world,
+                            pivot_world,
                             scale,
                         );
                         let new_local_pos =
@@ -679,64 +253,6 @@ impl TransformOperator {
         }
     }
 
-    /// Update visual feedback annotations.
-    fn update_visual_feedback(&mut self, ctx: &mut EventContext) {
-        let mut scene = ctx.scene.lock().unwrap();
-
-        // Create annotation root node if it does not exist
-        self.annotation_root.get_or_insert(
-            scene.add_node(
-                None, Some("Transform annotations".to_owned()), Transform::IDENTITY, NodeFlags::inert()
-            ).expect("Failed to create transform annotation root node")
-        );
-
-        // Clear previous annotations
-        for id in self.annotations.drain(..) {
-            scene.remove_node(id);
-        }
-
-        // Add axis constraint line if constrained
-        if let Some(color) = self.axis_constraint.color()
-            && let Some(axis) = self.get_constraint_axis() {
-                let half_length = self.model_radius * 2.0;
-                let start = self.pivot_world - axis * half_length;
-                let end = self.pivot_world + axis * half_length;
-                let mesh = Mesh::line(start, end);
-                let mesh_id = scene.add_mesh(mesh);
-
-                // Get or insert the material for this axis annotation
-                let create_color_material = |scene: &mut Scene| {
-                    scene.add_line_material(LineMaterial::new(color))
-                };
-                let mut material = self.annotation_axis_materials.entry(
-                    axis_from_constraint(&self.axis_constraint).unwrap()
-                ).or_insert(create_color_material(&mut *scene)).to_owned();
-                if scene.get_line_material(material).is_none() {
-                    // Our material was removed from the scene since we last used it.
-                    // This can happen if, while unused, the scene removed all unreferenced
-                    // resources. We'll have to reinsert the material.
-                    material = create_color_material(&mut *scene);
-                }
-
-                let id = scene.add_instance_node(
-                    self.annotation_root,
-                    Instance::new(mesh_id).with_line_material(material),
-                    Some("Transform axis annotation".to_owned()),
-                    Transform::IDENTITY,
-                    NodeFlags::inert()
-                ).expect("Failed to create axis annotation");
-                self.annotations.push(id);
-            }
-    }
-
-    /// Clean up annotations.
-    fn cleanup_annotations(&mut self, ctx: &mut EventContext) {
-        let mut scene = ctx.scene.lock().unwrap();
-        for id in self.annotations.drain(..) {
-            scene.remove_node(id);
-        }
-    }
-
     /// Show, reposition, or hide the gizmo based on `gizmo_enabled` and selection.
     fn sync_gizmo(&mut self, ctx: &mut EventContext) {
         let selected = ctx.selection.selected_nodes();
@@ -748,32 +264,27 @@ impl TransformOperator {
             return;
         }
 
-        let gizmo_type = self.mode.gizmo_type();
-        let (positions, model_radius) = {
-            let scene = ctx.scene.lock().unwrap();
-            let positions: Vec<Point3> = selected
-                .iter()
-                .filter_map(|&nid| scene.nodes_bounding(nid).bounds.map(|aabb| aabb.center()))
-                .collect();
-            let model_radius =
-                scene_scale::model_radius_from_bounds(scene.bounding().bounds.as_ref());
-            (positions, model_radius)
-        };
+        let gizmo_type = self.interaction.mode().gizmo_type();
+        let mut scene = ctx.scene.lock().unwrap();
+        let positions: Vec<Point3> = selected
+            .iter()
+            .filter_map(|&nid| scene.nodes_bounding(nid).bounds.map(|aabb| aabb.center()))
+            .collect();
+        let model_radius =
+            scene_scale::model_radius_from_bounds(scene.bounding().bounds.as_ref());
         let pivot = centroid_of_slice(&positions).unwrap_or(Point3::origin());
 
-        if self.gizmo.current_type == Some(gizmo_type) {
-            self.gizmo.update_position(pivot, ctx);
+        if self.gizmo.current_type() == Some(gizmo_type) {
+            self.gizmo.update_position(pivot, &mut scene);
         } else {
-            self.gizmo.show(gizmo_type, pivot, model_radius * 0.15, ctx);
+            self.gizmo.show(gizmo_type, pivot, model_radius * 0.15, &mut scene);
         }
     }
 
     /// Reset state after transform completes (confirm or cancel).
     fn reset(&mut self) {
-        self.active = false;
-        self.axis_constraint = AxisConstraint::None;
+        self.interaction.finish();
         self.original_transforms.clear();
-        self.accumulated_delta = (0.0, 0.0);
     }
 
     /// Start a transform operation in this operator's mode.
@@ -786,6 +297,8 @@ impl TransformOperator {
 
         // Store original transforms with world-space info
         let mut world_positions: Vec<Point3> = Vec::new();
+        let mut frame_rotation: Option<Quaternion> = None;
+        let model_radius;
         {
             let scene = ctx.scene.lock().unwrap();
             for node_id in &selected_nodes {
@@ -818,24 +331,20 @@ impl TransformOperator {
                 return;
             }
 
-            // Store primary selection's rotation for local axis transforms
+            // The primary selection's rotation orients local axis constraints
             if let Some(primary) = ctx.selection.primary()
                 && let Some(node) = scene.get_node(primary.node_id()) {
-                    self.primary_rotation = node.rotation();
+                    frame_rotation = Some(node.rotation());
                 }
 
             // Get model radius for sensitivity scaling
-            self.model_radius =
+            model_radius =
                 scene_scale::model_radius_from_bounds(scene.bounding().bounds.as_ref());
         }
 
-        // Compute pivot as centroid of world-space positions
-        self.pivot_world = centroid_of_slice(&world_positions).unwrap_or(Point3::origin());
-
-        // Activate the transform
-        self.active = true;
-        self.axis_constraint = AxisConstraint::None;
-        self.accumulated_delta = (0.0, 0.0);
+        // Activate about the centroid of world-space positions
+        let pivot = centroid_of_slice(&world_positions).unwrap_or(Point3::origin());
+        self.interaction.start(pivot, frame_rotation, model_radius);
     }
 
     /// Confirm the transform (keep current state).
@@ -846,8 +355,11 @@ impl TransformOperator {
         // Notify downstream consumers of the confirmed nodes
         let nodes: Vec<NodeId> = self.original_transforms.iter().map(|o| o.node_id).collect();
         ctx.emit(AppEvent::TransformCommitted { nodes });
-        self.cleanup_annotations(ctx);
-        self.gizmo.set_highlight(None, ctx);
+        {
+            let mut scene = ctx.scene.lock().unwrap();
+            self.annotations.clear(&mut scene);
+            self.gizmo.set_highlight(None, &mut scene);
+        }
         self.reset();
         self.sync_gizmo(ctx);
     }
@@ -857,8 +369,11 @@ impl TransformOperator {
     /// The gizmo remains visible at the original position.
     fn cancel_transform(&mut self, ctx: &mut EventContext) {
         self.restore_original_transforms(ctx);
-        self.cleanup_annotations(ctx);
-        self.gizmo.set_highlight(None, ctx);
+        {
+            let mut scene = ctx.scene.lock().unwrap();
+            self.annotations.clear(&mut scene);
+            self.gizmo.set_highlight(None, &mut scene);
+        }
         self.reset();
         self.sync_gizmo(ctx);
     }
@@ -870,6 +385,8 @@ impl TransformOperator {
 /// constraints, rotates the scale axis into local space and decomposes it
 /// into per-axis scale contributions.
 fn world_scale_to_local(scale: Vector3, parent_rotation_inv: Quaternion) -> Vector3 {
+    use duck_engine_common::{InnerSpace, Rotation};
+
     // For uniform scale (no constraint), return as-is
     if (scale.x - scale.y).abs() < 1e-6 && (scale.y - scale.z).abs() < 1e-6 {
         return scale;
@@ -901,7 +418,7 @@ impl Operator for TransformOperator {
                 if key_event.state != ElementState::Pressed || key_event.repeat {
                     return false;
                 }
-                let actions = self.bindings
+                let actions = self.interaction.bindings
                     .actions_for_key(&key_event.logical_key, ctx.modifiers)
                     .to_vec();
                 for action in actions {
@@ -941,8 +458,7 @@ impl Operator for TransformOperator {
 
             DeviceEvent::MouseMotion { delta } => {
                 if self.is_active() {
-                    self.accumulated_delta.0 += delta.0 as f32;
-                    self.accumulated_delta.1 += delta.1 as f32;
+                    self.interaction.accumulate(delta.0 as f32, delta.1 as f32);
                     self.apply_preview_transform(ctx);
                     true
                 } else {
@@ -954,7 +470,8 @@ impl Operator for TransformOperator {
                 if !self.is_active() {
                     return false;
                 }
-                let actions = self.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
+                let actions =
+                    self.interaction.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
                 for action in actions {
                     match action {
                         TransformAction::MouseConfirm => {
@@ -972,7 +489,7 @@ impl Operator for TransformOperator {
             }
 
             DeviceEvent::MouseDragStart { button, start_pos, .. } => {
-                if !self.bindings
+                if !self.interaction.bindings
                     .actions_for_drag_start(*button, ctx.modifiers)
                     .contains(&TransformAction::GizmoDrag)
                 {
@@ -981,33 +498,40 @@ impl Operator for TransformOperator {
                 if self.is_active() || !self.gizmo.has_gizmo() {
                     return false;
                 }
-                if let Some(axis) = self.gizmo.pick_handle(start_pos.0, start_pos.1, ctx) {
+                let picked = {
+                    let ray = ctx.camera().ray_from_screen_point(
+                        start_pos.0, start_pos.1, ctx.size.0, ctx.size.1,
+                    );
+                    let scene = ctx.scene.lock().unwrap();
+                    self.gizmo.pick_handle(ray, &scene)
+                };
+                if let Some(axis) = picked {
                     self.start_transform(ctx);
                     if !self.is_active() {
                         return false;
                     }
-                    self.axis_constraint = match axis {
+                    self.interaction.set_axis_constraint(match axis {
                         Axis::X => AxisConstraint::WorldX,
                         Axis::Y => AxisConstraint::WorldY,
                         Axis::Z => AxisConstraint::WorldZ,
-                    };
-                    self.gizmo.set_highlight(Some(axis), ctx);
-                    self.update_visual_feedback(ctx);
+                    });
+                    let mut scene = ctx.scene.lock().unwrap();
+                    self.gizmo.set_highlight(Some(axis), &mut scene);
+                    self.annotations.update(&self.interaction, &mut scene);
                     return true;
                 }
                 false
             }
 
             DeviceEvent::MouseDrag { button, delta, .. } => {
-                if !self.bindings
+                if !self.interaction.bindings
                     .actions_for_drag(*button, ctx.modifiers)
                     .contains(&TransformAction::GizmoDrag)
                 {
                     return false;
                 }
                 if self.is_active() {
-                    self.accumulated_delta.0 += delta.0;
-                    self.accumulated_delta.1 += delta.1;
+                    self.interaction.accumulate(delta.0, delta.1);
                     self.apply_preview_transform(ctx);
                     return true;
                 }
@@ -1015,7 +539,7 @@ impl Operator for TransformOperator {
             }
 
             DeviceEvent::MouseDragEnd { button, .. } => {
-                if !self.bindings
+                if !self.interaction.bindings
                     .actions_for_drag_end(*button, Modifiers::default())
                     .contains(&TransformAction::GizmoDrag)
                 {
@@ -1031,8 +555,12 @@ impl Operator for TransformOperator {
             DeviceEvent::CursorMoved { position } => {
                 // Hover highlight on gizmo handles when gizmo is visible but no transform active
                 if self.gizmo.has_gizmo() && !self.is_active() {
-                    let axis = self.gizmo.pick_handle(position.0 as f32, position.1 as f32, ctx);
-                    self.gizmo.set_highlight(axis, ctx);
+                    let ray = ctx.camera().ray_from_screen_point(
+                        position.0 as f32, position.1 as f32, ctx.size.0, ctx.size.1,
+                    );
+                    let mut scene = ctx.scene.lock().unwrap();
+                    let axis = self.gizmo.pick_handle(ray, &scene);
+                    self.gizmo.set_highlight(axis, &mut scene);
                 }
                 false
             }
@@ -1049,7 +577,7 @@ impl Operator for TransformOperator {
     }
 
     fn name(&self) -> &str {
-        match self.mode {
+        match self.interaction.mode() {
             TransformMode::Translate => "Translate",
             TransformMode::Rotate => "Rotate",
             TransformMode::Scale => "Scale",

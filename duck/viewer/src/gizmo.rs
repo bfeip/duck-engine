@@ -4,10 +4,15 @@
 //! a mesh and material ready to be added to the scene. All geometry is built at
 //! the origin; positioning at the selection pivot is done via node transforms.
 
-use duck_engine_common::{Deg, Matrix4, Vector3};
+use duck_engine_common::{Deg, Matrix4, Point3, Vector3};
+use duck_engine_scene::{NodeFlags, Scene};
 
-use crate::common::{Axis, RgbaColor};
-use crate::scene::{AlphaMode, FaceMaterial, MaterialFlags, Mesh, PrimitiveType};
+use crate::common::{Axis, Ray, RgbaColor, Transform};
+use crate::geom_query::{pick_all_from_ray, RayPickQuery};
+use crate::scene::{
+    AlphaMode, DisplayBehavior, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh,
+    MeshId, NodeId, PrimitiveType, RenderLayer,
+};
 
 const GIZMO_FLAGS: MaterialFlags = MaterialFlags::DO_NOT_LIGHT
     .union(MaterialFlags::DOUBLE_SIDED);
@@ -178,6 +183,175 @@ pub fn build_handles(gizmo_type: GizmoType, size: f32) -> Vec<GizmoHandle> {
         GizmoType::Translate => build_translate_handles(size),
         GizmoType::Rotate => build_rotate_handles(size),
         GizmoType::Scale => build_scale_handles(size),
+    }
+}
+
+/// Owns a gizmo's scene resources: handle nodes/meshes/materials, hover
+/// highlighting, picking, and repositioning at a pivot.
+///
+/// Gizmo nodes are parented under a root node drawn on the overlay layer so
+/// they are grouped with other overlay content.
+pub struct GizmoState {
+    /// Root node for all gizmo geometry. Created when first needed.
+    root_node: Option<NodeId>,
+    /// Node IDs of the gizmo handles (one per axis: X, Y, Z).
+    node_ids: Vec<NodeId>,
+    /// Mesh IDs added to the scene for gizmo geometry.
+    mesh_ids: Vec<MeshId>,
+    /// Material IDs added to the scene for gizmo handles.
+    material_ids: Vec<FaceMaterialId>,
+    /// Which axis is currently highlighted (hovered or active).
+    highlighted_axis: Option<Axis>,
+    /// Current gizmo type being displayed.
+    current_type: Option<GizmoType>,
+}
+
+impl GizmoState {
+    pub fn new() -> Self {
+        Self {
+            root_node: None,
+            node_ids: Vec::new(),
+            mesh_ids: Vec::new(),
+            material_ids: Vec::new(),
+            highlighted_axis: None,
+            current_type: None,
+        }
+    }
+
+    pub fn has_gizmo(&self) -> bool {
+        self.current_type.is_some()
+    }
+
+    /// The handle set currently displayed, if any.
+    pub fn current_type(&self) -> Option<GizmoType> {
+        self.current_type
+    }
+
+    /// Build and add gizmo handles to the scene at the given pivot point.
+    pub fn show(&mut self, gizmo_type: GizmoType, pivot: Point3, size: f32, scene: &mut Scene) {
+        self.hide(scene);
+
+        self.root_node.get_or_insert_with(|| {
+            let id = scene.add_node(
+                None, Some("Gizmo root".to_owned()), Transform::IDENTITY, NodeFlags::DO_NOT_EXPORT
+            ).expect("Failed to create Gizmo root node");
+            // Draw the gizmo on the overlay layer; handles inherit it.
+            scene.set_node_display(id, DisplayBehavior { layer: RenderLayer::Overlay, ..Default::default() });
+            id
+        });
+
+        let handles = build_handles(gizmo_type, size);
+        let pivot_transform = Transform::from_position(pivot);
+
+        for handle in handles {
+            let mesh_id = scene.add_mesh(handle.mesh);
+            let material_id = scene.add_face_material(handle.material);
+            let node_id = scene
+                .add_instance_node(
+                    self.root_node,
+                    Instance::new(mesh_id).with_face_material(material_id),
+                    None,
+                    pivot_transform,
+                    NodeFlags::DO_NOT_EXPORT
+                )
+                .expect("Failed to add gizmo node");
+
+            self.node_ids.push(node_id);
+            self.mesh_ids.push(mesh_id);
+            self.material_ids.push(material_id);
+        }
+
+        self.current_type = Some(gizmo_type);
+    }
+
+    /// Remove all gizmo geometry from the scene.
+    pub fn hide(&mut self, scene: &mut Scene) {
+        for &node_id in &self.node_ids {
+            scene.remove_node(node_id);
+        }
+        for &mesh_id in &self.mesh_ids {
+            scene.remove_mesh(mesh_id);
+        }
+        for &material_id in &self.material_ids {
+            scene.remove_face_material(material_id);
+        }
+
+        self.node_ids.clear();
+        self.mesh_ids.clear();
+        self.material_ids.clear();
+        self.highlighted_axis = None;
+        self.current_type = None;
+    }
+
+    /// Update the gizmo position (e.g. when pivot changes).
+    pub fn update_position(&self, pivot: Point3, scene: &mut Scene) {
+        for &node_id in &self.node_ids {
+            if scene.has_node(node_id) {
+                scene.set_node_position(node_id, pivot);
+            }
+        }
+    }
+
+    /// Pick which gizmo handle (if any) the ray hits.
+    pub fn pick_handle(&self, ray: Ray, scene: &Scene) -> Option<Axis> {
+        if !self.has_gizmo() {
+            return None;
+        }
+
+        let results = pick_all_from_ray(&RayPickQuery::faces(ray), scene);
+
+        // Find the first hit that matches a gizmo node
+        for result in &results {
+            for (i, &node_id) in self.node_ids.iter().enumerate() {
+                if result.node_id == node_id {
+                    return Some(Axis::ALL[i]);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Highlight a specific axis handle (or clear highlight with None).
+    pub fn set_highlight(&mut self, axis: Option<Axis>, scene: &mut Scene) {
+        if self.highlighted_axis == axis {
+            return;
+        }
+
+        // Restore previous highlight to normal color
+        if let Some(prev_axis) = self.highlighted_axis {
+            let idx = axis_index(prev_axis);
+            if let Some(&mat_id) = self.material_ids.get(idx)
+                && let Some(mat) = scene.get_face_material_mut(mat_id) {
+                    mat.set_base_color_factor(prev_axis.color());
+                }
+        }
+
+        // Apply highlight color to new axis
+        if let Some(new_axis) = axis {
+            let idx = axis_index(new_axis);
+            if let Some(&mat_id) = self.material_ids.get(idx)
+                && let Some(mat) = scene.get_face_material_mut(mat_id) {
+                    mat.set_base_color_factor(highlight_color(new_axis));
+                }
+        }
+
+        self.highlighted_axis = axis;
+    }
+}
+
+impl Default for GizmoState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Maps an axis to its index in the gizmo handle arrays (X=0, Y=1, Z=2).
+fn axis_index(axis: Axis) -> usize {
+    match axis {
+        Axis::X => 0,
+        Axis::Y => 1,
+        Axis::Z => 2,
     }
 }
 

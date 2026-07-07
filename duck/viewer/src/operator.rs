@@ -4,7 +4,10 @@ mod transform;
 
 pub use navigation::{NavigationMode, NavigationOperator};
 pub use selection::{SelectionKinds, SelectionMode, SelectionOperator};
-pub use transform::{TransformMode, TransformOperator};
+pub use transform::{
+    axis_from_constraint, AxisConstraint, TransformAction, TransformAnnotations,
+    TransformInteraction, TransformMode, TransformOperator,
+};
 
 use crate::event::{Event, EventContext};
 
