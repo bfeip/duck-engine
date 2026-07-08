@@ -5,6 +5,7 @@ mod extrude;
 mod grid;
 mod io;
 mod loft;
+mod notifications;
 mod operators;
 mod preview;
 mod snap;
@@ -41,6 +42,7 @@ use crate::operators::{
     CylinderOperator, ExtrudeOperator, LineOperator, LoftOperator, RectangleOperator,
     SphereOperator, TransformTool,
 };
+use crate::notifications::Notifications;
 use crate::tool_manager::ToolManager;
 use crate::ui::{ModelerUi, UiAction};
 
@@ -75,6 +77,7 @@ struct ViewerState<'a> {
 
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
+    notifications: Notifications,
     tools: ToolManager,
     /// The construction grid currently installed in the scene; replaced when
     /// the construction plane or grid settings change.
@@ -129,6 +132,7 @@ impl ViewerState<'static> {
 
         let construction_options = Rc::new(RefCell::new(ConstructionOptions::new()));
         let document = Arc::new(Mutex::new(Document::new(viewer.scene())));
+        let notifications = Notifications::default();
 
         let sel_op = Arc::new(Mutex::new(SelectionOperator::new()));
         viewer.dispatcher_mut().push_back(sel_op.clone());
@@ -136,9 +140,9 @@ impl ViewerState<'static> {
 
         let mut tools = ToolManager::new(sel_op);
         tools.install(viewer.dispatcher_mut());
-        tools.register(TransformTool::new(TransformMode::Translate, Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(TransformTool::new(TransformMode::Rotate, Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(TransformTool::new(TransformMode::Scale, Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(TransformTool::new(TransformMode::Translate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(TransformTool::new(TransformMode::Rotate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(TransformTool::new(TransformMode::Scale, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(SphereOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(BoxOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(RectangleOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
@@ -146,7 +150,7 @@ impl ViewerState<'static> {
         tools.register(CurveOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(CircleOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(CylinderOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(BooleanOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(BooleanOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(ExtrudeOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(LoftOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
 
@@ -164,6 +168,7 @@ impl ViewerState<'static> {
             window,
             construction_options,
             document,
+            notifications,
             tools,
             grid: None,
         }
@@ -340,6 +345,7 @@ impl<'a> ViewerState<'a> {
                 &self.construction_options,
                 self.viewer.selection_mut(),
                 &mut self.tools,
+                &self.notifications,
             );
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)

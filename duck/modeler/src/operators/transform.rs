@@ -17,6 +17,7 @@ use duck_engine_viewer::selection::SelectionItem;
 use opencascade::primitives::FaceOrientation;
 
 use crate::document::{Document, PartId};
+use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, ToolInfo};
 use crate::ui::icons;
@@ -51,6 +52,7 @@ pub struct TransformTool {
     routing_face: bool,
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
+    notifications: Notifications,
 }
 
 impl TransformTool {
@@ -58,14 +60,16 @@ impl TransformTool {
         mode: TransformMode,
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
+        notifications: Notifications,
     ) -> Self {
         Self {
             mode,
             transform_op: TransformOperator::new(mode),
-            face: FaceTweak::new(mode, Arc::clone(&document)),
+            face: FaceTweak::new(mode, Arc::clone(&document), notifications.clone()),
             routing_face: false,
             construction_options,
             document,
+            notifications,
         }
     }
 
@@ -114,6 +118,7 @@ impl TransformTool {
             if let Some(delta) = delta {
                 if let Err(e) = doc.bake_transform(part, delta, &options) {
                     log::error!("transform bake failed for node {node:?}: {e}");
+                    self.notifications.error(format!("Transform failed: {e}"));
                 }
             }
         }
@@ -204,10 +209,11 @@ struct FaceTweak {
     /// syncing runs every update.
     resolved: Option<(FaceTarget, Point3, Quaternion)>,
     document: Arc<Mutex<Document>>,
+    notifications: Notifications,
 }
 
 impl FaceTweak {
-    fn new(mode: TransformMode, document: Arc<Mutex<Document>>) -> Self {
+    fn new(mode: TransformMode, document: Arc<Mutex<Document>>, notifications: Notifications) -> Self {
         Self {
             interaction: TransformInteraction::new(mode),
             gizmo: GizmoState::new(),
@@ -216,6 +222,7 @@ impl FaceTweak {
             active_target: None,
             resolved: None,
             document,
+            notifications,
         }
     }
 
@@ -301,7 +308,10 @@ impl FaceTweak {
         );
         match result {
             Ok(()) => ctx.selection.clear(),
-            Err(e) => log::error!("face tweak failed: {e}"),
+            Err(e) => {
+                log::error!("face tweak failed: {e}");
+                self.notifications.error(format!("Face tweak failed: {e}"));
+            }
         }
     }
 

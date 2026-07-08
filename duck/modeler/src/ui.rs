@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::document::Document;
+use crate::notifications::{Notifications, Severity};
 use crate::operators::ConstructionOptions;
 use crate::tool_manager::ToolManager;
 
@@ -53,6 +54,7 @@ impl ModelerUi {
         construction: &Rc<RefCell<ConstructionOptions>>,
         selection: &mut SelectionManager,
         tools: &mut ToolManager,
+        notifications: &Notifications,
     ) -> Vec<UiAction> {
         let mut actions = Vec::new();
         self.menu.show(ctx, &mut actions);
@@ -66,6 +68,32 @@ impl ModelerUi {
             self.right.show(ctx, &mut document, &mut construction, selection, &mut actions);
         }
         self.tool_panel.show(ctx, tools, selection);
+        show_notifications(ctx, notifications);
         actions
     }
+}
+
+/// Bottom-anchored stack of transient notices; expires on its own.
+fn show_notifications(ctx: &egui::Context, notifications: &Notifications) {
+    let live = notifications.live();
+    if live.is_empty() {
+        return;
+    }
+    egui::Area::new(egui::Id::new("notifications"))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -24.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            for notice in &live {
+                let color = match notice.severity {
+                    Severity::Error => ui.visuals().error_fg_color,
+                    Severity::Info => ui.visuals().text_color(),
+                };
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.colored_label(color, &notice.text);
+                });
+            }
+        });
+    // Keep repainting while notices are visible so they expire without input.
+    ctx.request_repaint_after(std::time::Duration::from_millis(250));
 }

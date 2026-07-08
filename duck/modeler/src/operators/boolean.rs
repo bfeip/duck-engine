@@ -12,6 +12,7 @@ use duck_engine_viewer::{
 
 use crate::boolean::{execute_boolean, preview_boolean, BooleanKind};
 use crate::document::Document;
+use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
@@ -37,12 +38,14 @@ pub struct BooleanOperator {
 
     document: Arc<Mutex<Document>>,
     construction_options: Rc<RefCell<ConstructionOptions>>,
+    notifications: Notifications,
 }
 
 impl BooleanOperator {
     pub fn new(
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
+        notifications: Notifications,
     ) -> Self {
         let preview = PreviewSession::new(Arc::clone(&document));
         Self {
@@ -54,6 +57,7 @@ impl BooleanOperator {
             last_kind: BooleanKind::default(),
             document,
             construction_options,
+            notifications,
         }
     }
 
@@ -87,6 +91,7 @@ impl BooleanOperator {
     pub fn apply_and_clear(&mut self, selection: &mut SelectionManager) {
         if let Err(e) = self.apply() {
             log::error!("Boolean failed: {e}");
+            self.notifications.error(format!("Boolean failed: {e}"));
         } else {
             selection.clear();
         }
