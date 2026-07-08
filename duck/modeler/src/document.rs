@@ -314,6 +314,41 @@ mod tests {
     }
 
     #[test]
+    fn tweak_after_boolean_direct_path() {
+        use crate::boolean::{execute_boolean, BooleanKind};
+
+        let (mut doc, box_part, _) = doc_with_box();
+        let sphere = doc
+            .add_part(
+                "sphere",
+                opencascade::primitives::Shape::sphere(1.0).at(glam::dvec3(2.0, 2.0, 2.0)).build(),
+                &CadTessellationOptions::default(),
+            )
+            .expect("sphere tessellates");
+        let box_node = doc.node_for_part(box_part).unwrap();
+        let sphere_node = doc.node_for_part(sphere).unwrap();
+        execute_boolean(
+            BooleanKind::Subtract,
+            box_node,
+            &[sphere_node],
+            &mut doc,
+            &CadTessellationOptions::default(),
+        )
+        .expect("subtract succeeds");
+
+        let part = doc.parts().next().expect("boolean leaves one part").id;
+        let node = doc.node_for_part(part).unwrap();
+        let face = top_face_index(&doc, part);
+        let transform = Matrix4::from_translation(Vector3::new(0.0, 0.5, 0.0));
+
+        doc.tweak_faces(part, &[face], transform, &CadTessellationOptions::default())
+            .expect("tweaking the boolean result re-solves");
+
+        assert_eq!(doc.node_for_part(part), Some(node), "node id must be preserved");
+        assert!((max_y(&doc, part) - 2.5).abs() < 1e-6, "top must land at y=2.5");
+    }
+
+    #[test]
     fn tweak_faces_rejects_non_similarity_transform() {
         let (mut doc, part, _) = doc_with_box();
         let face = top_face_index(&doc, part);

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use duck_engine_scene::NodeId;
 use duck_engine_scene::cad::{CadTessellationOptions, tessellate_into};
-use opencascade::primitives::Shape;
+use opencascade::primitives::{Shape, ShapeType};
 
 use crate::document::{Document, PartId};
 
@@ -47,7 +47,21 @@ fn compute_boolean(
         };
     }
 
-    Ok(BooleanResult { shape, target_part_id, tool_part_ids })
+    Ok(BooleanResult { shape: normalize_boolean_result(shape), target_part_id, tool_part_ids })
+}
+
+/// A boolean result is wrapped in a TopoDS_COMPOUND even when it holds a
+/// single solid; unwrap that case so the part is a plain solid. Multi-solid
+/// or mixed compounds are legitimately multi-body and stay as-is.
+fn normalize_boolean_result(shape: Shape) -> Shape {
+    if shape.shape_type() != ShapeType::Compound {
+        return shape;
+    }
+    let mut children = shape.sub_shapes();
+    match (children.next(), children.next()) {
+        (Some(only), None) if only.shape_type() == ShapeType::Solid => only,
+        _ => shape,
+    }
 }
 
 pub fn execute_boolean(
@@ -86,4 +100,48 @@ pub fn preview_boolean(
     let mut scene = doc.scene().lock().unwrap();
     tessellate_into(&computed.shape, &mut *scene, options, None, Some("Boolean preview"))
         .context("Failed to tessellate boolean preview")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use duck_engine_scene::Scene;
+    use glam::dvec3;
+
+    use super::*;
+    use crate::document::PartKind;
+
+    fn doc_with_box_and_sphere() -> (Document, NodeId, NodeId) {
+        let scene = Arc::new(Mutex::new(Scene::new()));
+        let mut doc = Document::new(scene);
+        let options = CadTessellationOptions::default();
+        let box_part = doc
+            .add_part("box", Shape::cube(2.0), &options)
+            .expect("box tessellates");
+        let sphere_part = doc
+            .add_part("sphere", Shape::sphere(1.0).at(dvec3(2.0, 2.0, 2.0)).build(), &options)
+            .expect("sphere tessellates");
+        let box_node = doc.node_for_part(box_part).unwrap();
+        let sphere_node = doc.node_for_part(sphere_part).unwrap();
+        (doc, box_node, sphere_node)
+    }
+
+    #[test]
+    fn boolean_result_is_solid_part() {
+        let (mut doc, box_node, sphere_node) = doc_with_box_and_sphere();
+
+        execute_boolean(
+            BooleanKind::Subtract,
+            box_node,
+            &[sphere_node],
+            &mut doc,
+            &CadTessellationOptions::default(),
+        )
+        .expect("subtract succeeds");
+
+        let part = doc.parts().next().expect("boolean leaves one part");
+        assert_eq!(doc.parts().count(), 1, "inputs are consumed");
+        assert_eq!(part.kind(), PartKind::Solid, "single-solid compound must be unwrapped");
+    }
 }
