@@ -2,9 +2,10 @@
 //! context arrives through [`SnapInput`] and the [`Scene`].
 
 use duck_engine_viewer::common::{
-    transform_point, Aabb, EuclideanSpace, InnerSpace, Matrix4, Point3, Ray,
+    transform_normal, transform_point, Aabb, EuclideanSpace, InnerSpace, Matrix4, Point3, Ray,
+    Vector3,
 };
-use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
+use duck_engine_viewer::scene::geom_query::{intersect_ray, pick_all, PickQuery};
 use duck_engine_viewer::scene::{
     InstanceId, Mesh, NodeId, PositionedCamera, PrimitiveType, Scene, Topology, Visibility,
 };
@@ -124,9 +125,10 @@ impl SnapProvider for GridSnap {
     }
 }
 
-/// Snaps to existing geometry: B-rep corners (vertices, [`SnapKind::Corner`]) and
-/// points along edges/wires ([`SnapKind::Edge`]). Both kinds share one scene walk
-/// — the expensive part — so corner and edge snapping cost a single traversal.
+/// Snaps to existing geometry: B-rep corners (vertices, [`SnapKind::Corner`]),
+/// points along edges/wires ([`SnapKind::Edge`]), and ray–surface hits on faces
+/// ([`SnapKind::Face`]). All kinds share one scene walk, the expensive part,
+/// so they cost a single traversal.
 ///
 /// The walk is delegated to the scene's [`PickQuery`] framework ([`pick_all`]),
 /// which traverses the node tree from the roots, prunes `DO_NOT_SELECT` subtrees,
@@ -136,7 +138,7 @@ pub(crate) struct GeometrySnap;
 
 impl SnapProvider for GeometrySnap {
     fn produces(&self) -> SnapFlags {
-        SnapFlags::CORNER | SnapFlags::EDGE
+        SnapFlags::CORNER | SnapFlags::EDGE | SnapFlags::FACE
     }
 
     fn collect(&self, input: &SnapInput, scene: &Scene, settings: &SnapSettings) -> Vec<Snap> {
@@ -152,9 +154,28 @@ impl SnapProvider for GeometrySnap {
             // still drops anything globally disabled afterwards.
             want_corners: input.requested.contains(SnapFlags::CORNER),
             want_edges: input.requested.contains(SnapFlags::EDGE),
+            want_faces: input.requested.contains(SnapFlags::FACE),
         };
 
         let mut snaps = pick_all(&query, scene);
+
+        // Every face hit lies on the cursor ray, so screen-space ranking cannot
+        // tie-break between overlapping shapes: keep only the hit nearest along
+        // the ray (the visible surface).
+        let mut nearest_face: Option<Snap> = None;
+        let mut nearest_d2 = f32::INFINITY;
+        snaps.retain(|s| {
+            if s.kind != SnapKind::Face {
+                return true;
+            }
+            let d2 = (s.position - input.ray.origin).magnitude2();
+            if d2 < nearest_d2 {
+                nearest_d2 = d2;
+                nearest_face = Some(*s);
+            }
+            false
+        });
+        snaps.extend(nearest_face);
 
         // Collapse coincident corners (shared B-rep vertices emitted by the same
         // mesh). Guard on kind so an edge candidate is never merged into a corner.
@@ -184,6 +205,7 @@ struct GeometrySnapQuery<'a> {
     exclude_nodes: &'a [NodeId],
     want_corners: bool,
     want_edges: bool,
+    want_faces: bool,
 }
 
 impl PickQuery for GeometrySnapQuery<'_> {
@@ -242,6 +264,34 @@ impl PickQuery for GeometrySnapQuery<'_> {
         if self.want_corners {
             if let Some(topology) = mesh.topology() {
                 results.extend(collect_mesh_corners(mesh, topology, world_transform));
+            }
+        }
+
+        if self.want_faces {
+            // Nearest ray–triangle hit on this mesh (local-space ray, like edges);
+            // `GeometrySnap::collect` picks the nearest across all meshes.
+            let hit = intersect_ray(mesh, &self.ray)
+                .into_iter()
+                .min_by(|a, b| a.distance.total_cmp(&b.distance));
+            if let Some(hit) = hit {
+                if let Some([v0, v1, v2]) = mesh.triangles().nth(hit.triangle_index) {
+                    // Möller–Trumbore weights: hit = w·v0 + u·v1 + v·v2.
+                    let (u, v, w) = hit.barycentric;
+                    let mut normal = Vector3::from(v0.normal) * w
+                        + Vector3::from(v1.normal) * u
+                        + Vector3::from(v2.normal) * v;
+                    if normal.magnitude2() <= f32::EPSILON {
+                        // Missing/cancelling vertex normals: use the flat one.
+                        let p0 = Point3::from(v0.position);
+                        normal = (Point3::from(v1.position) - p0)
+                            .cross(Point3::from(v2.position) - p0);
+                    }
+                    results.push(Snap {
+                        position: transform_point(world_transform, hit.hit_point),
+                        direction: Some(transform_normal(world_transform, normal)),
+                        kind: SnapKind::Face,
+                    });
+                }
             }
         }
 
@@ -531,6 +581,121 @@ mod tests {
         assert!(snaps.iter().all(|s| s.kind == SnapKind::Corner));
     }
 
+    /// Adds a single-triangle node (vertices at `positions` with `normals`,
+    /// translated by `offset`) to `scene`.
+    fn add_triangle_node(
+        scene: &mut Scene,
+        positions: [[f32; 3]; 3],
+        normals: [[f32; 3]; 3],
+        offset: Vector3,
+    ) {
+        let vertices = positions
+            .iter()
+            .zip(normals.iter())
+            .map(|(&position, &normal)| Vertex { position, tex_coords: [0.0; 3], normal })
+            .collect();
+        let mesh = Mesh::from_raw(
+            vertices,
+            vec![MeshPrimitive {
+                primitive_type: PrimitiveType::TriangleList,
+                indices: vec![0, 1, 2],
+            }],
+        );
+        let mesh_id = scene.add_mesh(mesh);
+        scene
+            .add_instance_node(
+                None,
+                Instance::new(mesh_id),
+                Some("triangle".to_owned()),
+                Transform::from_position(Point3::origin() + offset),
+                NodeFlags::NONE,
+            )
+            .expect("instance node");
+    }
+
+    #[test]
+    fn face_snaps_to_ray_hit_in_world_space() {
+        // A triangle in the local XZ plane, on a node translated +2 in Z.
+        let mut scene = Scene::new();
+        add_triangle_node(
+            &mut scene,
+            [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 0.0, 10.0]],
+            [[0.0, 1.0, 0.0]; 3],
+            Vector3::new(0.0, 0.0, 2.0),
+        );
+
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        // Ray straight down at (3, 4): local hit (3, 0, 2) is inside the triangle.
+        let hit = Point3::new(3.0, 0.0, 4.0);
+        let ray = Ray::new(Point3::new(3.0, 10.0, 4.0), Vector3::new(0.0, -1.0, 0.0));
+        let inp = input_with_ray(ray, screen_of(&cam, hit), &cam, &plane, &grid);
+
+        let snaps = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+
+        let face = snaps
+            .iter()
+            .find(|s| s.kind == SnapKind::Face)
+            .expect("expected a face candidate");
+        assert!(close(face.position, hit), "{:?}", face.position);
+        let normal = face.direction.expect("face snap carries the surface normal");
+        assert!((normal - Vector3::new(0.0, 1.0, 0.0)).magnitude() < EPSILON, "{normal:?}");
+    }
+
+    #[test]
+    fn face_snap_keeps_only_nearest_hit_along_ray() {
+        // Two overlapping triangles: one at y=0, one at y=2. A downward ray from
+        // y=10 sees the y=2 face first.
+        let mut scene = Scene::new();
+        let positions = [[-10.0, 0.0, -10.0], [10.0, 0.0, -10.0], [0.0, 0.0, 10.0]];
+        let normals = [[0.0, 1.0, 0.0]; 3];
+        add_triangle_node(&mut scene, positions, normals, Vector3::new(0.0, 0.0, 0.0));
+        add_triangle_node(&mut scene, positions, normals, Vector3::new(0.0, 2.0, 0.0));
+
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let ray = Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
+        let inp = input_with_ray(ray, screen_of(&cam, Point3::origin()), &cam, &plane, &grid);
+
+        let snaps = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+
+        let faces: Vec<_> = snaps.iter().filter(|s| s.kind == SnapKind::Face).collect();
+        assert_eq!(faces.len(), 1, "only the nearest face hit survives");
+        assert!(close(faces[0].position, Point3::new(0.0, 2.0, 0.0)), "{:?}", faces[0].position);
+    }
+
+    #[test]
+    fn face_snap_interpolates_vertex_normals() {
+        // Distinct vertex normals; the hit at local (2, 0, 2) has barycentric
+        // weights (w, u, v) = (0.6, 0.2, 0.2), so the blend is (0.2, 0.6, 0.2).
+        let mut scene = Scene::new();
+        add_triangle_node(
+            &mut scene,
+            [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 0.0, 10.0]],
+            [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            Vector3::new(0.0, 0.0, 0.0),
+        );
+
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let hit = Point3::new(2.0, 0.0, 2.0);
+        let ray = Ray::new(Point3::new(2.0, 10.0, 2.0), Vector3::new(0.0, -1.0, 0.0));
+        let inp = input_with_ray(ray, screen_of(&cam, hit), &cam, &plane, &grid);
+
+        let snaps = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+
+        let face = snaps
+            .iter()
+            .find(|s| s.kind == SnapKind::Face)
+            .expect("expected a face candidate");
+        let normal = face.direction.expect("face snap carries the surface normal");
+        let expected = Vector3::new(0.2, 0.6, 0.2).normalize();
+        assert!((normal - expected).magnitude() < EPSILON, "{normal:?}");
+    }
+
     /// One identity-placed part: a straight edge (0,0,0)→(10,0,0) with B-rep
     /// topology, so it yields both corner and edge snaps. Returns its node id.
     fn scene_with_edge() -> (Scene, NodeId) {
@@ -592,6 +757,7 @@ mod tests {
             exclude_nodes: &[],
             want_corners: true,
             want_edges: true,
+            want_faces: true,
         };
 
         // An AABB straddling the origin projects under the cursor → kept.

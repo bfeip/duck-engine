@@ -50,6 +50,8 @@ pub enum SnapKind {
     Corner,
     /// A point on an existing geometry edge/wire (smooth closest-point snap).
     Edge,
+    /// A point on an existing geometry face (ray–surface hit under the cursor).
+    Face,
     /// The start point of an in-progress wire, offered so the path can be
     /// closed back onto itself.
     WireStart,
@@ -62,6 +64,7 @@ impl SnapKind {
             ConstructionPlane => SnapTier::Free,
             GridGuide => SnapTier::Guide,
             GridAxis => SnapTier::Axis,
+            Face => SnapTier::Face,
             Edge => SnapTier::Edge,
             Origin | Corner | WireStart => SnapTier::Feature,
         }
@@ -76,6 +79,7 @@ impl SnapKind {
             GridAxis => SnapFlags::GRID_AXIS,
             Corner => SnapFlags::CORNER,
             Edge => SnapFlags::EDGE,
+            Face => SnapFlags::FACE,
             WireStart => SnapFlags::WIRE_START,
         }
     }
@@ -96,6 +100,9 @@ enum SnapTier {
     Guide,
     /// A construction-frame principal axis.
     Axis,
+    /// A point on an existing geometry face (real geometry beats the grid, but
+    /// any edge or feature within tolerance still wins over a mid-face point).
+    Face,
     /// A point on an existing geometry edge/wire (real geometry beats the grid,
     /// but a discrete corner still wins over a mid-edge point).
     Edge,
@@ -116,6 +123,7 @@ bitflags! {
         const CORNER             = 1 << 4;
         const EDGE               = 1 << 5;
         const WIRE_START         = 1 << 6;
+        const FACE               = 1 << 7;
     }
 }
 
@@ -148,9 +156,10 @@ pub struct SnapInput<'a> {
 pub struct Snap {
     /// World-space position to snap to.
     pub position: Point3,
-    /// Optional associated direction (edge/axis tangent), populated by line snaps
-    /// such as grid axes. Carried for future orientation snaps and not yet read
-    /// by any operator, so allow it to sit unused for now.
+    /// Optional associated direction: the tangent for line snaps (edges, grid
+    /// axes) and the surface normal for face snaps. Carried for future
+    /// orientation snaps and not yet read by any operator, so allow it to sit
+    /// unused for now.
     #[allow(dead_code)]
     pub direction: Option<Vector3>,
     /// What this snap locks onto (drives tier + filtering).
@@ -354,7 +363,8 @@ mod tests {
     fn tier_ordering_low_to_high() {
         assert!(SnapTier::Free < SnapTier::Guide);
         assert!(SnapTier::Guide < SnapTier::Axis);
-        assert!(SnapTier::Axis < SnapTier::Edge);
+        assert!(SnapTier::Axis < SnapTier::Face);
+        assert!(SnapTier::Face < SnapTier::Edge);
         assert!(SnapTier::Edge < SnapTier::Feature);
     }
 
@@ -367,6 +377,7 @@ mod tests {
             SnapKind::GridAxis,
             SnapKind::Corner,
             SnapKind::Edge,
+            SnapKind::Face,
         ] {
             assert!(SnapFlags::all().contains(kind.flag()));
         }

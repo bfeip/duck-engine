@@ -172,10 +172,11 @@ fn snap_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) {
     ui.checkbox(&mut settings.enabled, "Enable snapping");
 
     ui.add_enabled_ui(settings.enabled, |ui| {
-        let kinds: [(&str, SnapFlags); 6] = [
+        let kinds: [(&str, SnapFlags); 7] = [
             ("Origin", SnapFlags::ORIGIN),
             ("Grid guides", SnapFlags::GRID_GUIDE),
             ("Grid axes", SnapFlags::GRID_AXIS),
+            ("Faces", SnapFlags::FACE),
             ("Corners", SnapFlags::CORNER),
             ("Edges", SnapFlags::EDGE),
             ("Wire start", SnapFlags::WIRE_START),
