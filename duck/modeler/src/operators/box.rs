@@ -2,9 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use duck_engine_common::{
-    matrix4_to_row_major_f64, InnerSpace, Plane, Point3, Ray, Vector3,
-};
+use duck_engine_common::{InnerSpace, Plane, Point3, Ray, Vector3};
 use duck_engine_scene::Visibility;
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
@@ -108,11 +106,37 @@ impl BoxOperator {
         }
     }
 
-    /// Unit reference box: footprint centered in local XY, height along local +Z
-    /// (`[0, 1]`). Shared by the preview and the committed shape so the baked
-    /// [`box_transform`](Self::box_transform) matches the preview exactly.
+    /// Unit reference box for the preview: footprint centered in local XY,
+    /// height along local +Z (`[0, 1]`), scaled/oriented via the preview node
+    /// transform ([`box_transform`](Self::box_transform)).
     fn reference_box() -> Shape {
         Shape::box_from_corners(dvec3(-0.5, -0.5, 0.0), dvec3(0.5, 0.5, 1.0))
+    }
+
+    /// World-space box with analytic planar faces: the footprint rectangle on
+    /// `plane` extruded along its normal.
+    fn analytic_box(
+        center: Point3,
+        width: f32,
+        depth: f32,
+        height: f32,
+        plane: &Plane,
+    ) -> Result<Shape, opencascade::Error> {
+        let (u, v) = plane.basis();
+        let half_w = u * (0.5 * width);
+        let half_d = v * (0.5 * depth);
+        let corners = [
+            center - half_w - half_d,
+            center + half_w - half_d,
+            center + half_w + half_d,
+            center - half_w + half_d,
+        ];
+        let wire = Wire::from_ordered_points(
+            corners.iter().map(|p| dvec3(p.x as f64, p.y as f64, p.z as f64)),
+        )?;
+        let face = Face::from_wire(&wire)?;
+        let dir = plane.normal * height;
+        Ok(face.extrude(dvec3(dir.x as f64, dir.y as f64, dir.z as f64)).into())
     }
 
     /// In-plane extents from the center→corner vector, as full (width, depth).
@@ -214,13 +238,9 @@ impl BoxOperator {
             return false;
         }
 
-        // Bake the box transform into a world-space shape via GTransform. The reference
-        // box matches the preview.
-        let world_shape = {
-            let mat = matrix4_to_row_major_f64(
-                &Self::box_transform(center, width, depth, height, &plane).to_matrix(),
-            );
-            Self::reference_box().gtransform(mat)
+        // Build the box analytically in world space
+        let Ok(world_shape) = Self::analytic_box(center, width, depth, height, &plane) else {
+            return false;
         };
 
         // Discard the preview, then commit the world-space shape as a registered part.

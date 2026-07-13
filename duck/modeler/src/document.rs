@@ -155,7 +155,12 @@ impl Document {
             let cad_part = self
                 .get_part_mut(part)
                 .context("bake_transform: part not found")?;
-            cad_part.shape = cad_part.shape.gtransform(mat);
+            // A similarity keeps surfaces analytic (planes stay planes); only a
+            // non-uniform scale needs the B-spline-converting general transform.
+            cad_part.shape = match cad_part.shape.transformed(mat) {
+                Ok(shape) => shape,
+                Err(_) => cad_part.shape.gtransform(mat),
+            };
         }
 
         let cad_part = self
@@ -338,6 +343,7 @@ mod tests {
 
         let part = doc.parts().next().expect("boolean leaves one part").id;
         let node = doc.node_for_part(part).unwrap();
+        let faces_before = doc.get_part(part).unwrap().shape.faces().count();
         let face = top_face_index(&doc, part);
         let transform = Matrix4::from_translation(Vector3::new(0.0, 0.5, 0.0));
 
@@ -346,6 +352,8 @@ mod tests {
 
         assert_eq!(doc.node_for_part(part), Some(node), "node id must be preserved");
         assert!((max_y(&doc, part) - 2.5).abs() < 1e-6, "top must land at y=2.5");
+        let faces_after = doc.get_part(part).unwrap().shape.faces().count();
+        assert_eq!(faces_after, faces_before, "the spherical cavity must survive the re-solve");
     }
 
     #[test]

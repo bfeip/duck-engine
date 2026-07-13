@@ -114,7 +114,7 @@ pub fn execute_extrude(
         // The pad fuses into the source body (the expensive boolean, done just once),
         // and the fused result supersedes it.
         let part = doc.get_part(raw.source_part).context("Source part not found")?;
-        (part.shape.union(&raw.prism).shape, true)
+        (part.shape.union(&raw.prism).context("Failed to fuse pad into source")?.shape, true)
     } else {
         // Region→solid or edge→face: the raw geometry is the result. A bare sketch
         // region is superseded; a solid whose edge was extruded is kept alongside.

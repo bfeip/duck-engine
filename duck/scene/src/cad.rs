@@ -291,7 +291,7 @@ mod tests {
     fn union_of_cuboid_and_sphere_tessellates() {
         let a = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
         let b = opencascade::primitives::Shape::sphere(1.5).build();
-        let combined = a.union(&b).shape;
+        let combined = a.union(&b).expect("fuse succeeds").shape;
         let mut scene = Scene::new();
         tessellate_into(&combined, &mut scene, &default_options(), None, None)
             .expect("union tessellation failed");

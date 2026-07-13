@@ -41,9 +41,9 @@ fn compute_boolean(
     let mut shape = target_part.shape.clone();
     for tool in &tool_shapes {
         shape = match kind {
-            BooleanKind::Subtract  => shape.subtract(tool).shape,
-            BooleanKind::Union     => shape.union(tool).shape,
-            BooleanKind::Intersect => shape.intersect(tool).shape,
+            BooleanKind::Subtract  => shape.subtract(tool)?.shape,
+            BooleanKind::Union     => shape.union(tool)?.shape,
+            BooleanKind::Intersect => shape.intersect(tool)?.shape,
         };
     }
 

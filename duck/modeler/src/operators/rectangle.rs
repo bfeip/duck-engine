@@ -2,7 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use duck_engine_common::{matrix4_to_row_major_f64, InnerSpace, Plane, Point3, Vector3};
+use duck_engine_common::{InnerSpace, Plane, Point3, Vector3};
+use glam::dvec3;
 use duck_engine_scene::Visibility;
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
@@ -94,12 +95,34 @@ impl RectangleOperator {
         width > EPSILON && depth > EPSILON
     }
 
-    /// Unit reference rectangle face (local XY, normal +Z), scaled/oriented onto the
-    /// construction plane on commit and via the preview transform.
+    /// Unit reference rectangle face (local XY, normal +Z), oriented onto the
+    /// construction plane via the preview transform.
     fn reference_face() -> Option<Shape> {
         let wire = Wire::rect(1.0, 1.0)
             .map_err(|e| warn!("Failed to build rectangle wire: {e}"))
             .ok()?;
+        Face::from_wire(&wire)
+            .map(Into::into)
+            .map_err(|e| warn!("Failed to build rectangle face: {e}"))
+            .ok()
+    }
+
+    /// World-space rectangle face with an analytic planar surface.
+    fn analytic_face(center: Point3, width: f32, depth: f32, plane: &Plane) -> Option<Shape> {
+        let (u, v) = plane.basis();
+        let half_w = u * (0.5 * width);
+        let half_d = v * (0.5 * depth);
+        let corners = [
+            center - half_w - half_d,
+            center + half_w - half_d,
+            center + half_w + half_d,
+            center - half_w + half_d,
+        ];
+        let wire = Wire::from_ordered_points(
+            corners.iter().map(|p| dvec3(p.x as f64, p.y as f64, p.z as f64)),
+        )
+        .map_err(|e| warn!("Failed to build rectangle wire: {e}"))
+        .ok()?;
         Face::from_wire(&wire)
             .map(Into::into)
             .map_err(|e| warn!("Failed to build rectangle face: {e}"))
@@ -150,16 +173,9 @@ impl RectangleOperator {
             return false;
         }
 
-        // Bake the footprint transform into a world-space shape via GTransform. The
-        // reference face matches the preview.
-        let Some(reference) = Self::reference_face() else {
+        // Build the face analytically in world space
+        let Some(world_shape) = Self::analytic_face(center, width, depth, &plane) else {
             return false;
-        };
-        let world_shape = {
-            let mat = matrix4_to_row_major_f64(
-                &Self::footprint_transform(center, width, depth, &plane).to_matrix(),
-            );
-            reference.gtransform(mat)
         };
 
         // Discard the preview, then commit the world-space shape as a registered part.
