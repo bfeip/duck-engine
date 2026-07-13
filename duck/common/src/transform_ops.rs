@@ -5,7 +5,10 @@
 //! These functions are designed to be reusable across operators, animation systems,
 //! gizmos, and other subsystems.
 
-use crate::{EuclideanSpace, InnerSpace, Matrix4, Point3, Quaternion, Rad, Rotation, Rotation3, Vector3};
+use crate::{
+    EuclideanSpace, InnerSpace, Matrix, Matrix4, Point3, Quaternion, Rad, Rotation, Rotation3,
+    SquareMatrix, Vector3,
+};
 
 use crate::EPSILON;
 
@@ -16,6 +19,19 @@ use crate::EPSILON;
 /// Transforms a point by a 4x4 matrix (applies translation, rotation, and scale).
 pub fn transform_point(matrix: &Matrix4, point: Point3) -> Point3 {
     Point3::from_homogeneous(matrix * point.to_homogeneous())
+}
+
+/// Transforms a surface normal by a 4x4 matrix, returning a unit vector.
+///
+/// Uses the inverse-transpose so normals stay perpendicular to their surface
+/// under non-uniform scale; falls back to a plain direction transform when the
+/// matrix is singular.
+pub fn transform_normal(matrix: &Matrix4, normal: Vector3) -> Vector3 {
+    let m = match matrix.invert() {
+        Some(inverse) => inverse.transpose(),
+        None => *matrix,
+    };
+    (m * normal.extend(0.0)).truncate().normalize()
 }
 
 // =============================================================================
@@ -244,6 +260,42 @@ mod tests {
     use crate::{Deg, Rotation3};
 
     const TEST_EPSILON: f32 = 1e-5;
+
+    // ===== transform_normal Tests =====
+
+    #[test]
+    fn test_transform_normal_rotation() {
+        let matrix = Matrix4::from(Quaternion::from_angle_z(Deg(90.0)));
+        let result = transform_normal(&matrix, Vector3::unit_x());
+
+        assert!((result.x - 0.0).abs() < TEST_EPSILON);
+        assert!((result.y - 1.0).abs() < TEST_EPSILON);
+        assert!((result.z - 0.0).abs() < TEST_EPSILON);
+    }
+
+    #[test]
+    fn test_transform_normal_non_uniform_scale() {
+        // A surface with tangent (1,-1,0) and normal (1,1,0)/√2, scaled by
+        // (2,1,1): the tangent becomes (2,-1,0), so the correct normal is
+        // proportional to (1,2,0), not the naively-transformed (2,1,0).
+        let matrix = Matrix4::from_nonuniform_scale(2.0, 1.0, 1.0);
+        let n = Vector3::new(1.0, 1.0, 0.0).normalize();
+
+        let result = transform_normal(&matrix, n);
+        let expected = Vector3::new(1.0, 2.0, 0.0).normalize();
+
+        assert!((result.x - expected.x).abs() < TEST_EPSILON);
+        assert!((result.y - expected.y).abs() < TEST_EPSILON);
+        assert!((result.z - expected.z).abs() < TEST_EPSILON);
+    }
+
+    #[test]
+    fn test_transform_normal_result_is_unit_length() {
+        let matrix = Matrix4::from_scale(3.0);
+        let result = transform_normal(&matrix, Vector3::new(0.0, 1.0, 0.0));
+
+        assert!((result.magnitude() - 1.0).abs() < TEST_EPSILON);
+    }
 
     // ===== rotate_position_about_pivot Tests =====
 
