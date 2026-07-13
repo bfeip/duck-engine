@@ -1133,6 +1133,7 @@ dependencies = [
  "anyhow",
  "bitflags 2.11.0",
  "bytemuck",
+ "criterion",
  "duck-engine-common",
  "image",
  "log",
