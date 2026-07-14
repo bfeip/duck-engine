@@ -564,6 +564,69 @@ impl Mesh {
             .collect()
     }
 
+    /// Returns triangle `index` (in [`Self::triangles`] order) as three resolved
+    /// vertices, or `None` if the mesh has fewer triangles.
+    pub fn triangle(&self, index: usize) -> Option<[Vertex; 3]> {
+        let mut remaining = index;
+        for primitive in self
+            .primitives
+            .iter()
+            .filter(|p| p.primitive_type == PrimitiveType::TriangleList)
+        {
+            let count = primitive.indices.len() / 3;
+            if remaining < count {
+                let tri = &primitive.indices[remaining * 3..remaining * 3 + 3];
+                return Some([
+                    self.vertices[tri[0] as usize],
+                    self.vertices[tri[1] as usize],
+                    self.vertices[tri[2] as usize],
+                ]);
+            }
+            remaining -= count;
+        }
+        None
+    }
+
+    /// Returns segment `index` (in [`Self::segments`] order) as two resolved
+    /// vertices, or `None` if the mesh has fewer segments.
+    pub fn segment(&self, index: usize) -> Option<[Vertex; 2]> {
+        let mut remaining = index;
+        for primitive in self
+            .primitives
+            .iter()
+            .filter(|p| p.primitive_type == PrimitiveType::LineList)
+        {
+            let count = primitive.indices.len() / 2;
+            if remaining < count {
+                let seg = &primitive.indices[remaining * 2..remaining * 2 + 2];
+                return Some([
+                    self.vertices[seg[0] as usize],
+                    self.vertices[seg[1] as usize],
+                ]);
+            }
+            remaining -= count;
+        }
+        None
+    }
+
+    /// Returns point `index` (in [`Self::points`] order) as a resolved vertex,
+    /// or `None` if the mesh has fewer points.
+    pub fn point(&self, index: usize) -> Option<Vertex> {
+        let mut remaining = index;
+        for primitive in self
+            .primitives
+            .iter()
+            .filter(|p| p.primitive_type == PrimitiveType::PointList)
+        {
+            let count = primitive.indices.len();
+            if remaining < count {
+                return Some(self.vertices[primitive.indices[remaining] as usize]);
+            }
+            remaining -= count;
+        }
+        None
+    }
+
     /// Iterates over each triangle as three resolved vertices.
     ///
     /// Yields `[v0, v1, v2]` for every triangle in the mesh's `TriangleList` primitives,

@@ -7,7 +7,8 @@ use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion};
 use duck_engine_scene::common::{Point3, Ray, Transform, Vector3};
 use duck_engine_scene::geom_query::{
-    intersect_ray, intersect_ray_with_lines, pick_all_from_ray, RayPickQuery,
+    intersect_ray, intersect_ray_nearest, intersect_ray_with_lines, pick_all_from_ray,
+    RayPickQuery,
 };
 use duck_engine_scene::{Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Scene, Vertex};
 
@@ -108,6 +109,9 @@ fn bench_mesh_queries(c: &mut Criterion) {
     let mut group = c.benchmark_group("mesh");
     group.bench_function("intersect_ray_80k_tris", |b| {
         b.iter(|| black_box(intersect_ray(black_box(&mesh), black_box(&ray))))
+    });
+    group.bench_function("intersect_ray_nearest_80k_tris", |b| {
+        b.iter(|| black_box(intersect_ray_nearest(black_box(&mesh), black_box(&ray))))
     });
     group.bench_function("intersect_ray_with_lines_80k_segs", |b| {
         b.iter(|| {

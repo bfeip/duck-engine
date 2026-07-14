@@ -5,7 +5,7 @@ use duck_engine_viewer::common::{
     transform_normal, transform_point, Aabb, EuclideanSpace, InnerSpace, Matrix4, Point3, Ray,
     Vector3,
 };
-use duck_engine_viewer::scene::geom_query::{intersect_ray, pick_all, PickQuery};
+use duck_engine_viewer::scene::geom_query::{intersect_ray_nearest, pick_all, PickQuery};
 use duck_engine_viewer::scene::{
     InstanceId, Mesh, NodeId, PositionedCamera, PrimitiveType, Scene, Topology, Visibility,
 };
@@ -149,6 +149,7 @@ impl SnapProvider for GeometrySnap {
             cursor: input.cursor,
             viewport: input.viewport,
             pixel_tolerance: settings.pixel_tolerance,
+            local_scale: 1.0,
             exclude_nodes: input.exclude_nodes,
             // Only do the work for kinds the caller actually asked for; the engine
             // still drops anything globally disabled afterwards.
@@ -202,10 +203,37 @@ struct GeometrySnapQuery<'a> {
     cursor: (f32, f32),
     viewport: (u32, u32),
     pixel_tolerance: f32,
+    /// Factor mapping world-space distances into the current (possibly local)
+    /// coordinate space; updated alongside the ray by [`Self::transform`].
+    local_scale: f32,
     exclude_nodes: &'a [NodeId],
     want_corners: bool,
     want_edges: bool,
     want_faces: bool,
+}
+
+impl GeometrySnapQuery<'_> {
+    /// Conservative local-space distance bound for edge candidates: a segment
+    /// farther than this from the ray projects to more than `pixel_tolerance`
+    /// pixels from the cursor, so `rank()` could never accept it.
+    ///
+    /// Every segment lies inside the mesh bounds, so its depth is at most the
+    /// farthest corner's, and `world_size_per_pixel` is non-decreasing in depth;
+    /// the 2× margin covers off-axis perspective distortion.
+    fn local_edge_tolerance(&self, mesh: &Mesh, world_transform: &Matrix4) -> f32 {
+        let Some(bounds) = mesh.bounding() else {
+            return 0.0;
+        };
+        let forward = self.camera.forward();
+        let mut far_depth = self.camera.znear;
+        for corner in bounds.transform(world_transform).corners() {
+            far_depth = far_depth.max((corner - self.camera.eye).dot(forward));
+        }
+        let world_tolerance = self.pixel_tolerance
+            * self.camera.world_size_per_pixel(far_depth, self.viewport.1)
+            * 2.0;
+        world_tolerance * self.local_scale
+    }
 }
 
 impl PickQuery for GeometrySnapQuery<'_> {
@@ -238,8 +266,17 @@ impl PickQuery for GeometrySnapQuery<'_> {
     }
 
     fn transform(&self, matrix: &Matrix4) -> Self {
+        // world_to_local (= matrix) embeds the inverse of the world scale, so a
+        // world-space distance d maps to d * column_magnitude in local space.
+        // The max column magnitude stays conservative under non-uniform scale.
+        let scale = [matrix.x, matrix.y, matrix.z]
+            .iter()
+            .map(|col| col.truncate().magnitude())
+            .fold(0.0_f32, f32::max);
+
         Self {
             ray: self.ray.transform(matrix),
+            local_scale: self.local_scale * scale,
             ..*self
         }
     }
@@ -263,18 +300,15 @@ impl PickQuery for GeometrySnapQuery<'_> {
 
         if self.want_corners {
             if let Some(topology) = mesh.topology() {
-                results.extend(collect_mesh_corners(mesh, topology, world_transform));
+                collect_mesh_corners(mesh, topology, world_transform, results);
             }
         }
 
         if self.want_faces {
             // Nearest ray–triangle hit on this mesh (local-space ray, like edges);
             // `GeometrySnap::collect` picks the nearest across all meshes.
-            let hit = intersect_ray(mesh, &self.ray)
-                .into_iter()
-                .min_by(|a, b| a.distance.total_cmp(&b.distance));
-            if let Some(hit) = hit {
-                if let Some([v0, v1, v2]) = mesh.triangles().nth(hit.triangle_index) {
+            if let Some(hit) = intersect_ray_nearest(mesh, &self.ray) {
+                if let Some([v0, v1, v2]) = mesh.triangle(hit.triangle_index) {
                     // Möller–Trumbore weights: hit = w·v0 + u·v1 + v·v2.
                     let (u, v, w) = hit.barycentric;
                     let mut normal = Vector3::from(v0.normal) * w
@@ -296,12 +330,18 @@ impl PickQuery for GeometrySnapQuery<'_> {
         }
 
         if self.want_edges {
+            // Cull candidates that can never rank: any segment farther from the
+            // ray than this bound projects beyond the pixel tolerance.
+            let local_tolerance = self.local_edge_tolerance(mesh, world_transform);
             // The ray is already in this mesh's local space, so test raw local
             // segments (no per-vertex transform) and lift the result to world.
             for seg in mesh.segments() {
                 let p0 = Point3::from(seg[0].position);
                 let p1 = Point3::from(seg[1].position);
                 if let Some(approach) = self.ray.closest_approach_to_segment(p0, p1) {
+                    if approach.distance > local_tolerance {
+                        continue;
+                    }
                     let position = transform_point(world_transform, approach.closest_on_segment);
                     let w0 = transform_point(world_transform, p0);
                     let w1 = transform_point(world_transform, p1);
@@ -321,9 +361,7 @@ impl PickQuery for GeometrySnapQuery<'_> {
 /// Prefers explicit point topology when present; otherwise derives corners from
 /// edge-range endpoints — the first/last vertex of each edge is its B-rep vertex,
 /// while intermediate curve-approximation points are not corners.
-fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4) -> Vec<Snap> {
-    let mut out = Vec::new();
-
+fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4, out: &mut Vec<Snap>) {
     let vertices = mesh.vertices();
     let mut push_corner = |local: [f32; 3]| {
         let position = transform_point(world, Point3::new(local[0], local[1], local[2]));
@@ -353,7 +391,7 @@ fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4) -> Ve
                 }
             }
         }
-        return out;
+        return;
     }
 
     // TODO: Only works on first line primitive. Not a big deal right now but...
@@ -362,7 +400,7 @@ fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4) -> Ve
         .iter()
         .find(|p| p.primitive_type == PrimitiveType::LineList)
     else {
-        return out;
+        return;
     };
 
     for range in &topology.edge_ranges {
@@ -382,8 +420,6 @@ fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4) -> Ve
             }
         }
     }
-
-    return out;
 }
 
 
@@ -573,7 +609,8 @@ mod tests {
         // Translate the whole part by +10 in X.
         let world = Matrix4::from_translation(Vector3::new(10.0, 0.0, 0.0));
 
-        let snaps = collect_mesh_corners(&mesh, &topology, &world);
+        let mut snaps = Vec::new();
+        collect_mesh_corners(&mesh, &topology, &world, &mut snaps);
 
         assert_eq!(snaps.len(), 2);
         assert!(snaps.iter().any(|s| close(s.position, Point3::new(11.0, 2.0, 3.0))));
@@ -754,6 +791,7 @@ mod tests {
             cursor: screen_of(&cam, Point3::origin()),
             viewport: (800, 600),
             pixel_tolerance: 12.0,
+            local_scale: 1.0,
             exclude_nodes: &[],
             want_corners: true,
             want_edges: true,
