@@ -267,7 +267,7 @@ impl CylinderOperator {
 
 impl ModelingTool for CylinderOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "cylinder", icon: icons::CYLINDER }
+        ToolInfo { id: "cylinder", icon: icons::CYLINDER, shortcut: None }
     }
 
     fn deactivate(&mut self) {

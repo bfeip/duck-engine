@@ -47,7 +47,10 @@ impl ToolPalette {
                             )
                             .selected(*selected),
                         )
-                        .on_hover_text(info.id);
+                        .on_hover_text(match info.shortcut {
+                            Some(c) => format!("{} ({})", info.id, c.to_ascii_uppercase()),
+                            None => info.id.to_string(),
+                        });
                     if btn.clicked() {
                         clicked = Some(Some(i));
                     }

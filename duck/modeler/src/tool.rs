@@ -12,6 +12,9 @@ pub struct ToolInfo {
     pub id: &'static str,
     /// Palette button icon, from [`crate::ui::icons`].
     pub icon: Icon,
+    /// Activation shortcut key, or `None`. Matches only with no modifier
+    /// (including shift) held.
+    pub shortcut: Option<char>,
 }
 
 /// External state a tool panel may need beyond what the tool already owns

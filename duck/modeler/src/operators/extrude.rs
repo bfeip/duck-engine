@@ -177,7 +177,7 @@ impl ExtrudeOperator {
 
 impl ModelingTool for ExtrudeOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "extrude", icon: icons::EXTRUDE }
+        ToolInfo { id: "extrude", icon: icons::EXTRUDE, shortcut: None }
     }
 
     fn deactivate(&mut self) {

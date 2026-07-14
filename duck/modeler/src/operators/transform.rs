@@ -154,9 +154,9 @@ impl Operator for TransformTool {
 impl ModelingTool for TransformTool {
     fn info(&self) -> ToolInfo {
         match self.mode {
-            TransformMode::Translate => ToolInfo { id: "move", icon: icons::MOVE },
-            TransformMode::Rotate => ToolInfo { id: "rotate", icon: icons::ROTATE },
-            TransformMode::Scale => ToolInfo { id: "scale", icon: icons::SCALE },
+            TransformMode::Translate => ToolInfo { id: "move", icon: icons::MOVE, shortcut: Some('g') },
+            TransformMode::Rotate => ToolInfo { id: "rotate", icon: icons::ROTATE, shortcut: Some('r') },
+            TransformMode::Scale => ToolInfo { id: "scale", icon: icons::SCALE, shortcut: Some('s') },
         }
     }
 

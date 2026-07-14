@@ -168,7 +168,7 @@ impl SphereOperator {
 
 impl ModelingTool for SphereOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "sphere", icon: icons::SPHERE }
+        ToolInfo { id: "sphere", icon: icons::SPHERE, shortcut: None }
     }
 
     fn deactivate(&mut self) {

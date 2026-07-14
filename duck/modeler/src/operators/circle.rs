@@ -187,7 +187,7 @@ impl CircleOperator {
 
 impl ModelingTool for CircleOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "circle", icon: icons::CIRCLE }
+        ToolInfo { id: "circle", icon: icons::CIRCLE, shortcut: None }
     }
 
     fn deactivate(&mut self) {

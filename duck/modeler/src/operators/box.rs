@@ -321,7 +321,7 @@ impl BoxOperator {
 
 impl ModelingTool for BoxOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "box", icon: icons::BOX }
+        ToolInfo { id: "box", icon: icons::BOX, shortcut: None }
     }
 
     fn deactivate(&mut self) {

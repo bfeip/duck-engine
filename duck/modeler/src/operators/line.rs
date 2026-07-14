@@ -294,7 +294,7 @@ impl LineOperator {
 
 impl ModelingTool for LineOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "line", icon: icons::LINE }
+        ToolInfo { id: "line", icon: icons::LINE, shortcut: None }
     }
 
     fn deactivate(&mut self) {

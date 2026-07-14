@@ -235,7 +235,7 @@ impl RectangleOperator {
 
 impl ModelingTool for RectangleOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "rectangle", icon: icons::RECTANGLE }
+        ToolInfo { id: "rectangle", icon: icons::RECTANGLE, shortcut: None }
     }
 
     fn deactivate(&mut self) {

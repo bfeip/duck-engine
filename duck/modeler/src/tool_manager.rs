@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use duck_engine_viewer::event::{Event, EventContext, EventDispatcher};
+use duck_engine_viewer::bindings::{InputBinding, InputMap};
+use duck_engine_viewer::event::{DeviceEvent, Event, EventContext, EventDispatcher};
+use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers};
 use duck_engine_viewer::operator::{Operator, SelectionMode, SelectionOperator};
 use duck_engine_viewer::scene::Scene;
 
@@ -28,6 +30,44 @@ impl Operator for ToolHost {
     }
 }
 
+/// Last-priority operator that turns unclaimed shortcut keys into deferred
+/// tool-activation requests, applied by [`ToolManager::update`].
+struct ToolSwitcher {
+    /// Shortcut key to index into [`ToolManager::tools`].
+    bindings: InputMap<usize>,
+    pending: Option<usize>,
+}
+
+impl ToolSwitcher {
+    /// Records an activation request if the key matches a shortcut.
+    /// Returns `true` when the key was claimed.
+    fn handle_key(&mut self, key_event: &KeyEvent, modifiers: Modifiers) -> bool {
+        if key_event.state != ElementState::Pressed || key_event.repeat {
+            return false;
+        }
+        match self.bindings.actions_for_key(&key_event.logical_key, modifiers).first() {
+            Some(&index) => {
+                self.pending = Some(index);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl Operator for ToolSwitcher {
+    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
+        let Event::Device(DeviceEvent::KeyboardInput { event: key_event, .. }) = event else {
+            return false;
+        };
+        self.handle_key(key_event, ctx.modifiers)
+    }
+
+    fn name(&self) -> &str {
+        "ToolSwitcher"
+    }
+}
+
 /// Owns the registered modeling tools and everything generic about driving
 /// them.
 /// 
@@ -40,6 +80,7 @@ pub struct ToolManager {
     /// Index into `tools`; `None` means plain selection mode.
     active: Option<usize>,
     host: Arc<Mutex<ToolHost>>,
+    switcher: Arc<Mutex<ToolSwitcher>>,
     sel_op: Arc<Mutex<SelectionOperator>>,
     /// The modeler-owned 3D cursor, driven each frame from the active tool.
     cursor: Cursor3d,
@@ -51,18 +92,31 @@ impl ToolManager {
             tools: Vec::new(),
             active: None,
             host: Arc::new(Mutex::new(ToolHost { active: None })),
+            switcher: Arc::new(Mutex::new(ToolSwitcher {
+                bindings: InputMap::new(),
+                pending: None,
+            })),
             sel_op,
             cursor: Cursor3d::default(),
         }
     }
 
-    /// Registers the forwarding host with the dispatcher at highest priority.
+    /// Registers the forwarding host with the dispatcher at highest priority
+    /// and the shortcut switcher at lowest, so tool switching only claims keys
+    /// no other operator consumed.
     /// Call once, after the selection/navigation operators are registered.
     pub fn install(&self, dispatcher: &mut EventDispatcher) {
         dispatcher.push_front(Arc::clone(&self.host));
+        dispatcher.push_back(Arc::clone(&self.switcher));
     }
 
     pub fn register<T: ModelingTool>(&mut self, tool: T) {
+        if let Some(c) = tool.info().shortcut {
+            self.switcher.lock().unwrap().bindings.add(
+                InputBinding::Key { key: Key::Character(c), modifiers: Modifiers::default() },
+                self.tools.len(),
+            );
+        }
         self.tools.push(Arc::new(Mutex::new(tool)));
     }
 
@@ -95,6 +149,11 @@ impl ToolManager {
 
     /// Per-frame update. Should be called every frame.
     pub fn update(&mut self, scene: &Arc<Mutex<Scene>>) {
+        let requested = self.switcher.lock().unwrap().pending.take();
+        if let Some(index) = requested {
+            self.activate(Some(index));
+        }
+
         if self.active.is_some_and(|i| self.tools[i].lock().unwrap().is_finished()) {
             self.activate(None);
         }
@@ -118,5 +177,151 @@ impl ToolManager {
     /// The active tool, locked for panel rendering, or `None` in selection mode.
     pub fn active_tool(&self) -> Option<MutexGuard<'_, dyn ModelingTool>> {
         self.active.map(|i| self.tools[i].lock().unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use duck_engine_viewer::input::PhysicalKey;
+
+    use super::*;
+
+    struct MockTool {
+        id: &'static str,
+        shortcut: Option<char>,
+        activations: Arc<AtomicUsize>,
+        deactivations: Arc<AtomicUsize>,
+    }
+
+    impl MockTool {
+        fn new(id: &'static str, shortcut: Option<char>) -> Self {
+            Self {
+                id,
+                shortcut,
+                activations: Arc::new(AtomicUsize::new(0)),
+                deactivations: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    impl Operator for MockTool {
+        fn dispatch(&mut self, _event: &Event, _ctx: &mut EventContext) -> bool {
+            false
+        }
+
+        fn name(&self) -> &str {
+            self.id
+        }
+    }
+
+    impl crate::tool::ModelingTool for MockTool {
+        fn info(&self) -> crate::tool::ToolInfo {
+            crate::tool::ToolInfo { id: self.id, icon: ("mock", &[]), shortcut: self.shortcut }
+        }
+
+        fn activate(&mut self) {
+            self.activations.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn deactivate(&mut self) {
+            self.deactivations.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn key_press(c: char) -> KeyEvent {
+        KeyEvent {
+            physical_key: PhysicalKey::Unidentified,
+            logical_key: Key::Character(c),
+            state: ElementState::Pressed,
+            repeat: false,
+        }
+    }
+
+    fn switcher_with(bindings: &[(char, usize)]) -> ToolSwitcher {
+        let mut map = InputMap::new();
+        for &(c, index) in bindings {
+            map.add(
+                InputBinding::Key { key: Key::Character(c), modifiers: Modifiers::default() },
+                index,
+            );
+        }
+        ToolSwitcher { bindings: map, pending: None }
+    }
+
+    #[test]
+    fn switcher_matches_bound_key() {
+        let mut switcher = switcher_with(&[('g', 0)]);
+        assert!(switcher.handle_key(&key_press('g'), Modifiers::default()));
+        assert_eq!(switcher.pending, Some(0));
+
+        // Case-insensitive via InputMap normalization.
+        switcher.pending = None;
+        assert!(switcher.handle_key(&key_press('G'), Modifiers::default()));
+        assert_eq!(switcher.pending, Some(0));
+
+        assert!(!switcher.handle_key(&key_press('q'), Modifiers::default()));
+    }
+
+    #[test]
+    fn switcher_ignores_repeat_release_and_modifiers() {
+        let mut switcher = switcher_with(&[('g', 0)]);
+
+        let mut repeat = key_press('g');
+        repeat.repeat = true;
+        assert!(!switcher.handle_key(&repeat, Modifiers::default()));
+
+        let mut released = key_press('g');
+        released.state = ElementState::Released;
+        assert!(!switcher.handle_key(&released, Modifiers::default()));
+
+        let ctrl = Modifiers { control: true, ..Modifiers::default() };
+        assert!(!switcher.handle_key(&key_press('g'), ctrl));
+
+        assert_eq!(switcher.pending, None);
+    }
+
+    #[test]
+    fn register_binds_shortcut_to_index() {
+        let mut manager = ToolManager::new(Arc::new(Mutex::new(SelectionOperator::new())));
+        manager.register(MockTool::new("plain", None));
+        manager.register(MockTool::new("keyed", Some('g')));
+
+        let mut switcher = manager.switcher.lock().unwrap();
+        assert!(switcher.handle_key(&key_press('g'), Modifiers::default()));
+        assert_eq!(switcher.pending, Some(1));
+    }
+
+    #[test]
+    fn update_applies_pending_switch() {
+        let mut manager = ToolManager::new(Arc::new(Mutex::new(SelectionOperator::new())));
+        let tool = MockTool::new("keyed", Some('g'));
+        let activations = Arc::clone(&tool.activations);
+        manager.register(MockTool::new("plain", None));
+        manager.register(tool);
+
+        let scene = Arc::new(Mutex::new(Scene::new()));
+        manager.switcher.lock().unwrap().handle_key(&key_press('g'), Modifiers::default());
+        manager.update(&scene);
+
+        assert_eq!(manager.active_tool().unwrap().info().id, "keyed");
+        assert_eq!(activations.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn update_same_tool_pending_is_noop() {
+        let mut manager = ToolManager::new(Arc::new(Mutex::new(SelectionOperator::new())));
+        let tool = MockTool::new("keyed", Some('g'));
+        let deactivations = Arc::clone(&tool.deactivations);
+        manager.register(tool);
+        manager.activate(Some(0));
+
+        let scene = Arc::new(Mutex::new(Scene::new()));
+        manager.switcher.lock().unwrap().handle_key(&key_press('g'), Modifiers::default());
+        manager.update(&scene);
+
+        assert_eq!(manager.active_tool().unwrap().info().id, "keyed");
+        assert_eq!(deactivations.load(Ordering::SeqCst), 0);
     }
 }

@@ -240,7 +240,7 @@ impl BooleanOperator {
 
 impl ModelingTool for BooleanOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "boolean", icon: icons::BOOLEAN }
+        ToolInfo { id: "boolean", icon: icons::BOOLEAN, shortcut: None }
     }
 
     fn deactivate(&mut self) {

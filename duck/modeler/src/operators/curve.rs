@@ -298,7 +298,7 @@ impl CurveOperator {
 
 impl ModelingTool for CurveOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "curve", icon: icons::CURVE }
+        ToolInfo { id: "curve", icon: icons::CURVE, shortcut: None }
     }
 
     fn deactivate(&mut self) {

@@ -199,7 +199,7 @@ impl LoftOperator {
 
 impl ModelingTool for LoftOperator {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "loft", icon: icons::LOFT }
+        ToolInfo { id: "loft", icon: icons::LOFT, shortcut: None }
     }
 
     fn deactivate(&mut self) {
