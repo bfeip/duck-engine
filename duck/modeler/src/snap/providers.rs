@@ -5,7 +5,7 @@ use duck_engine_viewer::common::{
     transform_normal, transform_point, Aabb, EuclideanSpace, InnerSpace, Matrix4, Point3, Ray,
     Vector3,
 };
-use duck_engine_viewer::scene::geom_query::{intersect_ray_nearest, pick_all, PickQuery};
+use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
 use duck_engine_viewer::scene::{
     InstanceId, Mesh, NodeId, PositionedCamera, PrimitiveType, Scene, Topology, Visibility,
 };
@@ -304,10 +304,18 @@ impl PickQuery for GeometrySnapQuery<'_> {
             }
         }
 
+        if !self.want_faces && !self.want_edges {
+            return;
+        }
+        // Both narrow phases run in this mesh's local space (the ray is already
+        // there) through the mesh's cached spatial index, and lift results to
+        // world.
+        let index = mesh.spatial_index();
+
         if self.want_faces {
-            // Nearest ray–triangle hit on this mesh (local-space ray, like edges);
-            // `GeometrySnap::collect` picks the nearest across all meshes.
-            if let Some(hit) = intersect_ray_nearest(mesh, &self.ray) {
+            // Nearest ray–triangle hit on this mesh; `GeometrySnap::collect`
+            // picks the nearest across all meshes.
+            if let Some(hit) = index.nearest_triangle(mesh, &self.ray) {
                 if let Some([v0, v1, v2]) = mesh.triangle(hit.triangle_index) {
                     // Möller–Trumbore weights: hit = w·v0 + u·v1 + v·v2.
                     let (u, v, w) = hit.barycentric;
@@ -330,28 +338,19 @@ impl PickQuery for GeometrySnapQuery<'_> {
         }
 
         if self.want_edges {
-            // Cull candidates that can never rank: any segment farther from the
-            // ray than this bound projects beyond the pixel tolerance.
+            // Bounded by the pixel tolerance: any segment farther from the ray
+            // can never rank, and the index skips subtrees outside the bound.
             let local_tolerance = self.local_edge_tolerance(mesh, world_transform);
-            // The ray is already in this mesh's local space, so test raw local
-            // segments (no per-vertex transform) and lift the result to world.
-            for seg in mesh.segments() {
-                let p0 = Point3::from(seg[0].position);
-                let p1 = Point3::from(seg[1].position);
-                if let Some(approach) = self.ray.closest_approach_to_segment(p0, p1) {
-                    if approach.distance > local_tolerance {
-                        continue;
-                    }
-                    let position = transform_point(world_transform, approach.closest_on_segment);
-                    let w0 = transform_point(world_transform, p0);
-                    let w1 = transform_point(world_transform, p1);
-                    results.push(Snap {
-                        position,
-                        direction: Some((w1 - w0).normalize()),
-                        kind: SnapKind::Edge,
-                    });
-                }
-            }
+            index.for_each_segment_within(mesh, &self.ray, local_tolerance, |i, approach| {
+                let Some([v0, v1]) = mesh.segment(i) else { return };
+                let w0 = transform_point(world_transform, Point3::from(v0.position));
+                let w1 = transform_point(world_transform, Point3::from(v1.position));
+                results.push(Snap {
+                    position: transform_point(world_transform, approach.closest_on_segment),
+                    direction: Some((w1 - w0).normalize()),
+                    kind: SnapKind::Edge,
+                });
+            });
         }
     }
 }

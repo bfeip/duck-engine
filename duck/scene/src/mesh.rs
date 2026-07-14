@@ -1,4 +1,10 @@
-use std::{cell::Cell, collections::HashSet, fs::File, io::BufReader, path::Path};
+use std::{
+    cell::{Cell, Ref, RefCell},
+    collections::HashSet,
+    fs::File,
+    io::BufReader,
+    path::Path,
+};
 
 use anyhow::{Context, Result};
 use duck_engine_common::{transform_point, InnerSpace, Matrix4, Point3, Vector3};
@@ -6,6 +12,7 @@ use duck_engine_common::{transform_point, InnerSpace, Matrix4, Point3, Vector3};
 mod primitives;
 
 use crate::common::Aabb;
+use crate::geom_query::MeshSpatialIndex;
 
 /// Unique identifier for a mesh in the scene.
 pub type MeshId = crate::Id<Mesh>;
@@ -285,6 +292,9 @@ pub struct Mesh {
     /// Cached local-space axis-aligned bounding box
     #[cfg_attr(feature = "serde", serde(skip))]
     cached_bounding: Cell<Option<Aabb>>,
+    /// Lazily built spatial index over triangles/segments, cleared on mutation.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    spatial_index: RefCell<Option<MeshSpatialIndex>>,
     /// Optional sub-geometry topology: maps faces/edges/points to index ranges.
     topology: Option<Topology>,
 }
@@ -298,6 +308,7 @@ impl Mesh {
             primitives: Vec::new(),
             generation: crate::initial_generation(),
             cached_bounding: Cell::new(None),
+            spatial_index: RefCell::new(None),
             topology: None,
         }
     }
@@ -314,6 +325,7 @@ impl Mesh {
             primitives,
             generation: crate::initial_generation(),
             cached_bounding: Cell::new(None),
+            spatial_index: RefCell::new(None),
             topology: None,
         }
     }
@@ -392,12 +404,14 @@ impl Mesh {
         self.vertices = vertices;
         self.generation += 1;
         self.cached_bounding.set(None);
+        *self.spatial_index.get_mut() = None;
     }
 
     /// Set the mesh's primitive data.
     pub fn set_primitives(&mut self, primitives: Vec<MeshPrimitive>) {
         self.primitives = primitives;
         self.generation += 1;
+        *self.spatial_index.get_mut() = None;
     }
 
     /// Add vertices to the mesh.
@@ -405,12 +419,14 @@ impl Mesh {
         self.vertices.extend_from_slice(vertices);
         self.generation += 1;
         self.cached_bounding.set(None);
+        *self.spatial_index.get_mut() = None;
     }
 
     /// Add a primitive to the mesh.
     pub fn add_primitive(&mut self, primitive: MeshPrimitive) {
         self.primitives.push(primitive);
         self.generation += 1;
+        *self.spatial_index.get_mut() = None;
     }
 
     /// Translates all vertex positions by the given offset.
@@ -422,6 +438,7 @@ impl Mesh {
         }
         self.generation += 1;
         self.cached_bounding.set(None);
+        *self.spatial_index.get_mut() = None;
     }
 
     /// Translates all vertex positions by the given offset (consuming variant).
@@ -451,6 +468,7 @@ impl Mesh {
         }
         self.generation += 1;
         self.cached_bounding.set(None);
+        *self.spatial_index.get_mut() = None;
     }
 
     /// Transforms all vertex positions and normals by a 4x4 matrix (consuming variant).
@@ -487,6 +505,7 @@ impl Mesh {
 
         self.generation += 1;
         self.cached_bounding.set(None);
+        *self.spatial_index.get_mut() = None;
     }
 
     /// Merges another mesh into this one (consuming variant).
@@ -700,6 +719,19 @@ impl Mesh {
         let bounding = Aabb::from_points(&positions);
         self.cached_bounding.set(bounding);
         bounding
+    }
+
+    /// Spatial index over this mesh's triangles and segments, built lazily and
+    /// rebuilt after any mutation.
+    ///
+    /// The returned guard borrows the cache; drop it before mutating the mesh.
+    pub fn spatial_index(&self) -> Ref<'_, MeshSpatialIndex> {
+        if self.spatial_index.borrow().is_none() {
+            *self.spatial_index.borrow_mut() = Some(MeshSpatialIndex::build(self));
+        }
+        Ref::map(self.spatial_index.borrow(), |slot| {
+            slot.as_ref().expect("just built")
+        })
     }
 
     /// Returns the mesh's sub-geometry topology, if any.

@@ -1,6 +1,7 @@
 mod mesh_intersection;
 mod pick_query;
 mod ray_picking;
+mod spatial_index;
 mod volume_picking;
 
 pub use mesh_intersection::{
@@ -8,5 +9,6 @@ pub use mesh_intersection::{
     intersect_volume, LineMeshHit, MeshVolumeHit, PointMeshHit, TriangleMeshHit,
 };
 pub use pick_query::{pick_all, PickQuery};
+pub use spatial_index::MeshSpatialIndex;
 pub use ray_picking::{pick_all_from_ray, RayHit, RayPickQuery, RayPickResult};
 pub use volume_picking::{pick_all_from_volume, VolumePickQuery, VolumePickResult};

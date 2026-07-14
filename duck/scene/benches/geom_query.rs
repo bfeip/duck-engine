@@ -8,7 +8,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use duck_engine_scene::common::{Point3, Ray, Transform, Vector3};
 use duck_engine_scene::geom_query::{
     intersect_ray, intersect_ray_nearest, intersect_ray_with_lines, pick_all_from_ray,
-    RayPickQuery,
+    MeshSpatialIndex, RayPickQuery,
 };
 use duck_engine_scene::{Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Scene, Vertex};
 
@@ -125,6 +125,33 @@ fn bench_mesh_queries(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_spatial_index(c: &mut Criterion) {
+    let mesh = grid_mesh(200, 10.0);
+    let ray = ray_down(5.02, 5.03);
+    let index = MeshSpatialIndex::build(&mesh);
+
+    let mut group = c.benchmark_group("spatial");
+    group.bench_function("build_80k", |b| {
+        b.iter(|| black_box(MeshSpatialIndex::build(black_box(&mesh))))
+    });
+    group.bench_function("nearest_triangle_80k", |b| {
+        b.iter(|| black_box(index.nearest_triangle(black_box(&mesh), black_box(&ray))))
+    });
+    group.bench_function("segments_within_80k", |b| {
+        b.iter(|| {
+            let mut count = 0u32;
+            index.for_each_segment_within(
+                black_box(&mesh),
+                black_box(&ray),
+                LINE_TOLERANCE,
+                |_, _| count += 1,
+            );
+            black_box(count)
+        })
+    });
+    group.finish();
+}
+
 fn bench_scene_queries(c: &mut Criterion) {
     // One dense part alone, and a 10×10 grid of instances of the same part.
     let single = instanced_scene(grid_mesh(200, 10.0), 1, 0.0);
@@ -160,5 +187,5 @@ fn bench_scene_queries(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_mesh_queries, bench_scene_queries);
+criterion_group!(benches, bench_mesh_queries, bench_spatial_index, bench_scene_queries);
 criterion_main!(benches);
