@@ -92,17 +92,26 @@ pub fn tessellate_occ_shape(
     // so the LineList primitive correctly references into the combined vertex buffer.
     //
     // One `edge_range` is emitted per `shape.edges()` entry, in iteration order —
-    // including a zero-length range for any degenerate edge that produces no segments.
-    // This keeps `edge_ranges` index-aligned 1:1 with `Shape::edges()` (mirroring how
-    // faces work), so an `edge_index` resolves back to its OCCT edge by plain position.
+    // including a zero-length range for any edge that produces no segments. Seam
+    // edges (closed-surface parameterization artifacts, e.g. a sphere's meridian)
+    // and degenerate edges (no 3D curve, e.g. a sphere's poles) are suppressed but
+    // still get their zero-length range. This keeps `edge_ranges` index-aligned 1:1
+    // with `Shape::edges()` (mirroring how faces work), so an `edge_index` resolves
+    // back to its OCCT edge by plain position.
     let mut edge_indices: Vec<u32> = Vec::new();
     let mut edge_ranges: Vec<SubMeshRange> = Vec::new();
 
     if include_edges {
+        let seams = shape.seam_edges();
         for edge in shape.edges() {
-            let points: Vec<_> = match edge.edge_type() {
-                EdgeType::Line => vec![edge.start_point(), edge.end_point()],
-                _ => edge.approximation_segments().collect(),
+            let suppressed = edge.is_degenerated() || seams.iter().any(|s| s.is_same(&edge));
+            let points: Vec<_> = if suppressed {
+                Vec::new()
+            } else {
+                match edge.edge_type() {
+                    EdgeType::Line => vec![edge.start_point(), edge.end_point()],
+                    _ => edge.approximation_segments().collect(),
+                }
             };
 
             let seg_start = (edge_indices.len() / 2) as u32;
@@ -312,6 +321,50 @@ mod tests {
         let mut scene = Scene::new();
         tessellate_into(&shape, &mut scene, &default_options(), None, None).unwrap();
         assert!(scene.mesh_count() > 0);
+    }
+
+    #[test]
+    fn sphere_renders_without_seam_or_pole_edges() {
+        // All of a full sphere's edges are parameterization artifacts (one seam
+        // meridian + two degenerate poles): none may produce line segments, but
+        // each still gets its zero-length range for positional index alignment.
+        let shape = opencascade::primitives::Shape::sphere(1.0).build();
+        let mesh = tessellate_occ_shape(&shape, 0.01, 1.0, true, false).unwrap();
+
+        let topology = mesh.topology().expect("topology");
+        assert_eq!(topology.edge_ranges.len(), shape.edges().count());
+        assert!(topology.edge_ranges.iter().all(|r| r.count == 0));
+        assert!(!mesh
+            .primitives()
+            .iter()
+            .any(|p| p.primitive_type == PrimitiveType::LineList));
+    }
+
+    #[test]
+    fn cylinder_seam_suppressed_but_rims_kept_and_aligned() {
+        // Exactly the seam edge's ranges are empty; the two rim circles render.
+        // Alignment with `shape.edges()` positions is what edge picking relies on.
+        let shape = opencascade::primitives::Shape::cylinder_radius_height(0.5, 2.0);
+        let mesh = tessellate_occ_shape(&shape, 0.01, 1.0, true, false).unwrap();
+
+        let topology = mesh.topology().expect("topology");
+        let edges: Vec<_> = shape.edges().collect();
+        assert_eq!(topology.edge_ranges.len(), edges.len());
+
+        let seams = shape.seam_edges();
+        assert_eq!(seams.len(), 1);
+        // The explorer yields an edge once per incident face, so rendered
+        // occurrences are deduped by topology to count the actual rim circles.
+        let mut rendered: Vec<&opencascade::primitives::Edge> = Vec::new();
+        for (edge, range) in edges.iter().zip(&topology.edge_ranges) {
+            let suppressed =
+                edge.is_degenerated() || seams.iter().any(|s| s.is_same(edge));
+            assert_eq!(range.count == 0, suppressed);
+            if range.count > 0 && !rendered.iter().any(|r| r.is_same(edge)) {
+                rendered.push(edge);
+            }
+        }
+        assert_eq!(rendered.len(), 2, "both rim circles must render");
     }
 
     #[test]
