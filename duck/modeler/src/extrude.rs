@@ -112,9 +112,11 @@ pub fn execute_extrude(
 
     let (shape, remove_source) = if raw.fuse_into_source {
         // The pad fuses into the source body (the expensive boolean, done just once),
-        // and the fused result supersedes it.
+        // and the fused result supersedes it. Fuse a deep copy: the OCCT boolean
+        // may mutate its inputs, and the source must survive unchanged if the
+        // fuse or the tessellation below fails.
         let part = doc.get_part(raw.source_part).context("Source part not found")?;
-        (part.shape.union(&raw.prism).context("Failed to fuse pad into source")?.shape, true)
+        (part.shape.deep_copy().union(&raw.prism).context("Failed to fuse pad into source")?.shape, true)
     } else {
         // Region→solid or edge→face: the raw geometry is the result. A bare sketch
         // region is superseded; a solid whose edge was extruded is kept alongside.

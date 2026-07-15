@@ -34,11 +34,15 @@ fn compute_boolean(
 
     let target_part = doc.get_part(target_part_id)
         .context("Target part not found")?;
+    // Deep copies: OCCT booleans run destructively by default (tolerance bumps,
+    // added PCurves on the *inputs*), and Shape::clone shares B-Rep data — so
+    // operating on clones would corrupt the document's parts, which outlive a
+    // cancelled or failed operation.
     let tool_shapes: Vec<_> = tool_part_ids.iter()
-        .map(|&id| doc.get_part(id).map(|p| p.shape.clone()).context("Tool part not found"))
+        .map(|&id| doc.get_part(id).map(|p| p.shape.deep_copy()).context("Tool part not found"))
         .collect::<Result<_>>()?;
 
-    let mut shape = target_part.shape.clone();
+    let mut shape = target_part.shape.deep_copy();
     for tool in &tool_shapes {
         shape = match kind {
             BooleanKind::Subtract  => shape.subtract(tool)?.shape,
@@ -125,6 +129,28 @@ mod tests {
         let box_node = doc.node_for_part(box_part).unwrap();
         let sphere_node = doc.node_for_part(sphere_part).unwrap();
         (doc, box_node, sphere_node)
+    }
+
+    /// The boolean must run on deep copies: OCCT BOPs are destructive toward
+    /// their inputs, and the result reuses unsplit input faces — with shallow
+    /// clones a preview would corrupt the document's parts, surviving cancel.
+    #[test]
+    fn boolean_shares_no_faces_with_document_parts() {
+        let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
+
+        let result = compute_boolean(BooleanKind::Subtract, box_node, &[sphere_node], &doc)
+            .expect("subtract succeeds");
+
+        for node in [box_node, sphere_node] {
+            let part_id = doc.part_for_node(node).unwrap();
+            let source = &doc.get_part(part_id).unwrap().shape;
+            for face in source.faces() {
+                assert!(
+                    !result.shape.faces().any(|f| f.is_same(&face)),
+                    "boolean result shares a face with a source part"
+                );
+            }
+        }
     }
 
     #[test]
