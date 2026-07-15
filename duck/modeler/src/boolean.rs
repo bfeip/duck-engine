@@ -42,16 +42,50 @@ fn compute_boolean(
         .map(|&id| doc.get_part(id).map(|p| p.shape.deep_copy()).context("Tool part not found"))
         .collect::<Result<_>>()?;
 
+    let target_volume = target_part.shape.volume();
     let mut shape = target_part.shape.deep_copy();
+    let fuzz = interactive_fuzz(std::iter::once(&shape).chain(&tool_shapes));
     for tool in &tool_shapes {
-        shape = match kind {
-            BooleanKind::Subtract  => shape.subtract(tool)?.shape,
-            BooleanKind::Union     => shape.union(tool)?.shape,
-            BooleanKind::Intersect => shape.intersect(tool)?.shape,
+        let result = match kind {
+            BooleanKind::Subtract  => shape.subtract_with_fuzz(tool, fuzz)?,
+            BooleanKind::Union     => shape.union_with_fuzz(tool, fuzz)?,
+            BooleanKind::Intersect => shape.intersect_with_fuzz(tool, fuzz)?,
         };
+        if let Some(warnings) = &result.warnings {
+            log::warn!("boolean completed with warnings:\n{warnings}");
+        }
+        shape = result.shape;
+    }
+
+    // A subtract that removes nothing is either a non-intersecting tool or an
+    // OCCT classification failure on near-coincident geometry (the cut reports
+    // success but only imprints the section edge). Either way, fail instead of
+    // consuming the inputs for a no-op result.
+    if kind == BooleanKind::Subtract && target_volume - shape.volume() <= 1e-9 * target_volume {
+        anyhow::bail!(
+            "Subtract removed no material — the tools may not intersect the target, \
+             or the inputs sit in a degenerate near-coincident position (try nudging a tool)"
+        );
     }
 
     Ok(BooleanResult { shape: normalize_boolean_result(shape), target_part_id, tool_part_ids })
+}
+
+/// Additional boolean intersection tolerance for interactively placed parts.
+///
+/// Placement flows through f32 (snaps, tessellated pick positions), so inputs
+/// meant to coincide can sit a few f32 ulps of the coordinate magnitude apart
+/// — far beyond OCCT's 1e-7 default, in the near-coincidence band where the
+/// BOP misclassifies splits and a subtract silently removes nothing. Four
+/// ulps of the inputs' extent covers that placement error with margin.
+fn interactive_fuzz<'a>(shapes: impl Iterator<Item = &'a Shape>) -> f64 {
+    let extent = shapes
+        .map(|shape| {
+            let aabb = opencascade::bounding_box::aabb(shape);
+            aabb.min().abs().max_element().max(aabb.max().abs().max_element())
+        })
+        .fold(0.0f64, f64::max);
+    4.0 * f32::EPSILON as f64 * extent
 }
 
 /// A boolean result is wrapped in a TopoDS_COMPOUND even when it holds a
@@ -151,6 +185,77 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The interactive-placement failure mode: a default-parametrization
+    /// sphere whose seam sits a few microns off the box's top face plane (f32
+    /// snap error at mm scale) makes a plain OCCT cut "succeed" while removing
+    /// nothing. The extent-scaled fuzzy value must rescue the cut through the
+    /// full modeler path.
+    #[test]
+    fn subtract_rescues_near_coincident_sphere() {
+        use opencascade::primitives::{Face, Wire};
+
+        let scene = Arc::new(Mutex::new(Scene::new()));
+        let mut doc = Document::new(scene);
+        let options = CadTessellationOptions::default();
+
+        let wire = Wire::from_ordered_points([
+            dvec3(0.0, 0.0, 0.0),
+            dvec3(100.0, 0.0, 0.0),
+            dvec3(100.0, 0.0, 100.0),
+            dvec3(0.0, 0.0, 100.0),
+        ])
+        .expect("rectangle wire");
+        let world_box: Shape =
+            Face::from_wire(&wire).expect("rectangle face").extrude(dvec3(0.0, 50.0, 0.0)).into();
+        let box_volume = world_box.volume();
+        let box_part = doc.add_part("box", world_box, &options).expect("box tessellates");
+        let sphere_part = doc
+            .add_part(
+                "sphere",
+                Shape::sphere(20.0).at(dvec3(40.0, 50.0 + 4e-6, 60.0)).build(),
+                &options,
+            )
+            .expect("sphere tessellates");
+
+        let result = compute_boolean(
+            BooleanKind::Subtract,
+            doc.node_for_part(box_part).unwrap(),
+            &[doc.node_for_part(sphere_part).unwrap()],
+            &doc,
+        )
+        .expect("near-coincident subtract succeeds");
+
+        let removed = box_volume - result.shape.volume();
+        let expected = 2.0 / 3.0 * std::f64::consts::PI * 20.0f64.powi(3);
+        assert!(
+            (removed - expected).abs() < 5e-3 * expected,
+            "expected a half-ball cavity ({expected:.1}), removed {removed:.1}"
+        );
+    }
+
+    /// A subtract whose tools don't intersect the target must fail loudly
+    /// instead of consuming the inputs for a no-op result.
+    #[test]
+    fn subtract_removing_nothing_errors() {
+        let (mut doc, box_node, _) = doc_with_box_and_sphere();
+        let options = CadTessellationOptions::default();
+        let far_part = doc
+            .add_part("far sphere", Shape::sphere(1.0).at(dvec3(10.0, 10.0, 10.0)).build(), &options)
+            .expect("sphere tessellates");
+        let far_node = doc.node_for_part(far_part).unwrap();
+
+        let err = execute_boolean(
+            BooleanKind::Subtract,
+            box_node,
+            &[far_node],
+            &mut doc,
+            &options,
+        )
+        .expect_err("no-op subtract must fail");
+        assert!(err.to_string().contains("removed no material"), "unexpected error: {err}");
+        assert_eq!(doc.parts().count(), 3, "a failed boolean must not consume inputs");
     }
 
     #[test]

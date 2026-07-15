@@ -110,8 +110,15 @@ impl SphereOperator {
             .map(|s| center.distance(s.position).max(0.01))
             .unwrap_or(0.01);
 
+        // Skew the polar axis off every world axis: with the default Z-up
+        // parametrization, a face-snapped center leaves the seam and pole
+        // edges a sub-tolerance distance from an axis-aligned cutting plane,
+        // where OCCT boolean classification fails.
+        // TODO: a more complete solution derives the axis from the snap (e.g. the
+        // snapped face's normal) so their placement is deliberate.
         let world_shape = Shape::sphere(radius as f64)
             .at(dvec3(center.x as f64, center.y as f64, center.z as f64))
+            .axis(dvec3(1.0, 2.0, 3.0).normalize())
             .build();
 
         // Discard the preview node, then commit the world-space shape as a registered part.
