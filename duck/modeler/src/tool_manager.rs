@@ -9,6 +9,10 @@ use duck_engine_viewer::scene::Scene;
 use crate::cursor::Cursor3d;
 use crate::tool::{ModelingTool, ToolInfo};
 
+/// Opaque handle to a registered tool. Minted only by [`ToolManager::register`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ToolId(usize);
+
 /// The single dispatcher-registered operator for all modeling tools.
 /// 
 /// Forwards events to the active tool, if any. Registered once at startup, in front
@@ -33,9 +37,8 @@ impl Operator for ToolHost {
 /// Last-priority operator that turns unclaimed shortcut keys into deferred
 /// tool-activation requests, applied by [`ToolManager::update`].
 struct ToolSwitcher {
-    /// Shortcut key to index into [`ToolManager::tools`].
-    bindings: InputMap<usize>,
-    pending: Option<usize>,
+    bindings: InputMap<ToolId>,
+    pending: Option<ToolId>,
 }
 
 impl ToolSwitcher {
@@ -46,8 +49,8 @@ impl ToolSwitcher {
             return false;
         }
         match self.bindings.actions_for_key(&key_event.logical_key, modifiers).first() {
-            Some(&index) => {
-                self.pending = Some(index);
+            Some(&id) => {
+                self.pending = Some(id);
                 true
             }
             None => false,
@@ -77,8 +80,8 @@ impl Operator for ToolSwitcher {
 /// [`ModelingTool`] plus one [`ToolManager::register`] call.
 pub struct ToolManager {
     tools: Vec<Arc<Mutex<dyn ModelingTool>>>,
-    /// Index into `tools`; `None` means plain selection mode.
-    active: Option<usize>,
+    /// `None` means plain selection mode.
+    active: Option<ToolId>,
     host: Arc<Mutex<ToolHost>>,
     switcher: Arc<Mutex<ToolSwitcher>>,
     sel_op: Arc<Mutex<SelectionOperator>>,
@@ -110,33 +113,35 @@ impl ToolManager {
         dispatcher.push_back(Arc::clone(&self.switcher));
     }
 
-    pub fn register<T: ModelingTool>(&mut self, tool: T) {
+    pub fn register<T: ModelingTool>(&mut self, tool: T) -> ToolId {
+        let id = ToolId(self.tools.len());
         if let Some(c) = tool.info().shortcut {
             self.switcher.lock().unwrap().bindings.add(
                 InputBinding::Key { key: Key::Character(c), modifiers: Modifiers::default() },
-                self.tools.len(),
+                id,
             );
         }
         self.tools.push(Arc::new(Mutex::new(tool)));
+        id
     }
 
     /// Switches the active tool; `None` returns to plain selection.
     /// Re-activating the already active tool is a no-op.
-    pub fn activate(&mut self, index: Option<usize>) {
-        if index == self.active {
+    pub fn activate(&mut self, id: Option<ToolId>) {
+        if id == self.active {
             return;
         }
 
         // Locks must be taken strictly one at a time
         if let Some(old) = self.active {
-            self.tools[old].lock().unwrap().deactivate();
+            self.tools[old.0].lock().unwrap().deactivate();
         }
 
-        self.host.lock().unwrap().active = index.map(|i| Arc::clone(&self.tools[i]));
+        self.host.lock().unwrap().active = id.map(|i| Arc::clone(&self.tools[i.0]));
 
-        let mode = match index {
+        let mode = match id {
             Some(i) => {
-                let mut tool = self.tools[i].lock().unwrap();
+                let mut tool = self.tools[i.0].lock().unwrap();
                 tool.activate();
                 tool.selection_mode()
             }
@@ -144,39 +149,44 @@ impl ToolManager {
         };
         self.sel_op.lock().unwrap().mode = mode;
 
-        self.active = index;
+        self.active = id;
     }
 
     /// Per-frame update. Should be called every frame.
     pub fn update(&mut self, scene: &Arc<Mutex<Scene>>) {
         let requested = self.switcher.lock().unwrap().pending.take();
-        if let Some(index) = requested {
-            self.activate(Some(index));
+        if let Some(id) = requested {
+            self.activate(Some(id));
         }
 
-        if self.active.is_some_and(|i| self.tools[i].lock().unwrap().is_finished()) {
+        if self.active.is_some_and(|i| self.tools[i.0].lock().unwrap().is_finished()) {
             self.activate(None);
         }
 
         let target = self
             .active
-            .and_then(|i| self.tools[i].lock().unwrap().cursor_target());
+            .and_then(|i| self.tools[i.0].lock().unwrap().cursor_target());
         self.cursor.update(target, &mut scene.lock().unwrap());
     }
 
-    /// Palette snapshot for the `ui` module: `(info, selected)` per tool.
+    /// Palette snapshot for the `ui` module: `(id, info)` per tool.
     /// Taken without holding any tool lock across egui rendering.
-    pub fn palette_entries(&self) -> Vec<(ToolInfo, bool)> {
+    pub fn palette_entries(&self) -> Vec<(ToolId, ToolInfo)> {
         self.tools
             .iter()
             .enumerate()
-            .map(|(i, tool)| (tool.lock().unwrap().info(), self.active == Some(i)))
+            .map(|(i, tool)| (ToolId(i), tool.lock().unwrap().info()))
             .collect()
+    }
+
+    /// The active tool's id, or `None` in plain selection mode.
+    pub fn active_id(&self) -> Option<ToolId> {
+        self.active
     }
 
     /// The active tool, locked for panel rendering, or `None` in selection mode.
     pub fn active_tool(&self) -> Option<MutexGuard<'_, dyn ModelingTool>> {
-        self.active.map(|i| self.tools[i].lock().unwrap())
+        self.active.map(|i| self.tools[i.0].lock().unwrap())
     }
 }
 
@@ -239,12 +249,12 @@ mod tests {
         }
     }
 
-    fn switcher_with(bindings: &[(char, usize)]) -> ToolSwitcher {
+    fn switcher_with(bindings: &[(char, ToolId)]) -> ToolSwitcher {
         let mut map = InputMap::new();
-        for &(c, index) in bindings {
+        for &(c, id) in bindings {
             map.add(
                 InputBinding::Key { key: Key::Character(c), modifiers: Modifiers::default() },
-                index,
+                id,
             );
         }
         ToolSwitcher { bindings: map, pending: None }
@@ -252,21 +262,21 @@ mod tests {
 
     #[test]
     fn switcher_matches_bound_key() {
-        let mut switcher = switcher_with(&[('g', 0)]);
+        let mut switcher = switcher_with(&[('g', ToolId(0))]);
         assert!(switcher.handle_key(&key_press('g'), Modifiers::default()));
-        assert_eq!(switcher.pending, Some(0));
+        assert_eq!(switcher.pending, Some(ToolId(0)));
 
         // Case-insensitive via InputMap normalization.
         switcher.pending = None;
         assert!(switcher.handle_key(&key_press('G'), Modifiers::default()));
-        assert_eq!(switcher.pending, Some(0));
+        assert_eq!(switcher.pending, Some(ToolId(0)));
 
         assert!(!switcher.handle_key(&key_press('q'), Modifiers::default()));
     }
 
     #[test]
     fn switcher_ignores_repeat_release_and_modifiers() {
-        let mut switcher = switcher_with(&[('g', 0)]);
+        let mut switcher = switcher_with(&[('g', ToolId(0))]);
 
         let mut repeat = key_press('g');
         repeat.repeat = true;
@@ -283,14 +293,14 @@ mod tests {
     }
 
     #[test]
-    fn register_binds_shortcut_to_index() {
+    fn register_binds_shortcut_to_id() {
         let mut manager = ToolManager::new(Arc::new(Mutex::new(SelectionOperator::new())));
         manager.register(MockTool::new("plain", None));
         manager.register(MockTool::new("keyed", Some('g')));
 
         let mut switcher = manager.switcher.lock().unwrap();
         assert!(switcher.handle_key(&key_press('g'), Modifiers::default()));
-        assert_eq!(switcher.pending, Some(1));
+        assert_eq!(switcher.pending, Some(ToolId(1)));
     }
 
     #[test]
@@ -314,8 +324,8 @@ mod tests {
         let mut manager = ToolManager::new(Arc::new(Mutex::new(SelectionOperator::new())));
         let tool = MockTool::new("keyed", Some('g'));
         let deactivations = Arc::clone(&tool.deactivations);
-        manager.register(tool);
-        manager.activate(Some(0));
+        let id = manager.register(tool);
+        manager.activate(Some(id));
 
         let scene = Arc::new(Mutex::new(Scene::new()));
         manager.switcher.lock().unwrap().handle_key(&key_press('g'), Modifiers::default());
