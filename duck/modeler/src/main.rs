@@ -1,5 +1,6 @@
 mod boolean;
 mod cursor;
+mod delete;
 mod document;
 mod extrude;
 mod grid;
@@ -42,6 +43,7 @@ use crate::operators::{
     CylinderOperator, ExtrudeOperator, LineOperator, LoftOperator, RectangleOperator,
     SphereOperator, TransformTool,
 };
+use crate::delete::DeleteOperator;
 use crate::notifications::Notifications;
 use crate::tool_manager::ToolManager;
 use crate::ui::{ModelerUi, UiAction};
@@ -79,6 +81,7 @@ struct ViewerState<'a> {
     document: Arc<Mutex<Document>>,
     notifications: Notifications,
     tools: ToolManager,
+    delete_op: Arc<Mutex<DeleteOperator>>,
     /// The construction grid currently installed in the scene; replaced when
     /// the construction plane or grid settings change.
     grid: Option<grid::Grid>,
@@ -140,6 +143,11 @@ impl ViewerState<'static> {
 
         let mut tools = ToolManager::new(sel_op);
         tools.install(viewer.dispatcher_mut());
+
+        // Behind the tool host so an active tool keeps any key it consumes.
+        let delete_op = Arc::new(Mutex::new(DeleteOperator::new()));
+        viewer.dispatcher_mut().push_back(Arc::clone(&delete_op));
+
         tools.register(TransformTool::new(TransformMode::Translate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(TransformTool::new(TransformMode::Rotate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(TransformTool::new(TransformMode::Scale, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
@@ -170,6 +178,7 @@ impl ViewerState<'static> {
             document,
             notifications,
             tools,
+            delete_op,
             grid: None,
         }
     }
@@ -357,6 +366,17 @@ impl<'a> ViewerState<'a> {
                 });
         });
         self.egui_winit.handle_platform_output(&self.window, full_output.platform_output.clone());
+
+        // A delete request aborts any in-progress tool (deactivate tears down
+        // its preview and restores hidden sources) before the parts go away.
+        if self.delete_op.lock().unwrap().take_pending() {
+            self.tools.activate(None);
+            let n = delete::delete_selected_parts(&self.document, self.viewer.selection_mut());
+            if n > 0 {
+                let plural = if n == 1 { "" } else { "s" };
+                self.notifications.info(format!("Deleted {n} part{plural}"));
+            }
+        }
 
         // After egui so a panel-driven finish (e.g. boolean Apply) cedes back
         // to selection in the same frame.

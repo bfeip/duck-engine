@@ -104,12 +104,13 @@ impl Document {
         Ok(id)
     }
 
-    /// Remove a part from the CAD store, the mapping, and the scene.
+    /// Remove a part from the CAD store, the mapping, and the scene,
+    /// including the node's now possibly orphaned mesh and materials.
     pub fn remove_part(&mut self, id: PartId) {
         self.parts.retain(|p| p.id != id);
         if let Some(node) = self.part_to_node.remove(&id) {
             self.node_to_part.remove(&node);
-            self.scene.lock().unwrap().remove_node(node);
+            self.scene.lock().unwrap().cleanup_node(node);
         }
     }
 
