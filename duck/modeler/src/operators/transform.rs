@@ -205,9 +205,9 @@ struct FaceTweak {
     preview: PreviewSession,
     /// The face locked at drag start.
     active_target: Option<FaceTarget>,
-    /// Pivot/frame resolved from the last-targeted face, cached because gizmo
-    /// syncing runs every update.
-    resolved: Option<(FaceTarget, Point3, Quaternion)>,
+    /// Pivot/frame resolved from the last-targeted face (`None` when the face
+    /// has no usable pivot), cached because gizmo syncing runs every update.
+    resolved: Option<(FaceTarget, Option<(Point3, Quaternion)>)>,
     document: Arc<Mutex<Document>>,
     notifications: Notifications,
 }
@@ -229,22 +229,31 @@ impl FaceTweak {
     /// Pivot (face centroid) and frame (local Z = outward face normal) for
     /// `target`, resolved from the B-Rep and cached.
     fn resolve(&mut self, target: FaceTarget) -> Option<(Point3, Quaternion)> {
-        if let Some((cached, pivot, frame)) = self.resolved
+        if let Some((cached, resolved)) = self.resolved
             && cached == target {
-                return Some((pivot, frame));
+                return resolved;
             }
-        let doc = self.document.lock().unwrap();
-        let face = doc.face_subshape(target.node, target.face_index)?;
-        // `normal_at_center` returns the surface's parametric normal, which
-        // points inward for Reversed faces — flip it so local Z points out.
-        let sign = if face.orientation() == FaceOrientation::Forward { 1.0 } else { -1.0 };
-        let n = face.normal_at_center();
-        let normal = (Vector3::new(n.x as f32, n.y as f32, n.z as f32) * sign).normalize();
-        let c = face.center_of_mass();
-        let pivot = Point3::new(c.x as f32, c.y as f32, c.z as f32);
-        let frame = Quaternion::from_arc(Vector3::unit_z(), normal, None);
-        self.resolved = Some((target, pivot, frame));
-        Some((pivot, frame))
+        let resolved = (|| {
+            let doc = self.document.lock().unwrap();
+            let face = doc.face_subshape(target.node, target.face_index)?;
+            // `normal_at_center` returns the surface's parametric normal, which
+            // points inward for Reversed faces — flip it so local Z points out.
+            let sign = if face.orientation() == FaceOrientation::Forward { 1.0 } else { -1.0 };
+            let n = match face.normal_at_center() {
+                Ok(n) => n,
+                Err(e) => {
+                    log::warn!("Tweak target has no usable pivot: {e}");
+                    return None;
+                }
+            };
+            let normal = (Vector3::new(n.x as f32, n.y as f32, n.z as f32) * sign).normalize();
+            let c = face.center_of_mass();
+            let pivot = Point3::new(c.x as f32, c.y as f32, c.z as f32);
+            let frame = Quaternion::from_arc(Vector3::unit_z(), normal, None);
+            Some((pivot, frame))
+        })();
+        self.resolved = Some((target, resolved));
+        resolved
     }
 
     /// Lock onto `target` and begin a transform: ghost the face and activate

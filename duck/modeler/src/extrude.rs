@@ -52,7 +52,9 @@ impl ExtrudeFrame {
                 // `normal_at_center` returns the surface's parametric normal, which points
                 // inward for Reversed faces — flip it so the pad grows outward.
                 let sign = if face.orientation() == FaceOrientation::Forward { 1.0 } else { -1.0 };
-                let n = face.normal_at_center();
+                let n = face
+                    .normal_at_center()
+                    .context("Selected face has no well-defined extrusion direction")?;
                 let axis = Vector3::new(n.x as f32, n.y as f32, n.z as f32) * sign;
                 Ok(Self { origin: dvec3_to_point(face.center_of_mass()), axis: axis.normalize() })
             }
