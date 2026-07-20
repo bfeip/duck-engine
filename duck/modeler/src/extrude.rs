@@ -125,6 +125,9 @@ pub fn execute_extrude(
         (raw.prism, !raw.source_is_solid)
     };
 
+    // One undo step covers the added extrusion and the superseded source.
+    let mut doc = doc.undo_scope("Extrude");
+
     // Tessellates atomically — if this fails, nothing is changed.
     doc.add_part("Extrusion".to_owned(), shape, options)
         .context("Failed to tessellate extrusion")?;

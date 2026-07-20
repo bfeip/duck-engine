@@ -111,6 +111,9 @@ pub fn execute_boolean(
 ) -> Result<()> {
     let computed = compute_boolean(kind, target, tools, doc)?;
 
+    // One undo step covers the added result and the removed inputs.
+    let mut doc = doc.undo_scope("Boolean");
+
     // Tessellates atomically — if this fails, nothing is changed.
     doc.add_part("Boolean result".to_owned(), computed.shape, options)
         .context("Failed to tessellate boolean result")?;
@@ -274,5 +277,30 @@ mod tests {
         let part = doc.parts().next().expect("boolean leaves one part");
         assert_eq!(doc.parts().count(), 1, "inputs are consumed");
         assert_eq!(part.kind(), PartKind::Solid, "single-solid compound must be unwrapped");
+    }
+
+    #[test]
+    fn boolean_is_one_undo_step() {
+        let (mut doc, box_node, sphere_node) = doc_with_box_and_sphere();
+
+        execute_boolean(
+            BooleanKind::Subtract,
+            box_node,
+            &[sphere_node],
+            &mut doc,
+            &CadTessellationOptions::default(),
+        )
+        .expect("subtract succeeds");
+        assert_eq!(doc.undo_label(), Some("Boolean"));
+
+        doc.undo().expect("undo succeeds");
+        let names: Vec<_> = doc.parts().map(|p| p.name.as_str()).collect();
+        assert_eq!(names.len(), 2, "one undo restores both inputs");
+        assert!(names.contains(&"box") && names.contains(&"sphere"));
+        assert_eq!(doc.node_for_part(doc.part_for_node(box_node).unwrap()), Some(box_node));
+
+        doc.redo().expect("redo succeeds");
+        assert_eq!(doc.parts().count(), 1, "one redo replays the boolean");
+        assert_eq!(doc.parts().next().unwrap().name, "Boolean result");
     }
 }

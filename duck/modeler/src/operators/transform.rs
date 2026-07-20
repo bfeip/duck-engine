@@ -105,6 +105,8 @@ impl TransformTool {
     fn bake_committed(&mut self, nodes: &[NodeId], ctx: &mut EventContext) {
         let options = self.construction_options.borrow().geometry_options.clone();
         let mut doc = self.document.lock().unwrap();
+        // One undo step covers a multi-select bake.
+        let mut doc = doc.undo_scope("Transform");
         for &node in nodes {
             let Some(part) = doc.part_for_node(node) else { continue };
             // Stay in common's matrix type; the OCCT array conversion happens

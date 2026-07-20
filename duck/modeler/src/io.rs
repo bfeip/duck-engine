@@ -33,6 +33,8 @@ pub fn import_cad_dialog(
 
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported").to_string();
     let mut document = document.lock().unwrap();
+    // One undo step covers every part in the file.
+    let mut document = document.undo_scope(format!("Import {stem}"));
     for (i, part) in parts.into_iter().enumerate() {
         let mut options = options.clone();
         if let Some(color) = part.color {

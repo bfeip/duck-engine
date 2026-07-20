@@ -82,7 +82,8 @@ pub fn execute_loft(
     let wires = resolve_profiles(doc, profiles)?;
     let shape = build_loft(&wires, kind);
     // Tessellates atomically — if this fails (e.g. degenerate solid loft), nothing changes.
-    doc.add_part("Loft".to_owned(), shape, options)
+    doc.undo_scope("Loft")
+        .add_part("Loft".to_owned(), shape, options)
         .context("Failed to tessellate loft")?;
     Ok(())
 }

@@ -86,6 +86,8 @@ pub fn delete_selected_parts(document: &Mutex<Document>, selection: &mut Selecti
         .collect();
 
     let mut document = document.lock().unwrap();
+    // One undo step covers the whole multi-selection.
+    let mut document = document.undo_scope("Delete");
     let mut deleted = 0;
     for node in nodes {
         let Some(part) = document.part_for_node(node) else { continue };
@@ -214,5 +216,24 @@ mod tests {
 
         assert_eq!(delete_selected_parts(&doc, &mut selection), 0);
         assert!(selection.is_node_selected(unmapped), "unmapped selection is left untouched");
+    }
+
+    #[test]
+    fn multi_delete_is_one_undo_step() {
+        let (doc, parts) = doc_with_boxes(3);
+
+        let mut selection = SelectionManager::new();
+        for &(_, node) in &parts {
+            selection.add(SelectionItem::Node(node));
+        }
+        assert_eq!(delete_selected_parts(&doc, &mut selection), 3);
+
+        let mut doc = doc.lock().unwrap();
+        assert_eq!(doc.undo_label(), Some("Delete"));
+        doc.undo().expect("undo succeeds");
+        assert_eq!(doc.parts().count(), 3, "one undo restores the whole selection");
+        for &(part, node) in &parts {
+            assert_eq!(doc.node_for_part(part), Some(node));
+        }
     }
 }

@@ -4,6 +4,7 @@ mod delete;
 mod document;
 mod extrude;
 mod grid;
+mod history;
 mod io;
 mod loft;
 mod notifications;
@@ -13,6 +14,7 @@ mod snap;
 mod tool;
 mod tool_manager;
 mod ui;
+mod undo;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -45,6 +47,7 @@ use crate::operators::{
 };
 use crate::delete::DeleteOperator;
 use crate::notifications::Notifications;
+use crate::undo::{UndoAction, UndoRedoOperator};
 use crate::tool_manager::ToolManager;
 use crate::ui::{ModelerUi, UiAction};
 
@@ -81,7 +84,10 @@ struct ViewerState<'a> {
     document: Arc<Mutex<Document>>,
     notifications: Notifications,
     tools: ToolManager,
+
     delete_op: Arc<Mutex<DeleteOperator>>,
+    undo_op: Arc<Mutex<UndoRedoOperator>>,
+
     /// The construction grid currently installed in the scene; replaced when
     /// the construction plane or grid settings change.
     grid: Option<grid::Grid>,
@@ -147,6 +153,8 @@ impl ViewerState<'static> {
         // Behind the tool host so an active tool keeps any key it consumes.
         let delete_op = Arc::new(Mutex::new(DeleteOperator::new()));
         viewer.dispatcher_mut().push_back(Arc::clone(&delete_op));
+        let undo_op = Arc::new(Mutex::new(UndoRedoOperator::new()));
+        viewer.dispatcher_mut().push_back(Arc::clone(&undo_op));
 
         tools.register(TransformTool::new(TransformMode::Translate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(TransformTool::new(TransformMode::Rotate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
@@ -179,6 +187,7 @@ impl ViewerState<'static> {
             notifications,
             tools,
             delete_op,
+            undo_op,
             grid: None,
         }
     }
@@ -335,6 +344,30 @@ impl<'a> ViewerState<'a> {
         }
     }
 
+    /// Applies a deferred undo/redo request: cancels any in-progress tool
+    /// (deactivation tears down previews and restores hidden sources), clears
+    /// the selection — re-tessellation invalidates sub-geometry indices and
+    /// undo may remove selected nodes outright — then replays the step.
+    fn apply_undo(&mut self, action: UndoAction) {
+        self.tools.activate(None);
+        self.viewer.selection_mut().clear();
+        let (result, verb) = match action {
+            UndoAction::Undo => (self.document.lock().unwrap().undo(), "Undid"),
+            UndoAction::Redo => (self.document.lock().unwrap().redo(), "Redid"),
+        };
+        match result {
+            Ok(Some(label)) => self.notifications.info(format!("{verb} {label}")),
+            Ok(None) => {
+                let noun = if action == UndoAction::Undo { "undo" } else { "redo" };
+                self.notifications.info(format!("Nothing to {noun}"));
+            }
+            Err(e) => {
+                log::error!("{verb} failed: {e:#}");
+                self.notifications.error(format!("{verb} failed: {e}"));
+            }
+        }
+    }
+
     /// Returns true when the user asked to quit via the menu.
     fn handle_redraw(&mut self) -> bool {
         self.viewer.update();
@@ -378,6 +411,11 @@ impl<'a> ViewerState<'a> {
             }
         }
 
+        let pending_undo = self.undo_op.lock().unwrap().take_pending();
+        if let Some(action) = pending_undo {
+            self.apply_undo(action);
+        }
+
         // After egui so a panel-driven finish (e.g. boolean Apply) cedes back
         // to selection in the same frame.
         self.tools.update(&self.viewer.scene());
@@ -396,6 +434,8 @@ impl<'a> ViewerState<'a> {
                         log::error!("CAD export failed: {e:#}");
                     }
                 }
+                UiAction::Undo => self.apply_undo(UndoAction::Undo),
+                UiAction::Redo => self.apply_undo(UndoAction::Redo),
                 UiAction::ConstructionChanged => self.rebuild_grid(),
                 UiAction::Quit => return true,
             }

@@ -29,6 +29,8 @@ use tool_panel::ToolPanel;
 pub enum UiAction {
     ImportCad,
     ExportCad,
+    Undo,
+    Redo,
     /// The construction plane or grid settings changed; the grid visuals must
     /// be rebuilt to match.
     ConstructionChanged,
@@ -57,7 +59,14 @@ impl ModelerUi {
         notifications: &Notifications,
     ) -> Vec<UiAction> {
         let mut actions = Vec::new();
-        self.menu.show(ctx, &mut actions);
+        let (undo_label, redo_label) = {
+            let document = document.lock().unwrap();
+            (
+                document.undo_label().map(str::to_owned),
+                document.redo_label().map(str::to_owned),
+            )
+        };
+        self.menu.show(ctx, undo_label.as_deref(), redo_label.as_deref(), &mut actions);
         self.palette.show(ctx, tools);
         {
             // The document lock must be released before drawing the tool panel,
