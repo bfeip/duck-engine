@@ -27,7 +27,6 @@ use crate::common::{
     rotate_position_about_pivot, scale_position_about_pivot_local, scale_position_about_pivot_world,
     Transform,
 };
-use crate::common::Axis;
 
 use crate::event::{AppEvent, DeviceEvent, Event, EventContext};
 use crate::gizmo::GizmoState;
@@ -144,7 +143,7 @@ impl TransformOperator {
         };
 
         let scale_factor = if mode == TransformMode::Scale {
-            Some(self.interaction.scale())
+            Some(self.interaction.scale(&camera, ctx.size))
         } else {
             None
         };
@@ -499,11 +498,7 @@ impl Operator for TransformOperator {
                     if !self.is_active() {
                         return false;
                     }
-                    self.interaction.set_axis_constraint(match axis {
-                        Axis::X => AxisConstraint::WorldX,
-                        Axis::Y => AxisConstraint::WorldY,
-                        Axis::Z => AxisConstraint::WorldZ,
-                    });
+                    self.interaction.constrain_to_handle_axis(axis);
                     let mut scene = ctx.scene.lock().unwrap();
                     self.gizmo.set_highlight(Some(axis), &mut scene);
                     self.annotations.update(&self.interaction, &mut scene);

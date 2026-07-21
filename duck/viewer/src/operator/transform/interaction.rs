@@ -143,6 +143,9 @@ pub struct TransformInteraction {
     /// Model radius for scaling sensitivity.
     model_radius: f32,
 
+    /// Whether the active drag came from grabbing a gizmo handle.
+    directional: bool,
+
     pub bindings: InputMap<TransformAction>,
 }
 
@@ -202,6 +205,7 @@ impl TransformInteraction {
             pivot_world: Point3::origin(),
             frame_rotation: Quaternion::new(1.0, 0.0, 0.0, 0.0),
             model_radius: 1.0,
+            directional: false,
             bindings,
         }
     }
@@ -227,6 +231,7 @@ impl TransformInteraction {
         self.active = true;
         self.axis_constraint = AxisConstraint::None;
         self.accumulated_delta = (0.0, 0.0);
+        self.directional = false;
     }
 
     /// Deactivate and clear the constraint and accumulated movement (after a
@@ -235,6 +240,7 @@ impl TransformInteraction {
         self.active = false;
         self.axis_constraint = AxisConstraint::None;
         self.accumulated_delta = (0.0, 0.0);
+        self.directional = false;
     }
 
     /// Add mouse movement to the accumulated drag.
@@ -261,6 +267,16 @@ impl TransformInteraction {
 
     pub fn set_axis_constraint(&mut self, constraint: AxisConstraint) {
         self.axis_constraint = constraint;
+    }
+
+    /// Constrain to a gizmo handle's world axis and mark the drag directional
+    pub fn constrain_to_handle_axis(&mut self, axis: Axis) {
+        self.axis_constraint = match axis {
+            Axis::X => AxisConstraint::WorldX,
+            Axis::Y => AxisConstraint::WorldY,
+            Axis::Z => AxisConstraint::WorldZ,
+        };
+        self.directional = true;
     }
 
     /// Cycles the axis constraint for a given axis key.
@@ -344,12 +360,35 @@ impl TransformInteraction {
     }
 
     /// Compute the scale factor based on mouse movement and constraints.
-    pub fn scale(&self) -> Vector3 {
+    /// `size` is the viewport size in pixels.
+    pub fn scale(&self, camera: &PositionedCamera, size: (u32, u32)) -> Vector3 {
         // 0.5% change per pixel
         let sensitivity = 0.005;
-        let factor = 1.0 + self.accumulated_delta.0 * sensitivity;
+
+        // For a handle drag, project the handle's world axis to screen space and
+        // measure the drag along it, so dragging toward the handle grows scale
+        // and away shrinks it. Otherwise (keyboard/no-handle) use horizontal drag.
+        let (dx, dy) = self.accumulated_delta;
+        let magnitude = match (self.directional, self.constraint_axis()) {
+            (true, Some(axis)) => {
+                let (w, h) = size;
+                let p0 = camera.project_point_screen(self.pivot_world, w, h);
+                let p1 = camera.project_point_screen(self.pivot_world + axis, w, h);
+                let (ex, ey) = (p1.x - p0.x, p1.y - p0.y);
+                let len = (ex * ex + ey * ey).sqrt();
+                if len > 1e-3 {
+                    // Signed drag along the handle, in pixels.
+                    (dx * ex + dy * ey) / len
+                } else {
+                    // Axis ~parallel to the view direction: fall back to horizontal.
+                    dx
+                }
+            }
+            _ => dx,
+        };
+
         // Clamp to prevent negative or zero scale
-        let factor = factor.max(0.01);
+        let factor = (1.0 + magnitude * sensitivity).max(0.01);
 
         match self.axis_constraint {
             AxisConstraint::None => Vector3::new(factor, factor, factor),
@@ -370,7 +409,7 @@ impl TransformInteraction {
             TransformMode::Translate => Matrix4::from_translation(self.translation(camera, size)),
             TransformMode::Rotate => to_pivot * Matrix4::from(self.rotation(camera)) * from_pivot,
             TransformMode::Scale => {
-                let s = self.scale();
+                let s = self.scale(camera, size);
                 let scale = Matrix4::from_nonuniform_scale(s.x, s.y, s.z);
                 let scale = if self.axis_constraint.is_local() {
                     let frame = Matrix4::from(self.frame_rotation);
