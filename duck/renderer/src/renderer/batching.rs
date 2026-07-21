@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use duck_engine_common::{
-    EuclideanSpace, InnerSpace, Matrix3, Matrix4, Point3, SquareMatrix, Vector3,
-};
+use duck_engine_common::{Matrix3, Matrix4, Point3, SquareMatrix};
 
 use crate::scene::{
     AlphaMode, DisplayBehavior, FaceMaterialId, Instance, InstanceId, Light, LineMaterialId,
@@ -172,23 +170,6 @@ pub(crate) struct SceneFrameData {
     pub lights: Vec<ResolvedLight>,
 }
 
-/// Resolves a node's own display behavior against the inherited (parent)
-/// behavior: a non-`Scene` layer or a set screen-space flag overrides downward,
-/// otherwise the parent's value is carried.
-fn inherit_display(parent: DisplayBehavior, node: DisplayBehavior) -> DisplayBehavior {
-    DisplayBehavior {
-        // A node that opts into screen-sizing supplies its own size; otherwise
-        // inherit the parent's.
-        screen_size: node.screen_size.or(parent.screen_size),
-        screen_facing: parent.screen_facing || node.screen_facing,
-        layer: if node.layer != RenderLayer::Scene {
-            node.layer
-        } else {
-            parent.layer
-        },
-    }
-}
-
 fn collect_scene_data_recursive(
     scene: &Scene,
     node_id: NodeId,
@@ -218,7 +199,7 @@ fn collect_scene_data_recursive(
         return;
     }
 
-    let display = inherit_display(parent_display, node.display());
+    let display = DisplayBehavior::inherit(parent_display, node.display());
 
     match node.payload() {
         NodePayload::Instance(instance_id) => {
@@ -492,15 +473,6 @@ where
     (matched, unmatched)
 }
 
-/// Normalizes `v`, returning `fallback` if `v` is (near) zero-length.
-fn normalize_or(v: Vector3, fallback: Vector3) -> Vector3 {
-    if v.magnitude2() > f32::EPSILON {
-        v.normalize()
-    } else {
-        fallback
-    }
-}
-
 /// Overwrites the effective transform of every instance that requests a
 /// camera-dependent presentation (`screen_size` and/or `screen_facing`).
 /// Ordinary instances are left untouched — their effective transform already
@@ -512,84 +484,14 @@ fn apply_screen_space_transforms(
 ) {
     for batch in batches.iter_mut() {
         for inst in batch.instances.iter_mut() {
-            if inst.display.screen_size.is_none() && !inst.display.screen_facing {
+            if !inst.display.is_screen_space() {
                 continue;
             }
-            let m = screen_space_matrix(inst.world_transform, inst.display, camera, viewport);
+            let m = inst.display.effective_transform(inst.world_transform, camera, viewport);
             inst.effective_transform = m;
             inst.effective_normal_matrix = common::compute_normal_matrix(&m);
         }
     }
-}
-
-/// Builds the camera-dependent model matrix for a screen-space instance.
-///
-/// Billboarding (`screen_facing`) replaces the rotation basis with one that
-/// faces the camera; screen-sizing (`screen_size`) replaces the per-axis scale
-/// with a uniform constant-pixel-size scale. The node origin (translation) is
-/// always preserved.
-fn screen_space_matrix(
-    world: Matrix4,
-    display: DisplayBehavior,
-    camera: &PositionedCamera,
-    viewport: (u32, u32),
-) -> Matrix4 {
-    // Node origin in world space (translation column of the world transform).
-    let p = Point3::from_vec(world.w.truncate());
-
-    // Rotation basis (orthonormal columns: right, up, forward).
-    let (right, up, fwd) = if display.screen_facing {
-        // Billboard: face the camera, discarding the node's authored rotation.
-        // Falls back to the camera forward if the node sits on the eye.
-        let fwd = normalize_or(camera.eye - p, -camera.forward());
-        let right = camera.up.cross(fwd).normalize();
-        let up = fwd.cross(right);
-        (right, up, fwd)
-    } else {
-        // Keep the authored orientation, orthonormalized so the basis carries
-        // rotation only (scale is reintroduced below).
-        (
-            normalize_or(world.x.truncate(), Vector3::unit_x()),
-            normalize_or(world.y.truncate(), Vector3::unit_y()),
-            normalize_or(world.z.truncate(), Vector3::unit_z()),
-        )
-    };
-
-    // Per-axis scale.
-    let scale = match display.screen_size {
-        // Constant pixel size: uniform scale on every axis. Parent scale is
-        // intentionally discarded — that is the point of constant pixel size.
-        Some(target_px) => {
-            let s = screen_size_scale(p, target_px, camera, viewport);
-            Vector3::new(s, s, s)
-        }
-        // Preserve the authored world scale (the world column lengths).
-        None => Vector3::new(
-            world.x.truncate().magnitude(),
-            world.y.truncate().magnitude(),
-            world.z.truncate().magnitude(),
-        ),
-    };
-
-    Matrix4::from_cols(
-        (right * scale.x).extend(0.0),
-        (up * scale.y).extend(0.0),
-        (fwd * scale.z).extend(0.0),
-        p.to_vec().extend(1.0),
-    )
-}
-
-/// Uniform world-space scale that makes a unit-extent geometry span `target_px`
-/// pixels on screen, regardless of camera distance.
-fn screen_size_scale(
-    p: Point3,
-    target_px: f32,
-    camera: &PositionedCamera,
-    viewport: (u32, u32),
-) -> f32 {
-    let depth = (p - camera.eye).dot(camera.forward()).max(camera.znear);
-    let depth_size = camera.world_size_per_pixel(depth, viewport.1);
-    depth_size * target_px
 }
 
 /// Sub-geometry highlight draw calls for the current frame, split into the
@@ -709,9 +611,9 @@ impl DrawData {
     /// - Sorts for transparency (opaque first, transparent back-to-front)
     /// - Partitions highlighted instances if a non-empty highlight is provided
     ///
-    /// `camera` and `viewport` are used to resolve transparency ordering and the
-    /// (currently identity) camera-dependent screen-space adjustments; see
-    /// `duck/docs/screen-space-presentation.md`.
+    /// `camera` and `viewport` resolve transparency ordering and the
+    /// camera-dependent screen-space adjustments (screen-sizing / billboarding),
+    /// which are computed by [`DisplayBehavior::effective_transform`].
     pub(crate) fn new(
         scene: &Scene,
         camera: &PositionedCamera,
@@ -875,7 +777,9 @@ impl DrawData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_common::{Deg, Matrix4, Quaternion, Rotation3, SquareMatrix, Vector3};
+    use duck_engine_common::{
+        Deg, EuclideanSpace, InnerSpace, Matrix4, Quaternion, Rotation3, SquareMatrix, Vector3,
+    };
     use duck_engine_scene::NodeFlags;
     use crate::scene::common::EPSILON;
 

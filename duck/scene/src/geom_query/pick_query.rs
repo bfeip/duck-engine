@@ -1,7 +1,9 @@
 use duck_engine_common::{Matrix4, SquareMatrix};
 
 use crate::common::Aabb;
-use crate::{InstanceId, Mesh, NodeFlags, NodeId, NodePayload, Scene};
+use crate::{
+    DisplayBehavior, InstanceId, Mesh, NodeFlags, NodeId, NodePayload, PositionedCamera, Scene,
+};
 
 /// A query that can pick objects by traversing the scene tree.
 ///
@@ -46,16 +48,43 @@ pub trait PickQuery {
     );
 }
 
+/// Camera context that makes picking agree with a screen-space render.
+///
+/// Screen-sized / screen-facing nodes ([`DisplayBehavior::is_screen_space`]) are
+/// drawn at a camera-dependent effective transform, not their authored world
+/// transform. Supplying a `PickView` lets the traversal test against that same
+/// effective transform so picks land where the geometry visually appears.
+/// Without one (`pick_all`), screen-space nodes are picked at their authored
+/// world transform.
+pub struct PickView<'a> {
+    pub camera: &'a PositionedCamera,
+    /// Viewport size in pixels (width, height).
+    pub viewport: (u32, u32),
+}
+
 /// Picks all instances in the scene that match the given query.
 ///
 /// Walks the scene tree from all root nodes, using cached bounding boxes
 /// for efficient culling. The query is transformed to local space for each
-/// instance test.
+/// instance test. Screen-space nodes are tested at their authored world
+/// transform; use [`pick_all_with_view`] to test them at their on-screen
+/// (camera-dependent) placement instead.
 pub fn pick_all<Q: PickQuery>(query: &Q, scene: &Scene) -> Vec<Q::Result> {
+    pick_all_with_view(query, scene, None)
+}
+
+/// Like [`pick_all`], but resolves screen-space nodes against `view` so picking
+/// matches the rendered (camera-dependent) placement of screen-sized /
+/// screen-facing geometry.
+pub fn pick_all_with_view<Q: PickQuery>(
+    query: &Q,
+    scene: &Scene,
+    view: Option<&PickView>,
+) -> Vec<Q::Result> {
     let mut results = Vec::new();
 
     for &root_id in scene.root_nodes() {
-        pick_node(query, root_id, scene, &mut results);
+        pick_node(query, root_id, scene, DisplayBehavior::default(), view, &mut results);
     }
 
     results
@@ -66,6 +95,8 @@ fn pick_node<Q: PickQuery>(
     query: &Q,
     node_id: NodeId,
     scene: &Scene,
+    parent_display: DisplayBehavior,
+    view: Option<&PickView>,
     results: &mut Vec<Q::Result>,
 ) {
     let Some(node) = scene.get_node(node_id) else { return };
@@ -74,40 +105,86 @@ fn pick_node<Q: PickQuery>(
         return;
     }
 
+    // Resolve this node's presentation against the inherited one so screen-space
+    // flags set on a group root reach their descendants.
+    let display = DisplayBehavior::inherit(parent_display, node.display());
+
+    // A screen-space node is drawn at a camera-dependent effective transform. We
+    // only honor that when a view is supplied; otherwise fall back to the
+    // authored world transform.
+    let screen_space = view.is_some() && display.is_screen_space();
+
     // Broad phase: skip entire subtree if bounds are unavailable or don't intersect.
     // nodes_bounding returns None for both "no geometry" and "all geometry still streaming",
     // both of which mean there is nothing pickable here yet.
-    let Some(bounds) = scene.nodes_bounding(node_id).bounds else { return };
-    if !query.might_intersect_bounds(&bounds) {
-        return;
+    //
+    // Skipped for screen-space subtrees: their cached world-space bounds are
+    // authored-size and would false-negative once the effective (on-screen) scale
+    // exceeds the authored one.
+    //
+    // TODO: This means that the odd case of a screen-space node that is parented to a
+    // non-screen-space node might be incorrectly skipped — though generally that does
+    // not happen and so the case isn't considered here.
+    if !screen_space {
+        let Some(bounds) = scene.nodes_bounding(node_id).bounds else { return };
+        if !query.might_intersect_bounds(&bounds) {
+            return;
+        }
     }
 
-    // Narrow phase: If this node has an instance, test it.
-    // Missing instance/mesh/transform just means the resource hasn't arrived yet;
-    // skip the narrow phase but still recurse to children.
-    if let NodePayload::Instance(instance_id) = node.payload() {
-        if let Some(instance) = scene.get_instance(*instance_id) {
-            if let Some(mesh) = scene.get_mesh(instance.mesh()) {
-                if let Some(world_transform) = scene.nodes_transform(node_id) {
-                    if let Some(world_to_local) = world_transform.invert() {
-                        let local_query = query.transform(&world_to_local);
-                        local_query.collect_mesh_hits(
-                            mesh,
-                            node_id,
-                            *instance_id,
-                            &world_transform,
-                            results,
-                        );
-                    }
-                }
-            }
-        }
+    // Narrow phase: test this node's instance (if any). A missing instance/mesh/
+    // transform just means the resource hasn't arrived yet; skip it but still
+    // recurse to children.
+    if let NodePayload::Instance(instance_id) = node.payload()
+        && let Some(transform) = pick_transform(scene, node_id, display, view)
+    {
+        collect_instance_hits(query, node_id, *instance_id, scene, &transform, results);
     }
 
     // Recurse to children. Missing child nodes are silently skipped.
     for &child_id in node.children() {
-        pick_node(query, child_id, scene, results);
+        pick_node(query, child_id, scene, display, view, results);
     }
+}
+
+/// The model matrix to pick `node_id` at.
+///
+/// Screen-space nodes ([`DisplayBehavior::is_screen_space`]) are drawn at the
+/// renderer's camera-dependent effective transform, so — when a [`PickView`] is
+/// available — they are picked there too; everything else picks at the cached
+/// world transform. Returns `None` while the node's world transform is
+/// unavailable (geometry still streaming).
+fn pick_transform(
+    scene: &Scene,
+    node_id: NodeId,
+    display: DisplayBehavior,
+    view: Option<&PickView>,
+) -> Option<Matrix4> {
+    let world = scene.nodes_transform(node_id)?;
+    match view {
+        Some(view) if display.is_screen_space() => {
+            Some(display.effective_transform(world, view.camera, view.viewport))
+        }
+        _ => Some(world),
+    }
+}
+
+/// Narrow phase: transforms the query into `transform`'s local space and collects
+/// the node instance's mesh hits. A no-op if the instance or its mesh is missing,
+/// or if `transform` is singular.
+fn collect_instance_hits<Q: PickQuery>(
+    query: &Q,
+    node_id: NodeId,
+    instance_id: InstanceId,
+    scene: &Scene,
+    transform: &Matrix4,
+    results: &mut Vec<Q::Result>,
+) {
+    let Some(instance) = scene.get_instance(instance_id) else { return };
+    let Some(mesh) = scene.get_mesh(instance.mesh()) else { return };
+    let Some(world_to_local) = transform.invert() else { return };
+    let local_query = query.transform(&world_to_local);
+    local_query.collect_mesh_hits(mesh, node_id, instance_id, transform, results);
 }
 
 #[cfg(test)]

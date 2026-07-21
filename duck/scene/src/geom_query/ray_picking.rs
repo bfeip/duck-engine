@@ -4,7 +4,7 @@ use crate::common::{Aabb, Ray};
 use crate::{InstanceId, Mesh, NodeId, Scene, SubGeometryKind};
 
 use super::mesh_intersection;
-use super::pick_query::{pick_all, PickQuery};
+use super::pick_query::{pick_all, pick_all_with_view, PickQuery, PickView};
 
 /// The primitive that was hit by a ray pick query.
 #[derive(Debug, Clone)]
@@ -277,11 +277,111 @@ impl PickQuery for RayPickQuery {
 /// [`RayPickQuery::points`] to pick segments/points only, or [`RayPickQuery::all`]
 /// to pick all primitive types.
 pub fn pick_all_from_ray(query: &RayPickQuery, scene: &Scene) -> Vec<RayPickResult> {
-    let mut results = pick_all(query, scene);
+    sort_by_distance(pick_all(query, scene))
+}
+
+/// Like [`pick_all_from_ray`], but resolves screen-space nodes against `view` so
+/// picking matches the rendered placement of screen-sized / screen-facing
+/// geometry (e.g. constant-pixel-size gizmo handles).
+pub fn pick_all_from_ray_with_view(
+    query: &RayPickQuery,
+    scene: &Scene,
+    view: Option<&PickView>,
+) -> Vec<RayPickResult> {
+    sort_by_distance(pick_all_with_view(query, scene, view))
+}
+
+/// Sorts pick results by world-space distance, closest first.
+fn sort_by_distance(mut results: Vec<RayPickResult>) -> Vec<RayPickResult> {
     results.sort_by(|a, b| {
         a.distance
             .partial_cmp(&b.distance)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duck_engine_common::{InnerSpace, Vector3};
+
+    use crate::common::Transform;
+    use crate::geom_query::PickView;
+    use crate::{
+        DisplayBehavior, FaceMaterial, Instance, Mesh, NodeFlags, PositionedCamera, PrimitiveType,
+        RenderLayer, Scene,
+    };
+
+    fn camera() -> PositionedCamera {
+        PositionedCamera {
+            eye: Point3::new(0.0, 0.0, 5.0),
+            target: Point3::new(0.0, 0.0, 0.0),
+            up: Vector3::new(0.0, 1.0, 0.0),
+            aspect: 1.0,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+            ortho: false,
+        }
+    }
+
+    /// A screen-sized node is drawn (and must be picked) larger than its authored
+    /// geometry when the camera is close. A ray aimed between the authored and
+    /// on-screen extents hits only when the pick is view-aware.
+    #[test]
+    fn screen_sized_node_picked_at_on_screen_extent() {
+        let mut scene = Scene::new();
+        // Unit cube at the origin: authored half-extent 0.5.
+        let mesh_id = scene.add_mesh(Mesh::cube(1.0, PrimitiveType::TriangleList));
+        let mat_id = scene.add_face_material(FaceMaterial::new());
+        let node = scene
+            .add_instance_node(
+                None,
+                Instance::new(mesh_id).with_face_material(mat_id),
+                None,
+                Transform::IDENTITY,
+                NodeFlags::NONE,
+            )
+            .unwrap();
+        let display = DisplayBehavior {
+            screen_size: Some(200.0),
+            layer: RenderLayer::Overlay,
+            ..Default::default()
+        };
+        scene.set_node_display(node, display);
+        let _ = scene.bounding();
+
+        let cam = camera();
+        let viewport = (256, 256);
+
+        // On-screen uniform scale for this node (identity world transform).
+        let s = display
+            .effective_transform(duck_engine_common::Matrix4::from_scale(1.0), &cam, viewport)
+            .x
+            .truncate()
+            .magnitude();
+        assert!(s > 1.0, "expected the node to render larger than authored (s = {s})");
+
+        // Aim between the authored half-extent (0.5) and the on-screen half (0.5*s).
+        let x = 0.5 * (0.5 + 0.5 * s);
+        assert!(x > 0.5 && x < 0.5 * s);
+        let ray = Ray::new(Point3::new(x, 0.0, 5.0), Vector3::new(0.0, 0.0, -1.0));
+        let query = RayPickQuery::faces(ray);
+
+        // View-aware pick honors the on-screen size and hits.
+        let view = PickView { camera: &cam, viewport };
+        let with_view = pick_all_from_ray_with_view(&query, &scene, Some(&view));
+        assert!(
+            with_view.iter().any(|r| r.node_id == node),
+            "view-aware pick should hit the screen-sized node",
+        );
+
+        // Authored-size pick tests the unit cube and misses.
+        let without_view = pick_all_from_ray(&query, &scene);
+        assert!(
+            !without_view.iter().any(|r| r.node_id == node),
+            "authored-size pick should miss (ray is outside the unit cube)",
+        );
+    }
 }
