@@ -157,10 +157,7 @@ pub struct Snap {
     /// World-space position to snap to.
     pub position: Point3,
     /// Optional associated direction: the tangent for line snaps (edges, grid
-    /// axes) and the surface normal for face snaps. Carried for future
-    /// orientation snaps and not yet read by any operator, so allow it to sit
-    /// unused for now.
-    #[allow(dead_code)]
+    /// axes) and the surface normal for face snaps.
     pub direction: Option<Vector3>,
     /// What this snap locks onto (drives tier + filtering).
     pub kind: SnapKind,

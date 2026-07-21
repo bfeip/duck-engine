@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use duck_engine_common::{MetricSpace, Point3, Quaternion, Vector3};
+use duck_engine_common::{InnerSpace, MetricSpace, Point3, Quaternion, Vector3};
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     common::Transform,
@@ -27,7 +27,12 @@ enum SphereAction {
 
 enum Phase {
     Idle,
-    Defining { center: Point3 },
+    /// Center placed; the cursor drives the radius. `axis` is the polar axis.
+    Defining { center: Point3, axis: Vector3 },
+}
+
+fn vec_to_dvec3(v: Vector3) -> glam::DVec3 {
+    dvec3(v.x as f64, v.y as f64, v.z as f64)
 }
 
 pub struct SphereOperator {
@@ -76,14 +81,21 @@ impl SphereOperator {
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
         let camera = ctx.camera();
-        let Some(center) = self
+        let Some(snap) = self
             .construction_options
             .borrow()
             .resolve_snap(position, &[], &camera, ctx, &[])
-            .map(|s| s.position)
         else {
             return false;
         };
+        let center = snap.position;
+        // Polar axis: the snapped direction (e.g. a face normal) when present, else
+        // a skewed fallback that keeps the seam/poles off every world axis so a
+        // later boolean's cutting plane isn't near-coincident with them (OCCT
+        // boolean near-coincidence robustness).
+        let axis = snap
+            .direction
+            .unwrap_or_else(|| Vector3::new(1.0, 2.0, 3.0).normalize());
         // Does not need preview tessellation detail because we only make the
         // sphere once, and then scale it.
         let preview_shape = Shape::sphere(1.0).build();
@@ -95,11 +107,17 @@ impl SphereOperator {
             .lock()
             .unwrap()
             .set_node_transform(node, Self::preview_transform(center, 0.01));
-        self.phase = Phase::Defining { center };
+        self.phase = Phase::Defining { center, axis };
         true
     }
 
-    fn on_place_outer(&mut self, center: Point3, position: (f32, f32), ctx: &mut EventContext) -> bool {
+    fn on_place_outer(
+        &mut self,
+        center: Point3,
+        axis: Vector3,
+        position: (f32, f32),
+        ctx: &mut EventContext
+    ) -> bool {
         let camera = ctx.camera();
         // Exclude the preview so the radius can snap through a corner, not to the
         // preview's own geometry.
@@ -110,15 +128,12 @@ impl SphereOperator {
             .map(|s| center.distance(s.position).max(0.01))
             .unwrap_or(0.01);
 
-        // Skew the polar axis off every world axis: with the default Z-up
-        // parametrization, a face-snapped center leaves the seam and pole
-        // edges a sub-tolerance distance from an axis-aligned cutting plane,
-        // where OCCT boolean classification fails.
-        // TODO: a more complete solution derives the axis from the snap (e.g. the
-        // snapped face's normal) so their placement is deliberate.
+        // The polar axis comes from the placement snap (chosen in `on_place_center`):
+        // the snapped direction when there was one, else a skewed fallback that keeps
+        // the seam/poles off the world axes for OCCT boolean near-coincidence robustness.
         let world_shape = Shape::sphere(radius as f64)
             .at(dvec3(center.x as f64, center.y as f64, center.z as f64))
-            .axis(dvec3(1.0, 2.0, 3.0).normalize())
+            .axis(vec_to_dvec3(axis))
             .build();
 
         // Discard the preview node, then commit the world-space shape as a registered part.
@@ -161,7 +176,7 @@ impl SphereOperator {
         self.cursor_target = snap.map(|s| s.position);
 
         // Drive the preview radius from the snapped point while defining.
-        if let Phase::Defining { center } = self.phase {
+        if let Phase::Defining { center, .. } = self.phase {
             if let (Some(snap), Some(preview_node)) = (snap, self.preview.preview_node()) {
                 let radius = center.distance(snap.position).max(0.01);
                 ctx.scene
@@ -200,8 +215,8 @@ impl Operator for SphereOperator {
                 for action in actions {
                     handled |= match action {
                         SphereAction::Place => {
-                            if let Phase::Defining { center } = self.phase {
-                                self.on_place_outer(center, *position, ctx)
+                            if let Phase::Defining { center, axis } = self.phase {
+                                self.on_place_outer(center, axis, *position, ctx)
                             } else {
                                 self.on_place_center(*position, ctx)
                             }

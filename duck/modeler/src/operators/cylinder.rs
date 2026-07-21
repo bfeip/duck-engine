@@ -37,9 +37,10 @@ enum CylinderAction {
 enum Phase {
     Idle,
     /// Center placed; the cursor drives the radius. Preview is a thin base disk.
-    Radius { center: Point3 },
+    /// `plane` is the placement plane through the center.
+    Radius { center: Point3, plane: Plane },
     /// Radius fixed; the cursor drives the height. Preview is the 3D cylinder.
-    Height { center: Point3, radius: f32 },
+    Height { center: Point3, radius: f32, plane: Plane },
 }
 
 pub struct CylinderOperator {
@@ -122,14 +123,18 @@ impl CylinderOperator {
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
         let camera = ctx.camera();
-        let Some(center) = self
+        let cplane = self.construction_options.borrow().construction_plane;
+        let Some(snap) = self
             .construction_options
             .borrow()
             .resolve_snap(position, &[], &camera, ctx, &[])
-            .map(|s| s.position)
         else {
             return false;
         };
+        let center = snap.position;
+        // Orient the cylinder to the snapped geometry when the snap carries a
+        // direction. Otherwise fall back to the construction plane.
+        let plane = Plane::from_point(snap.direction.unwrap_or(cplane.normal), center);
 
         // A single unit cylinder, scaled each move; preview detail is irrelevant here.
         let preview_shape = Shape::cylinder_radius_height(1.0, 1.0);
@@ -139,11 +144,17 @@ impl CylinderOperator {
         }
         // Hidden until the cursor defines a non-degenerate radius.
         self.preview.set_preview_visibility(Visibility::Invisible);
-        self.phase = Phase::Radius { center };
+        self.phase = Phase::Radius { center, plane };
         true
     }
 
-    fn on_place_radius(&mut self, center: Point3, position: (f32, f32), ctx: &mut EventContext) -> bool {
+    fn on_place_radius(
+        &mut self,
+        center: Point3,
+        plane: Plane,
+        position: (f32, f32),
+        ctx: &mut EventContext
+    ) -> bool {
         let camera = ctx.camera();
         // Exclude the preview so the radius can snap through a corner, not to the
         // preview's own geometry.
@@ -157,7 +168,7 @@ impl CylinderOperator {
         if !Self::radius_valid(radius) {
             return false;
         }
-        self.phase = Phase::Height { center, radius };
+        self.phase = Phase::Height { center, radius, plane };
         true
     }
 
@@ -165,10 +176,10 @@ impl CylinderOperator {
         &mut self,
         center: Point3,
         radius: f32,
+        plane: Plane,
         position: (f32, f32),
         ctx: &mut EventContext,
     ) -> bool {
-        let plane = self.construction_options.borrow().construction_plane;
         let height = Self::height_from_cursor(center, &plane, position, ctx);
         // A zero-height (degenerate) cylinder can't be committed; stay in the height stage.
         if !Self::cylinder_valid(radius, height) {
@@ -210,7 +221,6 @@ impl CylinderOperator {
 
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
-        let plane = self.construction_options.borrow().construction_plane;
 
         let camera = ctx.camera();
         // While defining, exclude our own preview so snapping doesn't lock onto it.
@@ -226,7 +236,7 @@ impl CylinderOperator {
             Phase::Idle => {
                 self.cursor_target = snap.map(|s| s.position);
             }
-            Phase::Radius { center } => {
+            Phase::Radius { center, plane } => {
                 self.cursor_target = snap.map(|s| s.position);
                 let radius = snap.map(|s| center.distance(s.position));
                 if let Some(preview_node) = self.preview.preview_node() {
@@ -244,7 +254,7 @@ impl CylinderOperator {
                     }
                 }
             }
-            Phase::Height { center, radius } => {
+            Phase::Height { center, radius, plane } => {
                 let height = Self::height_from_cursor(center, &plane, cursor, ctx);
                 self.cursor_target = Some(center + plane.normal * height);
                 if let Some(preview_node) = self.preview.preview_node() {
@@ -293,9 +303,11 @@ impl Operator for CylinderOperator {
                     handled |= match action {
                         CylinderAction::Place => match self.phase {
                             Phase::Idle => self.on_place_center(*position, ctx),
-                            Phase::Radius { center } => self.on_place_radius(center, *position, ctx),
-                            Phase::Height { center, radius } => {
-                                self.on_place_height(center, radius, *position, ctx)
+                            Phase::Radius { center, plane } => {
+                                self.on_place_radius(center, plane, *position, ctx)
+                            }
+                            Phase::Height { center, radius, plane } => {
+                                self.on_place_height(center, radius, plane, *position, ctx)
                             }
                         },
                         CylinderAction::Cancel => {

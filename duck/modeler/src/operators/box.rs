@@ -33,9 +33,10 @@ enum BoxAction {
 enum Phase {
     Idle,
     /// Center placed; the cursor drives the footprint. Preview is a flat rectangle face.
-    Base { center: Point3 },
+    /// Base being defined. `plane` is the plane the base rectangle is being defined on.
+    Base { center: Point3, plane: Plane },
     /// Footprint fixed; the cursor drives the height. Preview is the 3D box.
-    Height { center: Point3, width: f32, depth: f32 },
+    Height { center: Point3, width: f32, depth: f32, plane: Plane },
 }
 
 pub struct BoxOperator {
@@ -167,14 +168,18 @@ impl BoxOperator {
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
         let camera = ctx.camera();
-        let Some(center) = self
+        let cplane = self.construction_options.borrow().construction_plane;
+        let Some(snap) = self
             .construction_options
             .borrow()
             .resolve_snap(position, &[], &camera, ctx, &[])
-            .map(|s| s.position)
         else {
             return false;
         };
+        let center = snap.position;
+        // Seat the box on the snapped geometry when the snap carries a direction.
+        // Otherwise use the construction plane.
+        let plane = Plane::from_point(snap.direction.unwrap_or(cplane.normal), center);
 
         let Ok(preview_shape): Result<Shape, _> =
             Face::from_wire(&Wire::rect(1.0, 1.0).unwrap()).map(Into::into)
@@ -189,13 +194,18 @@ impl BoxOperator {
         }
         // Hidden until the cursor defines a non-degenerate footprint.
         self.preview.set_preview_visibility(Visibility::Invisible);
-        self.phase = Phase::Base { center };
+        self.phase = Phase::Base { center, plane };
         true
     }
 
-    fn on_place_corner(&mut self, center: Point3, position: (f32, f32), ctx: &mut EventContext) -> bool {
+    fn on_place_corner(
+        &mut self,
+        center: Point3,
+        plane: Plane,
+        position: (f32, f32),
+        ctx: &mut EventContext
+    ) -> bool {
         let camera = ctx.camera();
-        let plane = self.construction_options.borrow().construction_plane;
         // Exclude the preview so the footprint can snap through it.
         let Some(corner) = self
             .construction_options
@@ -219,7 +229,7 @@ impl BoxOperator {
         }
         // Hidden until the cursor defines a non-zero height.
         self.preview.set_preview_visibility(Visibility::Invisible);
-        self.phase = Phase::Height { center, width, depth };
+        self.phase = Phase::Height { center, width, depth, plane };
         true
     }
 
@@ -228,10 +238,10 @@ impl BoxOperator {
         center: Point3,
         width: f32,
         depth: f32,
+        plane: Plane,
         position: (f32, f32),
         ctx: &mut EventContext,
     ) -> bool {
-        let plane = self.construction_options.borrow().construction_plane;
         let height = Self::height_from_cursor(center, &plane, position, ctx);
         // A zero-height (degenerate) box can't be committed; stay in the height stage.
         if !Self::box_valid(width, depth, height) {
@@ -264,7 +274,6 @@ impl BoxOperator {
 
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
-        let plane = self.construction_options.borrow().construction_plane;
 
         let camera = ctx.camera();
         // While defining, exclude our own preview so snapping doesn't lock onto it.
@@ -280,7 +289,7 @@ impl BoxOperator {
             Phase::Idle => {
                 self.cursor_target = snap.map(|s| s.position);
             }
-            Phase::Base { center } => {
+            Phase::Base { center, plane } => {
                 self.cursor_target = snap.map(|s| s.position);
                 let dims = snap.map(|s| Self::footprint_dims(center, s.position, &plane));
                 if let Some(preview_node) = self.preview.preview_node() {
@@ -298,7 +307,7 @@ impl BoxOperator {
                     }
                 }
             }
-            Phase::Height { center, width, depth } => {
+            Phase::Height { center, width, depth, plane } => {
                 let height = Self::height_from_cursor(center, &plane, cursor, ctx);
                 self.cursor_target = Some(center + plane.normal * height);
                 if let Some(preview_node) = self.preview.preview_node() {
@@ -347,9 +356,11 @@ impl Operator for BoxOperator {
                     handled |= match action {
                         BoxAction::Place => match self.phase {
                             Phase::Idle => self.on_place_center(*position, ctx),
-                            Phase::Base { center } => self.on_place_corner(center, *position, ctx),
-                            Phase::Height { center, width, depth } => {
-                                self.on_place_height(center, width, depth, *position, ctx)
+                            Phase::Base { center, plane } => {
+                                self.on_place_corner(center, plane, *position, ctx)
+                            }
+                            Phase::Height { center, width, depth, plane } => {
+                                self.on_place_height(center, width, depth, plane, *position, ctx)
                             }
                         },
                         BoxAction::Cancel => {

@@ -27,7 +27,9 @@ enum CircleAction {
 
 enum Phase {
     Idle,
-    Defining { center: Point3 },
+    /// Center placed; the cursor drives the radius. `normal` is the disk's plane
+    /// normal.
+    Defining { center: Point3, normal: Vector3 },
 }
 
 pub struct CircleOperator {
@@ -91,23 +93,21 @@ impl CircleOperator {
         }
     }
 
-    /// The filled preview disk for `center`/`radius` on the construction plane.
-    fn make_shape(&self, center: Point3, radius: f64) -> Option<Shape> {
-        let coptions = self.construction_options.borrow();
-        circle_shape(center, coptions.construction_plane.normal, radius)
-    }
-
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
         let camera = ctx.camera();
-        let Some(center) = self
+        let cplane_normal = self.construction_options.borrow().construction_plane.normal;
+        let Some(snap) = self
             .construction_options
             .borrow()
             .resolve_snap(position, &[], &camera, ctx, &[])
-            .map(|s| s.position)
         else {
             return false;
         };
-        let Some(shape) = self.make_shape(center, 0.01) else {
+        let center = snap.position;
+        // Lay the disk on the snapped geometry when the snap carries a direction.
+        // Otherwise use the construction plane.
+        let normal = snap.direction.unwrap_or(cplane_normal);
+        let Some(shape) = circle_shape(center, normal, 0.01) else {
             return false;
         };
         // Coarser preview tolerance since the preview is rebuilt on every move.
@@ -115,11 +115,17 @@ impl CircleOperator {
         if self.preview.add_preview_from_shape(&shape, &preview_options, "circle").is_none() {
             return false;
         }
-        self.phase = Phase::Defining { center };
+        self.phase = Phase::Defining { center, normal };
         true
     }
 
-    fn on_place_outer(&mut self, center: Point3, position: (f32, f32), ctx: &mut EventContext) -> bool {
+    fn on_place_outer(
+        &mut self,
+        center: Point3,
+        normal: Vector3,
+        position: (f32, f32),
+        ctx: &mut EventContext
+    ) -> bool {
         let camera = ctx.camera();
         // Exclude the preview so the radius can snap through a corner, not to the
         // preview's own geometry.
@@ -130,7 +136,7 @@ impl CircleOperator {
             .map(|s| center.distance(s.position).max(0.01) as f64)
             .unwrap_or(0.01);
 
-        let shape = self.make_shape(center, radius);
+        let shape = circle_shape(center, normal, radius);
 
         // Discard the preview node, then commit the world-space shape as a part.
         let _ = self.preview.commit();
@@ -173,10 +179,10 @@ impl CircleOperator {
         // Rebuild the preview disk from the snapped radius while defining. A flat
         // disk's orientation depends on the plane normal, so we re-tessellate
         // rather than scaling a unit mesh.
-        if let Phase::Defining { center } = self.phase {
+        if let Phase::Defining { center, normal } = self.phase {
             if let Some(snap) = snap {
                 let radius = center.distance(snap.position).max(0.01) as f64;
-                if let Some(shape) = self.make_shape(center, radius) {
+                if let Some(shape) = circle_shape(center, normal, radius) {
                     let preview_options = self.construction_options.borrow().preview_options();
                     self.preview.try_replace_preview(&shape, &preview_options, "circle");
                 }
@@ -212,8 +218,8 @@ impl Operator for CircleOperator {
                 for action in actions {
                     handled |= match action {
                         CircleAction::Place => {
-                            if let Phase::Defining { center } = self.phase {
-                                self.on_place_outer(center, *position, ctx)
+                            if let Phase::Defining { center, normal } = self.phase {
+                                self.on_place_outer(center, normal, *position, ctx)
                             } else {
                                 self.on_place_center(*position, ctx)
                             }

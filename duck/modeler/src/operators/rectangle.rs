@@ -34,7 +34,8 @@ enum RectangleAction {
 enum Phase {
     Idle,
     /// Center placed; the cursor drives the footprint. Preview is a flat rectangle face.
-    Defining { center: Point3 },
+    /// `plane` is the placement plane through the center.
+    Defining { center: Point3, plane: Plane },
 }
 
 pub struct RectangleOperator {
@@ -131,14 +132,18 @@ impl RectangleOperator {
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
         let camera = ctx.camera();
-        let Some(center) = self
+        let cplane = self.construction_options.borrow().construction_plane;
+        let Some(snap) = self
             .construction_options
             .borrow()
             .resolve_snap(position, &[], &camera, ctx, &[])
-            .map(|s| s.position)
         else {
             return false;
         };
+        let center = snap.position;
+        // Seat the rectangle on the snapped geometry when the snap carries a
+        // direction. Otherwise use the  construction plane.
+        let plane = Plane::from_point(snap.direction.unwrap_or(cplane.normal), center);
 
         let Some(preview_shape) = Self::reference_face() else {
             return false;
@@ -151,13 +156,18 @@ impl RectangleOperator {
         }
         // Hidden until the cursor defines a non-degenerate footprint.
         self.preview.set_preview_visibility(Visibility::Invisible);
-        self.phase = Phase::Defining { center };
+        self.phase = Phase::Defining { center, plane };
         true
     }
 
-    fn on_place_corner(&mut self, center: Point3, position: (f32, f32), ctx: &mut EventContext) -> bool {
+    fn on_place_corner(
+        &mut self,
+        center: Point3,
+        plane: Plane,
+        position: (f32, f32),
+        ctx: &mut EventContext
+    ) -> bool {
         let camera = ctx.camera();
-        let plane = self.construction_options.borrow().construction_plane;
         // Exclude the preview so the footprint can snap through it.
         let Some(corner) = self
             .construction_options
@@ -199,7 +209,6 @@ impl RectangleOperator {
 
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
-        let plane = self.construction_options.borrow().construction_plane;
 
         let camera = ctx.camera();
         // While defining, exclude our own preview so snapping doesn't lock onto it.
@@ -213,7 +222,7 @@ impl RectangleOperator {
 
         self.cursor_target = snap.map(|s| s.position);
 
-        if let Phase::Defining { center } = self.phase {
+        if let Phase::Defining { center, plane } = self.phase {
             let dims = snap.map(|s| Self::footprint_dims(center, s.position, &plane));
             if let Some(preview_node) = self.preview.preview_node() {
                 let mut scene = ctx.scene.lock().unwrap();
@@ -261,7 +270,9 @@ impl Operator for RectangleOperator {
                     handled |= match action {
                         RectangleAction::Place => match self.phase {
                             Phase::Idle => self.on_place_center(*position, ctx),
-                            Phase::Defining { center } => self.on_place_corner(center, *position, ctx),
+                            Phase::Defining { center, plane } => {
+                                self.on_place_corner(center, plane, *position, ctx)
+                            }
                         },
                         RectangleAction::Cancel => {
                             let was_defining = matches!(self.phase, Phase::Defining { .. });
