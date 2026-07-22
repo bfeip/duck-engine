@@ -368,14 +368,7 @@ impl FaceTweak {
         if self.gizmo.current_type() == Some(gizmo_type) {
             self.gizmo.update_position(pivot, &mut scene);
         } else {
-            let model_radius = scene
-                .bounding()
-                .bounds
-                .as_ref()
-                .map(|aabb| aabb.bounding_sphere_radius())
-                .filter(|r| *r > 0.0)
-                .unwrap_or(1.0);
-            self.gizmo.show(gizmo_type, pivot, model_radius * 0.15, &mut scene);
+            self.gizmo.show(gizmo_type, pivot, &mut scene);
         }
     }
 
@@ -501,11 +494,12 @@ impl FaceTweak {
                     return false;
                 }
                 let picked = {
-                    let ray = ctx.camera().ray_from_screen_point(
+                    let camera = ctx.camera();
+                    let ray = camera.ray_from_screen_point(
                         start_pos.0, start_pos.1, ctx.size.0, ctx.size.1,
                     );
                     let scene = ctx.scene.lock().unwrap();
-                    self.gizmo.pick_handle(ray, &scene)
+                    self.gizmo.pick_handle(ray, &scene, &camera, ctx.size)
                 };
                 if let Some(axis) = picked {
                     self.start(target, ctx, options);
@@ -560,11 +554,12 @@ impl FaceTweak {
             DeviceEvent::CursorMoved { position } => {
                 // Hover highlight on gizmo handles while idle.
                 if self.gizmo.has_gizmo() && !self.interaction.is_active() {
-                    let ray = ctx.camera().ray_from_screen_point(
+                    let camera = ctx.camera();
+                    let ray = camera.ray_from_screen_point(
                         position.0 as f32, position.1 as f32, ctx.size.0, ctx.size.1,
                     );
                     let mut scene = ctx.scene.lock().unwrap();
-                    let axis = self.gizmo.pick_handle(ray, &scene);
+                    let axis = self.gizmo.pick_handle(ray, &scene, &camera, ctx.size);
                     self.gizmo.set_highlight(axis, &mut scene);
                 }
                 false

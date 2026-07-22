@@ -5,10 +5,10 @@
 //! the origin; positioning at the selection pivot is done via node transforms.
 
 use duck_engine_common::{Deg, Matrix4, Point3, Vector3};
-use duck_engine_scene::{NodeFlags, Scene};
+use duck_engine_scene::{NodeFlags, PositionedCamera, Scene};
 
 use crate::common::{Axis, Ray, RgbaColor, Transform};
-use crate::geom_query::{pick_all_from_ray, RayPickQuery};
+use crate::geom_query::{pick_all_from_ray_with_view, PickView, RayPickQuery};
 use crate::scene::{
     AlphaMode, DisplayBehavior, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh,
     MeshId, NodeId, PrimitiveType, RenderLayer,
@@ -18,6 +18,11 @@ const GIZMO_FLAGS: MaterialFlags = MaterialFlags::DO_NOT_LIGHT
     .union(MaterialFlags::DOUBLE_SIDED);
 
 const SEGMENTS: u32 = 16;
+
+/// On-screen pixel size of the gizmo's unit arm extent. Handle geometry is built
+/// at a unit size (arms span 0..1) and held at this constant pixel size via
+/// [`DisplayBehavior::screen_size`], so the gizmo no longer scales with zoom.
+const GIZMO_SCREEN_SIZE: f32 = 90.0;
 
 /// Which type of gizmo to display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,19 +233,27 @@ impl GizmoState {
     }
 
     /// Build and add gizmo handles to the scene at the given pivot point.
-    pub fn show(&mut self, gizmo_type: GizmoType, pivot: Point3, size: f32, scene: &mut Scene) {
+    ///
+    /// Handles are built at a unit size and held at a constant on-screen size via
+    /// [`DisplayBehavior::screen_size`] on the root, which the handles inherit.
+    pub fn show(&mut self, gizmo_type: GizmoType, pivot: Point3, scene: &mut Scene) {
         self.hide(scene);
 
         self.root_node.get_or_insert_with(|| {
             let id = scene.add_node(
                 None, Some("Gizmo root".to_owned()), Transform::IDENTITY, NodeFlags::DO_NOT_EXPORT
             ).expect("Failed to create Gizmo root node");
-            // Draw the gizmo on the overlay layer; handles inherit it.
-            scene.set_node_display(id, DisplayBehavior { layer: RenderLayer::Overlay, ..Default::default() });
+            // Draw the gizmo on the overlay layer at a constant on-screen size;
+            // handles inherit both.
+            scene.set_node_display(id, DisplayBehavior {
+                screen_size: Some(GIZMO_SCREEN_SIZE),
+                layer: RenderLayer::Overlay,
+                ..Default::default()
+            });
             id
         });
 
-        let handles = build_handles(gizmo_type, size);
+        let handles = build_handles(gizmo_type, 1.0);
         let pivot_transform = Transform::from_position(pivot);
 
         for handle in handles {
@@ -293,12 +306,24 @@ impl GizmoState {
     }
 
     /// Pick which gizmo handle (if any) the ray hits.
-    pub fn pick_handle(&self, ray: Ray, scene: &Scene) -> Option<Axis> {
+    ///
+    /// The gizmo is drawn at a constant on-screen size, so picking must resolve
+    /// its handles against the same camera-dependent transform via [`PickView`];
+    /// otherwise hits would be tested against the authored unit-size geometry.
+    pub fn pick_handle(
+        &self,
+        ray: Ray,
+        scene: &Scene,
+        camera: &PositionedCamera,
+        viewport: (u32, u32),
+    ) -> Option<Axis> {
         if !self.has_gizmo() {
             return None;
         }
 
-        let results = pick_all_from_ray(&RayPickQuery::faces(ray), scene);
+        let view = PickView { camera, viewport };
+        let results =
+            pick_all_from_ray_with_view(&RayPickQuery::faces(ray), scene, Some(&view));
 
         // Find the first hit that matches a gizmo node
         for result in &results {

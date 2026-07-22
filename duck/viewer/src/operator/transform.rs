@@ -258,14 +258,12 @@ impl TransformOperator {
             .iter()
             .filter_map(|&nid| scene.nodes_bounding(nid).bounds.map(|aabb| aabb.center()))
             .collect();
-        let model_radius =
-            scene_scale::model_radius_from_bounds(scene.bounding().bounds.as_ref());
         let pivot = centroid_of_slice(&positions).unwrap_or(Point3::origin());
 
         if self.gizmo.current_type() == Some(gizmo_type) {
             self.gizmo.update_position(pivot, &mut scene);
         } else {
-            self.gizmo.show(gizmo_type, pivot, model_radius * 0.15, &mut scene);
+            self.gizmo.show(gizmo_type, pivot, &mut scene);
         }
     }
 
@@ -487,11 +485,12 @@ impl Operator for TransformOperator {
                     return false;
                 }
                 let picked = {
-                    let ray = ctx.camera().ray_from_screen_point(
+                    let camera = ctx.camera();
+                    let ray = camera.ray_from_screen_point(
                         start_pos.0, start_pos.1, ctx.size.0, ctx.size.1,
                     );
                     let scene = ctx.scene.lock().unwrap();
-                    self.gizmo.pick_handle(ray, &scene)
+                    self.gizmo.pick_handle(ray, &scene, &camera, ctx.size)
                 };
                 if let Some(axis) = picked {
                     self.start_transform(ctx);
@@ -539,11 +538,12 @@ impl Operator for TransformOperator {
             DeviceEvent::CursorMoved { position } => {
                 // Hover highlight on gizmo handles when gizmo is visible but no transform active
                 if self.gizmo.has_gizmo() && !self.is_active() {
-                    let ray = ctx.camera().ray_from_screen_point(
+                    let camera = ctx.camera();
+                    let ray = camera.ray_from_screen_point(
                         position.0 as f32, position.1 as f32, ctx.size.0, ctx.size.1,
                     );
                     let mut scene = ctx.scene.lock().unwrap();
-                    let axis = self.gizmo.pick_handle(ray, &scene);
+                    let axis = self.gizmo.pick_handle(ray, &scene, &camera, ctx.size);
                     self.gizmo.set_highlight(axis, &mut scene);
                 }
                 false
