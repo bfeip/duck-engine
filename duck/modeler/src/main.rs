@@ -276,12 +276,7 @@ impl<'a> ViewerState<'a> {
         }
     }
 
-    /// Raw mouse motion drives active gizmo/transform drags; only forward it
-    /// while a viewport drag is in progress.
     fn handle_device_event(&mut self, event: &DeviceEvent) {
-        if !self.viewport_drag_active {
-            return;
-        }
         if let Some(app_event) = winit_support::convert_device_event(event.clone()) {
             self.viewer.handle_event(&app_event);
         }
