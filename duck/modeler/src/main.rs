@@ -277,6 +277,10 @@ impl<'a> ViewerState<'a> {
     }
 
     fn handle_device_event(&mut self, event: &DeviceEvent) {
+        if self.egui_ctx.is_using_pointer() {
+            // Do not respond to device events that egui is also consuming.
+            return;
+        }
         if let Some(app_event) = winit_support::convert_device_event(event.clone()) {
             self.viewer.handle_event(&app_event);
         }
