@@ -15,7 +15,7 @@ use crate::bindings::{InputBinding, InputMap};
 use crate::common::{
     local_axis_x, local_axis_y, local_axis_z, quaternion_from_axis_angle_safe, Axis, RgbaColor,
 };
-use crate::gizmo::GizmoType;
+use crate::gizmo::{GizmoHandleId, GizmoType};
 use crate::input::{Key, Modifiers, MouseButton, NamedKey};
 
 /// Semantic actions for an interactive transform.
@@ -29,6 +29,12 @@ pub enum TransformAction {
     ConstrainY,
     /// Cycle the axis constraint to Z (world then local on repeated press).
     ConstrainZ,
+    /// Cycle the plane constraint excluding X, i.e. the YZ plane (world then local).
+    ConstrainPlaneX,
+    /// Cycle the plane constraint excluding Y, i.e. the XZ plane (world then local).
+    ConstrainPlaneY,
+    /// Cycle the plane constraint excluding Z, i.e. the XY plane (world then local).
+    ConstrainPlaneZ,
     /// Confirm the active transform via keyboard.
     KeyConfirm,
     /// Cancel the active transform via keyboard.
@@ -69,52 +75,55 @@ impl TransformMode {
     }
 }
 
+/// The reference frame a constraint is expressed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstraintSpace {
+    /// World coordinate axes.
+    World,
+    /// Axes relative to the interaction frame.
+    Local,
+}
+
 /// Axis constraint for the transform operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisConstraint {
-    /// No constraint - free transform
+    /// No constraint - free transform.
     None,
-    /// Constrain to world X axis
-    WorldX,
-    /// Constrain to world Y axis
-    WorldY,
-    /// Constrain to world Z axis
-    WorldZ,
-    /// Constrain to local X axis (relative to the interaction frame)
-    LocalX,
-    /// Constrain to local Y axis (relative to the interaction frame)
-    LocalY,
-    /// Constrain to local Z axis (relative to the interaction frame)
-    LocalZ,
+    /// Constrain to a single axis in the given space.
+    Axis(Axis, ConstraintSpace),
+    /// Constrain to the plane whose normal is the given (excluded) axis, in the
+    /// given space. The operation runs on the other two axes (e.g. `Plane(Z)`
+    /// is the XY plane).
+    Plane(Axis, ConstraintSpace),
 }
 
 impl AxisConstraint {
-    /// Returns the color for visual feedback (RGB = XYZ convention).
+    /// Returns the color for visual feedback (RGB = XYZ convention). Only
+    /// single-axis constraints have a single feedback color; planes are drawn
+    /// with their two in-plane axis colors by the annotations.
     pub fn color(&self) -> Option<RgbaColor> {
         match self {
-            AxisConstraint::None => None,
-            AxisConstraint::WorldX | AxisConstraint::LocalX => Some(RgbaColor::RED),
-            AxisConstraint::WorldY | AxisConstraint::LocalY => Some(RgbaColor::GREEN),
-            AxisConstraint::WorldZ | AxisConstraint::LocalZ => Some(RgbaColor::BLUE),
+            AxisConstraint::Axis(axis, _) => Some(axis.color()),
+            AxisConstraint::None | AxisConstraint::Plane(..) => None,
         }
     }
 
-    /// Returns whether this is a local axis constraint.
+    /// Returns whether this constraint is expressed in local space.
     pub fn is_local(&self) -> bool {
         matches!(
             self,
-            AxisConstraint::LocalX | AxisConstraint::LocalY | AxisConstraint::LocalZ
+            AxisConstraint::Axis(_, ConstraintSpace::Local)
+                | AxisConstraint::Plane(_, ConstraintSpace::Local)
         )
     }
 }
 
-/// Maps an axis constraint to the corresponding Axis (e.g. for gizmo highlighting).
+/// Maps a single-axis constraint to its `Axis` (e.g. for gizmo highlighting).
+/// Returns `None` for plane and unconstrained states.
 pub fn axis_from_constraint(constraint: &AxisConstraint) -> Option<Axis> {
     match constraint {
-        AxisConstraint::WorldX | AxisConstraint::LocalX => Some(Axis::X),
-        AxisConstraint::WorldY | AxisConstraint::LocalY => Some(Axis::Y),
-        AxisConstraint::WorldZ | AxisConstraint::LocalZ => Some(Axis::Z),
-        AxisConstraint::None => None,
+        AxisConstraint::Axis(axis, _) => Some(*axis),
+        AxisConstraint::None | AxisConstraint::Plane(..) => None,
     }
 }
 
@@ -146,6 +155,10 @@ pub struct TransformInteraction {
     /// Whether the active drag came from grabbing a gizmo handle.
     directional: bool,
 
+    /// Screen position where a directional (handle) drag started. Used by
+    /// plane/uniform scale to measure radial distance from the pivot.
+    drag_start_screen: Option<(f32, f32)>,
+
     pub bindings: InputMap<TransformAction>,
 }
 
@@ -168,6 +181,18 @@ impl TransformInteraction {
             .bind(
                 InputBinding::Key { key: Key::Character('z'), modifiers: Modifiers::default() },
                 TransformAction::ConstrainZ,
+            )
+            .bind(
+                InputBinding::Key { key: Key::Character('x'), modifiers: Modifiers { shift: true, ..Modifiers::default() } },
+                TransformAction::ConstrainPlaneX,
+            )
+            .bind(
+                InputBinding::Key { key: Key::Character('y'), modifiers: Modifiers { shift: true, ..Modifiers::default() } },
+                TransformAction::ConstrainPlaneY,
+            )
+            .bind(
+                InputBinding::Key { key: Key::Character('z'), modifiers: Modifiers { shift: true, ..Modifiers::default() } },
+                TransformAction::ConstrainPlaneZ,
             )
             .bind(
                 InputBinding::Key { key: Key::Named(NamedKey::Enter), modifiers: Modifiers::default() },
@@ -206,6 +231,7 @@ impl TransformInteraction {
             frame_rotation: Quaternion::new(1.0, 0.0, 0.0, 0.0),
             model_radius: 1.0,
             directional: false,
+            drag_start_screen: None,
             bindings,
         }
     }
@@ -232,6 +258,7 @@ impl TransformInteraction {
         self.axis_constraint = AxisConstraint::None;
         self.accumulated_delta = (0.0, 0.0);
         self.directional = false;
+        self.drag_start_screen = None;
     }
 
     /// Deactivate and clear the constraint and accumulated movement (after a
@@ -241,6 +268,7 @@ impl TransformInteraction {
         self.axis_constraint = AxisConstraint::None;
         self.accumulated_delta = (0.0, 0.0);
         self.directional = false;
+        self.drag_start_screen = None;
     }
 
     /// Add mouse movement to the accumulated drag.
@@ -269,52 +297,78 @@ impl TransformInteraction {
         self.axis_constraint = constraint;
     }
 
-    /// Constrain to a gizmo handle's world axis and mark the drag directional
-    pub fn constrain_to_handle_axis(&mut self, axis: Axis) {
-        self.axis_constraint = match axis {
-            Axis::X => AxisConstraint::WorldX,
-            Axis::Y => AxisConstraint::WorldY,
-            Axis::Z => AxisConstraint::WorldZ,
+    /// Constrain to a gizmo handle and mark the drag directional. `screen_pos`
+    /// is the cursor position where the drag began (used by plane/uniform scale).
+    pub fn constrain_to_handle(&mut self, id: GizmoHandleId, screen_pos: (f32, f32)) {
+        self.axis_constraint = match id {
+            GizmoHandleId::Axis(axis) => AxisConstraint::Axis(axis, ConstraintSpace::World),
+            GizmoHandleId::Plane(normal) => AxisConstraint::Plane(normal, ConstraintSpace::World),
+            GizmoHandleId::Ball => AxisConstraint::None,
         };
         self.directional = true;
+        self.drag_start_screen = Some(screen_pos);
     }
 
-    /// Cycles the axis constraint for a given axis key.
-    /// None → World → Local → None
+    /// Cycles the single-axis constraint for a given axis key.
+    /// None → World → Local → None (switching from another constraint jumps to World).
     pub fn cycle_axis_constraint(&mut self, axis: char) {
-        self.axis_constraint = match (axis, &self.axis_constraint) {
-            // X axis cycling
-            ('x', AxisConstraint::None) => AxisConstraint::WorldX,
-            ('x', AxisConstraint::WorldX) => AxisConstraint::LocalX,
-            ('x', AxisConstraint::LocalX) => AxisConstraint::None,
-            ('x', _) => AxisConstraint::WorldX, // Switch from other axis
-
-            // Y axis cycling
-            ('y', AxisConstraint::None) => AxisConstraint::WorldY,
-            ('y', AxisConstraint::WorldY) => AxisConstraint::LocalY,
-            ('y', AxisConstraint::LocalY) => AxisConstraint::None,
-            ('y', _) => AxisConstraint::WorldY, // Switch from other axis
-
-            // Z axis cycling
-            ('z', AxisConstraint::None) => AxisConstraint::WorldZ,
-            ('z', AxisConstraint::WorldZ) => AxisConstraint::LocalZ,
-            ('z', AxisConstraint::LocalZ) => AxisConstraint::None,
-            ('z', _) => AxisConstraint::WorldZ, // Switch from other axis
-
-            _ => self.axis_constraint,
+        let Some(a) = Axis::from_char(axis) else { return };
+        use ConstraintSpace::{Local, World};
+        self.axis_constraint = match self.axis_constraint {
+            AxisConstraint::Axis(cur, World) if cur == a => AxisConstraint::Axis(a, Local),
+            AxisConstraint::Axis(cur, Local) if cur == a => AxisConstraint::None,
+            _ => AxisConstraint::Axis(a, World),
         };
     }
 
-    /// Get the constraint axis direction in world space.
+    /// Cycles the plane constraint excluding the given axis key (Blender Shift+axis).
+    /// None → World → Local → None (switching from another constraint jumps to World).
+    pub fn cycle_plane_constraint(&mut self, axis: char) {
+        let Some(a) = Axis::from_char(axis) else { return };
+        use ConstraintSpace::{Local, World};
+        self.axis_constraint = match self.axis_constraint {
+            AxisConstraint::Plane(cur, World) if cur == a => AxisConstraint::Plane(a, Local),
+            AxisConstraint::Plane(cur, Local) if cur == a => AxisConstraint::None,
+            _ => AxisConstraint::Plane(a, World),
+        };
+    }
+
+    /// The world-space direction of an axis in the given space.
+    fn axis_direction(&self, axis: Axis, space: ConstraintSpace) -> Vector3 {
+        match space {
+            ConstraintSpace::World => axis.direction(),
+            ConstraintSpace::Local => match axis {
+                Axis::X => local_axis_x(self.frame_rotation),
+                Axis::Y => local_axis_y(self.frame_rotation),
+                Axis::Z => local_axis_z(self.frame_rotation),
+            },
+        }
+    }
+
+    /// Get the single-axis constraint direction in world space (`None` unless a
+    /// single-axis constraint is active).
     pub fn constraint_axis(&self) -> Option<Vector3> {
         match self.axis_constraint {
+            AxisConstraint::Axis(axis, space) => Some(self.axis_direction(axis, space)),
+            _ => None,
+        }
+    }
+
+    /// The gizmo handle that should be highlighted for the current constraint.
+    pub fn highlight_handle(&self) -> Option<GizmoHandleId> {
+        match self.axis_constraint {
             AxisConstraint::None => None,
-            AxisConstraint::WorldX => Some(Vector3::unit_x()),
-            AxisConstraint::WorldY => Some(Vector3::unit_y()),
-            AxisConstraint::WorldZ => Some(Vector3::unit_z()),
-            AxisConstraint::LocalX => Some(local_axis_x(self.frame_rotation)),
-            AxisConstraint::LocalY => Some(local_axis_y(self.frame_rotation)),
-            AxisConstraint::LocalZ => Some(local_axis_z(self.frame_rotation)),
+            AxisConstraint::Axis(axis, _) => Some(GizmoHandleId::Axis(axis)),
+            AxisConstraint::Plane(normal, _) => Some(GizmoHandleId::Plane(normal)),
+        }
+    }
+
+    /// Get the constraint plane's world-space normal (`None` unless a plane
+    /// constraint is active).
+    pub fn constraint_plane_normal(&self) -> Option<Vector3> {
+        match self.axis_constraint {
+            AxisConstraint::Plane(axis, space) => Some(self.axis_direction(axis, space)),
+            _ => None,
         }
     }
 
@@ -332,12 +386,15 @@ impl TransformInteraction {
             .map_or(*pivot, |intersection| intersection.1);
         let move_vector = new_pivot - pivot;
 
-        match self.constraint_axis() {
-            None => {
-                move_vector
-            }
-            Some(axis) => {
+        match self.axis_constraint {
+            AxisConstraint::None => move_vector,
+            AxisConstraint::Axis(..) => {
+                let axis = self.constraint_axis().unwrap();
                 axis * axis.dot(move_vector)
+            }
+            AxisConstraint::Plane(..) => {
+                let normal = self.constraint_plane_normal().unwrap();
+                move_vector - normal * normal.dot(move_vector)
             }
         }
     }
@@ -359,18 +416,33 @@ impl TransformInteraction {
         quaternion_from_axis_angle_safe(axis, angle)
     }
 
+    /// Signed change (in pixels) of the cursor's distance from the pivot's
+    /// screen projection since a directional drag began. Used for plane and
+    /// uniform scale, where there is no single handle axis to project onto:
+    /// dragging outward grows, inward shrinks. Falls back to horizontal drag.
+    fn radial_magnitude(&self, camera: &PositionedCamera, size: (u32, u32)) -> f32 {
+        let (w, h) = size;
+        let (dx, dy) = self.accumulated_delta;
+        let Some((sx, sy)) = self.drag_start_screen else { return dx };
+        let p = camera.project_point_screen(self.pivot_world, w, h);
+        let start_dist = ((sx - p.x).powi(2) + (sy - p.y).powi(2)).sqrt();
+        let cur_dist = (((sx + dx) - p.x).powi(2) + ((sy + dy) - p.y).powi(2)).sqrt();
+        cur_dist - start_dist
+    }
+
     /// Compute the scale factor based on mouse movement and constraints.
     /// `size` is the viewport size in pixels.
     pub fn scale(&self, camera: &PositionedCamera, size: (u32, u32)) -> Vector3 {
         // 0.5% change per pixel
         let sensitivity = 0.005;
 
-        // For a handle drag, project the handle's world axis to screen space and
-        // measure the drag along it, so dragging toward the handle grows scale
-        // and away shrinks it. Otherwise (keyboard/no-handle) use horizontal drag.
         let (dx, dy) = self.accumulated_delta;
-        let magnitude = match (self.directional, self.constraint_axis()) {
-            (true, Some(axis)) => {
+        let magnitude = match (self.directional, self.axis_constraint) {
+            // Single-axis handle drag: project the handle's world axis to screen
+            // space and measure the drag along it, so dragging toward the handle
+            // grows scale and away shrinks it.
+            (true, AxisConstraint::Axis(..)) => {
+                let axis = self.constraint_axis().unwrap();
                 let (w, h) = size;
                 let p0 = camera.project_point_screen(self.pivot_world, w, h);
                 let p1 = camera.project_point_screen(self.pivot_world + axis, w, h);
@@ -384,6 +456,11 @@ impl TransformInteraction {
                     dx
                 }
             }
+            // Plane or uniform handle drag: radial distance from the pivot.
+            (true, AxisConstraint::Plane(..)) | (true, AxisConstraint::None) => {
+                self.radial_magnitude(camera, size)
+            }
+            // Keyboard / non-directional: horizontal drag.
             _ => dx,
         };
 
@@ -392,9 +469,12 @@ impl TransformInteraction {
 
         match self.axis_constraint {
             AxisConstraint::None => Vector3::new(factor, factor, factor),
-            AxisConstraint::WorldX | AxisConstraint::LocalX => Vector3::new(factor, 1.0, 1.0),
-            AxisConstraint::WorldY | AxisConstraint::LocalY => Vector3::new(1.0, factor, 1.0),
-            AxisConstraint::WorldZ | AxisConstraint::LocalZ => Vector3::new(1.0, 1.0, factor),
+            AxisConstraint::Axis(Axis::X, _) => Vector3::new(factor, 1.0, 1.0),
+            AxisConstraint::Axis(Axis::Y, _) => Vector3::new(1.0, factor, 1.0),
+            AxisConstraint::Axis(Axis::Z, _) => Vector3::new(1.0, 1.0, factor),
+            AxisConstraint::Plane(Axis::X, _) => Vector3::new(1.0, factor, factor),
+            AxisConstraint::Plane(Axis::Y, _) => Vector3::new(factor, 1.0, factor),
+            AxisConstraint::Plane(Axis::Z, _) => Vector3::new(factor, factor, 1.0),
         }
     }
 

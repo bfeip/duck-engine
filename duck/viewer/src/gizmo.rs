@@ -4,7 +4,7 @@
 //! a mesh and material ready to be added to the scene. All geometry is built at
 //! the origin; positioning at the selection pivot is done via node transforms.
 
-use duck_engine_common::{Deg, Matrix4, Point3, Vector3};
+use duck_engine_common::{Deg, Matrix4, Point3, Vector3, Vector4};
 use duck_engine_scene::{NodeFlags, PositionedCamera, Scene};
 
 use crate::common::{Axis, Ray, RgbaColor, Transform};
@@ -24,6 +24,9 @@ const SEGMENTS: u32 = 16;
 /// [`DisplayBehavior::screen_size`], so the gizmo no longer scales with zoom.
 const GIZMO_SCREEN_SIZE: f32 = 90.0;
 
+/// Neutral color for the center ball (uniform scale / view-plane translate).
+const BALL_COLOR: RgbaColor = RgbaColor { r: 0.85, g: 0.85, b: 0.85, a: 1.0 };
+
 /// Which type of gizmo to display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GizmoType {
@@ -32,14 +35,57 @@ pub enum GizmoType {
     Scale,
 }
 
-/// A single gizmo handle (one axis of a gizmo).
+/// Identifies a gizmo handle: a single axis arm, a coordinate-plane handle
+/// (identified by its excluded/normal axis), or the center ball.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GizmoHandleId {
+    /// A single-axis arm (arrow / cube tip / rotation ring).
+    Axis(Axis),
+    /// A coordinate-plane handle. The axis is the plane's normal (excluded)
+    /// axis, so `Plane(Axis::Z)` is the XY-plane handle.
+    Plane(Axis),
+    /// The center ball: uniform scale, or view-plane (camera-relative) translate.
+    Ball,
+}
+
+/// A single gizmo handle.
 pub struct GizmoHandle {
     pub mesh: Mesh,
     pub material: FaceMaterial,
-    pub axis: Axis,
+    pub id: GizmoHandleId,
 }
 
-/// Brighter color for hover/active highlighting.
+/// The two in-plane axes for a plane whose normal is `normal`.
+pub fn plane_in_axes(normal: Axis) -> (Axis, Axis) {
+    match normal {
+        Axis::X => (Axis::Y, Axis::Z),
+        Axis::Y => (Axis::Z, Axis::X),
+        Axis::Z => (Axis::X, Axis::Y),
+    }
+}
+
+/// Translucent fill color for a plane handle: blend of its two in-plane axes.
+fn plane_color(normal: Axis) -> RgbaColor {
+    let (a, b) = plane_in_axes(normal);
+    let (ca, cb) = (a.color(), b.color());
+    RgbaColor {
+        r: (ca.r + cb.r) * 0.5,
+        g: (ca.g + cb.g) * 0.5,
+        b: (ca.b + cb.b) * 0.5,
+        a: 0.5,
+    }
+}
+
+/// Base (unhighlighted) color for a handle.
+fn handle_base_color(id: GizmoHandleId) -> RgbaColor {
+    match id {
+        GizmoHandleId::Axis(axis) => axis.color(),
+        GizmoHandleId::Plane(normal) => plane_color(normal),
+        GizmoHandleId::Ball => BALL_COLOR,
+    }
+}
+
+/// Brighter color for hover/active highlighting of an axis handle.
 pub fn highlight_color(axis: Axis) -> RgbaColor {
     match axis {
         Axis::X => RgbaColor { r: 1.0, g: 0.5, b: 0.3, a: 1.0 },
@@ -48,12 +94,63 @@ pub fn highlight_color(axis: Axis) -> RgbaColor {
     }
 }
 
-/// Create a gizmo material for the given axis color.
+/// Highlight color for any handle (hover/active).
+fn handle_highlight_color(id: GizmoHandleId) -> RgbaColor {
+    match id {
+        GizmoHandleId::Axis(axis) => highlight_color(axis),
+        GizmoHandleId::Plane(normal) => {
+            let c = plane_color(normal);
+            // Brighten the fill and make it more opaque on highlight.
+            RgbaColor {
+                r: (c.r + 0.4).min(1.0),
+                g: (c.g + 0.4).min(1.0),
+                b: (c.b + 0.4).min(1.0),
+                a: 0.8,
+            }
+        }
+        GizmoHandleId::Ball => RgbaColor { r: 1.0, g: 1.0, b: 0.5, a: 1.0 },
+    }
+}
+
+/// Create a gizmo material for the given color, blending when it is translucent.
 fn gizmo_material(color: RgbaColor) -> FaceMaterial {
+    let alpha_mode = if color.a < 1.0 { AlphaMode::Blend } else { AlphaMode::Opaque };
     FaceMaterial::new()
         .with_base_color_factor(color)
         .with_flags(GIZMO_FLAGS)
-        .with_alpha_mode(AlphaMode::Opaque)
+        .with_alpha_mode(alpha_mode)
+}
+
+/// Build a plane handle: a small translucent quad in the coordinate plane whose
+/// normal is `normal`, offset into the positive corner between its two axes.
+fn build_plane_handle(normal: Axis, size: f32) -> GizmoHandle {
+    let quad_size = size * 0.22;
+    let center_dist = size * 0.3;
+    let (u_axis, v_axis) = plane_in_axes(normal);
+    let (u, v, n) = (u_axis.direction(), v_axis.direction(), normal.direction());
+    let translation = (u + v) * center_dist;
+
+    // Orient the authored XY quad (local x→u, local y→v, local z→normal) and
+    // place its center in the positive corner between the two in-plane axes.
+    let orient = Matrix4::from_cols(
+        u.extend(0.0),
+        v.extend(0.0),
+        n.extend(0.0),
+        Vector4::new(translation.x, translation.y, translation.z, 1.0),
+    );
+
+    let mesh = Mesh::quad(quad_size, quad_size, PrimitiveType::TriangleList)
+        .transformed(&orient);
+    let material = gizmo_material(plane_color(normal));
+
+    GizmoHandle { mesh, material, id: GizmoHandleId::Plane(normal) }
+}
+
+/// Build the center ball handle (uniform scale / view-plane translate).
+fn build_ball_handle(size: f32) -> GizmoHandle {
+    let mesh = Mesh::sphere(size * 0.09, SEGMENTS, SEGMENTS / 2, PrimitiveType::TriangleList);
+    let material = gizmo_material(BALL_COLOR);
+    GizmoHandle { mesh, material, id: GizmoHandleId::Ball }
 }
 
 /// Build translation gizmo handles: cylinder shaft + cone arrowhead per axis.
@@ -63,7 +160,7 @@ pub fn build_translate_handles(size: f32) -> Vec<GizmoHandle> {
     let cone_radius = size * 0.08;
     let cone_height = size * 0.2;
 
-    Axis::ALL
+    let mut handles: Vec<GizmoHandle> = Axis::ALL
         .into_iter()
         .map(|axis| {
             let rotation = axis.rotation_from_y();
@@ -95,13 +192,15 @@ pub fn build_translate_handles(size: f32) -> Vec<GizmoHandle> {
             let mesh = shaft.merged(&cone);
             let material = gizmo_material(axis.color());
 
-            GizmoHandle {
-                mesh,
-                material,
-                axis,
-            }
+            GizmoHandle { mesh, material, id: GizmoHandleId::Axis(axis) }
         })
-        .collect()
+        .collect();
+
+    for normal in Axis::ALL {
+        handles.push(build_plane_handle(normal, size));
+    }
+    handles.push(build_ball_handle(size));
+    handles
 }
 
 /// Build scale gizmo handles: cylinder shaft + cube tip per axis.
@@ -110,7 +209,7 @@ pub fn build_scale_handles(size: f32) -> Vec<GizmoHandle> {
     let shaft_height = size * 0.8;
     let cube_size = size * 0.1;
 
-    Axis::ALL
+    let mut handles: Vec<GizmoHandle> = Axis::ALL
         .into_iter()
         .map(|axis| {
             let rotation = axis.rotation_from_y();
@@ -136,13 +235,15 @@ pub fn build_scale_handles(size: f32) -> Vec<GizmoHandle> {
             let mesh = shaft.merged(&cube);
             let material = gizmo_material(axis.color());
 
-            GizmoHandle {
-                mesh,
-                material,
-                axis,
-            }
+            GizmoHandle { mesh, material, id: GizmoHandleId::Axis(axis) }
         })
-        .collect()
+        .collect();
+
+    for normal in Axis::ALL {
+        handles.push(build_plane_handle(normal, size));
+    }
+    handles.push(build_ball_handle(size));
+    handles
 }
 
 /// Build rotation gizmo handles: one torus ring per axis.
@@ -173,11 +274,7 @@ pub fn build_rotate_handles(size: f32) -> Vec<GizmoHandle> {
             .transformed(&rotation);
             let material = gizmo_material(axis.color());
 
-            GizmoHandle {
-                mesh,
-                material,
-                axis,
-            }
+            GizmoHandle { mesh, material, id: GizmoHandleId::Axis(axis) }
         })
         .collect()
 }
@@ -199,14 +296,16 @@ pub fn build_handles(gizmo_type: GizmoType, size: f32) -> Vec<GizmoHandle> {
 pub struct GizmoState {
     /// Root node for all gizmo geometry. Created when first needed.
     root_node: Option<NodeId>,
-    /// Node IDs of the gizmo handles (one per axis: X, Y, Z).
+    /// Node IDs of the gizmo handles, index-aligned with `handle_ids`.
     node_ids: Vec<NodeId>,
     /// Mesh IDs added to the scene for gizmo geometry.
     mesh_ids: Vec<MeshId>,
-    /// Material IDs added to the scene for gizmo handles.
+    /// Material IDs added to the scene for gizmo handles, index-aligned with `node_ids`.
     material_ids: Vec<FaceMaterialId>,
-    /// Which axis is currently highlighted (hovered or active).
-    highlighted_axis: Option<Axis>,
+    /// Identity of each handle, index-aligned with `node_ids`/`material_ids`.
+    handle_ids: Vec<GizmoHandleId>,
+    /// Which handle is currently highlighted (hovered or active).
+    highlighted: Option<GizmoHandleId>,
     /// Current gizmo type being displayed.
     current_type: Option<GizmoType>,
 }
@@ -218,7 +317,8 @@ impl GizmoState {
             node_ids: Vec::new(),
             mesh_ids: Vec::new(),
             material_ids: Vec::new(),
-            highlighted_axis: None,
+            handle_ids: Vec::new(),
+            highlighted: None,
             current_type: None,
         }
     }
@@ -272,6 +372,7 @@ impl GizmoState {
             self.node_ids.push(node_id);
             self.mesh_ids.push(mesh_id);
             self.material_ids.push(material_id);
+            self.handle_ids.push(handle.id);
         }
 
         self.current_type = Some(gizmo_type);
@@ -292,7 +393,8 @@ impl GizmoState {
         self.node_ids.clear();
         self.mesh_ids.clear();
         self.material_ids.clear();
-        self.highlighted_axis = None;
+        self.handle_ids.clear();
+        self.highlighted = None;
         self.current_type = None;
     }
 
@@ -316,7 +418,7 @@ impl GizmoState {
         scene: &Scene,
         camera: &PositionedCamera,
         viewport: (u32, u32),
-    ) -> Option<Axis> {
+    ) -> Option<GizmoHandleId> {
         if !self.has_gizmo() {
             return None;
         }
@@ -329,7 +431,7 @@ impl GizmoState {
         for result in &results {
             for (i, &node_id) in self.node_ids.iter().enumerate() {
                 if result.node_id == node_id {
-                    return Some(Axis::ALL[i]);
+                    return Some(self.handle_ids[i]);
                 }
             }
         }
@@ -337,46 +439,40 @@ impl GizmoState {
         None
     }
 
-    /// Highlight a specific axis handle (or clear highlight with None).
-    pub fn set_highlight(&mut self, axis: Option<Axis>, scene: &mut Scene) {
-        if self.highlighted_axis == axis {
+    /// The index of a handle in the parallel arrays, by identity.
+    fn handle_index(&self, id: GizmoHandleId) -> Option<usize> {
+        self.handle_ids.iter().position(|&h| h == id)
+    }
+
+    /// Highlight a specific handle (or clear highlight with None).
+    pub fn set_highlight(&mut self, handle: Option<GizmoHandleId>, scene: &mut Scene) {
+        if self.highlighted == handle {
             return;
         }
 
         // Restore previous highlight to normal color
-        if let Some(prev_axis) = self.highlighted_axis {
-            let idx = axis_index(prev_axis);
-            if let Some(&mat_id) = self.material_ids.get(idx)
-                && let Some(mat) = scene.get_face_material_mut(mat_id) {
-                    mat.set_base_color_factor(prev_axis.color());
-                }
-        }
+        if let Some(prev) = self.highlighted
+            && let Some(idx) = self.handle_index(prev)
+            && let Some(&mat_id) = self.material_ids.get(idx)
+            && let Some(mat) = scene.get_face_material_mut(mat_id) {
+                mat.set_base_color_factor(handle_base_color(prev));
+            }
 
-        // Apply highlight color to new axis
-        if let Some(new_axis) = axis {
-            let idx = axis_index(new_axis);
-            if let Some(&mat_id) = self.material_ids.get(idx)
-                && let Some(mat) = scene.get_face_material_mut(mat_id) {
-                    mat.set_base_color_factor(highlight_color(new_axis));
-                }
-        }
+        // Apply highlight color to new handle
+        if let Some(new) = handle
+            && let Some(idx) = self.handle_index(new)
+            && let Some(&mat_id) = self.material_ids.get(idx)
+            && let Some(mat) = scene.get_face_material_mut(mat_id) {
+                mat.set_base_color_factor(handle_highlight_color(new));
+            }
 
-        self.highlighted_axis = axis;
+        self.highlighted = handle;
     }
 }
 
 impl Default for GizmoState {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Maps an axis to its index in the gizmo handle arrays (X=0, Y=1, Z=2).
-fn axis_index(axis: Axis) -> usize {
-    match axis {
-        Axis::X => 0,
-        Axis::Y => 1,
-        Axis::Z => 2,
     }
 }
 
@@ -389,12 +485,17 @@ use crate::geom_query::RayPickQuery;
     use super::*;
 
     #[test]
-    fn translate_handles_have_three_axes() {
+    fn translate_handles_have_axis_plane_and_ball() {
         let handles = build_translate_handles(1.0);
-        assert_eq!(handles.len(), 3);
-        assert_eq!(handles[0].axis, Axis::X);
-        assert_eq!(handles[1].axis, Axis::Y);
-        assert_eq!(handles[2].axis, Axis::Z);
+        // 3 axis arms + 3 plane handles + 1 center ball.
+        assert_eq!(handles.len(), 7);
+        assert_eq!(handles[0].id, GizmoHandleId::Axis(Axis::X));
+        assert_eq!(handles[1].id, GizmoHandleId::Axis(Axis::Y));
+        assert_eq!(handles[2].id, GizmoHandleId::Axis(Axis::Z));
+        assert_eq!(handles[3].id, GizmoHandleId::Plane(Axis::X));
+        assert_eq!(handles[4].id, GizmoHandleId::Plane(Axis::Y));
+        assert_eq!(handles[5].id, GizmoHandleId::Plane(Axis::Z));
+        assert_eq!(handles[6].id, GizmoHandleId::Ball);
     }
 
     #[test]
@@ -406,9 +507,11 @@ use crate::geom_query::RayPickQuery;
     }
 
     #[test]
-    fn scale_handles_have_three_axes() {
+    fn scale_handles_have_axis_plane_and_ball() {
         let handles = build_scale_handles(1.0);
-        assert_eq!(handles.len(), 3);
+        // 3 axis arms + 3 plane handles + 1 center ball.
+        assert_eq!(handles.len(), 7);
+        assert_eq!(handles[6].id, GizmoHandleId::Ball);
     }
 
     #[test]
@@ -435,9 +538,9 @@ use crate::geom_query::RayPickQuery;
 
     #[test]
     fn build_handles_dispatches_correctly() {
-        assert_eq!(build_handles(GizmoType::Translate, 1.0).len(), 3);
+        assert_eq!(build_handles(GizmoType::Translate, 1.0).len(), 7);
         assert_eq!(build_handles(GizmoType::Rotate, 1.0).len(), 3);
-        assert_eq!(build_handles(GizmoType::Scale, 1.0).len(), 3);
+        assert_eq!(build_handles(GizmoType::Scale, 1.0).len(), 7);
     }
 
     #[test]
@@ -487,7 +590,7 @@ use crate::geom_query::RayPickQuery;
                 any_mesh_hit,
                 "Axis {:?}: ray through AABB center hit the AABB but missed all triangles. \
                  vertices={}, triangles={}, aabb_min={:?}, aabb_max={:?}",
-                handle.axis,
+                handle.id,
                 handle.mesh.vertices().len(),
                 handle.mesh.triangles().count(),
                 aabb.min,
@@ -529,7 +632,7 @@ use crate::geom_query::RayPickQuery;
                 any_mesh_hit,
                 "Axis {:?}: ray through AABB center missed all triangles. \
                  vertices={}, triangles={}",
-                handle.axis,
+                handle.id,
                 handle.mesh.vertices().len(),
                 handle.mesh.triangles().count(),
             );
@@ -569,7 +672,7 @@ use crate::geom_query::RayPickQuery;
                 any_mesh_hit,
                 "Axis {:?}: ray through AABB center missed all triangles. \
                  vertices={}, triangles={}",
-                handle.axis,
+                handle.id,
                 handle.mesh.vertices().len(),
                 handle.mesh.triangles().count(),
             );
@@ -664,7 +767,7 @@ use crate::geom_query::RayPickQuery;
             assert!(
                 found,
                 "Axis {:?}: full scene pipeline failed to pick gizmo handle at pivot {:?}",
-                handle.axis, pivot,
+                handle.id, pivot,
             );
         }
     }
@@ -747,7 +850,7 @@ use crate::geom_query::RayPickQuery;
             assert!(
                 found,
                 "Axis {:?}: picking failed after position update to {:?}",
-                handle.axis, new_pivot,
+                handle.id, new_pivot,
             );
         }
     }

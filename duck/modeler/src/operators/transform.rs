@@ -4,12 +4,12 @@ use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::SubGeometryKind;
-use duck_engine_viewer::common::{decompose_matrix, Axis, InnerSpace, Point3, Quaternion, Vector3};
+use duck_engine_viewer::common::{decompose_matrix, InnerSpace, Point3, Quaternion, Vector3};
 use duck_engine_viewer::event::{AppEvent, DeviceEvent, Event, EventContext};
-use duck_engine_viewer::gizmo::GizmoState;
+use duck_engine_viewer::gizmo::{GizmoHandleId, GizmoState};
 use duck_engine_viewer::input::{ElementState, Modifiers};
 use duck_engine_viewer::operator::{
-    axis_from_constraint, AxisConstraint, Operator, SelectionKinds, SelectionMode, TransformAction,
+    Operator, SelectionKinds, SelectionMode, TransformAction,
     TransformAnnotations, TransformInteraction, TransformMode, TransformOperator,
 };
 use duck_engine_viewer::scene::NodeId;
@@ -393,7 +393,7 @@ impl FaceTweak {
         }
         self.interaction.cycle_axis_constraint(axis);
         self.update_ghost(ctx);
-        let highlight = axis_from_constraint(&self.interaction.axis_constraint());
+        let highlight = self.interaction.highlight_handle();
         let mut scene = ctx.scene.lock().unwrap();
         self.annotations.update(&self.interaction, &mut scene);
         self.gizmo.set_highlight(highlight, &mut scene);
@@ -501,21 +501,22 @@ impl FaceTweak {
                     let scene = ctx.scene.lock().unwrap();
                     self.gizmo.pick_handle(ray, &scene, &camera, ctx.size)
                 };
-                if let Some(axis) = picked {
+                if let Some(handle) = picked {
                     self.start(target, ctx, options);
                     if !self.interaction.is_active() {
                         return false;
                     }
-                    // Scale stays uniform; the handle only starts the drag.
-                    if self.interaction.mode() != TransformMode::Scale {
-                        self.interaction.set_axis_constraint(match axis {
-                            Axis::X => AxisConstraint::WorldX,
-                            Axis::Y => AxisConstraint::WorldY,
-                            Axis::Z => AxisConstraint::WorldZ,
-                        });
-                    }
+                    // Scale stays uniform: use a Ball-equivalent constraint (None)
+                    // so the handle only begins a directional drag. Other modes
+                    // adopt the grabbed handle's axis/plane constraint.
+                    let constraint_handle = if self.interaction.mode() == TransformMode::Scale {
+                        GizmoHandleId::Ball
+                    } else {
+                        handle
+                    };
+                    self.interaction.constrain_to_handle(constraint_handle, *start_pos);
                     let mut scene = ctx.scene.lock().unwrap();
-                    self.gizmo.set_highlight(Some(axis), &mut scene);
+                    self.gizmo.set_highlight(Some(handle), &mut scene);
                     self.annotations.update(&self.interaction, &mut scene);
                     return true;
                 }
@@ -559,8 +560,8 @@ impl FaceTweak {
                         position.0 as f32, position.1 as f32, ctx.size.0, ctx.size.1,
                     );
                     let mut scene = ctx.scene.lock().unwrap();
-                    let axis = self.gizmo.pick_handle(ray, &scene, &camera, ctx.size);
-                    self.gizmo.set_highlight(axis, &mut scene);
+                    let handle = self.gizmo.pick_handle(ray, &scene, &camera, ctx.size);
+                    self.gizmo.set_highlight(handle, &mut scene);
                 }
                 false
             }

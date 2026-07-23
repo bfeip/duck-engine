@@ -202,6 +202,16 @@ pub enum Axis {
 }
 
 impl Axis {
+    /// The axis named by a key character (`'x'`/`'y'`/`'z'`), else `None`.
+    pub fn from_char(c: char) -> Option<Axis> {
+        match c {
+            'x' => Some(Axis::X),
+            'y' => Some(Axis::Y),
+            'z' => Some(Axis::Z),
+            _ => None,
+        }
+    }
+    
     /// Unit direction vector for this axis.
     pub fn direction(&self) -> Vector3 {
         match self {

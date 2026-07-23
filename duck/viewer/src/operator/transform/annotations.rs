@@ -4,10 +4,12 @@ use std::collections::HashMap;
 
 use duck_engine_scene::{Mesh, NodeFlags, Scene};
 
+use duck_engine_common::{InnerSpace, Vector3};
+
 use crate::common::{Axis, Transform};
 use crate::scene::{Instance, LineMaterial, LineMaterialId, NodeId};
 
-use super::interaction::{axis_from_constraint, TransformInteraction};
+use super::interaction::{AxisConstraint, TransformInteraction};
 
 /// Owns the scene nodes for transform feedback lines: a colored line through
 /// the pivot along the constrained axis, redrawn as the constraint changes.
@@ -42,39 +44,45 @@ impl TransformAnnotations {
             scene.remove_node(id);
         }
 
-        // Add axis constraint line if constrained
-        let constraint = interaction.axis_constraint();
-        if let Some(color) = constraint.color()
-            && let Some(axis) = interaction.constraint_axis() {
-                let half_length = interaction.model_radius() * 2.0;
-                let start = interaction.pivot() - axis * half_length;
-                let end = interaction.pivot() + axis * half_length;
-                let mesh = Mesh::line(start, end);
-                let mesh_id = scene.add_mesh(mesh);
+        // A single-axis constraint draws one line along its axis; a plane
+        // constraint draws its two in-plane axis lines.
+        for (axis, direction) in constraint_lines(interaction) {
+            self.draw_axis_line(axis, direction, interaction, scene);
+        }
+    }
 
-                // Get or insert the material for this axis annotation
-                let create_color_material = |scene: &mut Scene| {
-                    scene.add_line_material(LineMaterial::new(color))
-                };
-                let mut material = self.axis_materials.entry(
-                    axis_from_constraint(&constraint).unwrap()
-                ).or_insert(create_color_material(scene)).to_owned();
-                if scene.get_line_material(material).is_none() {
-                    // Our material was removed from the scene since we last used it.
-                    // This can happen if, while unused, the scene removed all unreferenced
-                    // resources. We'll have to reinsert the material.
-                    material = create_color_material(scene);
-                }
+    /// Draw one colored line through the pivot along `direction`, colored for `axis`.
+    fn draw_axis_line(
+        &mut self,
+        axis: Axis,
+        direction: Vector3,
+        interaction: &TransformInteraction,
+        scene: &mut Scene,
+    ) {
+        let half_length = interaction.model_radius() * 2.0;
+        let start = interaction.pivot() - direction * half_length;
+        let end = interaction.pivot() + direction * half_length;
+        let mesh_id = scene.add_mesh(Mesh::line(start, end));
 
-                let id = scene.add_instance_node(
-                    self.root,
-                    Instance::new(mesh_id).with_line_material(material),
-                    Some("Transform axis annotation".to_owned()),
-                    Transform::IDENTITY,
-                    NodeFlags::inert()
-                ).expect("Failed to create axis annotation");
-                self.nodes.push(id);
+        // Reuse the cached material for this axis's color, recreating it if it
+        // was pruned since last use (unreferenced resource sweep).
+        let material = match self.axis_materials.get(&axis).copied() {
+            Some(m) if scene.get_line_material(m).is_some() => m,
+            _ => {
+                let m = scene.add_line_material(LineMaterial::new(axis.color()));
+                self.axis_materials.insert(axis, m);
+                m
             }
+        };
+
+        let id = scene.add_instance_node(
+            self.root,
+            Instance::new(mesh_id).with_line_material(material),
+            Some("Transform axis annotation".to_owned()),
+            Transform::IDENTITY,
+            NodeFlags::inert()
+        ).expect("Failed to create axis annotation");
+        self.nodes.push(id);
     }
 
     /// Remove the annotation lines.
@@ -88,5 +96,34 @@ impl TransformAnnotations {
 impl Default for TransformAnnotations {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The colored lines to draw for the interaction's current constraint:
+/// `(axis-for-color, world-space direction)`. Empty when unconstrained.
+fn constraint_lines(interaction: &TransformInteraction) -> Vec<(Axis, Vector3)> {
+    use crate::common::{local_axis_x, local_axis_y, local_axis_z};
+    use crate::gizmo::plane_in_axes;
+    use super::interaction::ConstraintSpace;
+
+    let frame = interaction.frame_rotation();
+    let dir = |axis: Axis, space: ConstraintSpace| -> Vector3 {
+        match space {
+            ConstraintSpace::World => axis.direction(),
+            ConstraintSpace::Local => match axis {
+                Axis::X => local_axis_x(frame),
+                Axis::Y => local_axis_y(frame),
+                Axis::Z => local_axis_z(frame),
+            },
+        }
+    };
+
+    match interaction.axis_constraint() {
+        AxisConstraint::None => Vec::new(),
+        AxisConstraint::Axis(axis, space) => vec![(axis, dir(axis, space).normalize())],
+        AxisConstraint::Plane(normal, space) => {
+            let (u, v) = plane_in_axes(normal);
+            vec![(u, dir(u, space).normalize()), (v, dir(v, space).normalize())]
+        }
     }
 }

@@ -112,12 +112,33 @@ impl TransformOperator {
             }
         }
         self.interaction.cycle_axis_constraint(axis);
+        self.after_constraint_changed(ctx);
+        true
+    }
+
+    /// Handle a plane key (Shift+X/Y/Z): start the transform constrained to that
+    /// plane if idle, otherwise cycle the existing plane constraint. Returns
+    /// whether the key was acted on (false only when starting failed).
+    fn constrain_plane(&mut self, axis: char, ctx: &mut EventContext) -> bool {
+        if !self.is_active() {
+            self.start_transform(ctx);
+            if !self.is_active() {
+                return false;
+            }
+        }
+        self.interaction.cycle_plane_constraint(axis);
+        self.after_constraint_changed(ctx);
+        true
+    }
+
+    /// Re-apply the preview and refresh annotations/highlight after a keyboard
+    /// constraint change.
+    fn after_constraint_changed(&mut self, ctx: &mut EventContext) {
         self.apply_preview_transform(ctx);
-        let highlight = axis_from_constraint(&self.interaction.axis_constraint());
+        let highlight = self.interaction.highlight_handle();
         let mut scene = ctx.scene.lock().unwrap();
         self.annotations.update(&self.interaction, &mut scene);
         self.gizmo.set_highlight(highlight, &mut scene);
-        true
     }
 
     /// Apply the current transform preview to all selected nodes.
@@ -428,6 +449,21 @@ impl Operator for TransformOperator {
                                 return true;
                             }
                         }
+                        TransformAction::ConstrainPlaneX => {
+                            if self.constrain_plane('x', ctx) {
+                                return true;
+                            }
+                        }
+                        TransformAction::ConstrainPlaneY => {
+                            if self.constrain_plane('y', ctx) {
+                                return true;
+                            }
+                        }
+                        TransformAction::ConstrainPlaneZ => {
+                            if self.constrain_plane('z', ctx) {
+                                return true;
+                            }
+                        }
                         TransformAction::KeyConfirm if self.is_active() => {
                             self.confirm_transform(ctx);
                             return true;
@@ -492,14 +528,14 @@ impl Operator for TransformOperator {
                     let scene = ctx.scene.lock().unwrap();
                     self.gizmo.pick_handle(ray, &scene, &camera, ctx.size)
                 };
-                if let Some(axis) = picked {
+                if let Some(handle) = picked {
                     self.start_transform(ctx);
                     if !self.is_active() {
                         return false;
                     }
-                    self.interaction.constrain_to_handle_axis(axis);
+                    self.interaction.constrain_to_handle(handle, *start_pos);
                     let mut scene = ctx.scene.lock().unwrap();
-                    self.gizmo.set_highlight(Some(axis), &mut scene);
+                    self.gizmo.set_highlight(Some(handle), &mut scene);
                     self.annotations.update(&self.interaction, &mut scene);
                     return true;
                 }
@@ -543,8 +579,8 @@ impl Operator for TransformOperator {
                         position.0 as f32, position.1 as f32, ctx.size.0, ctx.size.1,
                     );
                     let mut scene = ctx.scene.lock().unwrap();
-                    let axis = self.gizmo.pick_handle(ray, &scene, &camera, ctx.size);
-                    self.gizmo.set_highlight(axis, &mut scene);
+                    let handle = self.gizmo.pick_handle(ray, &scene, &camera, ctx.size);
+                    self.gizmo.set_highlight(handle, &mut scene);
                 }
                 false
             }
