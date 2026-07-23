@@ -10,7 +10,7 @@ use duck_engine_viewer::gizmo::{GizmoHandleId, GizmoState};
 use duck_engine_viewer::input::{ElementState, Modifiers};
 use duck_engine_viewer::operator::{
     Operator, SelectionKinds, SelectionMode, TransformAction,
-    TransformAnnotations, TransformInteraction, TransformMode, TransformOperator,
+    TransformInteraction, TransformMode, TransformOperator,
 };
 use duck_engine_viewer::scene::NodeId;
 use duck_engine_viewer::selection::SelectionItem;
@@ -202,7 +202,6 @@ struct FaceTarget {
 struct FaceTweak {
     interaction: TransformInteraction,
     gizmo: GizmoState,
-    annotations: TransformAnnotations,
     /// Ghost of the picked face shown while dragging.
     preview: PreviewSession,
     /// The face locked at drag start.
@@ -219,7 +218,6 @@ impl FaceTweak {
         Self {
             interaction: TransformInteraction::new(mode),
             gizmo: GizmoState::new(),
-            annotations: TransformAnnotations::new(),
             preview: PreviewSession::new(Arc::clone(&document)),
             active_target: None,
             resolved: None,
@@ -336,7 +334,6 @@ impl FaceTweak {
         self.preview.cancel();
         {
             let mut scene = ctx.scene.lock().unwrap();
-            self.annotations.clear(&mut scene);
             self.gizmo.set_highlight(None, &mut scene);
         }
         self.interaction.finish();
@@ -349,7 +346,6 @@ impl FaceTweak {
         self.preview.cancel();
         let scene_arc = self.document.lock().unwrap().scene().clone();
         let mut scene = scene_arc.lock().unwrap();
-        self.annotations.clear(&mut scene);
         self.gizmo.hide(&mut scene);
         self.interaction.finish();
         self.active_target = None;
@@ -395,7 +391,6 @@ impl FaceTweak {
         self.update_ghost(ctx);
         let highlight = self.interaction.highlight_handle();
         let mut scene = ctx.scene.lock().unwrap();
-        self.annotations.update(&self.interaction, &mut scene);
         self.gizmo.set_highlight(highlight, &mut scene);
         true
     }
@@ -517,7 +512,6 @@ impl FaceTweak {
                     self.interaction.constrain_to_handle(constraint_handle, *start_pos);
                     let mut scene = ctx.scene.lock().unwrap();
                     self.gizmo.set_highlight(Some(handle), &mut scene);
-                    self.annotations.update(&self.interaction, &mut scene);
                     return true;
                 }
                 false

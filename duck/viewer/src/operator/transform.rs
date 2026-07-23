@@ -10,10 +10,8 @@
 //! live preview by mutating node transforms, restore-on-cancel, and the
 //! [`AppEvent::TransformCommitted`] notification.
 
-mod annotations;
 mod interaction;
 
-pub use annotations::TransformAnnotations;
 pub use interaction::{
     axis_from_constraint, AxisConstraint, TransformAction, TransformInteraction, TransformMode,
 };
@@ -58,9 +56,6 @@ pub struct TransformOperator {
     /// Whether the persistent gizmo should be shown (when a selection exists).
     /// The handle set is always [`TransformMode::gizmo_type`] for this mode.
     gizmo_enabled: bool,
-
-    /// Axis-constraint feedback lines.
-    annotations: TransformAnnotations,
 }
 
 impl TransformOperator {
@@ -71,7 +66,6 @@ impl TransformOperator {
             original_transforms: Vec::new(),
             gizmo: GizmoState::new(),
             gizmo_enabled: false,
-            annotations: TransformAnnotations::new(),
         }
     }
 
@@ -86,16 +80,15 @@ impl TransformOperator {
         self.gizmo_enabled = on;
     }
 
-    /// Tears down all scene-side visuals owned by this operator (gizmo handles
-    /// and annotation lines) and aborts any in-progress transform, restoring the
-    /// affected nodes to their pre-transform state.
+    /// Tears down all scene-side visuals owned by this operator (gizmo handles)
+    /// and aborts any in-progress transform, restoring the affected nodes to
+    /// their pre-transform state.
     pub fn teardown(&mut self, scene: &mut Scene) {
         if self.is_active() {
             for original in &self.original_transforms {
                 scene.set_node_transform(original.node_id, original.local_transform);
             }
         }
-        self.annotations.clear(scene);
         self.gizmo.hide(scene);
         self.gizmo_enabled = false;
         self.reset();
@@ -131,13 +124,12 @@ impl TransformOperator {
         true
     }
 
-    /// Re-apply the preview and refresh annotations/highlight after a keyboard
+    /// Re-apply the preview and refresh the gizmo highlight after a keyboard
     /// constraint change.
     fn after_constraint_changed(&mut self, ctx: &mut EventContext) {
         self.apply_preview_transform(ctx);
         let highlight = self.interaction.highlight_handle();
         let mut scene = ctx.scene.lock().unwrap();
-        self.annotations.update(&self.interaction, &mut scene);
         self.gizmo.set_highlight(highlight, &mut scene);
     }
 
@@ -364,7 +356,6 @@ impl TransformOperator {
         ctx.emit(AppEvent::TransformCommitted { nodes });
         {
             let mut scene = ctx.scene.lock().unwrap();
-            self.annotations.clear(&mut scene);
             self.gizmo.set_highlight(None, &mut scene);
         }
         self.reset();
@@ -378,7 +369,6 @@ impl TransformOperator {
         self.restore_original_transforms(ctx);
         {
             let mut scene = ctx.scene.lock().unwrap();
-            self.annotations.clear(&mut scene);
             self.gizmo.set_highlight(None, &mut scene);
         }
         self.reset();
@@ -536,7 +526,6 @@ impl Operator for TransformOperator {
                     self.interaction.constrain_to_handle(handle, *start_pos);
                     let mut scene = ctx.scene.lock().unwrap();
                     self.gizmo.set_highlight(Some(handle), &mut scene);
-                    self.annotations.update(&self.interaction, &mut scene);
                     return true;
                 }
                 false
