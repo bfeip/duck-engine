@@ -36,7 +36,7 @@ impl<'c> EventContext<'c> {
     /// through the operator stack once the current event finishes propagating.
     ///
     /// Operators use this to signal that something happened that other operators may need
-    /// to respond to (e.g. [`AppEvent::TransformCommitted`](super::AppEvent::TransformCommitted)).
+    /// to respond to (e.g. [`AppEvent::Selection`](super::AppEvent::Selection)).
     pub fn emit(&mut self, event: impl Into<Event>) {
         self.emit_queue.push(event.into());
     }

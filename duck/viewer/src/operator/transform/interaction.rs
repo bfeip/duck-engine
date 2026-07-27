@@ -15,8 +15,9 @@ use crate::bindings::{InputBinding, InputMap};
 use crate::common::{
     local_axis_x, local_axis_y, local_axis_z, quaternion_from_axis_angle_safe, Axis, RgbaColor,
 };
-use crate::gizmo::{GizmoHandleId, GizmoType};
 use crate::input::{Key, Modifiers, MouseButton, NamedKey};
+
+use super::gizmo::{GizmoHandleId, GizmoType};
 
 /// Semantic actions for an interactive transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -159,13 +160,15 @@ pub struct TransformInteraction {
     /// plane/uniform scale to measure radial distance from the pivot.
     drag_start_screen: Option<(f32, f32)>,
 
-    pub bindings: InputMap<TransformAction>,
+    /// Input bindings consumed by the driver's dispatch loop.
+    pub(in crate::operator::transform) bindings: InputMap<TransformAction>,
 }
 
-impl TransformInteraction {
-    /// Creates a new interaction locked to the given mode.
-    pub fn new(mode: TransformMode) -> Self {
-        let bindings = InputMap::new()
+/// The default input bindings for a transform interaction: the mode's start
+/// key, X/Y/Z axis and Shift+X/Y/Z plane constraints, Enter/LMB confirm,
+/// Escape/RMB cancel, and LMB drags on gizmo handles.
+fn default_bindings(mode: TransformMode) -> InputMap<TransformAction> {
+    InputMap::new()
             .bind(
                 InputBinding::Key { key: Key::Character(mode.start_key()), modifiers: Modifiers::default() },
                 TransformAction::StartTransform,
@@ -218,10 +221,15 @@ impl TransformInteraction {
                 InputBinding::MouseDrag { button: MouseButton::Left, modifiers: Modifiers::default() },
                 TransformAction::GizmoDrag,
             )
-            .bind(
-                InputBinding::MouseDragEnd { button: MouseButton::Left, modifiers: Modifiers::default() },
-                TransformAction::GizmoDrag,
-            );
+        .bind(
+            InputBinding::MouseDragEnd { button: MouseButton::Left, modifiers: Modifiers::default() },
+            TransformAction::GizmoDrag,
+        )
+}
+
+impl TransformInteraction {
+    /// Creates a new interaction locked to the given mode.
+    pub fn new(mode: TransformMode) -> Self {
         Self {
             mode,
             active: false,
@@ -232,7 +240,7 @@ impl TransformInteraction {
             model_radius: 1.0,
             directional: false,
             drag_start_screen: None,
-            bindings,
+            bindings: default_bindings(mode),
         }
     }
 

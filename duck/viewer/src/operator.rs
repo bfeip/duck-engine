@@ -5,8 +5,9 @@ mod transform;
 pub use navigation::{NavigationMode, NavigationOperator};
 pub use selection::{SelectionKinds, SelectionMode, SelectionOperator};
 pub use transform::{
-    axis_from_constraint, AxisConstraint, TransformAction, TransformInteraction, TransformMode,
-    TransformOperator,
+    axis_from_constraint, gizmo, AxisConstraint, NodeTransformTarget, TransformAction, TransformCaps,
+    TransformDriver, TransformFrame, TransformInteraction, TransformMode, TransformOperator,
+    TransformTarget,
 };
 
 use crate::event::{Event, EventContext};

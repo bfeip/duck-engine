@@ -5,14 +5,12 @@ use std::sync::{Arc, Mutex};
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::SubGeometryKind;
 use duck_engine_viewer::common::{decompose_matrix, InnerSpace, Point3, Quaternion, Vector3};
-use duck_engine_viewer::event::{AppEvent, DeviceEvent, Event, EventContext};
-use duck_engine_viewer::gizmo::{GizmoHandleId, GizmoState};
-use duck_engine_viewer::input::{ElementState, Modifiers};
+use duck_engine_viewer::event::{Event, EventContext};
 use duck_engine_viewer::operator::{
-    Operator, SelectionKinds, SelectionMode, TransformAction,
-    TransformInteraction, TransformMode, TransformOperator,
+    NodeTransformTarget, Operator, SelectionKinds, SelectionMode, TransformCaps, TransformDriver,
+    TransformFrame, TransformInteraction, TransformMode, TransformTarget,
 };
-use duck_engine_viewer::scene::NodeId;
+use duck_engine_viewer::scene::{NodeId, Scene};
 use duck_engine_viewer::selection::SelectionItem;
 use opencascade::primitives::FaceOrientation;
 
@@ -26,18 +24,18 @@ use super::ConstructionOptions;
 /// CAD-aware transform tool for one operation (move, rotate, *or* scale). Each
 /// [`TransformMode`] is registered as its own palette tool.
 ///
-/// Selection is progressive: the first click selects a whole part, a second
-/// click drills into a face. The two grains transform differently:
+/// The tool is a viewer [`TransformDriver`] over a [`ModelerTarget`], which
+/// routes between two transform grains based on the selection:
 ///
-/// - **Whole parts** go through the viewer's [`TransformOperator`], which does
-///   all the interactive work (gizmos, axis constraints, mouse math, preview,
-///   confirm/cancel) by mutating the *scene node* transform. That moves the
-///   tessellated mesh but leaves the underlying CAD B-Rep untouched, so on
-///   every confirmed transform we bake the node's final transform into the
-///   part's geometry via [`Document::bake_transform`].
-/// - **Faces** go through [`FaceTweak`], built from the same interaction
-///   units: the drag moves a ghost of the picked face, and confirming re-solves
-///   the B-Rep around the transformed face via [`Document::tweak_faces`].
+/// - **Whole parts** (node selection) transform through the viewer's
+///   [`NodeTransformTarget`] — the drag previews by mutating the *scene node*
+///   transform, which moves the tessellated mesh but leaves the CAD B-Rep
+///   untouched. On commit the node's transform is baked into the part's
+///   geometry via [`Document::bake_transform`].
+/// - **Faces** (a face drilled into as the primary selection) transform
+///   through [`FaceTweakTarget`]: the drag moves a ghost of the picked face,
+///   and committing re-solves the B-Rep around the transformed face via
+///   [`Document::tweak_faces`].
 ///
 /// Selecting the tool shows its handle set immediately; drag a handle to
 /// transform. The mode's key (G/R/S) starts a freeform transform and X/Y/Z
@@ -45,14 +43,10 @@ use super::ConstructionOptions;
 /// Escape cancels.
 pub struct TransformTool {
     mode: TransformMode,
-    transform_op: TransformOperator,
-    face: FaceTweak,
-    /// Whether events are currently routed to the face path (primary selection
-    /// is a face) rather than the node path.
-    routing_face: bool,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
+    driver: TransformDriver<ModelerTarget>,
+    /// Held only to reach the scene on [`ModelingTool::deactivate`], which has
+    /// no event context.
     document: Arc<Mutex<Document>>,
-    notifications: Notifications,
 }
 
 impl TransformTool {
@@ -62,90 +56,25 @@ impl TransformTool {
         document: Arc<Mutex<Document>>,
         notifications: Notifications,
     ) -> Self {
+        let target = ModelerTarget {
+            nodes: NodeTransformTarget::new(),
+            face: FaceTweakTarget::new(Arc::clone(&document)),
+            active: None,
+            construction_options,
+            document: Arc::clone(&document),
+            notifications,
+        };
         Self {
             mode,
-            transform_op: TransformOperator::new(mode),
-            face: FaceTweak::new(mode, Arc::clone(&document), notifications.clone()),
-            routing_face: false,
-            construction_options,
+            driver: TransformDriver::with_target(mode, target),
             document,
-            notifications,
-        }
-    }
-
-    /// The face currently drilled into as the primary selection, if it belongs
-    /// to a known CAD part.
-    fn selected_face(&self, ctx: &EventContext) -> Option<FaceTarget> {
-        let SelectionItem::SubGeometry { node_id, element } = ctx.selection.primary()? else {
-            return None;
-        };
-        if element.kind != SubGeometryKind::Face {
-            return None;
-        }
-        let part = self.document.lock().unwrap().part_for_node(node_id)?;
-        Some(FaceTarget { node: node_id, part, face_index: element.index })
-    }
-
-    /// Tear down whichever path is being left when the selection grain changes.
-    fn set_route(&mut self, face: bool, ctx: &mut EventContext) {
-        if self.routing_face == face {
-            return;
-        }
-        self.routing_face = face;
-        if face {
-            // Abort any node transform and hide its gizmo while a face is targeted.
-            self.transform_op.teardown(&mut ctx.scene.lock().unwrap());
-        } else {
-            self.face.teardown();
-            self.transform_op.set_gizmo_enabled(true);
-        }
-    }
-
-    /// Bake every just-confirmed node's transform into its CAD part.
-    fn bake_committed(&mut self, nodes: &[NodeId], ctx: &mut EventContext) {
-        let options = self.construction_options.borrow().geometry_options.clone();
-        let mut doc = self.document.lock().unwrap();
-        // One undo step covers a multi-select bake.
-        let mut doc = doc.undo_scope("Transform");
-        for &node in nodes {
-            let Some(part) = doc.part_for_node(node) else { continue };
-            // Stay in common's matrix type; the OCCT array conversion happens
-            // inside bake_transform.
-            let delta = ctx
-                .scene
-                .lock()
-                .unwrap()
-                .get_node(node)
-                .map(|n| n.transform().to_matrix());
-            if let Some(delta) = delta {
-                if let Err(e) = doc.bake_transform(part, delta, &options) {
-                    log::error!("transform bake failed for node {node:?}: {e}");
-                    self.notifications.error(format!("Transform failed: {e}"));
-                }
-            }
         }
     }
 }
 
 impl Operator for TransformTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        // The inner operator emits `AppEvent::TransformCommitted` on confirm; the
-        // dispatcher re-dispatches it back to us. Bake the committed nodes when we see
-        // it.
-        if let Event::App(AppEvent::TransformCommitted { nodes }) = event {
-            self.bake_committed(nodes, ctx);
-            return false;
-        }
-
-        let target = self.selected_face(ctx);
-        self.set_route(target.is_some(), ctx);
-        match target {
-            Some(target) => {
-                let options = self.construction_options.borrow().geometry_options.clone();
-                self.face.dispatch(target, event, ctx, &options)
-            }
-            None => self.transform_op.dispatch(event, ctx),
-        }
+        self.driver.dispatch(event, ctx)
     }
 
     fn name(&self) -> &str {
@@ -165,15 +94,13 @@ impl ModelingTool for TransformTool {
     fn activate(&mut self) {
         // Show this mode's handle set as soon as the tool is selected; the next
         // frame syncs it onto the current selection.
-        self.transform_op.set_gizmo_enabled(true);
+        self.driver.set_gizmo_enabled(true);
     }
 
     fn deactivate(&mut self) {
-        self.face.teardown();
-        self.routing_face = false;
-        // Abort any in-progress transform and remove gizmo/annotation nodes.
+        // Abort any in-progress transform and remove gizmo/ghost nodes.
         let scene_arc = self.document.lock().unwrap().scene().clone();
-        self.transform_op.teardown(&mut scene_arc.lock().unwrap());
+        self.driver.teardown(&scene_arc);
     }
 
     /// Whole parts first; a second click drills into a face for tweaking.
@@ -191,38 +118,161 @@ struct FaceTarget {
     face_index: u32,
 }
 
-/// Interactive transform of one face of a solid, sharing the node operator's
-/// interaction units (gizmo, constraint cycling, mouse math, annotations).
+/// Which transform grain an in-progress drag locked onto at
+/// [`TransformTarget::begin`].
+enum ActiveRoute {
+    Nodes,
+    Face(FaceTarget),
+}
+
+/// [`TransformTarget`] routing between whole-part node transforms and single
+/// face tweaks based on the current selection.
 ///
-/// The drag is previewed cheaply by rigidly transforming a ghost tessellation
-/// of just the picked face — no OCCT work per frame. Confirming runs the
-/// actual tweak ([`Document::tweak_faces`]), which re-solves the body around
-/// the moved face and re-tessellates in place; a tweak the kernel cannot
-/// re-solve leaves the part untouched and reports the error.
-struct FaceTweak {
-    interaction: TransformInteraction,
-    gizmo: GizmoState,
-    /// Ghost of the picked face shown while dragging.
-    preview: PreviewSession,
-    /// The face locked at drag start.
-    active_target: Option<FaceTarget>,
-    /// Pivot/frame resolved from the last-targeted face (`None` when the face
-    /// has no usable pivot), cached because gizmo syncing runs every update.
-    resolved: Option<(FaceTarget, Option<(Point3, Quaternion)>)>,
+/// The route is resolved from the selection in [`frame`](TransformTarget::frame)
+/// (so the idle gizmo follows the selection grain) and locked in
+/// [`begin`](TransformTarget::begin); preview/commit/cancel always act on the
+/// locked route, so a drag can never change grain midway.
+struct ModelerTarget {
+    nodes: NodeTransformTarget,
+    face: FaceTweakTarget,
+    active: Option<ActiveRoute>,
+    construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
     notifications: Notifications,
 }
 
-impl FaceTweak {
-    fn new(mode: TransformMode, document: Arc<Mutex<Document>>, notifications: Notifications) -> Self {
+impl ModelerTarget {
+    /// The face currently drilled into as the primary selection, if it belongs
+    /// to a known CAD part.
+    fn selected_face(&self, ctx: &EventContext) -> Option<FaceTarget> {
+        let SelectionItem::SubGeometry { node_id, element } = ctx.selection.primary()? else {
+            return None;
+        };
+        if element.kind != SubGeometryKind::Face {
+            return None;
+        }
+        let part = self.document.lock().unwrap().part_for_node(node_id)?;
+        Some(FaceTarget { node: node_id, part, face_index: element.index })
+    }
+
+    /// Snapshot of the tessellation options for one begin/commit.
+    fn geometry_options(&self) -> CadTessellationOptions {
+        self.construction_options.borrow().geometry_options.clone()
+    }
+
+    /// Bake every committed node's transform into its CAD part.
+    fn bake_nodes(&mut self, nodes: &[NodeId], ctx: &mut EventContext) {
+        let options = self.geometry_options();
+        let mut doc = self.document.lock().unwrap();
+        // One undo step covers a multi-select bake.
+        let mut doc = doc.undo_scope("Transform");
+        for &node in nodes {
+            let Some(part) = doc.part_for_node(node) else { continue };
+            // Stay in common's matrix type; the OCCT array conversion happens
+            // inside bake_transform.
+            let delta = ctx
+                .scene
+                .lock()
+                .unwrap()
+                .get_node(node)
+                .map(|n| n.transform().to_matrix());
+            if let Some(delta) = delta
+                && let Err(e) = doc.bake_transform(part, delta, &options) {
+                    log::error!("transform bake failed for node {node:?}: {e}");
+                    self.notifications.error(format!("Transform failed: {e}"));
+                }
+        }
+    }
+}
+
+impl TransformTarget for ModelerTarget {
+    fn frame(&mut self, ctx: &mut EventContext) -> Option<TransformFrame> {
+        match self.selected_face(ctx) {
+            Some(target) => self.face.frame_for(target),
+            None => self.nodes.frame(ctx),
+        }
+    }
+
+    fn caps(&self) -> TransformCaps {
+        match self.active {
+            // A non-uniform similarity can't be baked into the B-Rep.
+            Some(ActiveRoute::Face(_)) => TransformCaps { uniform_scale_only: true },
+            _ => TransformCaps::default(),
+        }
+    }
+
+    fn begin(&mut self, ctx: &mut EventContext) -> bool {
+        self.active = match self.selected_face(ctx) {
+            Some(target) => {
+                let options = self.geometry_options();
+                self.face.begin(target, &options).then_some(ActiveRoute::Face(target))
+            }
+            None => self.nodes.begin(ctx).then_some(ActiveRoute::Nodes),
+        };
+        self.active.is_some()
+    }
+
+    fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
+        match self.active {
+            Some(ActiveRoute::Nodes) => self.nodes.preview(interaction, ctx),
+            Some(ActiveRoute::Face(_)) => self.face.preview(interaction, ctx),
+            None => {}
+        }
+    }
+
+    fn commit(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
+        match self.active.take() {
+            Some(ActiveRoute::Nodes) => {
+                let nodes = self.nodes.nodes();
+                self.nodes.commit(interaction, ctx);
+                self.bake_nodes(&nodes, ctx);
+            }
+            Some(ActiveRoute::Face(target)) => {
+                let options = self.geometry_options();
+                self.face.commit(target, interaction, ctx, &options, &self.notifications);
+            }
+            None => {}
+        }
+    }
+
+    fn cancel(&mut self, ctx: &mut EventContext) {
+        match self.active.take() {
+            Some(ActiveRoute::Nodes) => self.nodes.cancel(ctx),
+            Some(ActiveRoute::Face(_)) => self.face.cancel(),
+            None => {}
+        }
+    }
+
+    fn abort(&mut self, scene: &Arc<Mutex<Scene>>) {
+        self.nodes.abort(scene);
+        self.face.abort();
+        self.active = None;
+    }
+}
+
+/// Face half of [`ModelerTarget`]: interactive transform of one face of a
+/// solid.
+///
+/// The drag is previewed cheaply by rigidly transforming a ghost tessellation
+/// of just the picked face — no OCCT work per frame. Committing runs the
+/// actual tweak ([`Document::tweak_faces`]), which re-solves the body around
+/// the moved face and re-tessellates in place; a tweak the kernel cannot
+/// re-solve leaves the part untouched and reports the error.
+struct FaceTweakTarget {
+    /// Ghost of the picked face shown while dragging.
+    preview: PreviewSession,
+    /// Pivot/frame resolved from the last-targeted face (`None` when the face
+    /// has no usable pivot), cached because gizmo syncing runs every update.
+    resolved: Option<(FaceTarget, Option<(Point3, Quaternion)>)>,
+    document: Arc<Mutex<Document>>,
+}
+
+impl FaceTweakTarget {
+    fn new(document: Arc<Mutex<Document>>) -> Self {
         Self {
-            interaction: TransformInteraction::new(mode),
-            gizmo: GizmoState::new(),
             preview: PreviewSession::new(Arc::clone(&document)),
-            active_target: None,
             resolved: None,
             document,
-            notifications,
         }
     }
 
@@ -256,57 +306,57 @@ impl FaceTweak {
         resolved
     }
 
-    /// Lock onto `target` and begin a transform: ghost the face and activate
-    /// the interaction about the face pivot. Fails silently (staying idle) if
-    /// the face can't be resolved or ghosted.
-    fn start(&mut self, target: FaceTarget, ctx: &mut EventContext, options: &CadTessellationOptions) {
-        let Some((pivot, frame)) = self.resolve(target) else {
+    /// The gizmo anchor for `target`, if the face can be resolved.
+    fn frame_for(&mut self, target: FaceTarget) -> Option<TransformFrame> {
+        let (pivot, frame) = self.resolve(target)?;
+        Some(TransformFrame { pivot, frame_rotation: Some(frame) })
+    }
+
+    /// Lock onto `target`: ghost the face for the upcoming drag. Fails
+    /// (refusing the start) if the face can't be resolved or ghosted.
+    fn begin(&mut self, target: FaceTarget, options: &CadTessellationOptions) -> bool {
+        if self.resolve(target).is_none() {
             log::warn!("Tweak target could not be resolved to a CAD face");
-            return;
-        };
+            return false;
+        }
 
         let ghost_shape = {
             let doc = self.document.lock().unwrap();
-            doc.face_subshape(target.node, target.face_index).map(opencascade::primitives::Shape::from)
+            doc.face_subshape(target.node, target.face_index)
+                .map(opencascade::primitives::Shape::from)
         };
-        let Some(ghost_shape) = ghost_shape else { return };
+        let Some(ghost_shape) = ghost_shape else { return false };
         if self.preview.add_preview_from_shape(&ghost_shape, options, "Tweak preview").is_none() {
             log::warn!("Tweak preview could not be tessellated");
-            return;
+            return false;
         }
-
-        let model_radius = {
-            let scene = ctx.scene.lock().unwrap();
-            scene
-                .bounding()
-                .bounds
-                .as_ref()
-                .map(|aabb| aabb.bounding_sphere_radius())
-                .filter(|r| *r > 0.0)
-                .unwrap_or(1.0)
-        };
-        self.interaction.start(pivot, Some(frame), model_radius);
-        self.active_target = Some(target);
+        true
     }
 
     /// Move the ghost to the interaction's current delta.
-    fn update_ghost(&mut self, ctx: &mut EventContext) {
+    fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
         let Some(ghost) = self.preview.preview_node() else { return };
         let camera = ctx.camera();
-        let delta = self.interaction.delta_matrix(&camera, ctx.size);
+        let delta = interaction.delta_matrix(&camera, ctx.size);
         let transform = decompose_matrix(&delta);
         ctx.scene.lock().unwrap().set_node_transform(ghost, transform);
     }
 
-    /// Run the tweak on the B-Rep and clear the drag state. On success the
-    /// selection is cleared — the part re-tessellates, so face indices no
-    /// longer identify the same sub-geometry.
-    fn confirm(&mut self, ctx: &mut EventContext, options: &CadTessellationOptions) {
-        let Some(target) = self.active_target else { return };
+    /// Run the tweak on the B-Rep. On success the selection is cleared — the
+    /// part re-tessellates, so face indices no longer identify the same
+    /// sub-geometry.
+    fn commit(
+        &mut self,
+        target: FaceTarget,
+        interaction: &TransformInteraction,
+        ctx: &mut EventContext,
+        options: &CadTessellationOptions,
+        notifications: &Notifications,
+    ) {
         let camera = ctx.camera();
-        let delta = self.interaction.delta_matrix(&camera, ctx.size);
+        let delta = interaction.delta_matrix(&camera, ctx.size);
 
-        self.finish_drag(ctx);
+        self.preview.cancel();
         self.resolved = None;
 
         let result = self.document.lock().unwrap().tweak_faces(
@@ -319,257 +369,20 @@ impl FaceTweak {
             Ok(()) => ctx.selection.clear(),
             Err(e) => {
                 log::error!("face tweak failed: {e}");
-                self.notifications.error(format!("Face tweak failed: {e}"));
+                notifications.error(format!("Face tweak failed: {e}"));
             }
         }
     }
 
     /// Discard the drag without touching the B-Rep.
-    fn cancel(&mut self, ctx: &mut EventContext) {
-        self.finish_drag(ctx);
-    }
-
-    /// Remove the ghost and per-drag visuals and deactivate the interaction.
-    fn finish_drag(&mut self, ctx: &mut EventContext) {
+    fn cancel(&mut self) {
         self.preview.cancel();
-        {
-            let mut scene = ctx.scene.lock().unwrap();
-            self.gizmo.set_highlight(None, &mut scene);
-        }
-        self.interaction.finish();
-        self.active_target = None;
     }
 
-    /// Remove everything this path owns in the scene (route change or tool
+    /// Drop everything held for the current face (route change or tool
     /// deactivation). Idempotent.
-    fn teardown(&mut self) {
+    fn abort(&mut self) {
         self.preview.cancel();
-        let scene_arc = self.document.lock().unwrap().scene().clone();
-        let mut scene = scene_arc.lock().unwrap();
-        self.gizmo.hide(&mut scene);
-        self.interaction.finish();
-        self.active_target = None;
         self.resolved = None;
     }
-
-    /// Show or reposition the gizmo at the targeted face's pivot.
-    fn sync_gizmo(&mut self, target: FaceTarget, ctx: &mut EventContext) {
-        let gizmo_type = self.interaction.mode().gizmo_type();
-        let Some((pivot, _)) = self.resolve(target) else {
-            let mut scene = ctx.scene.lock().unwrap();
-            self.gizmo.hide(&mut scene);
-            return;
-        };
-        let mut scene = ctx.scene.lock().unwrap();
-        if self.gizmo.current_type() == Some(gizmo_type) {
-            self.gizmo.update_position(pivot, &mut scene);
-        } else {
-            self.gizmo.show(gizmo_type, pivot, &mut scene);
-        }
-    }
-
-    /// Handle an axis key: start constrained if idle, otherwise cycle. Scale
-    /// tweaks are uniform-only (a non-uniform similarity can't be baked into
-    /// the B-Rep), so axis keys are accepted but don't constrain.
-    fn constrain_axis(
-        &mut self,
-        axis: char,
-        target: FaceTarget,
-        ctx: &mut EventContext,
-        options: &CadTessellationOptions,
-    ) -> bool {
-        if !self.interaction.is_active() {
-            self.start(target, ctx, options);
-            if !self.interaction.is_active() {
-                return false;
-            }
-        }
-        if self.interaction.mode() == TransformMode::Scale {
-            return true;
-        }
-        self.interaction.cycle_axis_constraint(axis);
-        self.update_ghost(ctx);
-        let highlight = self.interaction.highlight_handle();
-        let mut scene = ctx.scene.lock().unwrap();
-        self.gizmo.set_highlight(highlight, &mut scene);
-        true
-    }
-
-    fn dispatch(
-        &mut self,
-        target: FaceTarget,
-        event: &Event,
-        ctx: &mut EventContext,
-        options: &CadTessellationOptions,
-    ) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::KeyboardInput { event: key_event, .. } => {
-                if key_event.state != ElementState::Pressed || key_event.repeat {
-                    return false;
-                }
-                let actions = self.interaction.bindings
-                    .actions_for_key(&key_event.logical_key, ctx.modifiers)
-                    .to_vec();
-                for action in actions {
-                    match action {
-                        TransformAction::StartTransform if !self.interaction.is_active() => {
-                            self.start(target, ctx, options);
-                            return self.interaction.is_active();
-                        }
-                        TransformAction::ConstrainX => {
-                            if self.constrain_axis('x', target, ctx, options) {
-                                return true;
-                            }
-                        }
-                        TransformAction::ConstrainY => {
-                            if self.constrain_axis('y', target, ctx, options) {
-                                return true;
-                            }
-                        }
-                        TransformAction::ConstrainZ => {
-                            if self.constrain_axis('z', target, ctx, options) {
-                                return true;
-                            }
-                        }
-                        TransformAction::KeyConfirm if self.interaction.is_active() => {
-                            self.confirm(ctx, options);
-                            return true;
-                        }
-                        TransformAction::KeyCancel if self.interaction.is_active() => {
-                            self.cancel(ctx);
-                            return true;
-                        }
-                        _ => {}
-                    }
-                }
-                false
-            }
-
-            DeviceEvent::MouseMotion { delta } => {
-                if self.interaction.is_active() {
-                    self.interaction.accumulate(delta.0 as f32, delta.1 as f32);
-                    self.update_ghost(ctx);
-                    true
-                } else {
-                    false
-                }
-            }
-
-            DeviceEvent::MouseClick { button, .. } => {
-                if !self.interaction.is_active() {
-                    return false;
-                }
-                let actions =
-                    self.interaction.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
-                for action in actions {
-                    match action {
-                        TransformAction::MouseConfirm => {
-                            self.confirm(ctx, options);
-                            return true;
-                        }
-                        TransformAction::MouseCancel => {
-                            self.cancel(ctx);
-                            return true;
-                        }
-                        _ => {}
-                    }
-                }
-                false
-            }
-
-            DeviceEvent::MouseDragStart { button, start_pos, .. } => {
-                if !self.interaction.bindings
-                    .actions_for_drag_start(*button, ctx.modifiers)
-                    .contains(&TransformAction::GizmoDrag)
-                {
-                    return false;
-                }
-                if self.interaction.is_active() || !self.gizmo.has_gizmo() {
-                    return false;
-                }
-                let picked = {
-                    let camera = ctx.camera();
-                    let ray = camera.ray_from_screen_point(
-                        start_pos.0, start_pos.1, ctx.size.0, ctx.size.1,
-                    );
-                    let scene = ctx.scene.lock().unwrap();
-                    self.gizmo.pick_handle(ray, &scene, &camera, ctx.size)
-                };
-                if let Some(handle) = picked {
-                    self.start(target, ctx, options);
-                    if !self.interaction.is_active() {
-                        return false;
-                    }
-                    // Scale stays uniform: use a Ball-equivalent constraint (None)
-                    // so the handle only begins a directional drag. Other modes
-                    // adopt the grabbed handle's axis/plane constraint.
-                    let constraint_handle = if self.interaction.mode() == TransformMode::Scale {
-                        GizmoHandleId::Ball
-                    } else {
-                        handle
-                    };
-                    self.interaction.constrain_to_handle(constraint_handle, *start_pos);
-                    let mut scene = ctx.scene.lock().unwrap();
-                    self.gizmo.set_highlight(Some(handle), &mut scene);
-                    return true;
-                }
-                false
-            }
-
-            DeviceEvent::MouseDrag { button, delta, .. } => {
-                if !self.interaction.bindings
-                    .actions_for_drag(*button, ctx.modifiers)
-                    .contains(&TransformAction::GizmoDrag)
-                {
-                    return false;
-                }
-                if self.interaction.is_active() {
-                    self.interaction.accumulate(delta.0, delta.1);
-                    self.update_ghost(ctx);
-                    return true;
-                }
-                false
-            }
-
-            DeviceEvent::MouseDragEnd { button, .. } => {
-                if !self.interaction.bindings
-                    .actions_for_drag_end(*button, Modifiers::default())
-                    .contains(&TransformAction::GizmoDrag)
-                {
-                    return false;
-                }
-                if self.interaction.is_active() {
-                    self.confirm(ctx, options);
-                    return true;
-                }
-                false
-            }
-
-            DeviceEvent::CursorMoved { position } => {
-                // Hover highlight on gizmo handles while idle.
-                if self.gizmo.has_gizmo() && !self.interaction.is_active() {
-                    let camera = ctx.camera();
-                    let ray = camera.ray_from_screen_point(
-                        position.0 as f32, position.1 as f32, ctx.size.0, ctx.size.1,
-                    );
-                    let mut scene = ctx.scene.lock().unwrap();
-                    let handle = self.gizmo.pick_handle(ray, &scene, &camera, ctx.size);
-                    self.gizmo.set_highlight(handle, &mut scene);
-                }
-                false
-            }
-
-            DeviceEvent::Update { .. } => {
-                if !self.interaction.is_active() {
-                    self.sync_gizmo(target, ctx);
-                }
-                false
-            }
-
-            _ => false,
-        }
-    }
 }
-
-

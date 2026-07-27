@@ -1,4 +1,3 @@
-use crate::scene::NodeId;
 use crate::selection::SelectionItem;
 
 /// A semantic, high-level event emitted by an operator to signal that *something
@@ -7,11 +6,6 @@ use crate::selection::SelectionItem;
 /// Downstream crates that cannot edit this enum carry their own event types
 /// through [`AppEvent::Custom`] and recover them with [`std::any::Any::downcast_ref`].
 pub enum AppEvent {
-    /// A transform operation was confirmed for the listed nodes.
-    TransformCommitted {
-        /// Nodes whose transform was just confirmed.
-        nodes: Vec<NodeId>,
-    },
     /// The selection changed. Carries the sets before and after so consumers can tell
     /// what happened (added to, replaced, or cleared).
     //

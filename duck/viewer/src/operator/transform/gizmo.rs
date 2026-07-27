@@ -1,8 +1,9 @@
-//! Gizmo geometry builders for transform handles (translate, rotate, scale).
+//! Transform gizmo handles: geometry builders and scene-side state.
 //!
-//! Each builder produces a set of [`GizmoHandle`]s — one per axis — containing
-//! a mesh and material ready to be added to the scene. All geometry is built at
-//! the origin; positioning at the selection pivot is done via node transforms.
+//! The free builders produce a set of [`GizmoHandle`]s — one per axis —
+//! containing a mesh and material, built at the origin at unit size.
+//! [`GizmoState`] owns the gizmo's scene resources: it adds/removes the handle
+//! nodes, positions them at the pivot, hit-tests them, and drives highlights.
 
 use duck_engine_common::{Deg, Matrix4, Point3, Vector3, Vector4};
 use duck_engine_scene::{NodeFlags, PositionedCamera, Scene};
@@ -288,6 +289,14 @@ pub fn build_handles(gizmo_type: GizmoType, size: f32) -> Vec<GizmoHandle> {
     }
 }
 
+/// Scene resources backing one displayed handle.
+struct HandleResources {
+    node: NodeId,
+    mesh: MeshId,
+    material: FaceMaterialId,
+    id: GizmoHandleId,
+}
+
 /// Owns a gizmo's scene resources: handle nodes/meshes/materials, hover
 /// highlighting, picking, and repositioning at a pivot.
 ///
@@ -296,14 +305,8 @@ pub fn build_handles(gizmo_type: GizmoType, size: f32) -> Vec<GizmoHandle> {
 pub struct GizmoState {
     /// Root node for all gizmo geometry. Created when first needed.
     root_node: Option<NodeId>,
-    /// Node IDs of the gizmo handles, index-aligned with `handle_ids`.
-    node_ids: Vec<NodeId>,
-    /// Mesh IDs added to the scene for gizmo geometry.
-    mesh_ids: Vec<MeshId>,
-    /// Material IDs added to the scene for gizmo handles, index-aligned with `node_ids`.
-    material_ids: Vec<FaceMaterialId>,
-    /// Identity of each handle, index-aligned with `node_ids`/`material_ids`.
-    handle_ids: Vec<GizmoHandleId>,
+    /// Scene resources of the currently displayed handles.
+    handles: Vec<HandleResources>,
     /// Which handle is currently highlighted (hovered or active).
     highlighted: Option<GizmoHandleId>,
     /// Current gizmo type being displayed.
@@ -314,10 +317,7 @@ impl GizmoState {
     pub fn new() -> Self {
         Self {
             root_node: None,
-            node_ids: Vec::new(),
-            mesh_ids: Vec::new(),
-            material_ids: Vec::new(),
-            handle_ids: Vec::new(),
+            handles: Vec::new(),
             highlighted: None,
             current_type: None,
         }
@@ -369,10 +369,12 @@ impl GizmoState {
                 )
                 .expect("Failed to add gizmo node");
 
-            self.node_ids.push(node_id);
-            self.mesh_ids.push(mesh_id);
-            self.material_ids.push(material_id);
-            self.handle_ids.push(handle.id);
+            self.handles.push(HandleResources {
+                node: node_id,
+                mesh: mesh_id,
+                material: material_id,
+                id: handle.id,
+            });
         }
 
         self.current_type = Some(gizmo_type);
@@ -380,29 +382,22 @@ impl GizmoState {
 
     /// Remove all gizmo geometry from the scene.
     pub fn hide(&mut self, scene: &mut Scene) {
-        for &node_id in &self.node_ids {
-            scene.remove_node(node_id);
-        }
-        for &mesh_id in &self.mesh_ids {
-            scene.remove_mesh(mesh_id);
-        }
-        for &material_id in &self.material_ids {
-            scene.remove_face_material(material_id);
+        for handle in &self.handles {
+            scene.remove_node(handle.node);
+            scene.remove_mesh(handle.mesh);
+            scene.remove_face_material(handle.material);
         }
 
-        self.node_ids.clear();
-        self.mesh_ids.clear();
-        self.material_ids.clear();
-        self.handle_ids.clear();
+        self.handles.clear();
         self.highlighted = None;
         self.current_type = None;
     }
 
     /// Update the gizmo position (e.g. when pivot changes).
     pub fn update_position(&self, pivot: Point3, scene: &mut Scene) {
-        for &node_id in &self.node_ids {
-            if scene.has_node(node_id) {
-                scene.set_node_position(node_id, pivot);
+        for handle in &self.handles {
+            if scene.has_node(handle.node) {
+                scene.set_node_position(handle.node, pivot);
             }
         }
     }
@@ -429,19 +424,17 @@ impl GizmoState {
 
         // Find the first hit that matches a gizmo node
         for result in &results {
-            for (i, &node_id) in self.node_ids.iter().enumerate() {
-                if result.node_id == node_id {
-                    return Some(self.handle_ids[i]);
-                }
+            if let Some(handle) = self.handles.iter().find(|h| h.node == result.node_id) {
+                return Some(handle.id);
             }
         }
 
         None
     }
 
-    /// The index of a handle in the parallel arrays, by identity.
-    fn handle_index(&self, id: GizmoHandleId) -> Option<usize> {
-        self.handle_ids.iter().position(|&h| h == id)
+    /// The material backing a handle, by identity.
+    fn handle_material(&self, id: GizmoHandleId) -> Option<FaceMaterialId> {
+        self.handles.iter().find(|h| h.id == id).map(|h| h.material)
     }
 
     /// Highlight a specific handle (or clear highlight with None).
@@ -452,16 +445,14 @@ impl GizmoState {
 
         // Restore previous highlight to normal color
         if let Some(prev) = self.highlighted
-            && let Some(idx) = self.handle_index(prev)
-            && let Some(&mat_id) = self.material_ids.get(idx)
+            && let Some(mat_id) = self.handle_material(prev)
             && let Some(mat) = scene.get_face_material_mut(mat_id) {
                 mat.set_base_color_factor(handle_base_color(prev));
             }
 
         // Apply highlight color to new handle
         if let Some(new) = handle
-            && let Some(idx) = self.handle_index(new)
-            && let Some(&mat_id) = self.material_ids.get(idx)
+            && let Some(mat_id) = self.handle_material(new)
             && let Some(mat) = scene.get_face_material_mut(mat_id) {
                 mat.set_base_color_factor(handle_highlight_color(new));
             }
