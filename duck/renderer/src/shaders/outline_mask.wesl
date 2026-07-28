@@ -1,6 +1,9 @@
 // outline_mask.wesl
-// Shader for rendering selected objects to a mask texture.
-// Outputs solid 1.0 to R channel for selected object pixels.
+// Renders highlighted geometry into the coverage mask.
+//
+// The fragment writes 1.0 to both channels; the pipeline's color write mask
+// selects which one actually lands, so one shader serves both highlight tiers
+// (red = primary, green = secondary).
 
 import package::common::{VertexInput, InstanceInput};
 import package::vertex::vertex_position_only;
@@ -11,8 +14,7 @@ fn vs_mask(model: VertexInput, instance: InstanceInput) -> @builtin(position) ve
     return vertex_position_only(model, instance);
 }
 
-// Fragment shader - output solid 1.0 to mask
 @fragment
-fn fs_mask() -> @location(0) f32 {
-    return 1.0;
+fn fs_mask() -> @location(0) vec2<f32> {
+    return vec2<f32>(1.0, 1.0);
 }

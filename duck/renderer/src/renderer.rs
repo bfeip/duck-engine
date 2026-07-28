@@ -24,7 +24,10 @@ use anyhow::Result;
 use crate::{
     highlight_query::HighlightQuery,
     ibl::IblResources,
-    render_core::{GenCache, GpuTexture, Gpu, RenderHost, TargetConfig, TargetFeatures},
+    render_core::{
+        GenCache, Gpu, GpuTexture, MaskChannels, RenderHost, TargetConfig, TargetFeatures,
+        highest_supported_sample_count,
+    },
     rgba_to_wgpu_color,
     scene::{
         MeshId,
@@ -65,6 +68,23 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// The highest MSAA sample count this renderer can use on `adapter` with
+    /// `surface_format`, or 1 when multisampling is unavailable.
+    #[must_use]
+    pub fn preferred_sample_count(
+        adapter: &wgpu::Adapter,
+        surface_format: wgpu::TextureFormat,
+    ) -> u32 {
+        let downlevel = adapter.get_downlevel_capabilities().flags;
+        if !downlevel.contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING) {
+            return 1;
+        }
+        let formats = [surface_format, GpuTexture::DEPTH_FORMAT]
+            .into_iter()
+            .chain(MaskChannels::ALL.into_iter().map(MaskChannels::format));
+        highest_supported_sample_count(adapter, formats)
+    }
+
     /// Create a new renderer from pre-created device and queue.
     ///
     /// The caller (typically Viewer) is responsible for creating the wgpu instance,

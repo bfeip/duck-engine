@@ -25,6 +25,8 @@ pub use host::{RenderHost, RgbaPixels};
 pub use pipeline_cache::PipelineCache;
 pub use readback::ReadbackTarget;
 pub use shader::ShaderLibrary;
-pub use targets::{FrameTargets, TargetConfig, TargetFeatures};
-pub use texture::GpuTexture;
+pub use targets::{
+    FrameTargets, TargetConfig, TargetFeatures, highest_supported_sample_count,
+};
+pub use texture::{GpuTexture, MaskChannels};
 pub use workflow::{FrameFamily, RenderWorkflow};

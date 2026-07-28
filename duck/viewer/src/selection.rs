@@ -30,7 +30,7 @@ impl Default for SelectionConfig {
         Self {
             outline_color: [1.0, 0.6, 0.0, 1.0],           // Orange
             secondary_outline_color: [0.7, 0.35, 0.0, 1.0], // Darker orange
-            outline_width: 3.0,                              // 3 pixels
+            outline_width: 1.0,                           
             face_highlight_alpha: 0.4,
             outline_enabled: true,
             debug_annotations: false,

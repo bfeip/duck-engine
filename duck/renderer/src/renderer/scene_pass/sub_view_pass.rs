@@ -5,7 +5,7 @@ use crate::render_core::GpuTexture;
 
 use super::super::scene_bindings::{CameraBinding, CameraUniform};
 use super::super::pass_context::{SceneFrame, SceneRenderPass};
-use super::main_pass::draw_batches;
+use super::main_pass::{PrimitiveFilter, draw_batches};
 
 /// Draws each sub-view in its own region of the surface, after the main view.
 ///
@@ -102,10 +102,7 @@ impl SceneRenderPass for SubViewPass {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
                     }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    stencil_ops: None,
                 }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
@@ -121,7 +118,7 @@ impl SceneRenderPass for SubViewPass {
                 render_pass.set_bind_group(abi::GROUP_IBL, ibl, &[]);
             }
 
-            draw_batches(gpu, &mut render_pass, &sv.batches, frame, true);
+            draw_batches(gpu, &mut render_pass, &sv.batches, frame, true, PrimitiveFilter::All);
         }
     }
 }

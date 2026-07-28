@@ -493,23 +493,16 @@ impl<'a> WindowSurface<'a> {
 
         surface.configure(&device, &config);
 
-        // MSAA must be supported by both the color target and the renderer's
-        // depth target, so probe both formats and pick the highest count both
-        // allow.
-        let sample_count = if downlevel_flags.contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING) {
-            use crate::renderer::render_core::GpuTexture;
-            let color_flags = adapter.get_texture_format_features(surface_format).flags;
-            let depth_flags = adapter.get_texture_format_features(GpuTexture::DEPTH_FORMAT).flags;
-            [8, 4, 2, 1]
-                .into_iter()
-                .find(|&n| {
-                    color_flags.sample_count_supported(n) && depth_flags.sample_count_supported(n)
-                })
-                .unwrap_or(1)
-        } else {
-            1
-        };
-        log::info!("Using {sample_count}x MSAA");
+        // The renderer picks the count: it owns the attachments that have to
+        // support it.
+        let sample_count = Renderer::preferred_sample_count(&adapter, surface_format);
+
+        if sample_count > 1 {
+            log::info!("Using {sample_count}x MSAA");
+        }
+        else {
+            log::warn!("MSAA unavailable");
+        }
 
         Self {
             surface,

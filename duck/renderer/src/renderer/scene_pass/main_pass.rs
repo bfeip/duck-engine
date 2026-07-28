@@ -1,4 +1,4 @@
-use duck_engine_scene::AlphaMode;
+use duck_engine_scene::{AlphaMode, PrimitiveType};
 
 use crate::DrawBatch;
 use crate::abi;
@@ -7,6 +7,28 @@ use crate::renderer::pipeline::PipelineCacheKey;
 use crate::renderer::surface_config::SurfaceConfig;
 
 use super::super::pass_context::{SceneFrame, SceneRenderPass};
+
+/// Selects which primitive kinds a geometry pass draws, so faces and
+/// lines/points can be split across separate passes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PrimitiveFilter {
+    All,
+    Faces,
+    LinesAndPoints,
+}
+
+impl PrimitiveFilter {
+    const fn accepts(self, primitive_type: PrimitiveType) -> bool {
+        match self {
+            Self::All => true,
+            Self::Faces => matches!(primitive_type, PrimitiveType::TriangleList),
+            Self::LinesAndPoints => matches!(
+                primitive_type,
+                PrimitiveType::LineList | PrimitiveType::PointList
+            ),
+        }
+    }
+}
 
 /// Bind the scene-level bind groups shared by all geometry passes:
 /// - Group 0: Camera (view/proj + eye position)
@@ -25,12 +47,16 @@ pub(crate) fn bind_scene_groups<'p>(render_pass: &mut wgpu::RenderPass<'p>, fram
 /// If `with_depth_prepass` is true, a depth-only pre-pass for `Blend`-mode materials
 /// is executed first so their opaque portions establish correct depth occlusion before
 /// the main draw loop renders them with blending.
+///
+/// `filter` restricts to one primitive kind; batches of other kinds are
+/// left for another pass to draw.
 pub(crate) fn draw_batches(
     gpu: &Gpu,
     render_pass: &mut wgpu::RenderPass<'_>,
     batches: &[DrawBatch],
     frame: &mut SceneFrame<'_>,
     with_depth_prepass: bool,
+    filter: PrimitiveFilter,
 ) {
     let scene = frame.scene;
     let gpu_meshes = frame.gpu_meshes;
@@ -42,6 +68,10 @@ pub(crate) fn draw_batches(
         // so opaque portions of blend materials establish correct depth occlusion.
         let mut prepass_pipeline_key: Option<PipelineCacheKey> = None;
         for batch in batches {
+            if !filter.accepts(batch.primitive_type) {
+                continue;
+            }
+
             let material_props = &batch.material_props;
 
             if material_props.alpha_mode != AlphaMode::Blend {
@@ -91,6 +121,10 @@ pub(crate) fn draw_batches(
     // Main draw loop
     let mut current_pipeline_key: Option<PipelineCacheKey> = None;
     for batch in batches {
+        if !filter.accepts(batch.primitive_type) {
+            continue;
+        }
+
         let Some(mesh) = scene.get_mesh(batch.mesh_id) else {
             continue;
         };
@@ -125,11 +159,49 @@ pub(crate) fn draw_batches(
     }
 }
 
-/// Clears color/depth/stencil, binds camera/lights/IBL, runs a depth pre-pass for
-/// `Blend`-mode materials, then draws all batches with pipeline caching.
-pub(crate) struct MainPass;
+/// Binds camera/lights/IBL, runs a depth pre-pass for `Blend`-mode materials,
+/// then draws the batches this pass is responsible for.
+/// 
+/// Face passes always clear.
+
+// Scene geometry is drawn in two of these: [`MainPass::faces`] clears the color
+// and depth attachments and draws triangles, then [`MainPass::lines_and_points`]
+// loads them and draws the rest. The split exists so the highlight outline mask
+// can be built from a depth buffer holding faces only — lines write their true
+// (unbiased) depth, which would otherwise punch holes in the mask.
+//
+// One consequence: transparent line batches no longer interleave back-to-front
+// with transparent face batches, since `sort_batches_for_transparency` orders all
+// `Blend` batches together regardless of primitive type. Transparent line
+// materials are rare enough that this is an acceptable trade.
+pub(crate) struct MainPass {
+    filter: PrimitiveFilter,
+    /// `true` clears color and depth; `false` loads both.
+    clears: bool,
+}
+
+impl MainPass {
+    /// Draws triangles, clearing color and depth first.
+    pub(crate) const fn faces() -> Self {
+        Self { filter: PrimitiveFilter::Faces, clears: true }
+    }
+
+    /// Draws lines and points on top of an already-populated color/depth buffer.
+    pub(crate) const fn lines_and_points() -> Self {
+        Self { filter: PrimitiveFilter::LinesAndPoints, clears: false }
+    }
+}
 
 impl SceneRenderPass for MainPass {
+    fn is_active(&self, frame: &SceneFrame<'_>) -> bool {
+        // The clearing pass must always run, even with nothing to draw.
+        self.clears || frame
+            .draw
+            .all_batches()
+            .iter()
+            .any(|b| self.filter.accepts(b.primitive_type))
+    }
+
     fn execute(
         &mut self,
         gpu: &Gpu,
@@ -139,24 +211,27 @@ impl SceneRenderPass for MainPass {
         frame: &mut SceneFrame<'_>,
     ) {
         let (color_view, resolve_target) = targets.color_views(view);
+        let (color_load, depth_load) = if self.clears {
+            (wgpu::LoadOp::Clear(frame.background_color), wgpu::LoadOp::Clear(1.0))
+        } else {
+            (wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+        };
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("3D Scene Render Pass"),
+            label: Some(if self.clears {
+                "3D Scene Faces Pass"
+            } else {
+                "3D Scene Lines & Points Pass"
+            }),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: color_view,
                 resolve_target,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(frame.background_color),
-                    store: wgpu::StoreOp::Store,
-                },
+                ops: wgpu::Operations { load: color_load, store: wgpu::StoreOp::Store },
                 depth_slice: None,
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: targets.depth_view(),
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
+                depth_ops: Some(wgpu::Operations { load: depth_load, store: wgpu::StoreOp::Store }),
                 stencil_ops: None, // No stencil buffer
             }),
             occlusion_query_set: None,
@@ -165,7 +240,9 @@ impl SceneRenderPass for MainPass {
 
         bind_scene_groups(&mut render_pass, frame);
         let batches = frame.draw.all_batches();
-        draw_batches(gpu, &mut render_pass, batches, frame, true);
+        // The pre-pass runs in both halves: it filters by primitive type too, so
+        // blend lines and points keep the depth pre-pass they get today.
+        draw_batches(gpu, &mut render_pass, batches, frame, true, self.filter);
     }
 }
 
@@ -226,10 +303,7 @@ impl SceneRenderPass for OverlayPass {
                     load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(0),
-                    store: wgpu::StoreOp::Store,
-                }),
+                stencil_ops: None,
             }),
             occlusion_query_set: None,
             timestamp_writes: None,
@@ -237,6 +311,6 @@ impl SceneRenderPass for OverlayPass {
 
         bind_scene_groups(&mut render_pass, frame);
         let batches = frame.draw.overlay_batches();
-        draw_batches(gpu, &mut render_pass, batches, frame, false);
+        draw_batches(gpu, &mut render_pass, batches, frame, false, PrimitiveFilter::All);
     }
 }

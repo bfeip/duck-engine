@@ -23,7 +23,7 @@ impl Default for HighlightConfig {
     fn default() -> Self {
         Self {
             color: [1.0, 0.6, 0.0, 1.0], // Orange
-            width_pixels: 3.0,
+            width_pixels: 2.0,
             face_alpha: 0.4,
         }
     }

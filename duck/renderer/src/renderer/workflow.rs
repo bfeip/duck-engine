@@ -5,15 +5,16 @@ use crate::scene::common::RgbaColor;
 use super::pass_context::{SceneFrame, SceneFrames, SceneRenderPass};
 use super::scene_pass::{
     FlatColorPass, FlatColorPassDesc,
-    MainPass, OverlayPass, OutlinePass, SilhouetteEdgesPass, SubGeomHighlightPass, SubViewPass,
+    MainPass, OverlayPass, SilhouetteEdgesPass, SubGeomHighlightPass, SubViewPass, outline_passes,
 };
 use crate::shaders::ShaderGenerator;
 
 /// The default shaded rendering workflow.
 ///
-/// Runs the standard pass sequence: main geometry, overlay (always-on-top)
-/// geometry, and highlight outlines. Holds passes as `Box<dyn SceneRenderPass>`
-/// so custom passes can be injected via [`ShadedWorkflow::set_passes`].
+/// Runs the standard pass sequence: scene faces, the highlight outline mask,
+/// scene lines and points, the outline composite, overlay (always-on-top)
+/// geometry, sub-geometry highlights, and sub-views. Custom passes can be injected via
+/// [`ShadedWorkflow::set_passes`].
 pub struct ShadedWorkflow {
     passes: Vec<Box<dyn SceneRenderPass>>,
 }
@@ -29,11 +30,18 @@ impl ShadedWorkflow {
     ) -> Self {
         let (width, height) = config.size;
         let sample_count = config.sample_count;
+        let (outline_mask, outline_composite) =
+            outline_passes(device, config, camera_bgl, shader_generator);
         Self {
             passes: vec![
-                Box::new(MainPass),
+                Box::new(MainPass::faces()),
+                // Between the two geometry passes: the mask depth-tests against
+                // faces only.
+                Box::new(outline_mask),
+                Box::new(MainPass::lines_and_points()),
+                // After lines and points, so nothing cuts the outline band.
+                Box::new(outline_composite),
                 Box::new(OverlayPass::new(device, width, height, sample_count)),
-                Box::new(OutlinePass::new(device, config, camera_bgl, shader_generator)),
                 // Sub-geometry highlights draw on top of the node outlines.
                 Box::new(SubGeomHighlightPass::new(
                     device, config.format, sample_count,

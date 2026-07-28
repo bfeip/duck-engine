@@ -88,24 +88,15 @@ impl ShaderGenerator {
     }
 
     /// Generate the screen-space outline shader module.
-    /// `multisampled = true` produces a variant that reads from a `texture_multisampled_2d`
-    /// and averages MSAA samples for smooth edge coverage.
-    /// `multisampled = false` produces the standard single-sample variant.
     pub fn generate_outline_screenspace_shader(
         &mut self,
         device: &wgpu::Device,
-        multisampled: bool,
     ) -> anyhow::Result<wgpu::ShaderModule> {
-        let label = if multisampled {
-            "Outline Screenspace Shader (MSAA)"
-        } else {
-            "Outline Screenspace Shader"
-        };
         self.library.compile(
             device,
             "package::outline_screenspace",
-            &[("multisampled", multisampled)],
-            label,
+            &[],
+            "Outline Screenspace Shader",
         )
     }
 
@@ -135,5 +126,43 @@ impl ShaderGenerator {
             &[("depth_multisampled", depth_multisampled)],
             label,
         )
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::engine_library;
+    use wgpu::naga;
+
+    /// Compile the standalone shader modules to WGSL and run them through naga's
+    /// parser and validator. Both steps are device-free, so this is the only
+    /// automated coverage available for shader sources; it catches WESL import
+    /// breakage and WGSL type errors that would otherwise surface as a panic on
+    /// the first frame that builds the pipeline.
+    ///
+    /// The surface shader is excluded: its variants are driven by
+    /// `SurfaceConfig::features` and are covered by the pipeline cache instead.
+    #[test]
+    fn standalone_shader_modules_are_valid_wgsl() {
+        let mut library = engine_library();
+        for (module, features) in [
+            ("package::outline_mask", &[][..]),
+            ("package::outline_screenspace", &[][..]),
+            ("package::flat_color", &[][..]),
+            ("package::silhouette_edges", &[("depth_multisampled", false)][..]),
+            ("package::silhouette_edges", &[("depth_multisampled", true)][..]),
+        ] {
+            let wgsl = library
+                .compile_to_wgsl(module, features)
+                .unwrap_or_else(|e| panic!("{module}: WESL compilation failed: {e:?}"));
+            let parsed = naga::front::wgsl::parse_str(&wgsl)
+                .unwrap_or_else(|e| panic!("{module}: WGSL parse failed: {}", e.emit_to_string(&wgsl)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(&parsed)
+            .unwrap_or_else(|e| panic!("{module}: WGSL validation failed: {e:?}"));
+        }
     }
 }

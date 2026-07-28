@@ -1,5 +1,25 @@
 use crate::{Gpu, GpuTexture};
 
+/// Every multisample count wgpu recognizes, highest first.
+const SAMPLE_COUNTS: [u32; 5] = [16, 8, 4, 2, 1];
+
+/// The highest multisample count `adapter` supports for every format in
+/// `formats`. Always at least 1, which needs no support.
+#[must_use]
+pub fn highest_supported_sample_count(
+    adapter: &wgpu::Adapter,
+    formats: impl IntoIterator<Item = wgpu::TextureFormat>,
+) -> u32 {
+    let flags: Vec<_> = formats
+        .into_iter()
+        .map(|format| adapter.get_texture_format_features(format).flags)
+        .collect();
+    SAMPLE_COUNTS
+        .into_iter()
+        .find(|&count| flags.iter().all(|f| f.sample_count_supported(count)))
+        .unwrap_or(1)
+}
+
 /// The fixed parameters of a render target: size, color format, MSAA level.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TargetConfig {
