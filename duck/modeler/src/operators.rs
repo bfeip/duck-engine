@@ -56,6 +56,19 @@ impl ConstructionOptions {
                 // Double sided for now since regions are created with arbitrary orientation
                 .with_flags(MaterialFlags::DOUBLE_SIDED),
             line_material: LineMaterial::new(RgbaColor { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+            // Sketch appearance for geometry that bounds no volume: free edges,
+            // wires, and lone faces.
+            free_face_material: Some(
+                FaceMaterial::new()
+                    .with_base_color_factor(RgbaColor { r: 0.42, g: 0.68, b: 0.92, a: 1.0 })
+                    .with_flags(MaterialFlags::DOUBLE_SIDED | MaterialFlags::DO_NOT_LIGHT),
+            ),
+            free_line_material: Some(LineMaterial::new(RgbaColor {
+                r: 0.16,
+                g: 0.40,
+                b: 0.78,
+                a: 1.0,
+            })),
             include_edges: true,
             include_points: true,
         };

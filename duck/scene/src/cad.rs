@@ -1,11 +1,42 @@
 use anyhow::{Context, Result};
-use opencascade::primitives::{EdgeType, Shape};
+use opencascade::primitives::{EdgeType, Shape, ShapeType};
 
 use crate::common::{RgbaColor, Transform};
 use crate::{
     FaceMaterial, Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, NodePayload,
     PrimitiveType, Scene, SubMeshRange, Topology, Vertex,
 };
+
+/// Whether a shape bounds a volume, or is free geometry that does not.
+///
+/// Free geometry — loose vertices, edges, wires, and faces — is what CAD
+/// applications draw as sketches or construction curves, and is conventionally
+/// given a distinct appearance from bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeometryClass {
+    /// The shape bounds a volume, or is a surface body (shell).
+    Solid,
+    /// The shape bounds no volume: vertices, edges, wires, and lone faces.
+    Free,
+}
+
+/// Classifies `shape` by whether it bounds a volume. A container (compound) is
+/// free geometry only if nothing inside it bounds a volume.
+pub fn classify_shape(shape: &Shape) -> GeometryClass {
+    match shape.shape_type() {
+        ShapeType::Solid | ShapeType::CompoundSolid | ShapeType::Shell => GeometryClass::Solid,
+        ShapeType::Vertex | ShapeType::Edge | ShapeType::Wire | ShapeType::Face => {
+            GeometryClass::Free
+        }
+        ShapeType::Compound | ShapeType::Shape => {
+            if shape.contains_type(ShapeType::Solid) || shape.contains_type(ShapeType::Shell) {
+                GeometryClass::Solid
+            } else {
+                GeometryClass::Free
+            }
+        }
+    }
+}
 
 /// Options controlling tessellation and presentation when producing scene geometry from CAD data.
 ///
@@ -27,6 +58,12 @@ pub struct CadTessellationOptions {
     /// Material applied to wireframe edges. Acts as a template: each tessellated
     /// part receives a clone with a fresh id.
     pub line_material: LineMaterial,
+    /// Face material for shapes classified [`GeometryClass::Free`]. Falls back to
+    /// `face_material` when unset.
+    pub free_face_material: Option<FaceMaterial>,
+    /// Line material for shapes classified [`GeometryClass::Free`]. Falls back to
+    /// `line_material` when unset.
+    pub free_line_material: Option<LineMaterial>,
     /// Whether to include wireframe edges as `LineList` meshes.
     pub include_edges: bool,
     /// Whether to include B-Rep vertices as a `PointList` mesh. Points are not
@@ -43,8 +80,24 @@ impl Default for CadTessellationOptions {
             face_material: FaceMaterial::new()
                 .with_base_color_factor(RgbaColor { r: 0.8, g: 0.8, b: 0.8, a: 1.0 }),
             line_material: LineMaterial::new(RgbaColor { r: 0.15, g: 0.15, b: 0.15, a: 1.0 }),
+            free_face_material: None,
+            free_line_material: None,
             include_edges: true,
             include_points: true,
+        }
+    }
+}
+
+impl CadTessellationOptions {
+    /// The face and line templates that apply to `shape`, honouring its
+    /// [`GeometryClass`].
+    pub fn materials_for(&self, shape: &Shape) -> (&FaceMaterial, &LineMaterial) {
+        match classify_shape(shape) {
+            GeometryClass::Solid => (&self.face_material, &self.line_material),
+            GeometryClass::Free => (
+                self.free_face_material.as_ref().unwrap_or(&self.face_material),
+                self.free_line_material.as_ref().unwrap_or(&self.line_material),
+            ),
         }
     }
 }
@@ -201,8 +254,9 @@ pub fn tessellate_into(
         options.include_edges,
         options.include_points,
     )?;
-    let face_mat = scene.add_face_material(options.face_material.clone().with_fresh_id());
-    let line_mat = scene.add_line_material(options.line_material.clone().with_fresh_id());
+    let (face_template, line_template) = options.materials_for(shape);
+    let face_mat = scene.add_face_material(face_template.clone().with_fresh_id());
+    let line_mat = scene.add_line_material(line_template.clone().with_fresh_id());
     let mesh_id = scene.add_mesh(mesh);
     let instance_id = scene.add_instance(
         Instance::new(mesh_id)
@@ -222,6 +276,10 @@ pub fn tessellate_into(
 /// Re-tessellates `shape` into an existing `node`, preserving its [`NodeId`] and
 /// reusing its material slots. The node must already carry a
 /// [`NodePayload::Instance`]; the previous mesh and instance are removed.
+///
+/// Because the material slots are reused verbatim, the node keeps whichever
+/// materials it was first tessellated with. re-classify by
+/// creating a new node instead.
 pub fn retessellate_node(
     shape: &Shape,
     scene: &mut Scene,
@@ -380,6 +438,138 @@ mod tests {
         }
         assert_eq!(scene.face_material_count(), 3);
         assert_eq!(scene.line_material_count(), 3);
+    }
+
+    /// Distinctly-colored free templates, so a part's class is readable from the
+    /// material colors its instance ended up with.
+    fn classified_options() -> CadTessellationOptions {
+        CadTessellationOptions {
+            free_face_material: Some(FaceMaterial::new().with_base_color_factor(FREE_FACE)),
+            free_line_material: Some(LineMaterial::new(FREE_LINE)),
+            ..CadTessellationOptions::default()
+        }
+    }
+
+    const FREE_FACE: RgbaColor = RgbaColor { r: 0.42, g: 0.68, b: 0.92, a: 1.0 };
+    const FREE_LINE: RgbaColor = RgbaColor { r: 0.16, g: 0.40, b: 0.78, a: 1.0 };
+
+    /// The face and line colors the node's instance actually resolves to.
+    fn node_colors(scene: &Scene, node: NodeId) -> (RgbaColor, RgbaColor) {
+        let NodePayload::Instance(instance_id) = *scene.get_node(node).unwrap().payload() else {
+            panic!("expected instance payload");
+        };
+        let instance = scene.get_instance(instance_id).unwrap();
+        let face = scene.get_face_material(instance.face_material().unwrap()).unwrap();
+        let line = scene.get_line_material(instance.line_material().unwrap()).unwrap();
+        (face.base_color_factor(), line.color())
+    }
+
+    fn open_wire() -> opencascade::primitives::Shape {
+        opencascade::primitives::Wire::from_ordered_points([
+            glam::dvec3(0.0, 0.0, 0.0),
+            glam::dvec3(1.0, 0.0, 0.0),
+            glam::dvec3(1.0, 0.0, 1.0),
+        ])
+        .unwrap()
+        .into()
+    }
+
+    fn planar_face() -> opencascade::primitives::Shape {
+        let wire = opencascade::primitives::Wire::from_ordered_points([
+            glam::dvec3(0.0, 0.0, 0.0),
+            glam::dvec3(1.0, 0.0, 0.0),
+            glam::dvec3(1.0, 0.0, 1.0),
+            glam::dvec3(0.0, 0.0, 1.0),
+        ])
+        .unwrap()
+        .to_face()
+        .unwrap();
+        wire.into()
+    }
+
+    const EPSILON: f32 = 1e-6;
+
+    fn assert_color_eq(actual: RgbaColor, expected: RgbaColor, what: &str) {
+        let close = (actual.r - expected.r).abs() < EPSILON
+            && (actual.g - expected.g).abs() < EPSILON
+            && (actual.b - expected.b).abs() < EPSILON
+            && (actual.a - expected.a).abs() < EPSILON;
+        assert!(close, "{what}: expected {expected:?}, got {actual:?}");
+    }
+
+    #[test]
+    fn classify_shape_separates_bodies_from_free_geometry() {
+        assert_eq!(
+            classify_shape(&opencascade::primitives::Shape::cube(2.0)),
+            GeometryClass::Solid
+        );
+        assert_eq!(classify_shape(&open_wire()), GeometryClass::Free);
+        assert_eq!(classify_shape(&planar_face()), GeometryClass::Free);
+    }
+
+    #[test]
+    fn a_lofted_shell_is_a_body_not_free_geometry() {
+        let profile = |y: f64| {
+            opencascade::primitives::Wire::from_ordered_points([
+                glam::dvec3(0.0, y, 0.0),
+                glam::dvec3(1.0, y, 0.0),
+                glam::dvec3(1.0, y, 1.0),
+                glam::dvec3(0.0, y, 1.0),
+            ])
+            .unwrap()
+        };
+        let shell = opencascade::primitives::Shell::loft([profile(0.0), profile(2.0)]);
+        assert_eq!(classify_shape(&shell.into()), GeometryClass::Solid);
+    }
+
+    #[test]
+    fn compound_classification_follows_its_contents() {
+        // A compound is free geometry only if nothing inside it bounds a volume.
+        let wires = opencascade::primitives::Compound::from_shapes([open_wire(), planar_face()]);
+        assert_eq!(classify_shape(&wires.into()), GeometryClass::Free);
+
+        let mixed = opencascade::primitives::Compound::from_shapes([
+            open_wire(),
+            opencascade::primitives::Shape::cube(2.0),
+        ]);
+        assert_eq!(classify_shape(&mixed.into()), GeometryClass::Solid);
+    }
+
+    #[test]
+    fn free_shapes_use_the_free_materials() {
+        let options = classified_options();
+        let mut scene = Scene::new();
+
+        for shape in [open_wire(), planar_face()] {
+            let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
+            let (face, line) = node_colors(&scene, node);
+            assert_color_eq(face, FREE_FACE, "face");
+            assert_color_eq(line, FREE_LINE, "line");
+        }
+    }
+
+    #[test]
+    fn solids_use_the_default_materials() {
+        let options = classified_options();
+        let mut scene = Scene::new();
+        let shape = opencascade::primitives::Shape::cube(2.0);
+        let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
+
+        let (face, line) = node_colors(&scene, node);
+        assert_color_eq(face, options.face_material.base_color_factor(), "face");
+        assert_color_eq(line, options.line_material.color(), "line");
+    }
+
+    #[test]
+    fn unset_free_materials_fall_back_to_the_defaults() {
+        // Callers that never opt in (glTF/STEP import) must see no change.
+        let options = default_options();
+        let mut scene = Scene::new();
+        let node = tessellate_into(&open_wire(), &mut scene, &options, None, None).unwrap();
+
+        let (face, line) = node_colors(&scene, node);
+        assert_color_eq(face, options.face_material.base_color_factor(), "face");
+        assert_color_eq(line, options.line_material.color(), "line");
     }
 
     #[test]

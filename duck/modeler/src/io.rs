@@ -39,6 +39,10 @@ pub fn import_cad_dialog(
         let mut options = options.clone();
         if let Some(color) = part.color {
             options.face_material.set_base_color_factor(color);
+            // A part that carries its own color keeps it whatever its geometry
+            // class, so drop the sketch appearance for this part.
+            options.free_face_material = None;
+            options.free_line_material = None;
         }
         let name = part.name.unwrap_or_else(|| format!("{stem} {}", i + 1));
         document.add_part(name, part.shape, &options)?;

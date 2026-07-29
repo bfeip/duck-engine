@@ -1135,6 +1135,7 @@ dependencies = [
  "bytemuck",
  "criterion",
  "duck-engine-common",
+ "glam",
  "image",
  "log",
  "obj-rs",
