@@ -6,6 +6,10 @@
 //! bind-group layout is derived from the same config. There are no fallback
 //! textures: a material binds exactly the textures it declares.
 //!
+//! Also covers alpha-mode resolution: the last two columns set only a
+//! sub-1.0 color alpha and must come out blended, while column 0 is the same
+//! blue at full alpha for comparison.
+//!
 //! Doubles as a smoke test — if any variant's shader or layout is wrong, the
 //! render fails. Run with `cargo run --example material_variants -p duck-engine-renderer`.
 
@@ -39,7 +43,7 @@ fn main() -> anyhow::Result<()> {
 
     // Each closure spawns one sphere of the given mesh at column `col` (centered).
     let place = |scene: &mut Scene, mesh, col: i32, name: &str| -> anyhow::Result<()> {
-        let x = (col as f32 - 2.5) * 0.85;
+        let x = (col as f32 - 3.5) * 0.78;
         scene.add_instance_node(
             None,
             mesh,
@@ -84,6 +88,19 @@ fn main() -> anyhow::Result<()> {
     let point_tex = scene
         .add_point_material(PointMaterial::new(RgbaColor::WHITE).with_base_color_texture(base));
     place(&mut scene, Instance::new(points).with_point_material(point_tex), 5, "point-textured")?;
+
+    // --- Inferred blending: alpha alone, no explicit AlphaMode ---------------
+    // Both leave the mode at the default `Auto`, so the sub-1.0 alpha is what
+    // selects the blended pipeline. Compare column 6 against column 0, which is
+    // the same blue at full alpha.
+    let m_auto_blend = scene.add_face_material(
+        FaceMaterial::new().with_base_color_factor(RgbaColor { r: 0.2, g: 0.6, b: 0.9, a: 0.3 }),
+    );
+    place(&mut scene, Instance::new(tris).with_face_material(m_auto_blend), 6, "auto-blend-face")?;
+
+    let line_translucent =
+        scene.add_line_material(LineMaterial::new(RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 0.3 }));
+    place(&mut scene, Instance::new(lines).with_line_material(line_translucent), 7, "auto-blend-line")?;
 
     // A white directional light (its direction is the node's -Z axis).
     let light = scene

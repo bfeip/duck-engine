@@ -11,7 +11,7 @@ use duck_engine_scene::{NodeFlags, PositionedCamera, Scene};
 use crate::common::{Axis, Ray, RgbaColor, Transform};
 use crate::geom_query::{pick_all_from_ray_with_view, PickView, RayPickQuery};
 use crate::scene::{
-    AlphaMode, DisplayBehavior, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh,
+    DisplayBehavior, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh,
     MeshId, NodeId, PrimitiveType, RenderLayer,
 };
 
@@ -115,11 +115,7 @@ fn handle_highlight_color(id: GizmoHandleId) -> RgbaColor {
 
 /// Create a gizmo material for the given color, blending when it is translucent.
 fn gizmo_material(color: RgbaColor) -> FaceMaterial {
-    let alpha_mode = if color.a < 1.0 { AlphaMode::Blend } else { AlphaMode::Opaque };
-    FaceMaterial::new()
-        .with_base_color_factor(color)
-        .with_flags(GIZMO_FLAGS)
-        .with_alpha_mode(alpha_mode)
+    FaceMaterial::new().with_base_color_factor(color).with_flags(GIZMO_FLAGS)
 }
 
 /// Build a plane handle: a small translucent quad in the coordinate plane whose

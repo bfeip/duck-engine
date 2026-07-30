@@ -1,7 +1,7 @@
 use crate::common::RgbaColor;
 use crate::TextureId;
 
-use super::MaterialProperties;
+use super::{AlphaMode, MaterialProperties};
 
 /// Unique identifier for a [`LineMaterial`].
 pub type LineMaterialId = crate::Id<LineMaterial>;
@@ -49,9 +49,12 @@ impl LineMaterial {
     }
 
     /// Get the material properties used to select shaders and pipeline state.
+    ///
+    /// Lines carry no explicit alpha mode: a color alpha below 1.0 blends.
     pub fn properties(&self) -> MaterialProperties {
         MaterialProperties {
             base_color_texture: self.base_color_texture.is_some(),
+            alpha_mode: AlphaMode::Auto.resolve(self.color.a),
             ..MaterialProperties::UNLIT_OPAQUE
         }
     }

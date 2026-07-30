@@ -75,7 +75,7 @@ impl FaceMaterial {
             roughness_factor: DEFAULT_ROUGHNESS,
             normal_scale: DEFAULT_NORMAL_SCALE,
             flags: MaterialFlags::NONE,
-            alpha_mode: AlphaMode::Opaque,
+            alpha_mode: AlphaMode::Auto,
             alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
             generation: crate::initial_generation(),
         }
@@ -123,7 +123,9 @@ impl FaceMaterial {
         self.flags
     }
 
-    /// Get the alpha rendering mode.
+    /// Get the requested alpha rendering mode, which may be
+    /// [`AlphaMode::Auto`]. For the mode this material renders with, see
+    /// [`properties`](Self::properties).
     pub fn alpha_mode(&self) -> AlphaMode {
         self.alpha_mode
     }
@@ -142,11 +144,16 @@ impl FaceMaterial {
     }
 
     /// Get the material properties used to select shaders and pipeline state.
+    ///
+    /// The alpha mode is resolved against the base color factor, so a default
+    /// (`Auto`) material with `a < 1.0` renders blended. Alpha carried by a
+    /// base-color *texture* cannot be inferred — the factor stays 1.0 — so those
+    /// materials need an explicit [`with_alpha_mode`](Self::with_alpha_mode).
     pub fn properties(&self) -> MaterialProperties {
         MaterialProperties {
             has_lighting: !self.flags.contains(MaterialFlags::DO_NOT_LIGHT),
             double_sided: self.flags.contains(MaterialFlags::DOUBLE_SIDED),
-            alpha_mode: self.alpha_mode,
+            alpha_mode: self.alpha_mode.resolve(self.base_color_factor.a),
             base_color_texture: self.base_color_texture.is_some(),
             normal_texture: self.normal_texture.is_some(),
             metallic_roughness_texture: self.metallic_roughness_texture.is_some(),

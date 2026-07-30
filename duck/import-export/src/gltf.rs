@@ -345,9 +345,14 @@ fn load_material(
         material = material.with_flags(flags);
     }
 
-    // Alpha mode
+    // Alpha mode. OPAQUE is set explicitly rather than left at the default:
+    // the spec says the alpha channel is ignored, which is exactly what the
+    // explicit mode means, whereas the default would infer blending from a
+    // sub-1.0 base color factor.
     match gltf_material.alpha_mode() {
-        gltf::material::AlphaMode::Opaque => {}
+        gltf::material::AlphaMode::Opaque => {
+            material = material.with_alpha_mode(AlphaMode::Opaque);
+        }
         gltf::material::AlphaMode::Mask => {
             material = material
                 .with_alpha_mode(AlphaMode::Mask)

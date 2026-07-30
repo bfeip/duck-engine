@@ -25,16 +25,41 @@ pub const DEFAULT_NORMAL_SCALE: f32 = 1.0;
 pub const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
 
 /// Alpha rendering mode
+///
+/// [`Auto`](AlphaMode::Auto) is the default and infers the mode from the color
+/// factor's alpha. The other three are explicit instructions, always honoured as
+/// written — see [`resolve`](AlphaMode::resolve).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AlphaMode {
     /// Fully opaque, alpha channel ignored.
-    #[default]
     Opaque,
     /// Binary alpha test: alpha >= cutoff is fully opaque, otherwise discarded.
     Mask,
     /// Standard alpha blending (source alpha, one minus source alpha).
     Blend,
+    /// Infer from the color factor: blended below 1.0, opaque otherwise.
+    #[default]
+    Auto,
+}
+
+impl AlphaMode {
+    /// The mode a material actually renders with, given the alpha of its color
+    /// factor.
+    ///
+    /// Only [`Auto`](AlphaMode::Auto) resolves to anything — the explicit modes
+    /// pass through untouched. Asking for [`Blend`](AlphaMode::Blend)
+    /// blends even at full alpha, which is what a material carrying its
+    /// transparency in a base-color *texture* needs: its factor stays 1.0.
+    ///
+    /// Never returns `Auto`.
+    pub fn resolve(self, factor_alpha: f32) -> AlphaMode {
+        match self {
+            AlphaMode::Auto if factor_alpha < 1.0 => AlphaMode::Blend,
+            AlphaMode::Auto => AlphaMode::Opaque,
+            explicit => explicit,
+        }
+    }
 }
 
 bitflags! {
@@ -62,7 +87,7 @@ pub struct MaterialProperties {
     pub has_lighting: bool,
     /// Whether the material is double-sided (disables back-face culling, flips normals)
     pub double_sided: bool,
-    /// Alpha rendering mode
+    /// Alpha rendering mode, already resolved — never [`AlphaMode::Auto`]
     pub alpha_mode: AlphaMode,
     /// Whether the material binds a base-color texture
     pub base_color_texture: bool,
@@ -83,4 +108,59 @@ impl MaterialProperties {
         normal_texture: false,
         metallic_roughness_texture: false,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::RgbaColor;
+
+    fn translucent() -> RgbaColor {
+        RgbaColor { r: 0.4, g: 0.7, b: 0.9, a: 0.3 }
+    }
+
+    #[test]
+    fn auto_infers_from_factor_alpha() {
+        assert_eq!(AlphaMode::Auto.resolve(1.0), AlphaMode::Opaque);
+        assert_eq!(AlphaMode::Auto.resolve(0.3), AlphaMode::Blend);
+    }
+
+    #[test]
+    fn explicit_modes_are_never_overridden() {
+        // Blending at full alpha is how a base-color texture carrying alpha is
+        // expressed, and opaque at partial alpha is glTF's OPAQUE semantic.
+        assert_eq!(AlphaMode::Blend.resolve(1.0), AlphaMode::Blend);
+        assert_eq!(AlphaMode::Opaque.resolve(0.3), AlphaMode::Opaque);
+        assert_eq!(AlphaMode::Mask.resolve(0.3), AlphaMode::Mask);
+        assert_eq!(AlphaMode::Mask.resolve(1.0), AlphaMode::Mask);
+    }
+
+    #[test]
+    fn face_material_resolves_against_its_base_color() {
+        let opaque = FaceMaterial::new();
+        assert_eq!(opaque.properties().alpha_mode, AlphaMode::Opaque);
+
+        let blended = FaceMaterial::new().with_base_color_factor(translucent());
+        assert_eq!(blended.properties().alpha_mode, AlphaMode::Blend);
+
+        let masked =
+            FaceMaterial::new().with_base_color_factor(translucent()).with_alpha_mode(AlphaMode::Mask);
+        assert_eq!(masked.properties().alpha_mode, AlphaMode::Mask);
+    }
+
+    #[test]
+    fn line_and_point_materials_blend_when_translucent() {
+        assert_eq!(
+            LineMaterial::new(RgbaColor::WHITE).properties().alpha_mode,
+            AlphaMode::Opaque
+        );
+        assert_eq!(
+            LineMaterial::new(translucent()).properties().alpha_mode,
+            AlphaMode::Blend
+        );
+        assert_eq!(
+            PointMaterial::new(translucent()).properties().alpha_mode,
+            AlphaMode::Blend
+        );
+    }
 }
