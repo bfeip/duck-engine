@@ -41,11 +41,11 @@ impl Default for GridConfig {
             size: 1000.0,
             minor_spacing: 5.0,
             major_every: 5,
-            minor_color: RgbaColor { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
-            major_color: RgbaColor { r: 0.10, g: 0.10, b: 0.10, a: 1.0 },
-            axis_u_color: RgbaColor { r: 0.65, g: 0.20, b: 0.20, a: 1.0 },
-            axis_v_color: RgbaColor { r: 0.20, g: 0.30, b: 0.65, a: 1.0 },
-            axis_normal_color: RgbaColor { r: 0.20, g: 0.55, b: 0.25, a: 1.0 },
+            minor_color: RgbaColor { r: 0.105, g: 0.105, b: 0.105, a: 0.35 },
+            major_color: RgbaColor { r: 0.20, g: 0.20, b: 0.20, a: 0.45 },
+            axis_u_color: RgbaColor { r: 0.92, g: 0.28, b: 0.28, a: 0.7 },
+            axis_v_color: RgbaColor { r: 0.28, g: 0.42, b: 0.92, a: 0.7 },
+            axis_normal_color: RgbaColor { r: 0.28, g: 0.78, b: 0.35, a: 0.7 },
             normal_axis_length: 25.0,
         }
     }

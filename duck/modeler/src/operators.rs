@@ -60,7 +60,7 @@ impl ConstructionOptions {
             // wires, and lone faces.
             free_face_material: Some(
                 FaceMaterial::new()
-                    .with_base_color_factor(RgbaColor { r: 0.42, g: 0.68, b: 0.92, a: 1.0 })
+                    .with_base_color_factor(RgbaColor { r: 0.42, g: 0.68, b: 0.92, a: 0.3 })
                     .with_flags(MaterialFlags::DOUBLE_SIDED | MaterialFlags::DO_NOT_LIGHT),
             ),
             free_line_material: Some(LineMaterial::new(RgbaColor {
