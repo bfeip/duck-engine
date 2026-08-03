@@ -936,3 +936,57 @@ fn test_is_material_orphaned() {
     assert!(scene.is_point_material_orphaned(point));
 }
 
+
+// ============== Scene completeness tests ==============
+
+#[test]
+fn test_is_complete_fully_populated_scene() {
+    let mut scene = Scene::new();
+    let mesh_id = scene.add_mesh(make_unit_mesh());
+    let face = scene.add_face_material(FaceMaterial::new());
+    let line = scene.add_line_material(LineMaterial::new(common::RgbaColor::WHITE));
+    let instance = Instance::new(mesh_id).with_face_material(face).with_line_material(line);
+    let parent = scene
+        .add_instance_node(None, instance, None, Transform::IDENTITY, NodeFlags::NONE)
+        .unwrap();
+    scene.add_default_node(Some(parent), None).unwrap();
+
+    assert!(scene.is_complete());
+}
+
+#[test]
+fn test_is_complete_missing_mesh() {
+    let mut scene = Scene::new();
+    let face = scene.add_face_material(FaceMaterial::new());
+    // The mesh ID is never added to the scene.
+    let instance = Instance::new(MeshId::new()).with_face_material(face);
+    scene
+        .add_instance_node(None, instance, None, Transform::IDENTITY, NodeFlags::NONE)
+        .unwrap();
+
+    assert!(!scene.is_complete());
+}
+
+#[test]
+fn test_is_complete_missing_material() {
+    let mut scene = Scene::new();
+    let mesh_id = scene.add_mesh(make_unit_mesh());
+    // The face material ID is never added to the scene.
+    let instance = Instance::new(mesh_id).with_face_material(FaceMaterialId::new());
+    scene
+        .add_instance_node(None, instance, None, Transform::IDENTITY, NodeFlags::NONE)
+        .unwrap();
+
+    assert!(!scene.is_complete());
+}
+
+#[test]
+fn test_is_complete_dangling_child() {
+    let mut scene = Scene::new();
+    // A node whose child was listed but never inserted, as during a partial import.
+    let mut node = Node::new(None, Transform::IDENTITY, NodeFlags::NONE);
+    node.add_child_unchecked(NodeId::new());
+    scene.insert_node(node);
+
+    assert!(!scene.is_complete());
+}

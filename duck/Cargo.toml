@@ -11,8 +11,6 @@ members = [
     "modeler",
     "scene-info",
     "scene-converter",
-    "streaming",
-    "scene-server",
 ]
 default-members = ["viewer"]
 

@@ -4,8 +4,6 @@ mod left_panel;
 mod lights_tab;
 mod right_panel;
 mod scene_tab;
-#[cfg(feature = "streaming")]
-pub mod network_tab;
 
 pub use left_panel::LeftPanel;
 pub use right_panel::RightPanel;
@@ -37,12 +35,6 @@ pub struct UiActions {
     pub visibility_changes: Vec<VisibilityChange>,
     /// When set, replace the active camera with this value.
     pub set_camera: Option<PositionedCamera>,
-    /// When set, connect to this streaming server address.
-    #[cfg(feature = "streaming")]
-    pub connect_stream: Option<String>,
-    /// When true, disconnect from the streaming server.
-    #[cfg(feature = "streaming")]
-    pub disconnect_stream: bool,
 }
 
 /// Information about the current navigation mode, shared across panels.

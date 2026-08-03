@@ -1146,21 +1146,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "duck-engine-streaming"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "duck-engine-common",
- "duck-engine-import-export",
- "duck-engine-scene",
- "log",
- "serde",
- "thiserror 2.0.18",
- "zstd",
-]
-
-[[package]]
 name = "duck-engine-viewer"
 version = "0.1.0"
 dependencies = [
@@ -1174,7 +1159,6 @@ dependencies = [
  "duck-engine-import-export",
  "duck-engine-renderer",
  "duck-engine-scene",
- "duck-engine-streaming",
  "env_logger",
  "image",
  "log",
@@ -3985,18 +3969,6 @@ dependencies = [
  "duck-engine-scene",
  "serde",
  "zstd",
-]
-
-[[package]]
-name = "scene-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "duck-engine-import-export",
- "duck-engine-streaming",
- "env_logger",
- "log",
 ]
 
 [[package]]

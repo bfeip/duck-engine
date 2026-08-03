@@ -28,6 +28,3 @@ pub mod web;
 // Optional integrations
 #[cfg(feature = "winit-support")]
 pub mod winit_support;
-
-#[cfg(feature = "streaming")]
-pub mod streaming;

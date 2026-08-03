@@ -1,8 +1,6 @@
 use duck_engine_viewer::Viewer;
 
 use super::{environment_tab, lights_tab, scene_tab, UiActions};
-#[cfg(feature = "streaming")]
-use super::network_tab::{self, NetworkTabState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LeftPanelTab {
@@ -10,15 +8,11 @@ pub enum LeftPanelTab {
     Scene,
     Lights,
     Environment,
-    #[cfg(feature = "streaming")]
-    Network,
 }
 
 #[derive(Default)]
 pub struct LeftPanel {
     pub active_tab: LeftPanelTab,
-    #[cfg(feature = "streaming")]
-    pub network: NetworkTabState,
 }
 
 impl LeftPanel {
@@ -30,8 +24,6 @@ impl LeftPanel {
                     ui.selectable_value(&mut self.active_tab, LeftPanelTab::Scene, "Scene");
                     ui.selectable_value(&mut self.active_tab, LeftPanelTab::Lights, "Lights");
                     ui.selectable_value(&mut self.active_tab, LeftPanelTab::Environment, "Env");
-                    #[cfg(feature = "streaming")]
-                    ui.selectable_value(&mut self.active_tab, LeftPanelTab::Network, "Network");
                 });
 
                 ui.separator();
@@ -40,8 +32,6 @@ impl LeftPanel {
                     LeftPanelTab::Scene => scene_tab::show(ui, viewer, actions),
                     LeftPanelTab::Lights => lights_tab::show(ui, viewer, actions),
                     LeftPanelTab::Environment => environment_tab::show(ui, viewer, actions),
-                    #[cfg(feature = "streaming")]
-                    LeftPanelTab::Network => network_tab::show(ui, viewer, actions, &mut self.network),
                 }
             });
     }

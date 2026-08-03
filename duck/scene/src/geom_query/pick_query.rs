@@ -115,8 +115,8 @@ fn pick_node<Q: PickQuery>(
     let screen_space = view.is_some() && display.is_screen_space();
 
     // Broad phase: skip entire subtree if bounds are unavailable or don't intersect.
-    // nodes_bounding returns None for both "no geometry" and "all geometry still streaming",
-    // both of which mean there is nothing pickable here yet.
+    // nodes_bounding returns None for both "no geometry" and "geometry not yet
+    // present", both of which mean there is nothing pickable here yet.
     //
     // Skipped for screen-space subtrees: their cached world-space bounds are
     // authored-size and would false-negative once the effective (on-screen) scale
@@ -153,7 +153,7 @@ fn pick_node<Q: PickQuery>(
 /// renderer's camera-dependent effective transform, so — when a [`PickView`] is
 /// available — they are picked there too; everything else picks at the cached
 /// world transform. Returns `None` while the node's world transform is
-/// unavailable (geometry still streaming).
+/// unavailable.
 fn pick_transform(
     scene: &Scene,
     node_id: NodeId,

@@ -26,14 +26,12 @@ winit-support = ["winit"]
 assimp = ["duck-engine-import-export/assimp"]
 cad = ["duck-engine-import-export/cad"]
 usd = ["duck-engine-import-export/usd"]
-streaming = ["dep:duck-engine-streaming"]
 
 
 # Shared dependencies
 [dependencies]
 duck-engine-common = { path = "../common" }
 duck-engine-renderer = { path = "../renderer" }
-duck-engine-streaming = { path = "../streaming", optional = true }
 duck-engine-scene = { path = "../scene" }
 duck-engine-import-export = { path = "../import-export" }
 anyhow = "1.0"

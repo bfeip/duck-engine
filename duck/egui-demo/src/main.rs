@@ -389,24 +389,6 @@ impl<'a> App<'a> {
         if let Some(camera) = ui_actions.set_camera {
             self.state.as_mut().unwrap().viewer.set_camera(camera);
         }
-        #[cfg(feature = "streaming")]
-        if let Some(url) = ui_actions.connect_stream {
-            let viewer = &mut self.state.as_mut().unwrap().viewer;
-            match viewer.connect_stream(&url) {
-                Ok(()) => {
-                    self.ui.left.network.status =
-                        ui::network_tab::NetworkStatus::Connected;
-                }
-                Err(e) => {
-                    self.ui.left.network.status =
-                        ui::network_tab::NetworkStatus::Error(e.to_string());
-                }
-            }
-        }
-        #[cfg(feature = "streaming")]
-        if ui_actions.disconnect_stream {
-            self.state.as_mut().unwrap().viewer.disconnect_stream();
-        }
     }
 
     fn clear_scene(&mut self) {

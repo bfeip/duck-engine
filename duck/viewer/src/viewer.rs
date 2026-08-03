@@ -5,9 +5,6 @@ use duck_engine_common::Vector3;
 use duck_engine_scene::{NodeFlags, NodeId};
 use web_time::Instant;
 
-#[cfg(feature = "streaming")]
-use crate::streaming::ViewerStreamClient;
-
 use crate::{
     event::{DeviceEvent, Event, EventContext, EventDispatcher},
     scene::{NodePayload, PositionedCamera, Scene},
@@ -30,8 +27,6 @@ pub struct Viewer {
     cursor_position: Option<(f32, f32)>,
     /// Last time update() was called, for delta_time calculation
     last_update_time: Option<Instant>,
-    #[cfg(feature = "streaming")]
-    stream_client: Option<ViewerStreamClient>,
 }
 
 impl Viewer {
@@ -68,8 +63,6 @@ impl Viewer {
             dispatcher,
             cursor_position: None,
             last_update_time: None,
-            #[cfg(feature = "streaming")]
-            stream_client: None,
         };
 
         // Ensure there is always an active camera in the scene
@@ -124,50 +117,6 @@ impl Viewer {
 
         let event = Event::Device(DeviceEvent::Update { delta_time });
         self.handle_event(&event);
-
-        #[cfg(feature = "streaming")]
-        self.poll_stream();
-    }
-
-    /// Connect to a streaming server. Replaces any existing connection.
-    #[cfg(feature = "streaming")]
-    pub fn connect_stream(&mut self, addr: &str) -> anyhow::Result<()> {
-        use duck_engine_streaming::SubscribeOptions;
-        let camera = self.scene.lock().unwrap().active_camera_positioned(1.0).map(|cam| {
-            let fwd = cam.forward();
-            duck_engine_streaming::CameraHint {
-                position: cam.eye.into(),
-                forward: fwd.into(),
-                fov_y_rad: cam.fovy.to_radians(),
-            }
-        });
-        let client = ViewerStreamClient::connect(addr, SubscribeOptions { camera, ..Default::default() })?;
-        self.stream_client = Some(client);
-        Ok(())
-    }
-
-    /// Disconnect from the streaming server.
-    #[cfg(feature = "streaming")]
-    pub fn disconnect_stream(&mut self) {
-        self.stream_client = None;
-    }
-
-    /// Returns `true` once the initial priority sync from the server is complete.
-    #[cfg(feature = "streaming")]
-    pub fn stream_sync_complete(&self) -> bool {
-        self.stream_client.as_ref().map(|c| c.sync_complete).unwrap_or(false)
-    }
-
-    /// Drain pending scene updates from the streaming client. Called every frame from `update`.
-    #[cfg(feature = "streaming")]
-    fn poll_stream(&mut self) {
-        use crate::streaming::PollResult;
-        let mut scene = self.scene.lock().unwrap();
-        let result = self.stream_client.as_mut().map(|c| c.poll(&mut *scene));
-        match result {
-            Some(PollResult::Disconnected) => { self.stream_client = None; }
-            _ => {}
-        }
     }
 
     /// Get a reference to the active camera.
