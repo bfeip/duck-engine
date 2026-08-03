@@ -22,9 +22,6 @@ mod viewer;
 
 pub use viewer::{OffscreenViewer, SurfacedViewer, Viewer, WindowSurface};
 
-#[cfg(target_arch = "wasm32")]
-pub mod web;
-
 // Optional integrations
 #[cfg(feature = "winit-support")]
 pub mod winit_support;

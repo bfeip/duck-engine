@@ -1,9 +1,5 @@
 duck/target
-duck/pkg
 CLAUDE.md
 .vscode/settings.json
 
-duck/web-demo/node_modules
-duck/web-demo/pkg
-duck/web-demo/dist
 duck/egui-demo/dist
