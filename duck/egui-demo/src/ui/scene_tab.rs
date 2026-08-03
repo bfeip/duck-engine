@@ -8,9 +8,6 @@ pub fn show(ui: &mut egui::Ui, viewer: &Viewer, actions: &mut UiActions) {
         if ui.button("Open...").clicked() {
             actions.load_scene = true;
         }
-        if ui.button("Save...").clicked() {
-            actions.save_scene = true;
-        }
         if ui.button("Clear").clicked() {
             actions.clear_scene = true;
         }

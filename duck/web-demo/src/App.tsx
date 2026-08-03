@@ -12,7 +12,7 @@ export function App() {
   const handleViewerReady = useCallback(async (viewer: WebViewer) => {
     viewerRef.current = viewer;
     try {
-      const resp = await fetch("/default-scene.duck");
+      const resp = await fetch("/default-scene.glb");
       if (resp.ok) {
         const data = new Uint8Array(await resp.arrayBuffer());
         viewer.start_load(data);
@@ -46,7 +46,7 @@ export function App() {
 
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".gltf,.glb,.duck";
+    input.accept = ".gltf,.glb";
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;

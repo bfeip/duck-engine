@@ -1,7 +1,7 @@
 //! Trait-based importer system for scene file formats.
 //!
 //! Implement [`Importer`] to add support for a new file format. The built-in
-//! importers ([`DuckImporter`], [`GltfImporter`], [`UsdImporter`], [`AssimpImporter`])
+//! importers ([`GltfImporter`], [`UsdImporter`], [`AssimpImporter`])
 //! cover the standard formats; custom importers can be passed to
 //! [`load_sync_with`](crate::load_sync_with) / [`load_async_with`](crate::load_async_with).
 
@@ -30,7 +30,7 @@ use crate::{
 /// Use [`default_importers`] to get the built-in set, or supply your own list
 /// to [`load_sync_with`](crate::load_sync_with) / [`load_async_with`](crate::load_async_with).
 pub trait Importer: Send + Sync {
-    /// Human-readable format name (e.g., `"glTF"`, `"Duck"`).
+    /// Human-readable format name (e.g., `"glTF"`, `"USD"`).
     fn name(&self) -> &str;
 
     /// Try to detect this format from the first bytes of a file.
@@ -61,49 +61,6 @@ pub trait Importer: Send + Sync {
 // ============================================================================
 // Built-in Importers
 // ============================================================================
-
-/// Importer for the Duck binary scene format.
-pub struct DuckImporter;
-
-impl Importer for DuckImporter {
-    fn name(&self) -> &str {
-        "Duck"
-    }
-
-    fn detect_from_bytes(&self, bytes: &[u8]) -> bool {
-        bytes.len() >= 4 && bytes.starts_with(&crate::format::MAGIC)
-    }
-
-    fn detect_from_extension(&self, ext: &str) -> bool {
-        ext.eq_ignore_ascii_case("duck")
-    }
-
-    fn load(
-        &self,
-        bytes: &[u8],
-        _path_hint: Option<&Path>,
-        _options: &LoadOptions,
-        progress: &dyn ProgressReporter,
-    ) -> Result<SceneLoadResult, LoadError> {
-        progress.update(ProgressState {
-            description: "Parsing scene".into(),
-            progress: Some(0.1),
-            stage: None,
-        });
-        let scene = crate::format::from_bytes(bytes)?;
-
-        progress.update(ProgressState {
-            description: "Complete".into(),
-            progress: Some(1.0),
-            stage: None,
-        });
-        Ok(SceneLoadResult {
-            scene,
-            camera: None,
-            format: DetectedFormat::Duck,
-        })
-    }
-}
 
 /// Importer for glTF / GLB files.
 pub struct GltfImporter;
@@ -381,13 +338,10 @@ impl Importer for CadImporter {
 /// Returns the default set of built-in importers.
 ///
 /// The order determines detection priority (first match wins):
-/// Duck, glTF, CAD (if enabled), USD (if enabled), Assimp (if enabled).
+/// glTF, CAD (if enabled), USD (if enabled), Assimp (if enabled).
 pub fn default_importers() -> Vec<Box<dyn Importer>> {
     #[allow(unused_mut)]
-    let mut importers: Vec<Box<dyn Importer>> = vec![
-        Box::new(DuckImporter),
-        Box::new(GltfImporter),
-    ];
+    let mut importers: Vec<Box<dyn Importer>> = vec![Box::new(GltfImporter)];
     #[cfg(feature = "cad")]
     importers.push(Box::new(CadImporter));
     #[cfg(feature = "usd")]

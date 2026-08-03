@@ -27,7 +27,6 @@ pub struct VisibilityChange {
 #[derive(Default)]
 pub struct UiActions {
     pub load_scene: bool,
-    pub save_scene: bool,
     pub clear_scene: bool,
     pub add_light: Option<LightType>,
     pub load_environment: bool,

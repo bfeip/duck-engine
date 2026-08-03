@@ -34,12 +34,7 @@ impl TryFrom<image::ImageFormat> for TextureFormat {
 /// Textures can be created from embedded image data or loaded lazily from a file path.
 pub enum TextureSource {
     /// Image data embedded in memory.
-    /// Optionally includes original compressed bytes (PNG/JPEG) for efficient serialization.
-    Embedded {
-        image: DynamicImage,
-        /// Original compressed bytes preserved from loading (e.g., from glTF).
-        original_bytes: Option<(Vec<u8>, TextureFormat)>,
-    },
+    Embedded { image: DynamicImage },
     /// Image loaded lazily from a file path.
     /// The image can be released and reloaded by replacing the `OnceLock`.
     File {
@@ -51,9 +46,8 @@ pub enum TextureSource {
 impl Clone for TextureSource {
     fn clone(&self) -> Self {
         match self {
-            TextureSource::Embedded { image, original_bytes } => TextureSource::Embedded {
+            TextureSource::Embedded { image } => TextureSource::Embedded {
                 image: image.clone(),
-                original_bytes: original_bytes.clone(),
             },
             TextureSource::File { path, cache } => TextureSource::File {
                 path: path.clone(),
@@ -113,31 +107,7 @@ impl Texture {
     pub fn from_image(image: DynamicImage) -> Self {
         Self {
             id: crate::Id::new(),
-            source: TextureSource::Embedded { image, original_bytes: None },
-            generation: 1,
-        }
-    }
-
-    /// Create a texture from an embedded image with original compressed bytes preserved.
-    ///
-    /// This is used when loading from formats like glTF that embed compressed images.
-    /// The original bytes are preserved for efficient serialization (avoids re-encoding).
-    ///
-    /// # Arguments
-    /// * `image` - The decoded image data
-    /// * `original_bytes` - The original compressed bytes (PNG or JPEG)
-    /// * `format` - The format of the original bytes
-    pub fn from_image_with_original_bytes(
-        image: DynamicImage,
-        original_bytes: Vec<u8>,
-        format: TextureFormat,
-    ) -> Self {
-        Self {
-            id: crate::Id::new(),
-            source: TextureSource::Embedded {
-                image,
-                original_bytes: Some((original_bytes, format)),
-            },
+            source: TextureSource::Embedded { image },
             generation: 1,
         }
     }
@@ -174,27 +144,6 @@ impl Texture {
         }
     }
 
-    /// Create a texture from raw compressed image bytes (PNG or JPEG) with a specific ID.
-    ///
-    /// Used during deserialization to reconstruct a texture from embedded file bytes
-    /// while preserving the original resource ID.
-    pub fn from_image_bytes_with_id(id: TextureId, bytes: Vec<u8>) -> Result<Self> {
-        let format = image::guess_format(&bytes)
-            .ok()
-            .and_then(|f| TextureFormat::try_from(f).ok())
-            .with_context(|| "Unrecognized or unsupported image format in texture bytes")?;
-        let image = image::load_from_memory(&bytes)
-            .with_context(|| "Failed to decode texture image bytes")?;
-        Ok(Self {
-            id,
-            source: TextureSource::Embedded {
-                image,
-                original_bytes: Some((bytes, format)),
-            },
-            generation: 1,
-        })
-    }
-
     /// Load and return a reference to the image data.
     ///
     /// For path-based textures, this loads the image from disk on first access.
@@ -222,7 +171,7 @@ impl Texture {
 
     /// Replace the texture's image data.
     pub fn set_image(&mut self, image: DynamicImage) {
-        self.source = TextureSource::Embedded { image, original_bytes: None };
+        self.source = TextureSource::Embedded { image };
         self.generation += 1;
     }
 
@@ -275,19 +224,6 @@ impl Texture {
         }
     }
 
-    /// Get the original compressed bytes if available.
-    ///
-    /// Returns the original compressed bytes if this texture was created with
-    /// `from_image_with_original_bytes`. This is used for efficient serialization
-    /// to avoid re-encoding the image.
-    pub fn original_bytes(&self) -> Option<(&[u8], TextureFormat)> {
-        match &self.source {
-            TextureSource::Embedded { original_bytes: Some((bytes, format)), .. } => {
-                Some((bytes.as_slice(), *format))
-            }
-            _ => None,
-        }
-    }
 }
 
 #[cfg(feature = "serde")]
@@ -313,10 +249,7 @@ impl serde::Serialize for Texture {
             Ok(buf)
         };
 
-        let (data, format) = if let Some((bytes, fmt)) = self.original_bytes() {
-            // Best case: original compressed bytes preserved from load (e.g. from glTF).
-            (bytes.to_vec(), fmt)
-        } else if let Some(path) = self.source_path() {
+        let (data, format) = if let Some(path) = self.source_path() {
             // File texture: read the already-compressed file bytes directly.
             let bytes = std::fs::read(path).map_err(Error::custom)?;
             if let Some(fmt) = detect_texture_format(&bytes) {
@@ -355,23 +288,20 @@ impl<'de> serde::Deserialize<'de> for Texture {
 
         let td = TextureData::deserialize(deserializer)?;
 
-        let (image, original_bytes) = match td.format {
+        let image = match td.format {
             TextureFormat::Png | TextureFormat::Jpeg => {
-                let img = image::load_from_memory(&td.data)
-                    .map_err(|e| Error::custom(e.to_string()))?;
-                (img, Some((td.data, td.format)))
+                image::load_from_memory(&td.data).map_err(|e| Error::custom(e.to_string()))?
             }
             TextureFormat::Raw => {
-                // Raw RGBA8 data: reconstruct directly, no original_bytes to preserve.
                 let rgba = image::RgbaImage::from_raw(td.width, td.height, td.data)
                     .ok_or_else(|| Error::custom("invalid raw image dimensions"))?;
-                (DynamicImage::ImageRgba8(rgba), None)
+                DynamicImage::ImageRgba8(rgba)
             }
         };
 
         Ok(Texture {
             id: td.id,
-            source: TextureSource::Embedded { image, original_bytes },
+            source: TextureSource::Embedded { image },
             generation: 1,
         })
     }

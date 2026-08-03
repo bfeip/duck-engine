@@ -52,12 +52,13 @@ pub(crate) fn resume(app: &mut App, event_loop: &ActiveEventLoop) {
             .expect("Failed to create window"),
     );
 
-    // Queue the embedded default scene so it loads once the viewer is ready.
-    let default_scene = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/default-scene.duck"
-    ));
+    // Queue the embedded default scene and environment so they load once the
+    // viewer is ready.
+    let default_scene = include_bytes!(default_scene_path!());
     *app.pending_scene_bytes.borrow_mut() = Some(default_scene.to_vec());
+
+    let default_env = include_bytes!(default_environment_path!());
+    *app.pending_hdr_bytes.borrow_mut() = Some(default_env.to_vec());
 
     // winit's web backend doesn't emit `Resized` for browser-window resizes, so
     // listen for them ourselves and feed the new size back through the proxy.

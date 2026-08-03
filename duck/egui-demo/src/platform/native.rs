@@ -20,14 +20,13 @@ pub(crate) fn run() {
         workflow_index: 0,
         pending_hdr_path: None,
         pending_scene_load_path: None,
-        pending_scene_save_path: None,
     };
 
     event_loop.run_app(&mut app).unwrap();
 }
 
 /// Create the window and viewer state synchronously, then queue the default
-/// scene from disk.
+/// scene and environment from disk.
 pub(crate) fn resume(app: &mut App, event_loop: &ActiveEventLoop) {
     if app.state.is_some() {
         return;
@@ -46,11 +45,17 @@ pub(crate) fn resume(app: &mut App, event_loop: &ActiveEventLoop) {
     state.window.request_redraw();
     app.state = Some(state);
 
-    let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-    let default_scene = assets_dir.join("default-scene.duck");
+    let default_scene = PathBuf::from(default_scene_path!());
     if default_scene.exists() {
         app.pending_scene_load_path = Some(default_scene);
     } else {
         log::warn!("Default scene not found: {}", default_scene.display());
+    }
+
+    let default_env = PathBuf::from(default_environment_path!());
+    if default_env.exists() {
+        app.pending_hdr_path = Some(default_env);
+    } else {
+        log::warn!("Default environment not found: {}", default_env.display());
     }
 }

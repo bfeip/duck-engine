@@ -2,7 +2,7 @@ use std::path::Path;
 use duck_engine_common::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
 use duck_engine_scene::{
     AlphaMode, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh, MeshId, MeshPrimitive,
-    NodeFlags, PositionedCamera, PrimitiveType, Scene, Texture, TextureFormat, Vertex
+    NodeFlags, PositionedCamera, PrimitiveType, Scene, Texture, Vertex
 };
 
 /// A loaded primitive from a glTF mesh, containing the scene mesh ID and its material ID.
@@ -163,31 +163,6 @@ fn resolve_image_path(
     path.exists().then_some(path)
 }
 
-/// Extracts original compressed bytes from a glTF buffer view.
-fn extract_embedded_image_bytes(
-    image_index: usize,
-    document: &gltf::Document,
-    buffers: &[gltf::buffer::Data],
-) -> Option<(Vec<u8>, TextureFormat)> {
-    use TextureFormat;
-
-    let img = document.images().nth(image_index)?;
-    let gltf::image::Source::View { view, mime_type } = img.source() else { return None };
-
-    let format = match mime_type {
-        "image/png" => TextureFormat::Png,
-        "image/jpeg" => TextureFormat::Jpeg,
-        _ => return None,
-    };
-
-    let buffer_data = buffers.get(view.buffer().index())?;
-    let start = view.offset();
-    let end = start + view.length();
-    let bytes = buffer_data.get(start..end)?.to_vec();
-
-    Some((bytes, format))
-}
-
 /// Decodes glTF image pixel data into a DynamicImage.
 fn decode_gltf_image(gltf_image: &gltf::image::Data) -> anyhow::Result<image::DynamicImage> {
     use gltf::image::Format;
@@ -256,13 +231,12 @@ fn decode_gltf_image(gltf_image: &gltf::image::Data) -> anyhow::Result<image::Dy
 
 /// Loads an image from glTF image data and adds it as a texture to the scene.
 ///
-/// Preserves original compressed bytes when loading from embedded buffer views,
-/// or uses path-based textures for external URI references.
+/// External URI references become path-based textures; embedded images are
+/// decoded into memory.
 fn load_gltf_texture(
     gltf_image: &gltf::image::Data,
     image_index: usize,
     document: &gltf::Document,
-    buffers: &[gltf::buffer::Data],
     base_path: Option<&Path>,
     scene: &mut Scene,
 ) -> anyhow::Result<duck_engine_scene::TextureId> {
@@ -272,15 +246,7 @@ fn load_gltf_texture(
         return Ok(scene.add_texture(texture));
     }
 
-    // Decode the image from glTF pixel data
-    let dynamic_image = decode_gltf_image(gltf_image)?;
-
-    // For embedded images, try to preserve original compressed bytes
-    let texture = match extract_embedded_image_bytes(image_index, document, buffers) {
-        Some((bytes, format)) => Texture::from_image_with_original_bytes(dynamic_image, bytes, format),
-        None => Texture::from_image(dynamic_image),
-    };
-
+    let texture = Texture::from_image(decode_gltf_image(gltf_image)?);
     Ok(scene.add_texture(texture))
 }
 
@@ -292,7 +258,6 @@ fn load_material(
     gltf_material: &gltf::Material,
     images: &[gltf::image::Data],
     document: &gltf::Document,
-    buffers: &[gltf::buffer::Data],
     base_path: Option<&Path>,
     scene: &mut Scene,
 ) -> anyhow::Result<FaceMaterialId> {
@@ -313,7 +278,7 @@ fn load_material(
     // Base color texture (optional)
     if let Some(tex_info) = pbr.base_color_texture() {
         let image_index = tex_info.texture().source().index();
-        let texture_id = load_gltf_texture(&images[image_index], image_index, document, buffers, base_path, scene)?;
+        let texture_id = load_gltf_texture(&images[image_index], image_index, document, base_path, scene)?;
         material = material.with_base_color_texture(texture_id);
     }
 
@@ -326,14 +291,14 @@ fn load_material(
     // glTF packs roughness in G channel and metallic in B channel
     if let Some(tex_info) = pbr.metallic_roughness_texture() {
         let image_index = tex_info.texture().source().index();
-        let texture_id = load_gltf_texture(&images[image_index], image_index, document, buffers, base_path, scene)?;
+        let texture_id = load_gltf_texture(&images[image_index], image_index, document, base_path, scene)?;
         material = material.with_metallic_roughness_texture(texture_id);
     }
 
     // Normal map (from material, not from PBR extension)
     if let Some(normal_tex) = gltf_material.normal_texture() {
         let image_index = normal_tex.texture().source().index();
-        let texture_id = load_gltf_texture(&images[image_index], image_index, document, buffers, base_path, scene)?;
+        let texture_id = load_gltf_texture(&images[image_index], image_index, document, base_path, scene)?;
         material = material
             .with_normal_texture(texture_id)
             .with_normal_scale(normal_tex.scale());
@@ -588,14 +553,7 @@ pub fn load_gltf_assets(
     // Load all materials (which also loads their textures)
     let mut material_map: Vec<FaceMaterialId> = Vec::new();
     for material in parsed.document.materials() {
-        let mat_id = load_material(
-            &material,
-            &parsed.images,
-            &parsed.document,
-            &parsed.buffers,
-            base_path,
-            scene,
-        )?;
+        let mat_id = load_material(&material, &parsed.images, &parsed.document, base_path, scene)?;
         material_map.push(mat_id);
     }
 

@@ -47,10 +47,7 @@ pub use mesh::{Mesh, MeshDescriptor, MeshIndex, MeshPrimitive, ObjMesh, Primitiv
 pub use node::{CustomNodePayload, EffectiveVisibility, Node, NodePayload, Visibility, NodeFlags};
 pub use sub_view::{SubView, SubViewId, ViewportRect};
 pub use texture::{Texture, TextureFormat};
-pub use environment::{
-    CubemapFaceData, CubemapMipData, EnvironmentMap, EnvironmentSource, PreprocessedCubemap,
-    PreprocessedIbl, CUBEMAP_FACES,
-};
+pub use environment::{EnvironmentMap, EnvironmentSource};
 
 use crate::{common::Aabb};
 

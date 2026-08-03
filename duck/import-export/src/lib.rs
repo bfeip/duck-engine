@@ -1,12 +1,11 @@
-//! Scene import/export library.
+//! Scene import library.
 //!
-//! Provides format-agnostic loading and saving of scenes with progress reporting.
-//! Supports glTF (.glb/.gltf), USD (.usdc/.usda/.usdz), Duck (.duck), and
+//! Provides format-agnostic loading of scenes with progress reporting.
+//! Supports glTF (.glb/.gltf), USD (.usdc/.usda/.usdz), CAD (.step/.iges), and
 //! optionally assimp-based formats.
 //!
 //! # Submodules
 //!
-//! - [`mod@format`] — Binary scene serialization (.duck)
 //! - [`gltf`] — glTF loading
 //! - [`usd`] — USD loading (USDC, USDA, USDZ)
 //! - [`assimp`] — Assimp-based loading (feature-gated)
@@ -34,7 +33,6 @@
 pub mod assimp;
 #[cfg(feature = "cad")]
 pub mod cad;
-pub mod format;
 pub mod gltf;
 pub mod importer;
 #[cfg(feature = "usd")]
@@ -49,7 +47,6 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 use duck_engine_scene::PositionedCamera;
-use self::format::FormatError;
 use duck_engine_scene::Scene;
 
 // ============================================================================
@@ -100,7 +97,6 @@ pub struct SceneLoadResult {
 /// The file format that was detected and used for loading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DetectedFormat {
-    Duck,
     Gltf,
     #[cfg(feature = "assimp")]
     Assimp,
@@ -119,9 +115,6 @@ pub enum DetectedFormat {
 pub enum LoadError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("Format error: {0}")]
-    Format(#[from] FormatError),
 
     #[error("glTF error: {0}")]
     Gltf(String),
@@ -264,9 +257,6 @@ impl<T> AsyncHandle<T> {
 
 /// Handle to a loading operation in progress.
 pub type LoadHandle = AsyncHandle<LoadResult>;
-
-/// Handle to a save operation in progress.
-pub type SaveHandle = AsyncHandle<SaveResult>;
 
 // ============================================================================
 // Sync Loading (core logic)
@@ -446,9 +436,9 @@ async fn yield_to_event_loop() {
 
 /// WASM chunked loading: runs loading phases with yields between them.
 ///
-/// For built-in formats (Duck, glTF), uses optimized chunked loading with
-/// yield points between phases. For custom importers, falls back to the
-/// synchronous `Importer::load` within a single microtask.
+/// glTF uses optimized chunked loading with yield points between phases. All
+/// other importers fall back to the synchronous `Importer::load` within a
+/// single microtask.
 #[cfg(target_arch = "wasm32")]
 async fn load_chunked_wasm(
     source: SceneSource,
@@ -472,9 +462,8 @@ async fn load_chunked_wasm(
 
     let importer = detect_importer(&bytes, path_hint.as_deref(), importers)?;
 
-    // Use optimized chunked paths for built-in formats
+    // Use the optimized chunked path for glTF
     match importer.name() {
-        "Duck" => load_duck_chunked(&bytes, progress).await,
         "glTF" => {
             if !bytes.starts_with(b"glTF") {
                 // Non-GLB glTF files reference external resources via filesystem
@@ -490,28 +479,6 @@ async fn load_chunked_wasm(
             importer.load(&bytes, path_hint.as_deref(), options, progress)
         }
     }
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn load_duck_chunked(bytes: &[u8], progress: &SharedProgress) -> LoadResult {
-    progress.update(ProgressState {
-        description: "Parsing scene".into(),
-        progress: Some(0.1),
-        stage: None,
-    });
-    let scene = self::format::from_bytes(bytes)?;
-    yield_to_event_loop().await;
-
-    progress.update(ProgressState {
-        description: "Complete".into(),
-        progress: Some(1.0),
-        stage: None,
-    });
-    Ok(SceneLoadResult {
-        scene,
-        camera: None,
-        format: DetectedFormat::Duck,
-    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -561,138 +528,48 @@ async fn load_gltf_chunked(
 }
 
 // ============================================================================
-// Export Types
-// ============================================================================
-
-/// Where to write the exported scene.
-pub enum SaveDestination {
-    /// Write to a filesystem path.
-    Path(PathBuf),
-    /// Return the bytes in memory.
-    Bytes,
-}
-
-/// The result type produced by a completed save operation.
-type SaveResult = Result<Option<Vec<u8>>, LoadError>;
-
-// ============================================================================
-// Sync Export
-// ============================================================================
-
-/// Save a scene synchronously. Useful for CLI tools and tests.
-pub fn save_sync(
-    scene: &Scene,
-    dest: SaveDestination,
-    options: self::format::SaveOptions,
-) -> SaveResult {
-    save_sync_with_progress(scene, dest, &options, &NullProgress)
-}
-
-fn save_sync_with_progress(
-    scene: &Scene,
-    dest: SaveDestination,
-    options: &self::format::SaveOptions,
-    progress: &dyn ProgressReporter,
-) -> SaveResult {
-    progress.update(ProgressState::starting());
-    let bytes = format::to_bytes_with_options(scene, options)
-        .map_err(LoadError::Format)?;
-
-    progress.update(ProgressState {
-        description: "Writing".into(),
-        progress: Some(0.6),
-        stage: None,
-    });
-    match dest {
-        SaveDestination::Path(path) => {
-            std::fs::write(path, &bytes)?;
-            progress.update(ProgressState {
-                description: "Complete".into(),
-                progress: Some(1.0),
-                stage: None,
-            });
-            Ok(None)
-        }
-        SaveDestination::Bytes => {
-            progress.update(ProgressState {
-                description: "Complete".into(),
-                progress: Some(1.0),
-                stage: None,
-            });
-            Ok(Some(bytes))
-        }
-    }
-}
-
-// ============================================================================
-// Async Export
-// ============================================================================
-
-/// Start saving a scene asynchronously.
-///
-/// On native, spawns a background thread. On WASM, schedules as a microtask.
-///
-/// The scene is cloned internally for the background task, so the caller
-/// retains full ownership. Note: this is currently a deep clone. A future
-/// optimization can Arc-wrap large data (textures, meshes) for cheap clones.
-pub fn save_async(
-    scene: &Scene,
-    dest: SaveDestination,
-    options: self::format::SaveOptions,
-) -> SaveHandle {
-    let scene = scene.clone();
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        spawn_async(SharedProgress::new(), move |progress| {
-            save_sync_with_progress(&scene, dest, &options, progress)
-        })
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let progress = SharedProgress::new();
-        let p = progress.clone();
-        spawn_async_wasm(progress, async move {
-            save_sync_with_progress(&scene, dest, &options, &p)
-        })
-    }
-}
-
-// ============================================================================
 // Tests
 // ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_scene::{FaceMaterial, Instance, Mesh, PrimitiveType};
+    use std::path::Path;
 
-    fn create_test_scene() -> Scene {
-        let mut scene = Scene::new();
-        let mesh = Mesh::cube(1.0, PrimitiveType::TriangleList);
-        let mesh_id = scene.add_mesh(mesh);
-        let mat_id = scene.add_face_material(FaceMaterial::new());
-        scene
-            .add_instance_node(
-                None,
-                Instance::new(mesh_id).with_face_material(mat_id),
-                Some("TestNode".into()),
-                duck_engine_scene::common::Transform::IDENTITY,
-                duck_engine_scene::NodeFlags::NONE,
-            )
-            .unwrap();
-        scene
-    }
+    /// Minimal importer used to exercise the format-agnostic plumbing.
+    struct TestImporter;
 
-    fn create_test_scene_bytes() -> Vec<u8> {
-        format::to_bytes(&create_test_scene()).unwrap()
-    }
-
-    #[test]
-    fn test_detect_duck() {
-        let importers = default_importers();
-        let bytes = b"DUCK\x01\x00rest of file";
-        let imp = detect_importer(bytes, None, &importers).unwrap();
-        assert_eq!(imp.name(), "Duck");
+    impl Importer for TestImporter {
+        fn name(&self) -> &str { "Test" }
+        fn detect_from_bytes(&self, bytes: &[u8]) -> bool {
+            bytes.starts_with(b"TEST")
+        }
+        fn detect_from_extension(&self, ext: &str) -> bool {
+            ext == "test"
+        }
+        fn load(
+            &self,
+            _bytes: &[u8],
+            _path_hint: Option<&Path>,
+            _options: &LoadOptions,
+            progress: &dyn ProgressReporter,
+        ) -> Result<SceneLoadResult, LoadError> {
+            progress.update(ProgressState {
+                description: "Testing".into(),
+                progress: Some(0.5),
+                stage: None,
+            });
+            progress.update(ProgressState {
+                description: "Complete".into(),
+                progress: Some(1.0),
+                stage: None,
+            });
+            Ok(SceneLoadResult {
+                scene: Scene::new(),
+                camera: None,
+                format: DetectedFormat::Other("Test".into()),
+            })
+        }
     }
 
     #[test]
@@ -723,9 +600,6 @@ mod tests {
         let importers = default_importers();
         let unknown = b"\x00\x00\x00\x00";
 
-        let imp = detect_importer(unknown, Some(std::path::Path::new("model.duck")), &importers).unwrap();
-        assert_eq!(imp.name(), "Duck");
-
         let imp = detect_importer(unknown, Some(std::path::Path::new("model.glb")), &importers).unwrap();
         assert_eq!(imp.name(), "glTF");
 
@@ -743,42 +617,6 @@ mod tests {
 
     #[test]
     fn test_custom_importer() {
-        use std::path::Path;
-
-        struct TestImporter;
-        impl Importer for TestImporter {
-            fn name(&self) -> &str { "Test" }
-            fn detect_from_bytes(&self, bytes: &[u8]) -> bool {
-                bytes.starts_with(b"TEST")
-            }
-            fn detect_from_extension(&self, ext: &str) -> bool {
-                ext == "test"
-            }
-            fn load(
-                &self,
-                _bytes: &[u8],
-                _path_hint: Option<&Path>,
-                _options: &LoadOptions,
-                progress: &dyn ProgressReporter,
-            ) -> Result<SceneLoadResult, LoadError> {
-                progress.update(ProgressState {
-                    description: "Testing".into(),
-                    progress: Some(0.5),
-                    stage: None,
-                });
-                progress.update(ProgressState {
-                    description: "Complete".into(),
-                    progress: Some(1.0),
-                    stage: None,
-                });
-                Ok(SceneLoadResult {
-                    scene: Scene::new(),
-                    camera: None,
-                    format: DetectedFormat::Other("Test".into()),
-                })
-            }
-        }
-
         let importers: Vec<Box<dyn Importer>> = vec![Box::new(TestImporter)];
 
         // Detect from bytes
@@ -796,16 +634,6 @@ mod tests {
             &importers,
         ).unwrap();
         assert_eq!(result.format, DetectedFormat::Other("Test".into()));
-    }
-
-    #[test]
-    fn test_load_sync_duck_from_bytes() {
-        let bytes = create_test_scene_bytes();
-        let result = load_sync(SceneSource::Bytes(bytes), LoadOptions::default()).unwrap();
-        assert_eq!(result.format, DetectedFormat::Duck);
-        assert!(result.camera.is_none());
-        assert_eq!(result.scene.mesh_count(), 1);
-        assert_eq!(result.scene.node_count(), 1);
     }
 
     #[test]
@@ -848,16 +676,19 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn test_load_async_duck() {
-        let bytes = create_test_scene_bytes();
-        let handle = load_async(SceneSource::Bytes(bytes), LoadOptions::default());
+    fn test_load_async_success() {
+        let importers: Vec<Box<dyn Importer>> = vec![Box::new(TestImporter)];
+        let handle = load_async_with(
+            SceneSource::Bytes(b"TEST data".to_vec()),
+            LoadOptions::default(),
+            importers,
+        );
 
         // Poll until done (in a real app this would be each frame)
         loop {
             if let Some(result) = handle.try_get() {
                 let result = result.unwrap();
-                assert_eq!(result.format, DetectedFormat::Duck);
-                assert_eq!(result.scene.mesh_count(), 1);
+                assert_eq!(result.format, DetectedFormat::Other("Test".into()));
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -874,44 +705,6 @@ mod tests {
         loop {
             if let Some(result) = handle.try_get() {
                 assert!(result.is_err());
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        assert!(handle.is_done());
-    }
-
-    #[test]
-    fn test_save_sync_to_bytes() {
-        let scene = create_test_scene();
-        let result = save_sync(
-            &scene,
-            SaveDestination::Bytes,
-            format::SaveOptions::default(),
-        )
-        .unwrap();
-        let bytes = result.expect("Should return bytes");
-        assert!(bytes.starts_with(b"DUCK"));
-
-        // Verify round-trip
-        let loaded = load_sync(SceneSource::Bytes(bytes), LoadOptions::default()).unwrap();
-        assert_eq!(loaded.scene.mesh_count(), 1);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn test_save_async_to_bytes() {
-        let scene = create_test_scene();
-        let handle = save_async(
-            &scene,
-            SaveDestination::Bytes,
-            format::SaveOptions::default(),
-        );
-
-        loop {
-            if let Some(result) = handle.try_get() {
-                let bytes = result.unwrap().expect("Should return bytes");
-                assert!(bytes.starts_with(b"DUCK"));
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));

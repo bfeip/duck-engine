@@ -23,9 +23,7 @@ pub(crate) use prefilter::PrefilterPipeline;
 use wgpu::util::DeviceExt;
 
 // Re-export EnvironmentMap types from scene crate
-pub use duck_engine_scene::{
-    EnvironmentMap, EnvironmentMapId, EnvironmentSource, PreprocessedCubemap, PreprocessedIbl,
-};
+pub use duck_engine_scene::{EnvironmentMap, EnvironmentMapId, EnvironmentSource};
 
 /// GPU uniform for environment map parameters (intensity, etc.).
 ///
@@ -204,7 +202,7 @@ impl IblResources {
                 processed_environments: std::collections::HashMap::new(),
             }
         } else {
-            log::info!("Compute shaders unavailable — IBL environment maps will require preprocessed data.");
+            log::info!("Compute shaders unavailable — IBL environment maps will be skipped.");
             // BRDF LUT is always available via baked data from build.rs
             let brdf_lut = BrdfLut::from_baked(device, queue);
 
@@ -227,8 +225,7 @@ impl IblResources {
     /// the params buffer (intensity). Full texture reprocessing is skipped
     /// since the source cannot change on an existing environment map. (right now)
     ///
-    /// When preprocessed IBL data is available, uploads it directly — no compute
-    /// shaders needed. Otherwise, processes via GPU compute if available.
+    /// Requires compute shader support; without it the environment is skipped.
     pub fn process_environment(
         &mut self,
         device: &wgpu::Device,
@@ -241,51 +238,15 @@ impl IblResources {
             return Ok(());
         }
 
-        // Try preprocessed data first (works on all platforms)
-        if let Some(preprocessed) = env_map.preprocessed_ibl() {
-            return self.upload_preprocessed(device, queue, env_map, preprocessed);
-        }
-
         if !self.has_compute {
             log::warn!(
-                "Skipping environment map {} (no compute shaders and no preprocessed data).",
+                "Skipping environment map {} (no compute shader support).",
                 env_map.id
             );
             return Ok(());
         }
 
         self.process_from_hdr(device, queue, env_map)
-    }
-
-    /// Upload preprocessed IBL data directly to GPU textures.
-    ///
-    /// This path requires no compute shaders — it creates cubemap textures and
-    /// uploads the pre-baked pixel data via `queue.write_texture()`.
-    fn upload_preprocessed(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        env_map: &EnvironmentMap,
-        preprocessed: &PreprocessedIbl,
-    ) -> anyhow::Result<()> {
-        let irradiance = upload_preprocessed_cubemap(
-            device,
-            queue,
-            &preprocessed.irradiance,
-            "IBL Irradiance (Preprocessed)",
-        );
-
-        let prefiltered = upload_preprocessed_cubemap(
-            device,
-            queue,
-            &preprocessed.prefiltered,
-            "IBL Prefiltered (Preprocessed)",
-        );
-
-        // TODO: support custom BRDF LUT from preprocessed.brdf_lut
-
-        self.store_processed(device, env_map, &irradiance, &prefiltered);
-        Ok(())
     }
 
     /// Process an environment map from HDR source via GPU compute shaders.
@@ -299,9 +260,6 @@ impl IblResources {
         let hdr_image = match env_map.source() {
             EnvironmentSource::EquirectangularPath(path) => load_hdr_from_path(path)?,
             EnvironmentSource::EquirectangularHdr(bytes) => load_hdr_from_bytes(bytes)?,
-            EnvironmentSource::Preprocessed => {
-                anyhow::bail!("Environment map {} has no HDR source and no preprocessed IBL data", env_map.id);
-            }
         };
 
         // The unwraps below are safe: has_compute is true so pipelines were initialized
@@ -414,117 +372,4 @@ impl IblResources {
     pub fn _remove_processed(&mut self, id: EnvironmentMapId) {
         self.processed_environments.remove(&id);
     }
-
-    /// Preprocess an environment map into CPU-side IBL data via GPU compute shaders.
-    ///
-    /// Runs the full IBL pipeline (equirect→cubemap→irradiance+prefiltered) and
-    /// reads the results back from the GPU. The returned [`PreprocessedIbl`] can be
-    /// attached to an [`EnvironmentMap`] and serialized into a scene file.
-    ///
-    /// Requires compute shaders to be available (`has_compute == true`).
-    pub fn preprocess_ibl(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        env_map: &EnvironmentMap,
-    ) -> anyhow::Result<PreprocessedIbl> {
-        anyhow::ensure!(
-            self.has_compute,
-            "Cannot preprocess IBL without compute shader support"
-        );
-
-        let hdr_image = match env_map.source() {
-            EnvironmentSource::EquirectangularPath(path) => load_hdr_from_path(path)?,
-            EnvironmentSource::EquirectangularHdr(bytes) => load_hdr_from_bytes(bytes)?,
-            EnvironmentSource::Preprocessed => {
-                anyhow::bail!("Environment map already has only preprocessed data (no HDR source)");
-            }
-        };
-
-        let equirect = self.equirect_pipeline.as_ref().unwrap();
-        let irradiance_pipeline = self.irradiance_pipeline.as_ref().unwrap();
-        let prefilter_pipeline = self.prefilter_pipeline.as_ref().unwrap();
-
-        let environment = equirect.convert(device, queue, &hdr_image);
-        let irradiance = irradiance_pipeline.generate(device, queue, &environment);
-        let prefiltered = prefilter_pipeline.generate(device, queue, &environment);
-
-        let bytes_per_pixel = 8; // Rgba16Float
-
-        let irradiance_data = irradiance.readback(
-            device,
-            queue,
-            IRRADIANCE_CUBEMAP_SIZE,
-            1,
-            bytes_per_pixel,
-        );
-        let prefiltered_data = prefiltered.readback(
-            device,
-            queue,
-            PREFILTERED_CUBEMAP_SIZE,
-            PREFILTERED_MIP_LEVELS,
-            bytes_per_pixel,
-        );
-
-        Ok(PreprocessedIbl {
-            irradiance: irradiance_data,
-            prefiltered: prefiltered_data,
-            brdf_lut: None,
-        })
-    }
-}
-
-/// Upload a [`PreprocessedCubemap`] to a [`GpuCubemap`] via `queue.write_texture()`.
-///
-/// The preprocessed data is in Rgba16Float format (8 bytes per pixel), matching the
-/// GPU texture format directly.
-fn upload_preprocessed_cubemap(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    data: &PreprocessedCubemap,
-    label: &str,
-) -> GpuCubemap {
-    let cubemap = GpuCubemap::new(
-        device,
-        data.face_size,
-        wgpu::TextureFormat::Rgba16Float,
-        data.mip_levels,
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        label,
-    );
-
-    let bytes_per_pixel: u32 = 8; // Rgba16Float
-
-    for (mip, mip_faces) in data.mip_data.iter().enumerate() {
-        let mip_size = data.face_size >> mip as u32;
-        let bytes_per_row = mip_size * bytes_per_pixel;
-
-        for (face, face_data) in mip_faces.iter().enumerate() {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &cubemap.texture,
-                    mip_level: mip as u32,
-                    origin: wgpu::Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: face as u32,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                face_data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(mip_size),
-                },
-                wgpu::Extent3d {
-                    width: mip_size,
-                    height: mip_size,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-    }
-
-    cubemap
 }

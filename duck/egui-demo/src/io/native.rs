@@ -1,23 +1,22 @@
-//! Native file I/O: `rfd` filesystem dialogs + path-based load/save.
+//! Native file I/O: `rfd` filesystem dialogs + path-based loading.
 
 use std::sync::{Arc, Mutex};
 
 use duck_engine_viewer::import_export;
-use duck_engine_viewer::import_export::format::{SaveOptions, save_to_file};
 
 use crate::App;
 
 impl App<'_> {
     /// Consume any pending file I/O queued since the last frame.
+    ///
+    /// The scene loads first: it replaces the whole `Scene`, which would
+    /// discard an environment map applied earlier in the same frame.
     pub(crate) fn process_pending_io(&mut self) {
-        if self.pending_hdr_path.is_some() {
-            self.load_hdr_file();
-        }
         if self.pending_scene_load_path.is_some() {
             self.load_scene_file();
         }
-        if self.pending_scene_save_path.is_some() {
-            self.save_scene_file();
+        if self.pending_hdr_path.is_some() {
+            self.load_hdr_file();
         }
     }
 
@@ -40,7 +39,7 @@ impl App<'_> {
 
     pub(crate) fn open_scene_file_dialog(&mut self) {
         #[allow(unused_mut)]
-        let mut extensions: Vec<&str> = vec!["glb", "gltf", "duck"];
+        let mut extensions: Vec<&str> = vec!["glb", "gltf"];
 
         #[cfg(feature = "assimp")]
         extensions.extend_from_slice(import_export::assimp::ASSIMP_EXTENSIONS);
@@ -76,28 +75,6 @@ impl App<'_> {
                 log::info!("Loaded scene: {}", path_str);
             }
             Err(e) => log::error!("Failed to load scene {}: {}", path_str, e),
-        }
-    }
-
-    pub(crate) fn save_scene_file_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Duck Scene", &["duck"])
-            .set_file_name("scene.duck")
-            .save_file()
-        {
-            self.pending_scene_save_path = Some(path);
-        }
-    }
-
-    fn save_scene_file(&mut self) {
-        let Some(path) = self.pending_scene_save_path.take() else { return };
-        let Some(state) = self.state.as_mut() else { return };
-        let path_str = path.display().to_string();
-        let scene_arc = state.viewer.scene();
-        let scene = scene_arc.lock().unwrap();
-        match save_to_file(&scene, &path, &SaveOptions::default()) {
-            Ok(()) => log::info!("Saved scene: {}", path_str),
-            Err(e) => log::error!("Failed to save scene {}: {}", path_str, e),
         }
     }
 }

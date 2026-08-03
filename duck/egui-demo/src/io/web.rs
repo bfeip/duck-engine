@@ -2,7 +2,6 @@
 //!
 //! Dialogs run on the JS event loop via `spawn_local`; the resulting bytes are
 //! stashed in the `App`'s shared buffers and consumed on the next frame.
-//! Saving serializes the scene and triggers a browser download.
 
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +16,8 @@ impl App<'_> {
             return;
         }
         let scene_bytes = self.pending_scene_bytes.borrow_mut().take();
+        // The scene loads first: it replaces the whole `Scene`, which would
+        // discard an environment map applied earlier in the same frame.
         if let Some(bytes) = scene_bytes {
             self.load_scene_bytes(bytes);
         }
@@ -52,7 +53,7 @@ impl App<'_> {
         let sink = self.pending_scene_bytes.clone();
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(file) = rfd::AsyncFileDialog::new()
-                .add_filter("3D Scenes", &["glb", "gltf", "duck"])
+                .add_filter("3D Scenes", &["glb", "gltf"])
                 .pick_file()
                 .await
             {
@@ -77,35 +78,5 @@ impl App<'_> {
             }
             Err(e) => log::error!("Failed to load scene: {}", e),
         }
-    }
-
-    /// Serialize the scene and trigger a browser download via the save dialog.
-    pub(crate) fn save_scene_file_dialog(&mut self) {
-        use import_export::format::to_bytes;
-        let Some(state) = self.state.as_ref() else { return };
-        let scene_arc = state.viewer.scene();
-        let bytes = {
-            let scene = scene_arc.lock().unwrap();
-            match to_bytes(&scene) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    log::error!("Failed to serialize scene: {}", e);
-                    return;
-                }
-            }
-        };
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Some(file) = rfd::AsyncFileDialog::new()
-                .set_file_name("scene.duck")
-                .save_file()
-                .await
-            {
-                if let Err(e) = file.write(&bytes).await {
-                    log::error!("Failed to save scene: {:?}", e);
-                } else {
-                    log::info!("Saved scene");
-                }
-            }
-        });
     }
 }

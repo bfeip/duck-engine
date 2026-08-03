@@ -3,51 +3,6 @@ use std::path::PathBuf;
 /// Unique identifier for an environment map in a scene.
 pub type EnvironmentMapId = crate::Id<EnvironmentMap>;
 
-/// Number of faces in a cubemap.
-pub const CUBEMAP_FACES: usize = 6;
-
-/// Raw pixel data for a single cubemap face at a single mip level.
-/// Stored as Rgba16Float (8 bytes/pixel), row-major.
-pub type CubemapFaceData = Vec<u8>;
-
-/// Raw pixel data for one mip level of a cubemap: one [`CubemapFaceData`] per face.
-pub type CubemapMipData = [CubemapFaceData; CUBEMAP_FACES];
-
-/// Raw pixel data for a preprocessed cubemap texture.
-///
-/// Each mip level contains 6 faces of Rgba16Float pixel data (8 bytes per pixel).
-/// Face order follows the standard cubemap convention: +X, -X, +Y, -Y, +Z, -Z.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PreprocessedCubemap {
-    /// Width and height of each face at the base (mip 0) level.
-    pub face_size: u32,
-    /// Number of mip levels. Each successive mip is half the size of the previous.
-    pub mip_levels: u32,
-    /// Pixel data indexed as `mip_data[mip][face]`.
-    pub mip_data: Vec<CubemapMipData>,
-}
-
-/// Preprocessed IBL (Image-Based Lighting) data for an environment map.
-///
-/// Contains the precomputed textures needed for split-sum PBR environment lighting,
-/// stored as CPU-side pixel data with no GPU dependencies. This allows IBL to work
-/// on platforms without compute shader support (e.g. WebGL) by uploading the data
-/// directly to GPU textures at runtime.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PreprocessedIbl {
-    /// Diffuse irradiance cubemap (typically 32x32 per face, 1 mip level).
-    pub irradiance: PreprocessedCubemap,
-    /// Pre-filtered specular cubemap (typically 128x128 base, 5 mip levels).
-    /// Each mip level corresponds to increasing roughness.
-    pub prefiltered: PreprocessedCubemap,
-    /// Optional BRDF integration LUT (512x512, Rgba16Float).
-    /// When `None`, the renderer uses its built-in baked LUT.
-    /// Provided for future support of custom BRDF models.
-    pub brdf_lut: Option<Vec<u8>>,
-}
-
 /// Source data for an environment map.
 #[derive(Debug, Clone)]
 pub enum EnvironmentSource {
@@ -55,8 +10,6 @@ pub enum EnvironmentSource {
     EquirectangularPath(PathBuf),
     /// Equirectangular HDR image stored as raw .hdr file bytes.
     EquirectangularHdr(Vec<u8>),
-    /// Source was discarded after preprocessing; only baked IBL data remains.
-    Preprocessed,
 }
 
 /// An environment map used for image-based lighting.
@@ -75,8 +28,6 @@ pub struct EnvironmentMap {
     rotation: f32,
     /// Generation counter, incremented on each change.
     generation: u64,
-    /// Preprocessed IBL data, if available.
-    preprocessed_ibl: Option<PreprocessedIbl>,
 }
 
 impl EnvironmentMap {
@@ -91,7 +42,6 @@ impl EnvironmentMap {
             intensity: 1.0,
             rotation: 0.0,
             generation: 1,
-            preprocessed_ibl: None,
         }
     }
 
@@ -105,22 +55,6 @@ impl EnvironmentMap {
             intensity: 1.0,
             rotation: 0.0,
             generation: 1,
-            preprocessed_ibl: None,
-        }
-    }
-
-    /// Create an environment map from preprocessed IBL data.
-    ///
-    /// Used when the original HDR source has been discarded and only the
-    /// baked irradiance/prefiltered cubemaps remain.
-    pub fn from_preprocessed(preprocessed: PreprocessedIbl) -> Self {
-        Self {
-            id: crate::Id::new(),
-            source: EnvironmentSource::Preprocessed,
-            intensity: 1.0,
-            rotation: 0.0,
-            generation: 1,
-            preprocessed_ibl: Some(preprocessed),
         }
     }
 
@@ -159,15 +93,6 @@ impl EnvironmentMap {
         &self.source
     }
 
-    /// Drop the original HDR source data, marking this environment as preprocessed-only.
-    ///
-    /// After calling this, the environment can only be used if preprocessed IBL data
-    /// has been attached via [`set_preprocessed_ibl`]. This is used when baking IBL
-    /// data offline to avoid storing the (large) HDR source in the serialized scene.
-    pub fn drop_source(&mut self) {
-        self.source = EnvironmentSource::Preprocessed;
-    }
-
     /// Get the intensity multiplier.
     pub fn intensity(&self) -> f32 {
         self.intensity
@@ -185,17 +110,6 @@ impl EnvironmentMap {
     pub fn generation(&self) -> u64 {
         self.generation
     }
-
-    /// Get the preprocessed IBL data, if available.
-    pub fn preprocessed_ibl(&self) -> Option<&PreprocessedIbl> {
-        self.preprocessed_ibl.as_ref()
-    }
-
-    /// Set preprocessed IBL data for this environment map.
-    pub fn set_preprocessed_ibl(&mut self, data: PreprocessedIbl) {
-        self.preprocessed_ibl = Some(data);
-        self.generation += 1;
-    }
 }
 
 #[cfg(feature = "serde")]
@@ -206,21 +120,19 @@ impl serde::Serialize for EnvironmentMap {
         // path_bytes holds the read data when the source is a file path; the borrow
         // below must not outlive it, so both are declared in the same scope.
         let path_bytes;
-        let hdr_data: Option<&[u8]> = match &self.source {
+        let hdr_data: &[u8] = match &self.source {
             EnvironmentSource::EquirectangularPath(path) => {
                 path_bytes = std::fs::read(path).map_err(Error::custom)?;
-                Some(&path_bytes)
+                &path_bytes
             }
-            EnvironmentSource::EquirectangularHdr(data) => Some(data.as_slice()),
-            EnvironmentSource::Preprocessed => None,
+            EnvironmentSource::EquirectangularHdr(data) => data.as_slice(),
         };
 
-        let mut s = serializer.serialize_struct("EnvironmentMap", 5)?;
+        let mut s = serializer.serialize_struct("EnvironmentMap", 4)?;
         s.serialize_field("id", &self.id)?;
         s.serialize_field("hdr_data", &hdr_data)?;
         s.serialize_field("intensity", &self.intensity)?;
         s.serialize_field("rotation", &self.rotation)?;
-        s.serialize_field("preprocessed_ibl", &self.preprocessed_ibl)?;
         s.end()
     }
 }
@@ -228,37 +140,22 @@ impl serde::Serialize for EnvironmentMap {
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for EnvironmentMap {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
-
         #[derive(serde::Deserialize)]
         struct EnvMapData {
             id: EnvironmentMapId,
-            hdr_data: Option<Vec<u8>>,
+            hdr_data: Vec<u8>,
             intensity: f32,
             rotation: f32,
-            preprocessed_ibl: Option<PreprocessedIbl>,
         }
 
         let d = EnvMapData::deserialize(deserializer)?;
 
-        if d.hdr_data.is_none() && d.preprocessed_ibl.is_none() {
-            return Err(Error::custom(
-                "environment map has neither HDR data nor preprocessed IBL data",
-            ));
-        }
-
-        let source = match d.hdr_data {
-            Some(data) => EnvironmentSource::EquirectangularHdr(data),
-            None => EnvironmentSource::Preprocessed,
-        };
-
         Ok(EnvironmentMap {
             id: d.id,
-            source,
+            source: EnvironmentSource::EquirectangularHdr(d.hdr_data),
             intensity: d.intensity,
             rotation: d.rotation,
             generation: 1,
-            preprocessed_ibl: d.preprocessed_ibl,
         })
     }
 }

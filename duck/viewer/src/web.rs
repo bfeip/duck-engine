@@ -252,7 +252,7 @@ impl WebViewer {
             .unwrap_or(0)
     }
 
-    /// Load a scene synchronously from raw bytes. Format (glTF or duck) is auto-detected.
+    /// Load a scene synchronously from raw bytes. The format is auto-detected.
     /// The scene and camera will be set automatically.
     pub fn load(&mut self, data: &[u8]) -> Result<(), JsValue> {
         use crate::import_export::{LoadOptions, SceneSource};
@@ -286,12 +286,6 @@ impl WebViewer {
     /// Load a glTF/glb model from raw bytes.
     /// The scene and camera will be set automatically.
     pub fn load_gltf(&mut self, data: &[u8]) -> Result<(), JsValue> {
-        self.load(data)
-    }
-
-    /// Load a scene from .duck format bytes.
-    /// The scene and camera will be set automatically.
-    pub fn load_scene(&mut self, data: &[u8]) -> Result<(), JsValue> {
         self.load(data)
     }
 

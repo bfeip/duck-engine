@@ -6,9 +6,8 @@ targeting both native platforms and the web (WebAssembly / WebGL). It is built
 around a strict layering: a GPU-free scene model sits underneath the wgpu renderer,
 so scene data can be created, loaded, and queried without a graphics device.
 
-On top of the core it provides asset import/export (glTF, USD, Assimp, and CAD via
-OpenCASCADE), a compact compressed `.duck` binary scene format, and an interactive
-CAD modeler in early development. The workspace root is
+On top of the core it provides asset import (glTF, USD, Assimp, and CAD via
+OpenCASCADE) and an interactive CAD modeler in early development. The workspace root is
 `duck/`; run all `cargo` commands from there.
 
 ## Crates
@@ -23,12 +22,10 @@ dependency under a short alias.
 | `scene` | GPU-free scene graph, camera, materials (Face/Line/Point), geometry queries, environment maps.|
 | `render-core` | Agnostic GPU plumbing: device/queue, render targets, headless readback, pipeline & shader caches. Implementation independent|
 | `renderer` | Renderer implimentation using `render-core` and `scene`: PBR/surface shading, lights, IBL, headless rendering. |
-| `import-export` | Configurable I/O: glTF, the native binary format, USD, Assimp, and CAD (STEP/IGES) import. |
+| `import-export` | Configurable import: glTF, USD, Assimp, and CAD (STEP/IGES); CAD export. |
 | `viewer` | Windowing, input, operator/event system, selection. Native + WASM. |
 | `modeler` | Interactive CAD modeler app (egui + viewer): boolean ops, extrude, snapping, tool manager. |
 | `egui-demo` | Desktop demo application using egui. |
-| `scene-info` | CLI to inspect `.duck` scene files (structure, sizes, compression, statistics). |
-| `scene-converter` | CLI to convert/optimize scenes between formats (e.g. glTF → `.duck`). |
 
 ## Requirements
 

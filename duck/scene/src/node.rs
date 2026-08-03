@@ -101,11 +101,8 @@ bitflags! {
         const NONE = 0;
         /// Marks a node as non-selectable. Geometry queries will not search this node or its children.
         const DO_NOT_SELECT = 1 << 0;
-        /// Marks a node as not for export. Nodes marked with this will not appear in exported
-        /// scenes, nor will their children.
-        const DO_NOT_EXPORT = 1 << 1;
         /// Marks a node as not part of the scene bounding. This node will not be used for bounding calculations.
-        const DOES_NOT_CONTRIBUTE_BOUNDING = 1 << 2;
+        const DOES_NOT_CONTRIBUTE_BOUNDING = 1 << 1;
     }
 }
 
@@ -113,7 +110,7 @@ impl NodeFlags {
     /// A set of flags marking a node as (more or less) non-interactive. Geometry will be visible,
     /// but that is all.
     pub fn inert() -> Self {
-        Self::DO_NOT_SELECT | Self::DO_NOT_EXPORT | Self::DOES_NOT_CONTRIBUTE_BOUNDING
+        Self::DO_NOT_SELECT | Self::DOES_NOT_CONTRIBUTE_BOUNDING
     }
 }
 

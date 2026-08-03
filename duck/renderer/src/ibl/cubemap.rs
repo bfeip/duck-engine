@@ -3,8 +3,6 @@
 //! Cubemaps are used to store environment maps, irradiance maps, and pre-filtered
 //! specular maps for image-based lighting.
 
-use duck_engine_scene::{CubemapFaceData, PreprocessedCubemap, CUBEMAP_FACES};
-
 /// GPU resources for a cubemap texture.
 ///
 /// Cubemaps consist of 6 square faces representing the +X, -X, +Y, -Y, +Z, -Z directions.
@@ -85,109 +83,6 @@ impl GpuCubemap {
             texture,
             view,
             sampler,
-        }
-    }
-
-    /// Read back cubemap texture data from the GPU to a [`PreprocessedCubemap`].
-    ///
-    /// Uses `copy_texture_to_buffer` + buffer mapping to read each face at each mip level.
-    /// This is a blocking operation that polls the device until the readback completes.
-    ///
-    /// The `bytes_per_pixel` must match the texture format (e.g. 8 for Rgba16Float).
-    pub fn readback(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        face_size: u32,
-        mip_levels: u32,
-        bytes_per_pixel: u32,
-    ) -> PreprocessedCubemap {
-        let mut mip_data = Vec::with_capacity(mip_levels as usize);
-
-        for mip in 0..mip_levels {
-            let mip_size = face_size >> mip;
-            let unpadded_bytes_per_row = mip_size * bytes_per_pixel;
-            // wgpu requires rows aligned to COPY_BYTES_PER_ROW_ALIGNMENT (256)
-            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-            let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
-            let buffer_size = (padded_bytes_per_row * mip_size) as u64;
-
-            let mut faces: [CubemapFaceData; CUBEMAP_FACES] =
-                std::array::from_fn(|_| Vec::new());
-
-            for face in 0..CUBEMAP_FACES as u32 {
-                let staging = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(&format!("Cubemap Readback Mip {} Face {}", mip, face)),
-                    size: buffer_size,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                });
-
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Cubemap Readback Encoder"),
-                });
-
-                encoder.copy_texture_to_buffer(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &self.texture,
-                        mip_level: mip,
-                        origin: wgpu::Origin3d { x: 0, y: 0, z: face },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::TexelCopyBufferInfo {
-                        buffer: &staging,
-                        layout: wgpu::TexelCopyBufferLayout {
-                            offset: 0,
-                            bytes_per_row: Some(padded_bytes_per_row),
-                            rows_per_image: Some(mip_size),
-                        },
-                    },
-                    wgpu::Extent3d {
-                        width: mip_size,
-                        height: mip_size,
-                        depth_or_array_layers: 1,
-                    },
-                );
-
-                queue.submit(std::iter::once(encoder.finish()));
-
-                // Map and read
-                let (sender, receiver) = std::sync::mpsc::channel();
-                staging.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-                    sender.send(result).unwrap();
-                });
-                let _ = device.poll(wgpu::PollType::Wait {
-                    submission_index: None,
-                    timeout: None,
-                });
-                receiver.recv().unwrap().unwrap();
-
-                let mapped = staging.slice(..).get_mapped_range();
-
-                // Strip row padding if present
-                if padded_bytes_per_row == unpadded_bytes_per_row {
-                    faces[face as usize] = mapped.to_vec();
-                } else {
-                    let mut face_data = Vec::with_capacity((unpadded_bytes_per_row * mip_size) as usize);
-                    for row in 0..mip_size {
-                        let start = (row * padded_bytes_per_row) as usize;
-                        let end = start + unpadded_bytes_per_row as usize;
-                        face_data.extend_from_slice(&mapped[start..end]);
-                    }
-                    faces[face as usize] = face_data;
-                }
-
-                drop(mapped);
-                staging.unmap();
-            }
-
-            mip_data.push(faces);
-        }
-
-        PreprocessedCubemap {
-            face_size,
-            mip_levels,
-            mip_data,
         }
     }
 

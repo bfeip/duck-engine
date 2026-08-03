@@ -247,9 +247,6 @@ struct App<'a> {
     /// Pending scene file path to load
     #[cfg(not(target_arch = "wasm32"))]
     pending_scene_load_path: Option<PathBuf>,
-    /// Pending scene file path to save
-    #[cfg(not(target_arch = "wasm32"))]
-    pending_scene_save_path: Option<PathBuf>,
     /// Proxy used to hand the asynchronously-built viewer state back to the loop.
     #[cfg(target_arch = "wasm32")]
     proxy: EventLoopProxy<UserEvent>,
@@ -361,9 +358,6 @@ impl<'a> App<'a> {
         // Handle UI actions (after releasing the state borrow)
         if ui_actions.load_scene {
             self.open_scene_file_dialog();
-        }
-        if ui_actions.save_scene {
-            self.save_scene_file_dialog();
         }
         if ui_actions.clear_scene {
             self.clear_scene();

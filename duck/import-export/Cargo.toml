@@ -10,25 +10,19 @@ cad = ["dep:opencascade", "duck-engine-scene/cad"]
 
 [dependencies]
 duck-engine-common = { path = "../common" }
-duck-engine-scene = { path = "../scene", features = ["serde"] }
+duck-engine-scene = { path = "../scene" }
 anyhow = "1.0"
-bincode = { version = "2.0.1", features = ["serde"] }
 bytemuck = { version = "1.16", features = ["derive"] }
 gltf = { version = "1.4", features = ["utils", "KHR_materials_transmission"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 log = "0.4"
-serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
-zstd = "0.13"
 
 # Optional format loaders
 russimp = { version = "3", features = ["prebuilt"], optional = true }
 openusd = { version = "0.1", optional = true }
 zip = { version = "8", optional = true, default-features = false, features = ["deflate"] }
 opencascade = { path = "../../third-party/opencascade-rs/crates/opencascade", optional = true }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rayon = "1.10"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

@@ -337,7 +337,7 @@ impl GizmoState {
 
         self.root_node.get_or_insert_with(|| {
             let id = scene.add_node(
-                None, Some("Gizmo root".to_owned()), Transform::IDENTITY, NodeFlags::DO_NOT_EXPORT
+                None, Some("Gizmo root".to_owned()), Transform::IDENTITY, NodeFlags::NONE
             ).expect("Failed to create Gizmo root node");
             // Draw the gizmo on the overlay layer at a constant on-screen size;
             // handles inherit both.
@@ -361,7 +361,7 @@ impl GizmoState {
                     Instance::new(mesh_id).with_face_material(material_id),
                     None,
                     pivot_transform,
-                    NodeFlags::DO_NOT_EXPORT
+                    NodeFlags::NONE
                 )
                 .expect("Failed to add gizmo node");
 
