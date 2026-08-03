@@ -5,7 +5,7 @@ use crate::scene::common::RgbaColor;
 use super::pass_context::{SceneFrame, SceneFrames, SceneRenderPass};
 use super::scene_pass::{
     FlatColorPass, FlatColorPassDesc,
-    MainPass, OverlayPass, SilhouetteEdgesPass, SubGeomHighlightPass, SubViewPass, outline_passes,
+    MainPass, OverlayPass, SilhouetteEdgesPass, SubGeomHighlightPass, outline_passes,
 };
 use crate::shaders::ShaderGenerator;
 
@@ -13,7 +13,7 @@ use crate::shaders::ShaderGenerator;
 ///
 /// Runs the standard pass sequence: scene faces, the highlight outline mask,
 /// scene lines and points, the outline composite, overlay (always-on-top)
-/// geometry, sub-geometry highlights, and sub-views. Custom passes can be injected via
+/// geometry, and sub-geometry highlights. Custom passes can be injected via
 /// [`ShadedWorkflow::set_passes`].
 pub struct ShadedWorkflow {
     passes: Vec<Box<dyn SceneRenderPass>>,
@@ -47,8 +47,6 @@ impl ShadedWorkflow {
                     device, config.format, sample_count,
                     camera_bgl, lights_bgl, material_color_bgl, shader_generator,
                 )),
-                // Drawn last so each sub-view composites on top of the finished main view.
-                Box::new(SubViewPass::new(device, width, height, sample_count, camera_bgl)),
             ],
         }
     }

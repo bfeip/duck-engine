@@ -842,4 +842,25 @@ mod tests {
         assert!((reconstructed.up.y - original.up.y).abs() < 1e-4);
         assert!((reconstructed.up.z - original.up.z).abs() < 1e-4);
     }
+
+    #[test]
+    fn positioned_camera_for_node_uses_given_aspect() {
+        use crate::{NodeFlags, NodePayload, Scene, common};
+
+        let mut scene = Scene::new();
+        let camera = scene
+            .add_node(None, Some("cam".into()), common::Transform::IDENTITY, NodeFlags::NONE)
+            .unwrap();
+        let proj = CameraProjection {
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+            ortho: false,
+            focus_distance: 5.0,
+        };
+        scene.set_node_payload(camera, NodePayload::Camera(proj));
+
+        let positioned = scene.positioned_camera_for_node(camera, 2.0).expect("camera resolves");
+        assert!((positioned.aspect - 2.0).abs() < EPSILON);
+    }
 }

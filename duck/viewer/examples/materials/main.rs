@@ -12,7 +12,7 @@ use duck_engine_viewer::common::{RgbaColor, Transform, Point3};
 use duck_engine_viewer::input::{ElementState, Key};
 use duck_engine_viewer::scene::{
     DisplayBehavior, EnvironmentMapId, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh,
-    NodePayload, PointMaterial, PositionedCamera, PrimitiveType, ViewportRect,
+    PointMaterial, PrimitiveType,
 };
 use duck_engine_viewer::{SurfacedViewer, Viewer, winit_support};
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode, TransformOperator};
@@ -246,51 +246,6 @@ fn build_material_scene(viewer: &mut Viewer) {
             ..Default::default()
         },
     );
-
-    // ---- Sub-view demo --------------------------------------------------
-    // A separate subtree (a single red sphere at the origin) rendered into an
-    // inset region in the top-right corner, viewed through its own camera. The
-    // subtree is drawn *only* in the sub-view, never in the main grid.
-    let sub_root = scene
-        .add_node(None, Some("SubViewRoot".to_string()), Transform::IDENTITY, NodeFlags::NONE)
-        .unwrap();
-    let sub_mat = scene.add_face_material(
-        FaceMaterial::new().with_base_color_factor(RgbaColor::RED).with_roughness_factor(0.4),
-    );
-    scene
-        .add_instance_node(
-            Some(sub_root),
-            Instance::new(mesh_id).with_face_material(sub_mat),
-            Some("SubViewSphere".to_string()),
-            Transform::IDENTITY,
-            NodeFlags::NONE,
-        )
-        .unwrap();
-
-    // A dedicated camera node looking head-on at the sub-view sphere. The aspect
-    // is overridden per frame from the sub-view's pixel rectangle.
-    let sub_cam = PositionedCamera {
-        eye: Point3::new(0.0, 0.5, 2.0),
-        target: Point3::new(0.0, 0.0, 0.0),
-        up: duck_engine_viewer::common::Vector3::new(0.0, 1.0, 0.0),
-        aspect: 1.0,
-        fovy: 45.0,
-        znear: 0.1,
-        zfar: 100.0,
-        ortho: false,
-    };
-    let sub_cam_node = scene
-        .add_node(
-            None,
-            Some("SubViewCamera".to_string()),
-            sub_cam.to_node_transform(),
-            NodeFlags::NONE,
-        )
-        .unwrap();
-    scene.set_node_payload(sub_cam_node, NodePayload::Camera(sub_cam.projection()));
-
-    // Top-right inset: 24% of the surface, inset slightly from the corner.
-    scene.add_sub_view(ViewportRect::new(0.72, 0.04, 0.24, 0.24), sub_root, sub_cam_node);
 
     // Release the scene lock before re-borrowing the viewer for the camera.
     drop(scene);

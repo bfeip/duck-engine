@@ -29,7 +29,6 @@ pub enum RenderLayer {
     /// so it depth-tests among itself but not against scene geometry. Used for
     /// gizmos, handles, and other always-visible annotation geometry.
     Overlay,
-    // future: MiniView(MiniViewId) — confined to a sub-viewport of the surface.
 }
 
 /// How a node's geometry is presented at render time.

@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::scene::Scene;
 
-use super::batching::collect_main_scene_data;
+use super::batching::collect_scene_data;
 use super::mesh::MeshGpuResources;
 use super::scene_bindings::LightsArrayUniform;
 use super::texture::create_texture_gpu_resources;
@@ -41,7 +41,7 @@ impl Renderer {
 
         // 4. Lights.
         self.bindings.sync_lights(&self.host.gpu().queue, scene, || {
-            let frame_data = collect_main_scene_data(scene, &super::batching::sub_view_root_set(scene));
+            let frame_data = collect_scene_data(scene);
             LightsArrayUniform::from_resolved_lights(&frame_data.lights)
         });
 
