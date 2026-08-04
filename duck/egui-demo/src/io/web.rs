@@ -16,7 +16,7 @@ impl App<'_> {
             return;
         }
         let scene_bytes = self.pending_scene_bytes.borrow_mut().take();
-        // The scene loads first: it replaces the whole `Scene`, which would
+        // The scene loads first: it replaces the whole `SceneData`, which would
         // discard an environment map applied earlier in the same frame.
         if let Some(bytes) = scene_bytes {
             self.load_scene_bytes(bytes);
@@ -43,7 +43,7 @@ impl App<'_> {
     fn load_hdr_bytes(&mut self, bytes: Vec<u8>) {
         let Some(state) = self.state.as_mut() else { return };
         let scene_arc = state.viewer.scene();
-        let mut scene = scene_arc.lock().unwrap();
+        let mut scene = scene_arc.lock();
         let env_id = scene.add_environment_map_from_hdr_data(bytes);
         scene.set_active_environment_map(Some(env_id));
         log::info!("Loaded HDR environment");
@@ -68,7 +68,7 @@ impl App<'_> {
         match load_sync(SceneSource::Bytes(bytes), LoadOptions::default()) {
             Ok(result) => {
                 let bounds = result.scene.bounding().bounds;
-                state.viewer.set_scene(Arc::new(Mutex::new(result.scene)));
+                state.viewer.set_scene(Scene::new(result.scene));
                 if let Some(camera) = result.camera {
                     state.viewer.set_camera(camera);
                 } else if let Some(bounds) = bounds {

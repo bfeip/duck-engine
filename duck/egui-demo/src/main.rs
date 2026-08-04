@@ -21,11 +21,11 @@ use winit::event_loop::EventLoopProxy;
 
 use duck_engine_common::Point3;
 use duck_engine_viewer::event::Event;
-use duck_engine_viewer::{common::RgbaColor, scene::NodeFlags};
+use duck_engine_viewer::common::RgbaColor;
 use duck_engine_viewer::input::{ElementState, Key};
 use duck_engine_viewer::operator::{NavigationMode, NavigationOperator, SelectionOperator, TransformMode, TransformOperator};
 use duck_engine_viewer::common::Transform;
-use duck_engine_viewer::scene::{Light, LightType, NodePayload, Scene};
+use duck_engine_viewer::scene::{Light, LightType, NodePayload, NodeFlags, Scene};
 use duck_engine_viewer::winit_support;
 use duck_engine_viewer::{OffscreenViewer, WindowSurface};
 
@@ -373,8 +373,7 @@ impl<'a> App<'a> {
         }
 
         {
-            let scene_arc = self.state.as_mut().unwrap().viewer.scene();
-            let mut scene = scene_arc.lock().unwrap();
+            let scene = self.state.as_mut().unwrap().viewer.scene();
             for change in ui_actions.visibility_changes {
                 scene.set_node_visibility(change.node_id, change.new_visibility);
             }
@@ -387,7 +386,7 @@ impl<'a> App<'a> {
 
     fn clear_scene(&mut self) {
         if let Some(state) = self.state.as_mut() {
-            state.viewer.set_scene(Arc::new(Mutex::new(Scene::new())));
+            state.viewer.set_scene(Scene::default());
             log::info!("Scene cleared");
         }
     }
@@ -410,7 +409,7 @@ impl<'a> App<'a> {
         };
 
         let scene_arc = viewer.scene();
-        let mut scene = scene_arc.lock().unwrap();
+        let mut scene = scene_arc.lock();
         let node_id = scene.add_node(None, None, transform, NodeFlags::NONE).expect("add light node");
         scene.set_node_payload(node_id, NodePayload::Light(light));
         log::info!("Added {:?} light", light_type);
@@ -418,9 +417,7 @@ impl<'a> App<'a> {
 
     fn clear_environment(&mut self) {
         if let Some(state) = self.state.as_mut() {
-            let scene_arc = state.viewer.scene();
-            let mut scene = scene_arc.lock().unwrap();
-            scene.set_active_environment_map(None);
+            state.viewer.scene().set_active_environment_map(None);
             log::info!("Environment cleared");
         }
     }

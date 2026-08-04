@@ -44,8 +44,6 @@ fn selection_item_label(item: SelectionItem, viewer: &Viewer) -> String {
     let node_id = item.node_id();
     let node_label = viewer
         .scene()
-        .lock()
-        .unwrap()
         .get_node(node_id)
         .and_then(|n| n.name.clone())
         .unwrap_or_else(|| format!("Node #{}", node_id));
@@ -86,8 +84,7 @@ fn build_selection_section(ui: &mut egui::Ui, viewer: &Viewer) {
 
 fn build_scene_info_section(ui: &mut egui::Ui, viewer: &Viewer) {
     ui.heading("Scene Info");
-    let scene_arc = viewer.scene();
-    let scene = scene_arc.lock().unwrap();
+    let scene = viewer.scene();
     ui.label(format!("Meshes: {}", scene.mesh_count()));
     ui.label(format!("Instances: {}", scene.instance_count()));
     ui.label(format!("Nodes: {}", scene.node_count()));

@@ -20,12 +20,14 @@ pub fn show(ui: &mut egui::Ui, viewer: &Viewer, actions: &mut UiActions) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let scene_arc = viewer.scene();
-            let scene = scene_arc.lock().unwrap();
-            if scene.root_nodes().is_empty() {
+            // The scene must not be locked here: this closure builds widgets,
+            // and `render_node_tree` recurses through them.
+            let scene = viewer.scene();
+            let roots = scene.root_nodes();
+            if roots.is_empty() {
                 ui.label("(empty)");
             } else {
-                for &root_id in scene.root_nodes() {
+                for root_id in roots {
                     render_node_tree(ui, &scene, root_id, 0, actions);
                 }
             }
@@ -69,7 +71,6 @@ pub fn render_node_tree(
         1.0
     };
 
-    // Clone children before ui.horizontal to avoid borrow issues
     let children: Vec<NodeId> = node.children().to_vec();
 
     if has_children {

@@ -1,15 +1,15 @@
 //! Native file I/O: `rfd` filesystem dialogs + path-based loading.
 
-use std::sync::{Arc, Mutex};
 
 use duck_engine_viewer::import_export;
+use duck_engine_viewer::scene::Scene;
 
 use crate::App;
 
 impl App<'_> {
     /// Consume any pending file I/O queued since the last frame.
     ///
-    /// The scene loads first: it replaces the whole `Scene`, which would
+    /// The scene loads first: it replaces the whole `SceneData`, which would
     /// discard an environment map applied earlier in the same frame.
     pub(crate) fn process_pending_io(&mut self) {
         if self.pending_scene_load_path.is_some() {
@@ -31,7 +31,7 @@ impl App<'_> {
         let Some(state) = self.state.as_mut() else { return };
         let path_str = path.display().to_string();
         let scene_arc = state.viewer.scene();
-        let mut scene = scene_arc.lock().unwrap();
+        let mut scene = scene_arc.lock();
         let env_id = scene.add_environment_map_from_hdr_path(&path);
         scene.set_active_environment_map(Some(env_id));
         log::info!("Loaded HDR environment: {}", path_str);
@@ -66,7 +66,7 @@ impl App<'_> {
         match load_sync(SceneSource::Path(path), LoadOptions::default()) {
             Ok(result) => {
                 let bounds = result.scene.bounding().bounds;
-                state.viewer.set_scene(Arc::new(Mutex::new(result.scene)));
+                state.viewer.set_scene(Scene::new(result.scene));
                 if let Some(camera) = result.camera {
                     state.viewer.set_camera(camera);
                 } else if let Some(bounds) = bounds {

@@ -19,15 +19,7 @@ pub fn show(ui: &mut egui::Ui, viewer: &mut Viewer, actions: &mut UiActions) {
     });
 
     let scene_arc = viewer.scene();
-    let light_nodes: Vec<(NodeId, Light)> = scene_arc
-        .lock()
-        .unwrap()
-        .nodes()
-        .filter_map(|n| match n.payload() {
-            NodePayload::Light(l) => Some((n.id, l.clone())),
-            _ => None,
-        })
-        .collect();
+    let light_nodes: Vec<(NodeId, Light)> = scene_arc.light_nodes();
 
     ui.label(format!("({} lights)", light_nodes.len()));
     ui.separator();
@@ -53,10 +45,10 @@ pub fn show(ui: &mut egui::Ui, viewer: &mut Viewer, actions: &mut UiActions) {
                 }
 
                 if let Some(id) = to_delete {
-                    scene_arc.lock().unwrap().remove_node(id);
+                    scene_arc.remove_node(id);
                 }
                 if let Some((id, light)) = to_update {
-                    scene_arc.lock().unwrap().set_node_payload(id, NodePayload::Light(light));
+                    scene_arc.set_node_payload(id, NodePayload::Light(light));
                 }
             }
         });
