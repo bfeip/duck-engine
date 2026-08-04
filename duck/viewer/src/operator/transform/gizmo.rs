@@ -6,7 +6,7 @@
 //! nodes, positions them at the pivot, hit-tests them, and drives highlights.
 
 use duck_engine_common::{Deg, Matrix4, Point3, Vector3, Vector4};
-use duck_engine_scene::{NodeFlags, PositionedCamera, Scene};
+use duck_engine_scene::{NodeFlags, PositionedCamera, Scene, SceneData};
 
 use crate::common::{Axis, Ray, RgbaColor, Transform};
 use crate::geom_query::{pick_all_from_ray_with_view, PickView, RayPickQuery};
@@ -332,8 +332,12 @@ impl GizmoState {
     ///
     /// Handles are built at a unit size and held at a constant on-screen size via
     /// [`DisplayBehavior::screen_size`] on the root, which the handles inherit.
-    pub fn show(&mut self, gizmo_type: GizmoType, pivot: Point3, scene: &mut Scene) {
-        self.hide(scene);
+    pub fn show(&mut self, gizmo_type: GizmoType, pivot: Point3, scene: &Scene) {
+        self.show_in(gizmo_type, pivot, &mut scene.lock());
+    }
+
+    fn show_in(&mut self, gizmo_type: GizmoType, pivot: Point3, scene: &mut SceneData) {
+        self.hide_in(scene);
 
         self.root_node.get_or_insert_with(|| {
             let id = scene.add_node(
@@ -377,7 +381,11 @@ impl GizmoState {
     }
 
     /// Remove all gizmo geometry from the scene.
-    pub fn hide(&mut self, scene: &mut Scene) {
+    pub fn hide(&mut self, scene: &Scene) {
+        self.hide_in(&mut scene.lock());
+    }
+
+    fn hide_in(&mut self, scene: &mut SceneData) {
         for handle in &self.handles {
             scene.remove_node(handle.node);
             scene.remove_mesh(handle.mesh);
@@ -390,7 +398,8 @@ impl GizmoState {
     }
 
     /// Update the gizmo position (e.g. when pivot changes).
-    pub fn update_position(&self, pivot: Point3, scene: &mut Scene) {
+    pub fn update_position(&self, pivot: Point3, scene: &Scene) {
+        let mut scene = scene.lock();
         for handle in &self.handles {
             if scene.has_node(handle.node) {
                 scene.set_node_position(handle.node, pivot);
@@ -434,10 +443,12 @@ impl GizmoState {
     }
 
     /// Highlight a specific handle (or clear highlight with None).
-    pub fn set_highlight(&mut self, handle: Option<GizmoHandleId>, scene: &mut Scene) {
+    pub fn set_highlight(&mut self, handle: Option<GizmoHandleId>, scene: &Scene) {
         if self.highlighted == handle {
             return;
         }
+
+        let mut scene = scene.lock();
 
         // Restore previous highlight to normal color
         if let Some(prev) = self.highlighted
@@ -672,12 +683,12 @@ use crate::geom_query::RayPickQuery;
     fn translate_handles_pickable_through_scene() {
         use crate::common::Ray;
         use crate::geom_query::pick_all_from_ray;
-        use crate::scene::{FaceMaterial, Mesh, PrimitiveType, Scene};
+        use crate::scene::{FaceMaterial, Mesh, PrimitiveType, SceneData};
         use duck_engine_common::{Point3, Vector3};
 
         let pivot = Point3::new(5.0, 3.0, 0.0);
 
-        let mut scene = Scene::new();
+        let mut scene = SceneData::new();
 
         // Add a model cube so the scene isn't empty (like the real app)
         let cube = Mesh::cube(2.0, PrimitiveType::TriangleList);
@@ -765,13 +776,13 @@ use crate::geom_query::RayPickQuery;
     fn translate_handles_pickable_after_position_update() {
         use crate::common::Ray;
         use crate::geom_query::pick_all_from_ray;
-        use crate::scene::Scene;
+        use crate::scene::SceneData;
         use duck_engine_common::{Point3, Vector3};
 
         let initial_pivot = Point3::new(0.0, 0.0, 0.0);
         let new_pivot = Point3::new(10.0, 5.0, 3.0);
 
-        let mut scene = Scene::new();
+        let mut scene = SceneData::new();
         let pivot_transform = crate::common::Transform::from_position(initial_pivot);
 
         let handles = build_translate_handles(1.0);

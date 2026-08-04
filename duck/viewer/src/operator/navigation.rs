@@ -203,8 +203,7 @@ impl NavigationOperator {
     ) -> bool {
         let camera = ctx.camera();
         let scene_center = {
-            let scene = ctx.scene.lock().unwrap();
-            scene.bounding().bounds.map(|b| b.center()).unwrap_or(camera.target)
+            ctx.scene.bounding().bounds.map(|b| b.center()).unwrap_or(camera.target)
         };
 
         match (self.mode, action) {
@@ -221,8 +220,7 @@ impl NavigationOperator {
                     start_pos.0, start_pos.1, ctx.size.0, ctx.size.1,
                 );
                 let hits = {
-                    let scene = ctx.scene.lock().unwrap();
-                    pick_all_from_ray(&RayPickQuery::faces(ray), &*scene)
+                    pick_all_from_ray(&RayPickQuery::faces(ray), &ctx.scene)
                 };
                 let pivot = hits.first().map(|h| h.hit_point).unwrap_or(scene_center);
                 match self.mode {
@@ -381,8 +379,7 @@ impl Operator for NavigationOperator {
                     MouseScrollDelta::PixelDelta(_x, y) => *y / 100.0,
                 };
                 let model_radius = {
-                    let scene = ctx.scene.lock().unwrap();
-                    scene_scale::model_radius_from_bounds(scene.bounding().bounds.as_ref())
+                    scene_scale::model_radius_from_bounds(ctx.scene.bounding().bounds.as_ref())
                 };
                 ctx.with_camera_mut(|cam| {
                     self.handle_wheel(scroll_amount, cam, model_radius);
@@ -404,8 +401,7 @@ impl Operator for NavigationOperator {
             }
             DeviceEvent::Update { delta_time } => {
                 let model_radius = {
-                    let scene = ctx.scene.lock().unwrap();
-                    scene_scale::model_radius_from_bounds(scene.bounding().bounds.as_ref())
+                    scene_scale::model_radius_from_bounds(ctx.scene.bounding().bounds.as_ref())
                 };
                 ctx.with_camera_mut(|cam| {
                     self.handle_update(*delta_time, cam, model_radius);

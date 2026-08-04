@@ -136,9 +136,8 @@ impl SelectionOperator {
         let tolerance = camera.world_size_per_pixel(camera_distance, ctx.size.1) * 6.0;
 
         let (pick_faces, pick_lines, pick_points) = self.mode.query_primitives();
-        let scene = ctx.scene.lock().unwrap();
         let query = RayPickQuery::for_kinds(ray, tolerance, pick_faces, pick_lines, pick_points);
-        let results = pick_all_from_ray(&query, &*scene);
+        let results = pick_all_from_ray(&query, &ctx.scene);
         let first_node = results.first().map(|hit| hit.node_id);
 
         match self.mode {
@@ -150,7 +149,7 @@ impl SelectionOperator {
                 if sub.is_empty() {
                     return allow_node.then_some(first_node.map(SelectionItem::Node)).flatten();
                 }
-                resolve_sub_geometry(&results, &*scene, sub)
+                resolve_sub_geometry(&results, &ctx.scene, sub)
                     .or_else(|| allow_node.then_some(first_node.map(SelectionItem::Node)).flatten())
             }
 
@@ -160,7 +159,7 @@ impl SelectionOperator {
                 // node or any of its sub-geometry is currently the active selection.
                 if ctx.selection.is_node_selected(node) {
                     let sub = kinds & SelectionKinds::sub_geometry();
-                    resolve_sub_geometry(&results, &*scene, sub)
+                    resolve_sub_geometry(&results, &ctx.scene, sub)
                         .or(Some(SelectionItem::Node(node)))
                 } else {
                     Some(SelectionItem::Node(node))
@@ -220,6 +219,7 @@ fn resolve_sub_geometry(
     scene: &Scene,
     sub_kinds: SelectionKinds,
 ) -> Option<SelectionItem> {
+    let scene = scene.lock();
     for hit in results {
         let kind = hit.hit.kind();
         if !sub_kinds.contains(SelectionKinds::from(kind)) {

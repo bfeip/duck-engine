@@ -1,6 +1,5 @@
 //! [`TransformTarget`] over the selected scene nodes.
 
-use std::sync::{Arc, Mutex};
 
 use duck_engine_common::{Matrix4, Point3, Quaternion, SquareMatrix, Vector3};
 
@@ -42,7 +41,8 @@ impl NodeTransformTarget {
     }
 
     /// Restore all captured nodes to their original transforms.
-    fn restore(&self, scene: &mut Scene) {
+    fn restore(&self, scene: &Scene) {
+        let mut scene = scene.lock();
         for orig in &self.original_transforms {
             if scene.has_node(orig.node_id) {
                 scene.set_node_transform(orig.node_id, orig.local_transform);
@@ -58,7 +58,7 @@ impl TransformTarget for NodeTransformTarget {
             return None;
         }
 
-        let scene = ctx.scene.lock().unwrap();
+        let scene = ctx.scene.lock();
         let positions: Vec<Point3> = selected
             .iter()
             .filter_map(|&nid| {
@@ -87,7 +87,7 @@ impl TransformTarget for NodeTransformTarget {
         self.original_transforms.clear();
         let selected_nodes = ctx.selection.selected_nodes();
 
-        let scene = ctx.scene.lock().unwrap();
+        let scene = ctx.scene.lock();
         for node_id in &selected_nodes {
             if let Some(node) = scene.get_node(*node_id) {
                 let Some(world_matrix) = scene.nodes_transform(*node_id) else { continue };
@@ -116,8 +116,6 @@ impl TransformTarget for NodeTransformTarget {
     fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
         let mode = interaction.mode();
 
-        // Pre-compute camera-dependent values before locking the scene.
-        // ctx.camera() acquires and releases the scene lock internally.
         let camera = ctx.camera();
         let translation_delta = if mode == TransformMode::Translate {
             Some(interaction.translation(&camera, ctx.size))
@@ -140,8 +138,7 @@ impl TransformTarget for NodeTransformTarget {
         let pivot_world = interaction.pivot();
         let frame_rotation = interaction.frame_rotation();
 
-        // Now apply transforms to nodes under a single scene lock.
-        let mut scene = ctx.scene.lock().unwrap();
+        let mut scene = ctx.scene.lock();
         for orig in &self.original_transforms {
             let inv_parent = orig
                 .parent_world_transform
@@ -226,12 +223,12 @@ impl TransformTarget for NodeTransformTarget {
     }
 
     fn cancel(&mut self, ctx: &mut EventContext) {
-        self.restore(&mut ctx.scene.lock().unwrap());
+        self.restore(&ctx.scene);
         self.original_transforms.clear();
     }
 
-    fn abort(&mut self, scene: &Arc<Mutex<Scene>>) {
-        self.restore(&mut scene.lock().unwrap());
+    fn abort(&mut self, scene: &Scene) {
+        self.restore(scene);
         self.original_transforms.clear();
     }
 }

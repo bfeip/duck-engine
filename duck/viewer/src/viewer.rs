@@ -1,13 +1,12 @@
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex};
 
 use duck_engine_common::Vector3;
-use duck_engine_scene::{NodeFlags, NodeId};
+use duck_engine_scene::{NodeFlags, NodeId, Scene};
 use web_time::Instant;
 
 use crate::{
     event::{DeviceEvent, Event, EventContext, EventDispatcher},
-    scene::{NodePayload, PositionedCamera, Scene},
+    scene::{NodePayload, PositionedCamera},
     selection::SelectionManager,
     renderer::{Gpu, Renderer, HighlightQuery},
 };
@@ -20,7 +19,7 @@ use crate::{
 pub struct Viewer {
     gpu: Gpu,
     renderer: Renderer,
-    scene: Arc<Mutex<Scene>>,
+    scene: Scene,
     selection: SelectionManager,
     dispatcher: EventDispatcher,
     /// Current cursor position in screen coordinates
@@ -52,7 +51,7 @@ impl Viewer {
             sample_count,
             has_compute,
         );
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         let dispatcher = EventDispatcher::new();
 
         let mut viewer = Self {
@@ -92,7 +91,7 @@ impl Viewer {
         let mut ctx = EventContext {
             size: self.renderer.size(),
             cursor_position: &mut self.cursor_position,
-            scene: Arc::clone(&self.scene),
+            scene: self.scene.clone(), // pointer clone
             selection: &mut self.selection,
             modifiers: Default::default(), // dispatcher overwrites this in dispatch()
             emit_queue: Vec::new(),
@@ -119,28 +118,30 @@ impl Viewer {
         self.handle_event(&event);
     }
 
+    /// Viewport aspect ratio.
+    pub fn aspect(&self) -> f32 {
+        let (w, h) = self.renderer.size();
+        if h > 0 { w as f32 / h as f32 } else { 16.0 / 9.0 }
+    }
+
     /// Get a reference to the active camera.
     ///
     /// Panics if the scene has no active camera node.
     pub fn camera(&self) -> PositionedCamera {
-        let (w, h) = self.renderer.size();
-        let aspect = if h > 0 { w as f32 / h as f32 } else { 16.0 / 9.0 };
-        self.scene.lock().unwrap().active_camera_positioned(aspect).expect("no active camera in scene")
+        self.scene.camera(self.aspect()).expect("no active camera in scene")
     }
 
-    /// Clones the active camera, passes it to `f` for mutation, then writes it back.
+    /// Reads the active camera, passes it to `f`, and writes it back.
+    ///
+    /// The read and the write share one critical section. `f` must not touch the
+    /// scene.
     pub fn with_camera_mut<F: FnOnce(&mut PositionedCamera)>(&mut self, f: F) {
-        let mut cam = self.camera();
-        f(&mut cam);
-        self.set_camera(cam);
+        self.scene.with_camera_mut(self.aspect(), f);
     }
 
     /// Replace the active camera.
     pub fn set_camera(&mut self, camera: PositionedCamera) {
-        let mut scene = self.scene.lock().unwrap();
-        let id = scene.active_camera().expect("no active camera in scene");
-        scene.set_node_transform(id, camera.to_node_transform());
-        scene.set_node_payload(id, NodePayload::Camera(camera.projection()));
+        self.scene.set_camera(camera);
     }
 
     /// Get the current viewport size as (width, height)
@@ -185,17 +186,17 @@ impl Viewer {
         self.gpu.clone()
     }
 
-    /// Returns a clone of the scene Arc, for sharing with other owners (e.g. Document).
-    pub fn scene(&self) -> Arc<Mutex<Scene>> {
-        Arc::clone(&self.scene)
+    /// Returns a clone of the scene handle, for sharing with other owners (e.g. Document).
+    pub fn scene(&self) -> Scene {
+        self.scene.clone()
     }
 
-    /// Replace the viewer's scene Arc.
+    /// Replace the viewer's scene.
     ///
     /// This clears all scene-specific GPU resources and selection state
     /// to prevent stale data from persisting across scene changes.
     /// If the incoming scene has no active camera a default one is added.
-    pub fn set_scene(&mut self, scene: Arc<Mutex<Scene>>) {
+    pub fn set_scene(&mut self, scene: Scene) {
         self.scene = scene;
         self.selection.clear();
         self.renderer.clear_gpu_resources();
@@ -212,7 +213,7 @@ impl Viewer {
     /// - All cached GPU resources (vertex buffers, texture views, material bind groups)
     /// - The current selection
     pub fn clear_scene(&mut self) {
-        self.scene.lock().unwrap().clear();
+        self.scene.clear();
         self.selection.clear();
         self.renderer.clear_gpu_resources();
         self.ensure_active_camera();
@@ -220,7 +221,7 @@ impl Viewer {
 
     /// Adds a default camera node to the scene if no active camera is set.
     fn ensure_active_camera(&mut self) -> NodeId {
-        let mut scene = self.scene.lock().unwrap();
+        let mut scene = self.scene.lock();
         if let Some(camera_id) = scene.active_camera() {
             return camera_id;
         }
@@ -243,15 +244,14 @@ impl Viewer {
 
     /// Adds default lights as children of the camera if the scene is otherwise unlit.
     fn ensure_default_lights(&mut self) {
-        let has_lights = {
-            let scene = self.scene.lock().unwrap();
-            scene.has_light_nodes() || scene.active_environment_map().is_some()
-        };
-        if has_lights {
+        // Resolve the camera first so the unlit test and the mutation that
+        // follows share one critical section.
+        let camera = self.ensure_active_camera();
+        let mut scene = self.scene.lock();
+        if scene.has_light_nodes() || scene.active_environment_map().is_some() {
             return;
         }
-        let camera = self.ensure_active_camera();
-        self.scene.lock().unwrap().set_default_light_nodes(camera);
+        scene.set_default_light_nodes(camera);
     }
 
     /// Get a reference to the selection manager
@@ -277,7 +277,7 @@ impl Viewer {
     /// Prepare GPU resources for the scene ahead of rendering. Called by the
     /// owning wrapper before recording render passes.
     pub fn prepare_scene(&mut self) -> Result<(), anyhow::Error> {
-        let mut scene = self.scene.lock().unwrap();
+        let mut scene = self.scene.lock();
         self.renderer.prepare_scene(&mut *scene)
     }
 
@@ -301,17 +301,15 @@ impl Viewer {
         view: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<(), anyhow::Error> {
-        let scene = self.scene.lock().unwrap();
         let highlight = Self::selection_for_render(&self.selection);
-        self.renderer.render_scene_to_view(view, encoder, None, &*scene, highlight)
+        self.renderer.render_scene_to_view(view, encoder, None, &self.scene, highlight)
     }
 
     /// Render the scene from the given camera and read the result back into an
     /// RGBA image (blocking). For headless still-image / thumbnail rendering.
     pub fn render_to_image(&mut self, camera: &PositionedCamera) -> Result<image::RgbaImage, anyhow::Error> {
-        let mut scene = self.scene.lock().unwrap();
         let highlight = Self::selection_for_render(&self.selection);
-        self.renderer.render_scene_to_image(camera, &mut *scene, highlight)
+        self.renderer.render_scene_to_image(camera, &mut self.scene, highlight)
     }
 }
 

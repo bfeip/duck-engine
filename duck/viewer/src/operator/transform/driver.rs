@@ -6,7 +6,6 @@
 //! transformed, how it is previewed, and what commit means) to a
 //! [`TransformTarget`] implementation.
 
-use std::sync::{Arc, Mutex};
 
 use duck_engine_common::{Point3, Quaternion};
 
@@ -75,7 +74,7 @@ pub trait TransformTarget: 'static {
     /// preview and drop target state. Must be idempotent. Receives the scene
     /// handle, not a guard, because implementations lock scene and/or other
     /// state in their own order.
-    fn abort(&mut self, scene: &Arc<Mutex<Scene>>);
+    fn abort(&mut self, scene: &Scene);
 }
 
 /// Operator driving a single transform operation (translate, rotate, or
@@ -129,9 +128,9 @@ impl<T: TransformTarget> TransformDriver<T> {
     /// Tears down all scene-side visuals owned by this driver (gizmo handles)
     /// and aborts any in-progress transform, reverting the target to its
     /// pre-transform state.
-    pub fn teardown(&mut self, scene: &Arc<Mutex<Scene>>) {
+    pub fn teardown(&mut self, scene: &Scene) {
         self.target.abort(scene);
-        self.gizmo.hide(&mut scene.lock().unwrap());
+        self.gizmo.hide(scene);
         self.gizmo_enabled = false;
         self.interaction.finish();
     }
@@ -185,8 +184,7 @@ impl<T: TransformTarget> TransformDriver<T> {
         self.interaction.reset_rotation();
         self.apply_preview(ctx);
         let highlight = self.interaction.highlight_handle();
-        let mut scene = ctx.scene.lock().unwrap();
-        self.gizmo.set_highlight(highlight, &mut scene);
+        self.gizmo.set_highlight(highlight, &ctx.scene);
     }
 
     /// Show the current delta on the target, if a transform is active.
@@ -204,17 +202,15 @@ impl<T: TransformTarget> TransformDriver<T> {
         // Hide the gizmo whenever it is disabled or there is nothing to
         // transform.
         let Some(frame) = frame else {
-            let mut scene = ctx.scene.lock().unwrap();
-            self.gizmo.hide(&mut scene);
+            self.gizmo.hide(&ctx.scene);
             return;
         };
 
         let gizmo_type = self.interaction.mode().gizmo_type();
-        let mut scene = ctx.scene.lock().unwrap();
         if self.gizmo.current_type() == Some(gizmo_type) {
-            self.gizmo.update_position(frame.pivot, &mut scene);
+            self.gizmo.update_position(frame.pivot, &ctx.scene);
         } else {
-            self.gizmo.show(gizmo_type, frame.pivot, &mut scene);
+            self.gizmo.show(gizmo_type, frame.pivot, &ctx.scene);
         }
     }
 
@@ -244,10 +240,7 @@ impl<T: TransformTarget> TransformDriver<T> {
         // The interaction is still active here so the target can read the
         // final delta.
         self.target.commit(&self.interaction, ctx);
-        {
-            let mut scene = ctx.scene.lock().unwrap();
-            self.gizmo.set_highlight(None, &mut scene);
-        }
+        self.gizmo.set_highlight(None, &ctx.scene);
         self.interaction.finish();
         self.sync_gizmo(ctx);
     }
@@ -257,10 +250,7 @@ impl<T: TransformTarget> TransformDriver<T> {
     /// The gizmo remains visible at the original position.
     fn cancel_transform(&mut self, ctx: &mut EventContext) {
         self.target.cancel(ctx);
-        {
-            let mut scene = ctx.scene.lock().unwrap();
-            self.gizmo.set_highlight(None, &mut scene);
-        }
+        self.gizmo.set_highlight(None, &ctx.scene);
         self.interaction.finish();
         self.sync_gizmo(ctx);
     }
@@ -377,8 +367,7 @@ impl<T: TransformTarget> Operator for TransformDriver<T> {
                     let ray = camera.ray_from_screen_point(
                         start_pos.0, start_pos.1, ctx.size.0, ctx.size.1,
                     );
-                    let scene = ctx.scene.lock().unwrap();
-                    self.gizmo.pick_handle(ray, &scene, &camera, ctx.size)
+                    self.gizmo.pick_handle(ray, &ctx.scene, &camera, ctx.size)
                 };
                 if let Some(handle) = picked {
                     // Anchor at the pixel the handle was picked at, not the
@@ -399,8 +388,7 @@ impl<T: TransformTarget> Operator for TransformDriver<T> {
                         handle
                     };
                     self.interaction.constrain_to_handle(constraint_handle);
-                    let mut scene = ctx.scene.lock().unwrap();
-                    self.gizmo.set_highlight(Some(handle), &mut scene);
+                    self.gizmo.set_highlight(Some(handle), &ctx.scene);
                     return true;
                 }
                 false
@@ -455,9 +443,8 @@ impl<T: TransformTarget> Operator for TransformDriver<T> {
                     let ray = camera.ray_from_screen_point(
                         position.0 as f32, position.1 as f32, ctx.size.0, ctx.size.1,
                     );
-                    let mut scene = ctx.scene.lock().unwrap();
-                    let handle = self.gizmo.pick_handle(ray, &scene, &camera, ctx.size);
-                    self.gizmo.set_highlight(handle, &mut scene);
+                    let handle = self.gizmo.pick_handle(ray, &ctx.scene, &camera, ctx.size);
+                    self.gizmo.set_highlight(handle, &ctx.scene);
                 }
                 false
             }
@@ -489,14 +476,14 @@ mod tests {
     use crate::input::MouseButton;
     use super::super::interaction::{AxisConstraint, ConstraintSpace};
     use crate::common::Axis;
-    use crate::scene::{NodePayload, PositionedCamera};
+    use crate::scene::{NodePayload, PositionedCamera, Scene, SceneData};
     use crate::selection::SelectionManager;
     use duck_engine_common::{InnerSpace, Vector3};
     use duck_engine_scene::NodeFlags;
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    type ContextParts = (Option<(f32, f32)>, Arc<Mutex<Scene>>, SelectionManager);
+    type ContextParts = (Option<(f32, f32)>, Scene, SelectionManager);
 
     fn context_parts() -> ContextParts {
         context_parts_viewed_from((0.0, 0.0, 4.0))
@@ -513,20 +500,20 @@ mod tests {
             zfar: 100.0,
             ortho: false,
         };
-        let mut scene = Scene::new();
+        let mut scene = SceneData::new();
         let cam_id = scene
             .add_node(None, None, camera.to_node_transform(), NodeFlags::NONE)
             .unwrap();
         scene.set_node_payload(cam_id, NodePayload::Camera(camera.projection()));
         scene.set_active_camera(Some(cam_id));
-        (Some((400.0, 300.0)), Arc::new(Mutex::new(scene)), SelectionManager::new())
+        (Some((400.0, 300.0)), Scene::new(scene), SelectionManager::new())
     }
 
     fn make_context(parts: &mut ContextParts) -> EventContext<'_> {
         EventContext {
             size: (800, 600),
             cursor_position: &mut parts.0,
-            scene: Arc::clone(&parts.1),
+            scene: parts.1.clone(),
             selection: &mut parts.2,
             modifiers: Default::default(),
             emit_queue: Vec::new(),
@@ -552,7 +539,7 @@ mod tests {
         }
         fn commit(&mut self, _interaction: &TransformInteraction, _ctx: &mut EventContext) {}
         fn cancel(&mut self, _ctx: &mut EventContext) {}
-        fn abort(&mut self, _scene: &Arc<Mutex<Scene>>) {}
+        fn abort(&mut self, _scene: &Scene) {}
     }
 
     fn motion(delta: (f64, f64)) -> Event {

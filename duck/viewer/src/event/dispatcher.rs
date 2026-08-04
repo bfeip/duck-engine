@@ -670,7 +670,7 @@ mod tests {
     use super::*;
     use crate::event::AppEvent;
     use crate::input::{ElementState, MouseButton};
-    use crate::scene::{NodePayload, Scene};
+    use crate::scene::{NodePayload, Scene, SceneData};
     use crate::selection::SelectionManager;
     use duck_engine_scene::NodeFlags;
     use std::cell::Cell;
@@ -679,7 +679,7 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    fn create_mock_context_parts() -> (Option<(f32, f32)>, Arc<Mutex<Scene>>, SelectionManager) {
+    fn create_mock_context_parts() -> (Option<(f32, f32)>, Scene, SelectionManager) {
         use crate::scene::PositionedCamera;
         use duck_engine_common::Vector3;
         let camera = PositionedCamera {
@@ -692,20 +692,20 @@ mod tests {
             zfar: 100.0,
             ortho: false,
         };
-        let mut scene = Scene::new();
+        let mut scene = SceneData::new();
         let cam_id = scene.add_node(
             None, None, camera.to_node_transform(), NodeFlags::NONE
         ).unwrap();
         scene.set_node_payload(cam_id, NodePayload::Camera(camera.projection()));
         scene.set_active_camera(Some(cam_id));
-        (None, Arc::new(Mutex::new(scene)), SelectionManager::new())
+        (None, Scene::new(scene), SelectionManager::new())
     }
 
-    fn make_context(parts: &mut (Option<(f32, f32)>, Arc<Mutex<Scene>>, SelectionManager)) -> EventContext<'_> {
+    fn make_context(parts: &mut (Option<(f32, f32)>, Scene, SelectionManager)) -> EventContext<'_> {
         EventContext {
             size: (800, 600),
             cursor_position: &mut parts.0,
-            scene: Arc::clone(&parts.1),
+            scene: parts.1.clone(),
             selection: &mut parts.2,
             modifiers: Default::default(),
             emit_queue: Vec::new(),
