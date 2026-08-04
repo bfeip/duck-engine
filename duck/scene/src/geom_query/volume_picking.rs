@@ -1,7 +1,7 @@
 use duck_engine_common::Matrix4;
 
 use crate::common::{Aabb, ConvexPolyhedron};
-use crate::{InstanceId, Mesh, NodeId, Scene};
+use crate::{InstanceId, Mesh, Node, NodeId, Scene};
 
 use super::mesh_intersection;
 use super::pick_query::{pick_all, PickQuery};
@@ -55,11 +55,12 @@ impl PickQuery for VolumePickQuery {
     fn collect_mesh_hits(
         &self,
         mesh: &Mesh,
-        node_id: NodeId,
+        node: &Node,
         instance_id: InstanceId,
         _world_transform: &Matrix4,
         results: &mut Vec<Self::Result>,
     ) {
+        let node_id = node.id;
         // Test against mesh (volume is already in local space)
         if let Some(mesh_hit) = mesh_intersection::intersect_volume(mesh, &self.volume, self.thorough) {
             results.push(VolumePickResult {

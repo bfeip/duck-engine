@@ -7,7 +7,7 @@ use duck_engine_viewer::common::{
 };
 use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
 use duck_engine_viewer::scene::{
-    InstanceId, Mesh, NodeId, PositionedCamera, PrimitiveType, Scene, Topology, Visibility,
+    InstanceId, Mesh, Node, NodeId, PositionedCamera, PrimitiveType, Scene, Topology, Visibility,
 };
 
 use super::{Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
@@ -143,7 +143,6 @@ impl SnapProvider for GeometrySnap {
 
     fn collect(&self, input: &SnapInput, scene: &Scene, settings: &SnapSettings) -> Vec<Snap> {
         let query = GeometrySnapQuery {
-            scene,
             ray: input.ray,
             camera: input.camera,
             cursor: input.cursor,
@@ -195,8 +194,6 @@ impl SnapProvider for GeometrySnap {
 /// in local space and transforms results back to world.
 #[derive(Clone, Copy)]
 struct GeometrySnapQuery<'a> {
-    /// Scene handle, used in the narrow phase to look up per-node visibility.
-    scene: &'a Scene,
     /// Cursor ray: world space at broad phase, local space after [`Self::transform`].
     ray: Ray,
     camera: &'a PositionedCamera,
@@ -284,17 +281,17 @@ impl PickQuery for GeometrySnapQuery<'_> {
     fn collect_mesh_hits(
         &self,
         mesh: &Mesh,
-        node_id: NodeId,
+        node: &Node,
         _instance_id: InstanceId,
         world_transform: &Matrix4,
         results: &mut Vec<Snap>,
     ) {
         // Per-node filters the broad phase doesn't apply. Visibility is checked per
         // node (not propagated to descendants), matching the previous behavior.
-        if self.exclude_nodes.contains(&node_id) {
+        if self.exclude_nodes.contains(&node.id) {
             return;
         }
-        if self.scene.get_node(node_id).map(|n| n.visibility()) != Some(Visibility::Visible) {
+        if node.visibility() != Visibility::Visible {
             return;
         }
 
@@ -784,7 +781,6 @@ mod tests {
         let cam = dummy_camera();
         let scene = Scene::default();
         let query = GeometrySnapQuery {
-            scene: &scene,
             ray: Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0)),
             camera: &cam,
             cursor: screen_of(&cam, Point3::origin()),

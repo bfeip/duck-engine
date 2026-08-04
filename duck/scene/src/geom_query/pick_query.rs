@@ -2,7 +2,8 @@ use duck_engine_common::{Matrix4, SquareMatrix};
 
 use crate::common::Aabb;
 use crate::{
-    DisplayBehavior, InstanceId, Mesh, NodeFlags, NodeId, NodePayload, PositionedCamera, Scene, SceneData,
+    DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId, NodePayload, PositionedCamera, Scene,
+    SceneData,
 };
 
 /// A query that can pick objects by traversing the scene tree.
@@ -34,14 +35,14 @@ pub trait PickQuery {
     ///
     /// # Arguments
     /// * `mesh` - The mesh to test against (in local space)
-    /// * `node_id` - ID of the node being tested
+    /// * `node` - The node being tested
     /// * `instance_id` - ID of the instance being tested
     /// * `world_transform` - The node's world transform (for result computation)
     /// * `results` - Vector to push results into
     fn collect_mesh_hits(
         &self,
         mesh: &Mesh,
-        node_id: NodeId,
+        node: &Node,
         instance_id: InstanceId,
         world_transform: &Matrix4,
         results: &mut Vec<Self::Result>,
@@ -139,7 +140,7 @@ fn pick_node<Q: PickQuery>(
     if let NodePayload::Instance(instance_id) = node.payload()
         && let Some(transform) = pick_transform(scene, node_id, display, view)
     {
-        collect_instance_hits(query, node_id, *instance_id, scene, &transform, results);
+        collect_instance_hits(query, node, *instance_id, scene, &transform, results);
     }
 
     // Recurse to children. Missing child nodes are silently skipped.
@@ -175,7 +176,7 @@ fn pick_transform(
 /// or if `transform` is singular.
 fn collect_instance_hits<Q: PickQuery>(
     query: &Q,
-    node_id: NodeId,
+    node: &Node,
     instance_id: InstanceId,
     scene: &SceneData,
     transform: &Matrix4,
@@ -185,7 +186,7 @@ fn collect_instance_hits<Q: PickQuery>(
     let Some(mesh) = scene.get_mesh(instance.mesh()) else { return };
     let Some(world_to_local) = transform.invert() else { return };
     let local_query = query.transform(&world_to_local);
-    local_query.collect_mesh_hits(mesh, node_id, instance_id, transform, results);
+    local_query.collect_mesh_hits(mesh, node, instance_id, transform, results);
 }
 
 #[cfg(test)]
@@ -213,12 +214,12 @@ mod tests {
         fn collect_mesh_hits(
             &self,
             _mesh: &Mesh,
-            node_id: NodeId,
+            node: &Node,
             _instance_id: InstanceId,
             _world_transform: &Matrix4,
             results: &mut Vec<NodeId>,
         ) {
-            results.push(node_id);
+            results.push(node.id);
         }
     }
 

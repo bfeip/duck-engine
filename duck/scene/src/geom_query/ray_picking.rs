@@ -1,7 +1,7 @@
 use duck_engine_common::{transform_point, InnerSpace, Matrix4, Point3};
 
 use crate::common::{Aabb, Ray};
-use crate::{InstanceId, Mesh, NodeId, Scene, SubGeometryKind};
+use crate::{InstanceId, Mesh, Node, NodeId, Scene, SubGeometryKind};
 
 use super::mesh_intersection;
 use super::pick_query::{pick_all, pick_all_with_view, PickQuery, PickView};
@@ -189,11 +189,12 @@ impl PickQuery for RayPickQuery {
     fn collect_mesh_hits(
         &self,
         mesh: &Mesh,
-        node_id: NodeId,
+        node: &Node,
         instance_id: InstanceId,
         world_transform: &Matrix4,
         results: &mut Vec<Self::Result>,
     ) {
+        let node_id = node.id;
         if self.pick_faces {
             for mesh_hit in mesh_intersection::intersect_ray(mesh, &self.ray) {
                 let world_hit_point =
