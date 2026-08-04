@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
     // Build a simple scene: one sphere with a PBR material plus default lights.
     {
         let scene_arc = viewer.scene();
-        let mut scene = scene_arc.lock().unwrap();
+        let mut scene = scene_arc.lock();
 
         let camera_node = scene
             .add_node(None, Some("Camera".to_string()), Default::default(), NodeFlags::NONE)

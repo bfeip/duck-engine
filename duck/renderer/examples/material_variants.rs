@@ -17,13 +17,13 @@ use duck_engine_common::{Point3, Vector3};
 use duck_engine_renderer::Renderer;
 use duck_engine_renderer::scene::{
     AlphaMode, FaceMaterial, Instance, Light, LineMaterial, MaterialFlags, Mesh, NodePayload,
-    PointMaterial, PositionedCamera, PrimitiveType, Scene, Texture, TextureId,
+    PointMaterial, PositionedCamera, PrimitiveType, SceneData, Texture, TextureId,
     common::{RgbaColor, Transform},
 };
 use duck_engine_scene::NodeFlags;
 
 /// Add a 2×2 solid-color texture and return its id.
-fn solid_texture(scene: &mut Scene, rgba: [u8; 4]) -> TextureId {
+fn solid_texture(scene: &mut SceneData, rgba: [u8; 4]) -> TextureId {
     let pixels: Vec<u8> = rgba.iter().copied().cycle().take(2 * 2 * 4).collect();
     scene.add_texture(Texture::from_rgba8(2, 2, pixels))
 }
@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     let (width, height) = (640u32, 320u32);
     let mut renderer = pollster::block_on(Renderer::new_headless(width, height));
 
-    let mut scene = Scene::new();
+    let mut scene = SceneData::new();
     let tris = scene.add_mesh(Mesh::sphere(0.35, 24, 16, PrimitiveType::TriangleList));
     let lines = scene.add_mesh(Mesh::sphere(0.35, 16, 10, PrimitiveType::LineList));
     let points = scene.add_mesh(Mesh::sphere(0.35, 12, 8, PrimitiveType::PointList));
@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
     let metal_rough = solid_texture(&mut scene, [255, 200, 40, 255]); // G=rough, B=metal
 
     // Each closure spawns one sphere of the given mesh at column `col` (centered).
-    let place = |scene: &mut Scene, mesh, col: i32, name: &str| -> anyhow::Result<()> {
+    let place = |scene: &mut SceneData, mesh, col: i32, name: &str| -> anyhow::Result<()> {
         let x = (col as f32 - 3.5) * 0.78;
         scene.add_instance_node(
             None,

@@ -33,6 +33,7 @@ use crate::{
         MeshId,
         PositionedCamera,
         Scene,
+        SceneData,
         SceneProperties,
         TextureId,
         common::RgbaColor
@@ -302,11 +303,14 @@ impl Renderer {
         scene: &mut Scene,
         highlight: Option<&dyn HighlightQuery>,
     ) -> Result<image::RgbaImage> {
-        self.prepare_scene(scene)?;
+        // Lock scene for duration of rendering
+        let mut scene = scene.lock();
+
+        self.prepare_scene(&mut scene)?;
 
         let size = self.host.targets().size();
         self.bindings.write_camera(&self.host.gpu().queue, camera);
-        let draw_data = DrawData::new(scene, camera, size, highlight);
+        let draw_data = DrawData::new(&scene, camera, size, highlight);
 
         // Build the frame from disjoint field borrows, then hand it to the host's
         // readback path, which owns the offscreen target and the encoder/submit.
@@ -317,7 +321,7 @@ impl Renderer {
             .and_then(|env_id| self.ibl_resources.get_processed(env_id))
             .map(|processed| &processed.bind_group);
         let mut frame = SceneFrame {
-            scene,
+            scene: &scene,
             draw: &draw_data,
             gpu_meshes: &self.gpu_meshes,
             bindings: self.bindings.refs(ibl_bind_group),
@@ -342,6 +346,9 @@ impl Renderer {
         scene: &Scene,
         highlight: Option<&dyn HighlightQuery>,
     ) -> Result<()> {
+        // Lock scene for the duration of the render
+        let scene = scene.lock();
+
         let size = self.host.targets().size();
         let owned: PositionedCamera;
         let camera: &PositionedCamera = match camera_override {
@@ -358,7 +365,7 @@ impl Renderer {
         self.bindings.write_camera(&self.host.gpu().queue, camera);
 
         // Collect, sort, and partition draw batches for this frame
-        let draw_data = DrawData::new(scene, camera, size, highlight);
+        let draw_data = DrawData::new(&scene, camera, size, highlight);
 
         // Build the frame from disjoint field borrows. Because the frame borrows
         // only the scene subsystems (not `host`), `&mut self.host` in `render`
@@ -370,7 +377,7 @@ impl Renderer {
             .and_then(|env_id| self.ibl_resources.get_processed(env_id))
             .map(|processed| &processed.bind_group);
         let mut frame = SceneFrame {
-            scene,
+            scene: &scene,
             draw: &draw_data,
             gpu_meshes: &self.gpu_meshes,
             bindings: self.bindings.refs(ibl_bind_group),

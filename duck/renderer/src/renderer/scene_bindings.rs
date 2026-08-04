@@ -1,7 +1,7 @@
 use bytemuck::bytes_of;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-use crate::scene::{Light, LightType, PositionedCamera, Scene, MAX_LIGHTS};
+use crate::scene::{Light, LightType, PositionedCamera, SceneData, MAX_LIGHTS};
 
 use super::batching::ResolvedLight;
 use super::bind_group_layouts::BindGroupLayouts;
@@ -248,7 +248,7 @@ impl SceneBindings {
     pub fn sync_lights(
         &mut self,
         queue: &wgpu::Queue,
-        scene: &Scene,
+        scene: &SceneData,
         resolve: impl FnOnce() -> LightsArrayUniform,
     ) {
         let node_gen = scene.node_generation();

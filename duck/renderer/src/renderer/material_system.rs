@@ -17,7 +17,7 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use crate::render_core::{GenCache, GpuTexture};
 use crate::scene::{
     common::RgbaColor, FaceMaterial, FaceMaterialId, LineMaterial, LineMaterialId, PointMaterial,
-    PointMaterialId, Scene, TextureId,
+    PointMaterialId, SceneData, TextureId,
 };
 use crate::shaders::ShaderGenerator;
 
@@ -173,7 +173,7 @@ impl MaterialSystem {
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
-        scene: &Scene,
+        scene: &SceneData,
         textures: &GenCache<TextureId, GpuTexture>,
     ) -> Result<()> {
         let face_ids: Vec<FaceMaterialId> = scene

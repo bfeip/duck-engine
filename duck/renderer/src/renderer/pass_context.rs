@@ -1,5 +1,5 @@
 use crate::render_core::{FrameFamily, FrameTargets, GenCache, Gpu};
-use crate::scene::{MeshId, Scene, SceneProperties};
+use crate::scene::{MeshId, SceneData, SceneProperties};
 
 use super::batching::{DrawBatch, DrawData};
 use super::mesh::MeshGpuResources;
@@ -44,7 +44,7 @@ pub type SceneWorkflow = dyn crate::render_core::RenderWorkflow<SceneFrames>;
 /// is what lets the renderer hold `&mut host` while the frame borrows the
 /// renderer's other fields.
 pub struct SceneFrame<'a> {
-    pub scene: &'a Scene,
+    pub scene: &'a SceneData,
     /// Collected, sorted, partitioned draw batches for this frame.
     pub draw: &'a DrawData,
     /// Uploaded mesh vertex/index buffers, keyed by mesh id.
@@ -64,14 +64,13 @@ impl SceneFrame<'_> {
     /// Looks up the mesh's GPU vertex/index buffers and issues the instanced draw
     /// call. Silently skips batches whose GPU resources haven't been uploaded yet.
     pub fn draw_batch(&self, gpu: &Gpu, render_pass: &mut wgpu::RenderPass<'_>, batch: &DrawBatch) {
-        let Some(mesh) = self.scene.get_mesh(batch.mesh_id) else { return };
         let Some(gpu_mesh) = self.gpu_meshes.get(batch.mesh_id) else { return };
         gpu_mesh.draw_instances(
             &gpu.device,
             render_pass,
             batch.primitive_type,
             &batch.instances,
-            mesh.index_count(batch.primitive_type),
+            batch.index_count,
         );
     }
 }

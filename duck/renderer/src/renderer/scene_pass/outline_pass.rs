@@ -329,9 +329,6 @@ fn draw_tier(
         if batch.primitive_type != PrimitiveType::TriangleList {
             continue;
         }
-        let Some(mesh) = frame.scene.get_mesh(batch.mesh_id) else {
-            continue;
-        };
         let Some(gpu_mesh) = frame.gpu_meshes.get(batch.mesh_id) else {
             continue;
         };
@@ -344,7 +341,7 @@ fn draw_tier(
             rp,
             batch.primitive_type,
             &batch.instances,
-            mesh.index_count(batch.primitive_type),
+            batch.index_count,
         );
     }
 }

@@ -5,7 +5,7 @@ use duck_engine_common::{Matrix3, Matrix4, Point3, SquareMatrix};
 use crate::scene::{
     AlphaMode, DisplayBehavior, FaceMaterialId, Instance, InstanceId, Light, LineMaterialId,
     MaterialProperties, MeshId, NodeId, NodePayload, PointMaterialId, PositionedCamera,
-    PrimitiveType, RenderLayer, Scene, SubGeometryElement, SubGeometryKind, Visibility,
+    PrimitiveType, RenderLayer, SceneData, SubGeometryElement, SubGeometryKind, Visibility,
 };
 use crate::scene::common;
 use crate::highlight_query::HighlightQuery;
@@ -112,16 +112,25 @@ pub struct DrawBatch {
     /// Geometry primitive selecting the mesh's index buffer and pipeline topology.
     /// Always agrees with `material`'s kind.
     pub primitive_type: PrimitiveType,
+    /// Number of indices this batch draws, resolved from the mesh at collection
+    /// time so the draw loops need no scene lookup.
+    pub index_count: u32,
     pub instances: Vec<InstanceTransform>,
 }
 
 impl DrawBatch {
-    pub fn new(mesh_id: MeshId, material: BatchMaterial, primitive_type: PrimitiveType) -> Self {
+    pub fn new(
+        mesh_id: MeshId,
+        material: BatchMaterial,
+        primitive_type: PrimitiveType,
+        index_count: u32,
+    ) -> Self {
         Self {
             mesh_id,
             material,
             material_props: MaterialProperties::UNLIT_OPAQUE,
             primitive_type,
+            index_count,
             instances: Vec::new(),
         }
     }
@@ -171,7 +180,7 @@ pub(crate) struct SceneFrameData {
 }
 
 fn collect_scene_data_recursive(
-    scene: &Scene,
+    scene: &SceneData,
     node_id: NodeId,
     parent_transform: Matrix4,
     parent_display: DisplayBehavior,
@@ -214,7 +223,7 @@ fn collect_scene_data_recursive(
 }
 
 /// Walks the entire scene tree and collects all instances and lights in one pass.
-pub(crate) fn collect_scene_data(scene: &Scene) -> SceneFrameData {
+pub(crate) fn collect_scene_frame_data(scene: &SceneData) -> SceneFrameData {
     let mut data = SceneFrameData {
         instance_transforms: Vec::new(),
         lights: Vec::new(),
@@ -242,8 +251,8 @@ pub(crate) fn collect_scene_data(scene: &Scene) -> SceneFrameData {
 /// 1. By material ID (to minimize bind group changes)
 /// 2. By primitive type (to minimize pipeline changes)
 /// 3. By mesh ID (for GPU cache locality)
-pub(crate) fn collect_draw_batches(scene: &Scene) -> Vec<DrawBatch> {
-    let instance_transforms = collect_scene_data(scene).instance_transforms;
+pub(crate) fn collect_draw_batches(scene: &SceneData) -> Vec<DrawBatch> {
+    let instance_transforms = collect_scene_frame_data(scene).instance_transforms;
     let mut batch_map: HashMap<BatchKey, DrawBatch> = HashMap::new();
 
     for inst_transform in instance_transforms {
@@ -275,7 +284,8 @@ pub(crate) fn collect_draw_batches(scene: &Scene) -> Vec<DrawBatch> {
             batch_map
                 .entry(key)
                 .or_insert_with(|| {
-                    DrawBatch::new(instance.mesh(), material, primitive_type)
+                    let index_count = mesh.index_count(primitive_type);
+                    DrawBatch::new(instance.mesh(), material, primitive_type, index_count)
                         .with_material_props(material_props)
                 })
                 .add_instance(inst_transform.clone());
@@ -322,7 +332,7 @@ pub(crate) fn sort_batches_for_transparency(
 /// drawn). Face materials carry full PBR properties; line/point materials are
 /// unlit but may bind a base-color texture.
 fn resolve_batch_material(
-    scene: &Scene,
+    scene: &SceneData,
     instance: &Instance,
     primitive_type: PrimitiveType,
 ) -> Option<(BatchMaterial, MaterialProperties)> {
@@ -396,8 +406,13 @@ where
             if predicate(instance) {
                 let idx = *matched_index.entry(key).or_insert_with(|| {
                     matched.push(
-                        DrawBatch::new(batch.mesh_id, batch.material, batch.primitive_type)
-                            .with_material_props(batch.material_props.clone()),
+                        DrawBatch::new(
+                            batch.mesh_id,
+                            batch.material,
+                            batch.primitive_type,
+                            batch.index_count,
+                        )
+                        .with_material_props(batch.material_props.clone()),
                     );
                     matched.len() - 1
                 });
@@ -405,8 +420,13 @@ where
             } else {
                 let idx = *unmatched_index.entry(key).or_insert_with(|| {
                     unmatched.push(
-                        DrawBatch::new(batch.mesh_id, batch.material, batch.primitive_type)
-                            .with_material_props(batch.material_props.clone()),
+                        DrawBatch::new(
+                            batch.mesh_id,
+                            batch.material,
+                            batch.primitive_type,
+                            batch.index_count,
+                        )
+                        .with_material_props(batch.material_props.clone()),
                     );
                     unmatched.len() - 1
                 });
@@ -458,7 +478,7 @@ struct SubGeomHighlights {
 /// is secondary.
 fn collect_highlight_sub_geom_batches(
     batches: &[DrawBatch],
-    scene: &Scene,
+    scene: &SceneData,
     highlight: &dyn HighlightQuery,
 ) -> SubGeomHighlights {
     // Build a node_id → InstanceTransform index so we can resolve elements by node.
@@ -547,7 +567,7 @@ impl DrawData {
     /// camera-dependent screen-space adjustments (screen-sizing / billboarding),
     /// which are computed by [`DisplayBehavior::effective_transform`].
     pub(crate) fn new(
-        scene: &Scene,
+        scene: &SceneData,
         camera: &PositionedCamera,
         viewport: (u32, u32),
         highlight: Option<&dyn HighlightQuery>,
@@ -837,7 +857,7 @@ mod tests {
     fn test_draw_batch_new() {
         let mesh_id = mid();
         let material_id = matid();
-        let batch = DrawBatch::new(mesh_id, material_id, PrimitiveType::TriangleList);
+        let batch = DrawBatch::new(mesh_id, material_id, PrimitiveType::TriangleList, 3);
 
         assert_eq!(batch.mesh_id, mesh_id);
         assert_eq!(batch.material, material_id);
@@ -848,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_draw_batch_add_instance() {
-        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList);
+        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList, 3);
         let instance_id = iid();
 
         let instance_transform = InstanceTransform::new(nid(), instance_id, Matrix4::identity());
@@ -861,7 +881,7 @@ mod tests {
 
     #[test]
     fn test_draw_batch_add_multiple_instances() {
-        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList);
+        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList, 3);
         let instance_ids: Vec<InstanceId> = (0..5).map(|_| iid()).collect();
 
         for &id in &instance_ids {
@@ -882,8 +902,8 @@ mod tests {
         let mat1 = matid();
         let mesh2 = mid();
         let mat2 = matid();
-        let batch1 = DrawBatch::new(mesh1, mat1, PrimitiveType::TriangleList);
-        let batch2 = DrawBatch::new(mesh2, mat2, PrimitiveType::LineList);
+        let batch1 = DrawBatch::new(mesh1, mat1, PrimitiveType::TriangleList, 3);
+        let batch2 = DrawBatch::new(mesh2, mat2, PrimitiveType::LineList, 2);
 
         assert_eq!(batch1.mesh_id, mesh1);
         assert_eq!(batch1.material, mat1);
@@ -896,7 +916,7 @@ mod tests {
 
     #[test]
     fn test_draw_batch_instance_count() {
-        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList);
+        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList, 3);
 
         assert_eq!(batch.len(), 0);
 
@@ -912,7 +932,7 @@ mod tests {
 
     #[test]
     fn test_draw_batch_instances_with_different_transforms() {
-        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList);
+        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList, 3);
 
         let transform1 = Matrix4::from_scale(1.0);
         let transform2 = Matrix4::from_scale(2.0);
@@ -932,7 +952,7 @@ mod tests {
 
     #[test]
     fn test_draw_batch_large_number_of_instances() {
-        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList);
+        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList, 3);
 
         for _ in 0..1000 {
             batch.add_instance(InstanceTransform::new(nid(), iid(), Matrix4::identity()));
@@ -956,7 +976,7 @@ mod tests {
 
     #[test]
     fn test_partition_batches_all_match() {
-        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList);
+        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList, 3);
         batch.add_instance(InstanceTransform::new(nid(), iid(), Matrix4::identity()));
         batch.add_instance(InstanceTransform::new(nid(), iid(), Matrix4::identity()));
 
@@ -968,7 +988,7 @@ mod tests {
 
     #[test]
     fn test_partition_batches_none_match() {
-        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList);
+        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList, 3);
         batch.add_instance(InstanceTransform::new(nid(), iid(), Matrix4::identity()));
         batch.add_instance(InstanceTransform::new(nid(), iid(), Matrix4::identity()));
 
@@ -986,7 +1006,7 @@ mod tests {
         // We'll match only node_b
         let match_id = node_b;
 
-        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList);
+        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList, 3);
         batch.add_instance(InstanceTransform::new(node_a, iid(), Matrix4::identity()));
         batch.add_instance(InstanceTransform::new(node_b, iid(), Matrix4::identity()));
         batch.add_instance(InstanceTransform::new(node_c, iid(), Matrix4::identity()));
@@ -999,6 +1019,23 @@ mod tests {
 
         assert_eq!(unmatched.len(), 1);
         assert_eq!(unmatched[0].instances.len(), 2);
+    }
+
+    #[test]
+    fn test_partition_batches_preserves_index_count() {
+        let node_a = nid();
+        let node_b = nid();
+
+        let mut batch = DrawBatch::new(mid(), matid(), PrimitiveType::TriangleList, 42);
+        batch.add_instance(InstanceTransform::new(node_a, iid(), Matrix4::identity()));
+        batch.add_instance(InstanceTransform::new(node_b, iid(), Matrix4::identity()));
+
+        let (matched, unmatched) = partition_batches(&[batch], |inst| inst.node_id == node_a);
+
+        // The draw loops read index_count off the batch, so a partition that
+        // dropped it would silently draw the wrong number of indices.
+        assert_eq!(matched[0].index_count, 42);
+        assert_eq!(unmatched[0].index_count, 42);
     }
 
     // ========================================================================
@@ -1064,8 +1101,8 @@ mod tests {
     }
 
     /// Creates a scene with one instance node (empty mesh + default material).
-    fn build_simple_scene() -> (Scene, NodeId) {
-        let mut scene = Scene::new();
+    fn build_simple_scene() -> (SceneData, NodeId) {
+        let mut scene = SceneData::new();
         let mesh_id = scene.add_mesh(crate::scene::Mesh::new());
         let material_id = scene.add_face_material(crate::scene::FaceMaterial::new());
         let node_id = scene.add_instance_node(
@@ -1076,7 +1113,7 @@ mod tests {
 
     #[test]
     fn test_draw_data_no_highlight() {
-        let scene = Scene::new();
+        let scene = SceneData::new();
         let draw_data = DrawData::new(&scene, &test_camera(), (256, 256), None);
 
         assert!(draw_data.all_batches().is_empty());
@@ -1138,7 +1175,7 @@ mod tests {
             }],
         );
 
-        let mut scene = Scene::new();
+        let mut scene = SceneData::new();
         let mesh_id = scene.add_mesh(mesh);
         let material_id = scene.add_face_material(crate::scene::FaceMaterial::new());
 
@@ -1192,7 +1229,7 @@ mod tests {
             }],
         );
 
-        let mut scene = Scene::new();
+        let mut scene = SceneData::new();
         let mesh_id = scene.add_mesh(mesh);
         let material_id = scene.add_face_material(crate::scene::FaceMaterial::new());
 

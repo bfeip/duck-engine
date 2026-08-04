@@ -1,8 +1,8 @@
 use anyhow::Result;
 
-use crate::scene::Scene;
+use crate::scene::SceneData;
 
-use super::batching::collect_scene_data;
+use super::batching::collect_scene_frame_data;
 use super::mesh::MeshGpuResources;
 use super::scene_bindings::LightsArrayUniform;
 use super::texture::create_texture_gpu_resources;
@@ -19,7 +19,7 @@ impl Renderer {
     // TODO: This iterates more or less everything in the scene. For performance in the future,
     // we should keep track of the need for these updates in the scene. I.e. mark things as
     // dirty if they need to be reified.
-    pub fn prepare_scene(&mut self, scene: &mut Scene) -> Result<()> {
+    pub fn prepare_scene(&mut self, scene: &mut SceneData) -> Result<()> {
         // 1. Textures first (materials sample them).
         for texture in scene.textures() {
             self.gpu_textures.try_ensure(texture.id(), texture.generation(), || {
@@ -41,7 +41,7 @@ impl Renderer {
 
         // 4. Lights.
         self.bindings.sync_lights(&self.host.gpu().queue, scene, || {
-            let frame_data = collect_scene_data(scene);
+            let frame_data = collect_scene_frame_data(scene);
             LightsArrayUniform::from_resolved_lights(&frame_data.lights)
         });
 

@@ -34,7 +34,7 @@ fn grid_position(row: usize, col: usize) -> Point3 {
 /// Build the material showcase scene: a 5x5 grid of spheres demonstrating PBR properties.
 fn build_material_scene(viewer: &mut Viewer) {
     let scene_arc = viewer.scene();
-    let mut scene = scene_arc.lock().unwrap();
+    let mut scene = scene_arc.lock();
 
     // Attach default camera-space key + fill lights to a placeholder camera node.
     let camera_node = scene.add_node(
@@ -247,15 +247,13 @@ fn build_material_scene(viewer: &mut Viewer) {
         },
     );
 
-    // Release the scene lock before re-borrowing the viewer for the camera.
-    drop(scene);
 
     // Camera: elevated view looking down at the grid
     viewer.with_camera_mut(|camera| {
         camera.eye = Point3::new(0.0, 6.0, 8.0);
         camera.target = Point3::new(0.0, 0.0, 0.0);
     });
-    let bounds = scene_arc.lock().unwrap().bounding().bounds;
+    let bounds = scene.bounding().bounds;
     if let Some(bounds) = bounds {
         viewer.with_camera_mut(|camera| camera.fit_to_bounds(&bounds));
     }
@@ -295,7 +293,6 @@ impl<'a> App<'a> {
         let env_map_id = viewer
             .scene()
             .lock()
-            .unwrap()
             .add_environment_map_from_hdr_path(env_map_path);
         self.env_map_id = Some(env_map_id);
 
@@ -353,7 +350,7 @@ impl<'a> ApplicationHandler for App<'a> {
             Key::Character('e') => {
                 if let Some(env_id) = self.env_map_id {
                     let scene = viewer.scene();
-                    let mut scene = scene.lock().unwrap();
+                    let mut scene = scene.lock();
                     let ibl_active = scene.active_environment_map().is_some();
                     if ibl_active {
                         scene.set_active_environment_map(None);

@@ -58,7 +58,6 @@ pub(crate) fn draw_batches(
     with_depth_prepass: bool,
     filter: PrimitiveFilter,
 ) {
-    let scene = frame.scene;
     let gpu_meshes = frame.gpu_meshes;
     let scene_props = frame.scene_props.clone();
     let materials = &mut *frame.materials;
@@ -78,9 +77,6 @@ pub(crate) fn draw_batches(
                 continue;
             }
 
-            let Some(mesh) = scene.get_mesh(batch.mesh_id) else {
-                continue;
-            };
             let Some(gpu_mesh) = gpu_meshes.get(batch.mesh_id) else {
                 continue;
             };
@@ -113,7 +109,7 @@ pub(crate) fn draw_batches(
                 render_pass,
                 batch.primitive_type,
                 &batch.instances,
-                mesh.index_count(batch.primitive_type),
+                batch.index_count,
             );
         }
     }
@@ -125,9 +121,6 @@ pub(crate) fn draw_batches(
             continue;
         }
 
-        let Some(mesh) = scene.get_mesh(batch.mesh_id) else {
-            continue;
-        };
         let Some(gpu_mesh) = gpu_meshes.get(batch.mesh_id) else {
             continue;
         };
@@ -154,7 +147,7 @@ pub(crate) fn draw_batches(
             render_pass,
             batch.primitive_type,
             &batch.instances,
-            mesh.index_count(batch.primitive_type),
+            batch.index_count,
         );
     }
 }

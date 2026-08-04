@@ -7,7 +7,7 @@
 
 use duck_engine_renderer::Renderer;
 use duck_engine_renderer::scene::{
-    FaceMaterial, Instance, Light, Mesh, NodePayload, PositionedCamera, PrimitiveType, Scene,
+    FaceMaterial, Instance, Light, Mesh, NodePayload, PositionedCamera, PrimitiveType, SceneData,
     common::RgbaColor,
 };
 use duck_engine_common::{Point3, Vector3};
@@ -18,7 +18,7 @@ fn main() -> anyhow::Result<()> {
     let mut renderer = pollster::block_on(Renderer::new_headless(width, height));
 
     // A single lit sphere with a warm red material.
-    let mut scene = Scene::new();
+    let mut scene = SceneData::new();
     let mesh_id = scene.add_mesh(Mesh::sphere(1.0, 48, 24, PrimitiveType::TriangleList));
     let mat_id = scene.add_face_material(
         FaceMaterial::new().with_base_color_factor(RgbaColor { r: 0.8, g: 0.3, b: 0.2, a: 1.0 }),

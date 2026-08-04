@@ -2,7 +2,7 @@ use duck_engine_renderer::{
     FrameTargets, Gpu, Renderer, RenderWorkflow, SceneFrame, SceneFrames, SceneRenderPass, abi,
 };
 use duck_engine_renderer::scene::{
-    FaceMaterial, Instance, Light, Mesh, NodePayload, PositionedCamera, PrimitiveType, Scene,
+    FaceMaterial, Instance, Light, Mesh, NodePayload, PositionedCamera, PrimitiveType, SceneData,
     common::RgbaColor,
 };
 
@@ -105,7 +105,7 @@ fn main() -> anyhow::Result<()> {
     // Build scene: UV sphere with a plain unlit material.
     // The Gooch pass ignores material bind groups and drives color purely from
     // normal direction, so any valid material works here.
-    let mut scene = Scene::new();
+    let mut scene = SceneData::new();
     let mesh_id = scene.add_mesh(Mesh::sphere(1.0, 48, 24, PrimitiveType::TriangleList));
     let mat_id = scene.add_face_material(FaceMaterial::new());
     scene.add_instance_node(
