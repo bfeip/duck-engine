@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 use duck_engine_scene::PositionedCamera;
-use duck_engine_scene::Scene;
+use duck_engine_scene::SceneData;
 
 // ============================================================================
 // Type Aliases
@@ -87,7 +87,7 @@ impl Default for LoadOptions {
 /// The result of a successful scene load.
 pub struct SceneLoadResult {
     /// The loaded scene.
-    pub scene: Scene,
+    pub scene: SceneData,
     /// Camera extracted from the file, if present (glTF only).
     pub camera: Option<PositionedCamera>,
     /// Which format was detected and loaded.
@@ -502,7 +502,7 @@ async fn load_gltf_chunked(
         progress: Some(0.2),
         stage: None,
     });
-    let mut scene = Scene::new();
+    let mut scene = SceneData::new();
     let (_material_map, mesh_map) =
         load_gltf_assets(&parsed, &mut scene).map_err(|e| LoadError::Gltf(e.to_string()))?;
     yield_to_event_loop().await;
@@ -565,7 +565,7 @@ mod tests {
                 stage: None,
             });
             Ok(SceneLoadResult {
-                scene: Scene::new(),
+                scene: SceneData::new(),
                 camera: None,
                 format: DetectedFormat::Other("Test".into()),
             })

@@ -2,7 +2,7 @@
 //!
 //! Uses the russimp crate (Rust bindings for the Open Asset Import Library) to load
 //! 3D models in dozens of formats (FBX, DAE, 3DS, Blend, STL, PLY, OBJ, etc.)
-//! and convert them into the engine's Scene representation.
+//! and convert them into the engine's scene representation.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,13 +16,13 @@ use russimp::scene::{PostProcess, Scene as RScene};
 
 use duck_engine_scene::{
     FaceMaterial, FaceMaterialId, Instance, Light, Mesh, MeshId, MeshPrimitive, NodeFlags, NodeId,
-    NodePayload, PositionedCamera, PrimitiveType, Scene, Texture, TextureId, Vertex
+    NodePayload, PositionedCamera, PrimitiveType, SceneData, Texture, TextureId, Vertex
 };
 use duck_engine_scene::common::{RgbaColor, Transform, decompose_matrix};
 
 /// Result of loading a scene via assimp.
 pub struct AssimpLoadResult {
-    pub scene: Scene,
+    pub scene: SceneData,
     pub camera: Option<PositionedCamera>,
 }
 
@@ -63,9 +63,9 @@ pub fn load_assimp_scene_from_bytes(bytes: &[u8], hint: &str) -> Result<AssimpLo
 // Conversion Pipeline
 // ============================================================================
 
-/// Convert a russimp Scene into our engine's Scene.
+/// Convert a russimp Scene into our engine's [`SceneData`].
 fn convert_scene(assimp_scene: &RScene, base_path: Option<&Path>) -> Result<AssimpLoadResult> {
-    let mut scene = Scene::new();
+    let mut scene = SceneData::new();
 
     // Phase 1: Load textures (embedded + external referenced by materials)
     let texture_map = load_textures(assimp_scene, base_path, &mut scene);
@@ -104,7 +104,7 @@ type TextureMap = HashMap<String, TextureId>;
 fn load_textures(
     assimp_scene: &RScene,
     _base_path: Option<&Path>,
-    _scene: &mut Scene,
+    scene: &mut SceneData,
 ) -> TextureMap {
     let mut map = TextureMap::new();
 
@@ -122,7 +122,7 @@ fn load_textures(
                 russimp::material::DataContent::Bytes(bytes) if !bytes.is_empty() => {
                     match image::load_from_memory(bytes) {
                         Ok(img) => {
-                            let tex_id = _scene.add_texture(Texture::from_image(img));
+                            let tex_id = scene.add_texture(Texture::from_image(img));
                             map.insert(key, tex_id);
                         }
                         Err(e) => {
@@ -142,7 +142,7 @@ fn load_textures(
                     }
                     if let Some(img) = image::RgbaImage::from_raw(width, height, rgba) {
                         let tex_id =
-                            _scene.add_texture(Texture::from_image(image::DynamicImage::ImageRgba8(img)));
+                            scene.add_texture(Texture::from_image(image::DynamicImage::ImageRgba8(img)));
                         map.insert(key, tex_id);
                     }
                 }
@@ -161,7 +161,7 @@ fn resolve_texture(
     path: &str,
     base_path: Option<&Path>,
     texture_map: &mut TextureMap,
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) -> Option<TextureId> {
     // Check if already loaded (embedded textures use "*N" keys)
     if let Some(&id) = texture_map.get(path) {
@@ -190,7 +190,7 @@ fn load_materials(
     assimp_materials: &[RMaterial],
     texture_map: &TextureMap,
     base_path: Option<&Path>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) -> Vec<FaceMaterialId> {
     // We need a mutable texture map for lazy-loading external textures.
     // Clone the initial map so we can extend it.
@@ -206,7 +206,7 @@ fn load_single_material(
     mat: &RMaterial,
     texture_map: &mut TextureMap,
     base_path: Option<&Path>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) -> FaceMaterialId {
     let mut material = FaceMaterial::new();
 
@@ -280,7 +280,7 @@ fn extract_texture(
     tex_type: TextureType,
     texture_map: &mut TextureMap,
     base_path: Option<&Path>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) -> Option<TextureId> {
     let tex = mat.textures.get(&tex_type)?;
     let tex_ref = tex.borrow();
@@ -299,7 +299,7 @@ fn extract_texture(
 fn load_meshes(
     assimp_meshes: &[russimp::mesh::Mesh],
     material_map: &[FaceMaterialId],
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) -> Vec<(MeshId, FaceMaterialId)> {
     let mut fallback_material_id: Option<FaceMaterialId> = None;
     assimp_meshes
@@ -311,7 +311,7 @@ fn load_meshes(
 fn load_single_mesh(
     assimp_mesh: &russimp::mesh::Mesh,
     material_map: &[FaceMaterialId],
-    scene: &mut Scene,
+    scene: &mut SceneData,
     fallback_material_id: &mut Option<FaceMaterialId>,
 ) -> (MeshId, FaceMaterialId) {
     let material_id = material_map
@@ -369,7 +369,7 @@ fn load_single_mesh(
 /// Recursively build the scene node tree from the assimp node hierarchy.
 fn build_node_tree(
     node: &Rc<RNode>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     mesh_map: &[(MeshId, FaceMaterialId)],
     material_map: &[FaceMaterialId],
     parent: Option<NodeId>,
@@ -442,7 +442,7 @@ fn build_node_tree(
 // ============================================================================
 
 /// Load lights from assimp scene into our scene.
-fn load_lights(assimp_lights: &[russimp::light::Light], scene: &mut Scene) {
+fn load_lights(assimp_lights: &[russimp::light::Light], scene: &mut SceneData) {
     use russimp::light::LightSourceType;
 
     for light in assimp_lights {

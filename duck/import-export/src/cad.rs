@@ -11,7 +11,7 @@ use duck_engine_scene::cad::{tessellate_occ_shape, CadTessellationOptions};
 use duck_engine_scene::common::Transform;
 use duck_engine_scene::{
     Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, NodePayload,
-    PrimitiveType, Scene, Vertex,
+    PrimitiveType, SceneData, Vertex,
 };
 use opencascade::primitives::{Compound, EdgeType, Shape};
 use opencascade::xcaf::{XcafColorTool, XcafDimTolTool, XcafDocument, XcafLabel, XcafShapeTool};
@@ -55,7 +55,7 @@ pub struct CadImportResult {
 /// the assembly hierarchy.
 pub fn load_step(
     path: impl AsRef<Path>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     options: &CadImportOptions,
 ) -> Result<CadImportResult> {
     let doc = XcafDocument::read_step(path.as_ref())
@@ -66,7 +66,7 @@ pub fn load_step(
 /// Import STEP data from a string into `scene`.
 pub fn load_step_from_str(
     s: &str,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     options: &CadImportOptions,
 ) -> Result<CadImportResult> {
     let doc = XcafDocument::read_step_from_str(s).context("Failed to read STEP data")?;
@@ -76,7 +76,7 @@ pub fn load_step_from_str(
 /// Import an IGES file into `scene`, returning a [`CadImportResult`].
 pub fn load_iges(
     path: impl AsRef<Path>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     options: &CadImportOptions,
 ) -> Result<CadImportResult> {
     let doc = XcafDocument::read_iges(path.as_ref())
@@ -87,7 +87,7 @@ pub fn load_iges(
 /// Import IGES data from a string into `scene`.
 pub fn load_iges_from_str(
     s: &str,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     options: &CadImportOptions,
 ) -> Result<CadImportResult> {
     let doc = XcafDocument::read_iges_from_str(s).context("Failed to read IGES data")?;
@@ -96,7 +96,7 @@ pub fn load_iges_from_str(
 
 pub(crate) fn import_xcaf_document(
     doc: &XcafDocument,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     options: &CadImportOptions,
 ) -> Result<CadImportResult> {
     let shape_tool = doc.shape_tool();
@@ -125,7 +125,7 @@ fn import_xcaf_label(
     label: &XcafLabel,
     shape_tool: &XcafShapeTool,
     color_tool: &XcafColorTool,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     options: &CadImportOptions,
     parent: Option<NodeId>,
 ) -> Result<NodeId> {
@@ -156,7 +156,7 @@ fn import_xcaf_label(
 
 fn import_leaf_part(
     shape: &Shape,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     options: &CadImportOptions,
     node: NodeId,
     face_color: Option<RgbaColor>,
@@ -198,7 +198,7 @@ fn matrix_to_transform(mat: [[f64; 4]; 4]) -> Transform {
 
 fn import_pmi(
     dim_tol_tool: &XcafDimTolTool,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     options: &CadImportOptions,
     parent: NodeId,
 ) -> Result<Option<NodeId>> {
@@ -292,7 +292,7 @@ fn import_pmi(
 /// finalization of the camera/view node representation.
 pub(crate) fn import_views(
     _view_tool: &opencascade::xcaf::XcafViewTool,
-    _scene: &mut Scene,
+    _scene: &mut SceneData,
     _options: &CadImportOptions,
 ) -> Vec<NodeId> {
     vec![]

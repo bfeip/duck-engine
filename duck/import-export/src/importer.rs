@@ -95,7 +95,7 @@ impl Importer for GltfImporter {
         progress: &dyn ProgressReporter,
     ) -> Result<SceneLoadResult, LoadError> {
         use crate::gltf::{build_gltf_scene, load_gltf_assets, parse_gltf, parse_gltf_from_path};
-        use duck_engine_scene::Scene;
+        use duck_engine_scene::SceneData;
 
         progress.update(ProgressState {
             description: "Parsing glTF".into(),
@@ -114,7 +114,7 @@ impl Importer for GltfImporter {
             progress: Some(0.2),
             stage: None,
         });
-        let mut scene = Scene::new();
+        let mut scene = SceneData::new();
         let (_material_map, mesh_map) = load_gltf_assets(&parsed, &mut scene)
             .map_err(|e| LoadError::Gltf(e.to_string()))?;
 
@@ -295,7 +295,7 @@ impl Importer for CadImporter {
             stage: None,
         });
 
-        let mut scene = duck_engine_scene::Scene::new();
+        let mut scene = duck_engine_scene::SceneData::new();
         let options = crate::cad::CadImportOptions::default();
 
         let result = if let Some(path) = path_hint {

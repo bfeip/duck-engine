@@ -15,13 +15,13 @@ use openusd::sdf::{self, AbstractData, Value};
 
 use duck_engine_scene::{
     FaceMaterial, FaceMaterialId, Instance, Light, Mesh, MeshId, MeshPrimitive, PositionedCamera,
-    NodeId, NodePayload, PrimitiveType, Scene, Vertex, NodeFlags
+    NodeId, NodePayload, PrimitiveType, SceneData, Vertex, NodeFlags
 };
 use duck_engine_scene::common::{RgbaColor, Transform, decompose_matrix};
 
 /// Result of loading a scene from USD.
 pub struct UsdLoadResult {
-    pub scene: Scene,
+    pub scene: SceneData,
     pub camera: Option<PositionedCamera>,
 }
 
@@ -198,7 +198,7 @@ fn get_prim_children(data: &mut dyn AbstractData, path: &sdf::Path) -> Vec<Strin
 // ============================================================================
 
 fn convert_scene(data: &mut dyn AbstractData) -> Result<UsdLoadResult> {
-    let mut scene = Scene::new();
+    let mut scene = SceneData::new();
     let root = sdf::Path::abs_root();
 
     // Phase 1: Collect all materials (pre-pass)
@@ -234,7 +234,7 @@ fn collect_materials_recursive(
     data: &mut dyn AbstractData,
     path: &sdf::Path,
     material_map: &mut HashMap<String, FaceMaterialId>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) {
     let children = get_prim_children(data, path);
     for child_name in &children {
@@ -342,7 +342,7 @@ fn build_node_recursive(
     data: &mut dyn AbstractData,
     prim_path: &sdf::Path,
     material_map: &HashMap<String, FaceMaterialId>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     parent: Option<NodeId>,
     camera_out: &mut Option<PositionedCamera>,
     fallback_material_id: &mut Option<FaceMaterialId>,
@@ -409,7 +409,7 @@ fn recurse_children(
     data: &mut dyn AbstractData,
     prim_path: &sdf::Path,
     material_map: &HashMap<String, FaceMaterialId>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     parent_node: NodeId,
     camera_out: &mut Option<PositionedCamera>,
     fallback_material_id: &mut Option<FaceMaterialId>,
@@ -559,7 +559,7 @@ fn extract_mesh(
     data: &mut dyn AbstractData,
     mesh_path: &sdf::Path,
     material_map: &HashMap<String, FaceMaterialId>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     fallback_material_id: &mut Option<FaceMaterialId>,
 ) -> Vec<(MeshId, FaceMaterialId)> {
     let material_id = get_material_binding(data, mesh_path, material_map)
@@ -905,7 +905,7 @@ fn extract_light(
     light_path: &sdf::Path,
     type_name: &str,
     position: &Point3,
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) {
     let intensity =
         get_float_from_prop(data, &make_property_path(light_path, "inputs:intensity"))

@@ -1,8 +1,9 @@
 use std::path::Path;
 use duck_engine_common::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
 use duck_engine_scene::{
-    AlphaMode, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh, MeshId, MeshPrimitive,
-    NodeFlags, PositionedCamera, PrimitiveType, Scene, Texture, Vertex
+    AlphaMode, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh, MeshId,
+    MeshPrimitive, NodeFlags, NodeId, PositionedCamera, PrimitiveType, SceneData,
+    Texture, Vertex
 };
 
 /// A loaded primitive from a glTF mesh, containing the scene mesh ID and its material ID.
@@ -18,7 +19,7 @@ type GltfMeshMap = Vec<Vec<LoadedPrimitive>>;
 /// Result of loading a glTF scene, containing the scene and optional camera.
 pub struct GltfLoadResult {
     /// The loaded scene with meshes, materials, and scene tree
-    pub scene: Scene,
+    pub scene: SceneData,
     /// Camera from the glTF file, if one was defined
     pub camera: Option<PositionedCamera>,
 }
@@ -238,7 +239,7 @@ fn load_gltf_texture(
     image_index: usize,
     document: &gltf::Document,
     base_path: Option<&Path>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) -> anyhow::Result<duck_engine_scene::TextureId> {
     // For external files, use path-based texture (lazy loading, preserves original format)
     if let Some(path) = resolve_image_path(image_index, document, base_path) {
@@ -259,7 +260,7 @@ fn load_material(
     images: &[gltf::image::Data],
     document: &gltf::Document,
     base_path: Option<&Path>,
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) -> anyhow::Result<FaceMaterialId> {
     let pbr = gltf_material.pbr_metallic_roughness();
 
@@ -546,7 +547,7 @@ pub fn parse_gltf_from_path(path: &Path) -> anyhow::Result<ParsedGltf> {
 /// needed by [`build_gltf_scene`] to wire up the node hierarchy.
 pub fn load_gltf_assets(
     parsed: &ParsedGltf,
-    scene: &mut Scene,
+    scene: &mut SceneData,
 ) -> anyhow::Result<(Vec<FaceMaterialId>, GltfMeshMap)> {
     let base_path = parsed.base_path.as_deref();
 
@@ -599,7 +600,7 @@ pub fn load_gltf_assets(
 /// was defined in the glTF file.
 pub fn build_gltf_scene(
     parsed: &ParsedGltf,
-    scene: &mut Scene,
+    scene: &mut SceneData,
     mesh_map: &GltfMeshMap,
     aspect: f32,
 ) -> anyhow::Result<Option<PositionedCamera>> {
@@ -645,7 +646,7 @@ fn load_gltf_from_data(
         base_path: base_path.map(|p| p.to_path_buf()),
     };
 
-    let mut scene = Scene::new();
+    let mut scene = SceneData::new();
     let (_material_map, mesh_map) = load_gltf_assets(&parsed, &mut scene)?;
     let camera = build_gltf_scene(&parsed, &mut scene, &mesh_map, aspect)?;
 
@@ -656,9 +657,9 @@ fn load_gltf_from_data(
 fn load_node_recursive(
     gltf_node: &gltf::Node,
     parent: Option<duck_engine_scene::NodeId>,
-    scene: &mut duck_engine_scene::Scene,
+    scene: &mut SceneData,
     mesh_map: &[Vec<LoadedPrimitive>],
-    node_map: &mut std::collections::HashMap<usize, duck_engine_scene::NodeId>,
+    node_map: &mut std::collections::HashMap<usize, NodeId>,
 ) -> anyhow::Result<()> {
 
     // Decompose transform
