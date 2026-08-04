@@ -20,7 +20,7 @@ use duck_engine_renderer::scene::{
     PointMaterial, PositionedCamera, PrimitiveType, SceneData, Texture, TextureId,
     common::{RgbaColor, Transform},
 };
-use duck_engine_scene::NodeFlags;
+use duck_engine_scene::{NodeFlags, Scene};
 
 /// Add a 2×2 solid-color texture and return its id.
 fn solid_texture(scene: &mut SceneData, rgba: [u8; 4]) -> TextureId {
@@ -122,6 +122,7 @@ fn main() -> anyhow::Result<()> {
         ortho: false,
     };
 
+    let mut scene = Scene::new(scene);
     let image = renderer.render_scene_to_image(&camera, &mut scene, None)?;
     image.save("material_variants.png")?;
     println!("Saved material_variants.png ({width}×{height}) — all surface variants compiled");

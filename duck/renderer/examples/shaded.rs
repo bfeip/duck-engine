@@ -11,7 +11,7 @@ use duck_engine_renderer::scene::{
     common::RgbaColor,
 };
 use duck_engine_common::{Point3, Vector3};
-use duck_engine_scene::NodeFlags;
+use duck_engine_scene::{NodeFlags, Scene};
 
 fn main() -> anyhow::Result<()> {
     let (width, height) = (800u32, 600u32);
@@ -52,6 +52,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     // No `set_workflow` call: the renderer starts with the built-in ShadedWorkflow.
+    let mut scene = Scene::new(scene);
     let image = renderer.render_scene_to_image(&camera, &mut scene, None)?;
     image.save("shaded.png")?;
     println!("Saved shaded.png ({width}×{height})");

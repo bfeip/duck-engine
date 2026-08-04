@@ -728,6 +728,8 @@ use crate::geom_query::RayPickQuery;
             node_ids.push(node_id);
         }
 
+        let scene = Scene::new(scene);
+
         // For each handle, fire a ray at its world-space AABB center
         for (i, handle) in handles.iter().enumerate() {
             let local_aabb = handle.mesh.bounding().expect("handle should have bounds");
@@ -810,6 +812,8 @@ use crate::geom_query::RayPickQuery;
         for &node_id in &node_ids {
             scene.set_node_position(node_id, new_pivot);
         }
+
+        let scene = Scene::new(scene);
 
         // Try to pick at the NEW position
         for (i, handle) in handles.iter().enumerate() {

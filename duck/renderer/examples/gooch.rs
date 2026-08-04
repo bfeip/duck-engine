@@ -7,7 +7,7 @@ use duck_engine_renderer::scene::{
 };
 
 use duck_engine_common::{Point3, Vector3};
-use duck_engine_scene::NodeFlags;
+use duck_engine_scene::{NodeFlags, Scene};
 
 const GOOCH_WESL: &str = include_str!("gooch.wesl");
 
@@ -138,6 +138,7 @@ fn main() -> anyhow::Result<()> {
 
     renderer.set_workflow(Box::new(GoochWorkflow::new(&renderer)));
 
+    let mut scene = Scene::new(scene);
     let image = renderer.render_scene_to_image(&camera, &mut scene, None)?;
     image.save("gooch.png")?;
     println!("Saved gooch.png ({width}×{height})");
