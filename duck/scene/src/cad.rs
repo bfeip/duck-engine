@@ -4,7 +4,7 @@ use opencascade::primitives::{EdgeType, Shape, ShapeType};
 use crate::common::{RgbaColor, Transform};
 use crate::{
     FaceMaterial, Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId,
-    NodePayload, PrimitiveType, Scene, SceneData, SubMeshRange, Topology, Vertex,
+    NodePayload, PrimitiveType, Scene, SubMeshRange, Topology, Vertex,
 };
 
 /// Whether a shape bounds a volume, or is free geometry that does not.

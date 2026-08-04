@@ -33,7 +33,6 @@ use crate::{
         MeshId,
         PositionedCamera,
         Scene,
-        SceneData,
         SceneProperties,
         TextureId,
         common::RgbaColor

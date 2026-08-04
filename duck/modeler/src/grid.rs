@@ -4,7 +4,7 @@ use duck_engine_viewer::common::{
     EuclideanSpace, InnerSpace, Matrix3, Plane, Point3, Quaternion, RgbaColor, Transform, Vector3,
 };
 use duck_engine_viewer::scene::{
-    Instance, LineMaterial, Mesh, MeshIndex, MeshPrimitive, NodeFlags, NodeId, PrimitiveType, SceneData, Scene,
+    Instance, LineMaterial, Mesh, MeshIndex, MeshPrimitive, NodeFlags, NodeId, PrimitiveType, Scene,
     Vertex,
 };
 

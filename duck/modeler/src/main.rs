@@ -37,7 +37,7 @@ use duck_engine_viewer::common::{
     Vector3, InnerSpace
 };
 use duck_engine_viewer::scene::{
-    SceneData, Scene, NodeFlags, NodePayload, PositionedCamera,
+    Scene, NodeFlags, NodePayload, PositionedCamera,
 };
 
 use crate::operators::{

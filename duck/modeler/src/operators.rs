@@ -115,7 +115,6 @@ impl ConstructionOptions {
             requested: SnapFlags::all(),
             exclude_nodes: exclude,
         };
-        let scene = ctx.scene.lock();
-        self.snap.snap(&input, &scene, additional_providers)
+        self.snap.snap(&input, &ctx.scene, additional_providers)
     }
 }

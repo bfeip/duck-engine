@@ -80,7 +80,7 @@ impl Cursor3d {
 
     /// Sets the dot color. Takes effect immediately if the node already exists,
     /// otherwise it is applied when the node is first created.
-    pub fn set_color(&mut self, color: RgbaColor, scene: &Scene) {
+    pub fn _set_color(&mut self, color: RgbaColor, scene: &Scene) {
         self.color = color;
         if let Some(material) = self.material {
             if let Some(mat) = scene.lock().get_face_material_mut(material) {
