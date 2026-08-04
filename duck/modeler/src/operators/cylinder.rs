@@ -240,7 +240,7 @@ impl CylinderOperator {
                 self.cursor_target = snap.map(|s| s.position);
                 let radius = snap.map(|s| center.distance(s.position));
                 if let Some(preview_node) = self.preview.preview_node() {
-                    let mut scene = ctx.scene.lock().unwrap();
+                    let mut scene = ctx.scene.lock();
                     match radius {
                         Some(radius) if Self::radius_valid(radius) => {
                             scene.set_node_visibility(preview_node, Visibility::Visible);
@@ -258,7 +258,7 @@ impl CylinderOperator {
                 let height = Self::height_from_cursor(center, &plane, cursor, ctx);
                 self.cursor_target = Some(center + plane.normal * height);
                 if let Some(preview_node) = self.preview.preview_node() {
-                    let mut scene = ctx.scene.lock().unwrap();
+                    let mut scene = ctx.scene.lock();
                     if Self::cylinder_valid(radius, height) {
                         scene.set_node_visibility(preview_node, Visibility::Visible);
                         scene.set_node_transform(

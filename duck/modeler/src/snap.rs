@@ -255,7 +255,7 @@ impl SnapEngine {
         let builtin = self.providers.iter().map(|p| p.as_ref());
         for provider in builtin.chain(extra.iter().copied()) {
             if provider.produces().intersects(active) {
-                let provider_candidates = provider.collect(input, scene, &self.settings);
+                let provider_candidates = provider.collect(input, &scene, &self.settings);
                 candidates.extend(provider_candidates);
             }
         }
@@ -309,7 +309,6 @@ impl SnapEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_viewer::scene::Scene;
 
     /// A camera looking down −Z from (0, 0, 10) at the origin, 800×600 viewport.
     fn test_camera() -> PositionedCamera {
@@ -457,7 +456,7 @@ mod tests {
         engine.settings.enabled = false;
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let scene = Scene::new();
+        let scene = Scene::default();
         // Aim straight at the origin; with snapping on this would be Origin, but
         // disabled it must fall through to the construction plane.
         let cursor = screen_of(&cam, Point3::new(0.0, 0.0, 0.0));

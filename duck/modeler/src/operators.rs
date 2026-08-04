@@ -94,8 +94,7 @@ impl ConstructionOptions {
     /// Resolves a cursor position to a snapped world location via the shared snap
     /// engine, using this context's construction plane, grid, and snap settings.
     /// `exclude` lists nodes the snap should ignore — e.g. an operator's own
-    /// in-progress preview geometry. The caller supplies `camera` so we never
-    /// rebuild it while holding a scene lock. `additional_providers` lets the
+    /// in-progress preview geometry. `additional_providers` lets the
     /// caller inject per-call snaps (e.g. an in-progress wire's start point)
     /// that compete in the normal ranking alongside the registered providers.
     pub fn resolve_snap(
@@ -116,7 +115,7 @@ impl ConstructionOptions {
             requested: SnapFlags::all(),
             exclude_nodes: exclude,
         };
-        let scene = ctx.scene.lock().unwrap();
+        let scene = ctx.scene.lock();
         self.snap.snap(&input, &scene, additional_providers)
     }
 }

@@ -293,7 +293,7 @@ impl BoxOperator {
                 self.cursor_target = snap.map(|s| s.position);
                 let dims = snap.map(|s| Self::footprint_dims(center, s.position, &plane));
                 if let Some(preview_node) = self.preview.preview_node() {
-                    let mut scene = ctx.scene.lock().unwrap();
+                    let mut scene = ctx.scene.lock();
                     match dims {
                         Some((width, depth)) if Self::footprint_valid(width, depth) => {
                             scene.set_node_visibility(preview_node, Visibility::Visible);
@@ -311,7 +311,7 @@ impl BoxOperator {
                 let height = Self::height_from_cursor(center, &plane, cursor, ctx);
                 self.cursor_target = Some(center + plane.normal * height);
                 if let Some(preview_node) = self.preview.preview_node() {
-                    let mut scene = ctx.scene.lock().unwrap();
+                    let mut scene = ctx.scene.lock();
                     if Self::box_valid(width, depth, height) {
                         scene.set_node_visibility(preview_node, Visibility::Visible);
                         scene.set_node_transform(

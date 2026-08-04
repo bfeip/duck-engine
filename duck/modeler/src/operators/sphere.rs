@@ -104,8 +104,7 @@ impl SphereOperator {
             return false;
         };
         ctx.scene
-            .lock()
-            .unwrap()
+            
             .set_node_transform(node, Self::preview_transform(center, 0.01));
         self.phase = Phase::Defining { center, axis };
         true
@@ -180,8 +179,7 @@ impl SphereOperator {
             if let (Some(snap), Some(preview_node)) = (snap, self.preview.preview_node()) {
                 let radius = center.distance(snap.position).max(0.01);
                 ctx.scene
-                    .lock()
-                    .unwrap()
+                    
                     .set_node_transform(preview_node, Self::preview_transform(center, radius));
             }
         }

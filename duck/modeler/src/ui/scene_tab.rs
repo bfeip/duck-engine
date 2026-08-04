@@ -51,7 +51,6 @@ impl SceneTab {
 /// navigation operator.
 fn camera_ui(ui: &mut egui::Ui, document: &mut Document) {
     let scene = document.scene().clone();
-    let mut scene = scene.lock().unwrap();
 
     let projection = scene.active_camera().and_then(|node_id| {
         let node = scene.get_node(node_id)?;

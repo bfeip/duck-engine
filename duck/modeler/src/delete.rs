@@ -156,7 +156,7 @@ mod tests {
     }
 
     fn doc_with_boxes(count: usize) -> (Arc<Mutex<Document>>, Vec<(PartId, NodeId)>) {
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         let mut doc = Document::new(scene);
         let parts = (0..count)
             .map(|i| {
@@ -191,11 +191,11 @@ mod tests {
         let doc = doc.lock().unwrap();
         assert!(doc.get_part(deleted_part).is_none());
         assert_eq!(doc.node_for_part(deleted_part), None);
-        assert!(doc.scene().lock().unwrap().get_node(deleted_node).is_none());
+        assert!(doc.scene().get_node(deleted_node).is_none());
         assert!(!selection.is_node_selected(deleted_node), "selection entries must be purged");
 
         assert!(doc.get_part(kept_part).is_some(), "sub-geometry selection must not delete");
-        assert!(doc.scene().lock().unwrap().get_node(kept_node).is_some());
+        assert!(doc.scene().get_node(kept_node).is_some());
         assert_eq!(selection.len(), 1, "kept part's selection survives");
     }
 
@@ -207,7 +207,6 @@ mod tests {
             .unwrap()
             .scene()
             .lock()
-            .unwrap()
             .add_node(None, Some("free node".into()), Transform::IDENTITY, NodeFlags::NONE)
             .expect("node adds");
 

@@ -37,7 +37,7 @@ use duck_engine_viewer::common::{
     Vector3, InnerSpace
 };
 use duck_engine_viewer::scene::{
-    Scene, NodeFlags, NodePayload, PositionedCamera,
+    SceneData, Scene, NodeFlags, NodePayload, PositionedCamera,
 };
 
 use crate::operators::{
@@ -193,7 +193,7 @@ impl ViewerState<'static> {
     }
 
     fn set_default_scene(&mut self) {
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
 
         // Setup default camera and lighting
         let eye = [75.0, 50.0, 75.0].into();
@@ -216,24 +216,26 @@ impl ViewerState<'static> {
         };
         let camera_transform = camera.to_node_transform();
         let camera_projection = camera.projection();
-        let camera_node_id = scene.add_node(
-            None,
-            Some("Main camera".to_owned()),
-            camera_transform,
-            NodeFlags::NONE
-        ).expect("Failed to add camera on default scene");
-        scene.set_node_payload(camera_node_id, NodePayload::Camera(camera_projection));
-        scene.set_active_camera(Some(camera_node_id));
-        scene.set_default_light_nodes(camera_node_id);
+        {
+            let mut scene = scene.lock();
+            let camera_node_id = scene.add_node(
+                None,
+                Some("Main camera".to_owned()),
+                camera_transform,
+                NodeFlags::NONE
+            ).expect("Failed to add camera on default scene");
+            scene.set_node_payload(camera_node_id, NodePayload::Camera(camera_projection));
+            scene.set_active_camera(Some(camera_node_id));
+            scene.set_default_light_nodes(camera_node_id);
+        }
 
         let coptions = self.construction_options.borrow();
         self.grid =
             Some(grid::Grid::add_to_scene(&mut scene, &coptions.grid, &coptions.construction_plane));
         drop(coptions);
 
-        let scene_arc = Arc::new(Mutex::new(scene));
-        self.viewer.set_scene(Arc::clone(&scene_arc));
-        self.document.lock().unwrap().set_scene(scene_arc);
+        self.viewer.set_scene(scene.clone());
+        self.document.lock().unwrap().set_scene(scene);
     }
 }
 
@@ -242,13 +244,12 @@ impl<'a> ViewerState<'a> {
     /// plane and grid settings.
     fn rebuild_grid(&mut self) {
         let scene = self.viewer.scene();
-        let mut scene = scene.lock().unwrap();
         if let Some(grid) = self.grid.take() {
-            grid.remove_from_scene(&mut scene);
+            grid.remove_from_scene(&scene);
         }
         let coptions = self.construction_options.borrow();
         self.grid =
-            Some(grid::Grid::add_to_scene(&mut scene, &coptions.grid, &coptions.construction_plane));
+            Some(grid::Grid::add_to_scene(&scene, &coptions.grid, &coptions.construction_plane));
     }
 
     /// Handle a window event. egui always sees it first (for its own hover /

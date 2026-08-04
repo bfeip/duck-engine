@@ -1,5 +1,5 @@
 //! The built-in [`SnapProvider`]s. Each is a stateless strategy; all live
-//! context arrives through [`SnapInput`] and the [`Scene`].
+//! context arrives through [`SnapInput`] and the [`SceneData`].
 
 use duck_engine_viewer::common::{
     transform_normal, transform_point, Aabb, EuclideanSpace, InnerSpace, Matrix4, Point3, Ray,
@@ -489,7 +489,7 @@ mod tests {
         let ray = Ray::new(Point3::new(5.2, 10.0, -3.1), Vector3::new(0.0, -1.0, 0.0));
         let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
 
-        let snaps = GridSnap.collect(&inp, &Scene::new(), &SnapSettings::default());
+        let snaps = GridSnap.collect(&inp, &Scene::default(), &SnapSettings::default());
 
         let guide = snaps
             .iter()
@@ -509,7 +509,7 @@ mod tests {
         let ray = Ray::new(Point3::new(7.0, 10.0, -1.5), Vector3::new(0.0, -1.0, 0.0));
         let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
 
-        let snaps = GridSnap.collect(&inp, &Scene::new(), &SnapSettings::default());
+        let snaps = GridSnap.collect(&inp, &Scene::default(), &SnapSettings::default());
 
         // Three principal axes (U, V, N) should each yield a candidate.
         let axes: Vec<_> = snaps.iter().filter(|s| s.kind == SnapKind::GridAxis).collect();
@@ -532,7 +532,7 @@ mod tests {
         let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
 
         let start = Point3::new(2.0, 0.0, -3.0);
-        let snaps = WireStartSnap { start }.collect(&inp, &Scene::new(), &SnapSettings::default());
+        let snaps = WireStartSnap { start }.collect(&inp, &Scene::default(), &SnapSettings::default());
 
         assert_eq!(snaps.len(), 1);
         assert_eq!(snaps[0].kind, SnapKind::WireStart);
@@ -554,7 +554,7 @@ mod tests {
             }],
         );
 
-        let mut scene = Scene::new();
+        let scene = Scene::default();
         let mesh_id = scene.add_mesh(mesh);
         scene
             .add_instance_node(
@@ -620,7 +620,7 @@ mod tests {
     /// Adds a single-triangle node (vertices at `positions` with `normals`,
     /// translated by `offset`) to `scene`.
     fn add_triangle_node(
-        scene: &mut Scene,
+        scene: &Scene,
         positions: [[f32; 3]; 3],
         normals: [[f32; 3]; 3],
         offset: Vector3,
@@ -652,9 +652,9 @@ mod tests {
     #[test]
     fn face_snaps_to_ray_hit_in_world_space() {
         // A triangle in the local XZ plane, on a node translated +2 in Z.
-        let mut scene = Scene::new();
+        let scene = Scene::default();
         add_triangle_node(
-            &mut scene,
+            &scene,
             [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 0.0, 10.0]],
             [[0.0, 1.0, 0.0]; 3],
             Vector3::new(0.0, 0.0, 2.0),
@@ -683,7 +683,7 @@ mod tests {
     fn face_snap_keeps_only_nearest_hit_along_ray() {
         // Two overlapping triangles: one at y=0, one at y=2. A downward ray from
         // y=10 sees the y=2 face first.
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         let positions = [[-10.0, 0.0, -10.0], [10.0, 0.0, -10.0], [0.0, 0.0, 10.0]];
         let normals = [[0.0, 1.0, 0.0]; 3];
         add_triangle_node(&mut scene, positions, normals, Vector3::new(0.0, 0.0, 0.0));
@@ -706,7 +706,7 @@ mod tests {
     fn face_snap_interpolates_vertex_normals() {
         // Distinct vertex normals; the hit at local (2, 0, 2) has barycentric
         // weights (w, u, v) = (0.6, 0.2, 0.2), so the blend is (0.2, 0.6, 0.2).
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         add_triangle_node(
             &mut scene,
             [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 0.0, 10.0]],
@@ -750,7 +750,7 @@ mod tests {
             edge_ranges: vec![SubMeshRange { start: 0, count: 1 }],
             pointset_ranges: vec![],
         });
-        let mut scene = Scene::new();
+        let scene = Scene::default();
         let mesh_id = scene.add_mesh(mesh);
         let node = scene
             .add_instance_node(
@@ -782,7 +782,7 @@ mod tests {
     #[test]
     fn might_intersect_bounds_tests_screen_proximity() {
         let cam = dummy_camera();
-        let scene = Scene::new();
+        let scene = Scene::default();
         let query = GeometrySnapQuery {
             scene: &scene,
             ray: Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0)),
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn excluded_and_invisible_nodes_yield_no_snaps() {
-        let (mut scene, node) = scene_with_edge();
+        let (scene, node) = scene_with_edge();
         let cam = dummy_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();

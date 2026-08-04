@@ -3,14 +3,13 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::SubGeometryKind;
+use duck_engine_scene::{Scene, SubGeometryKind, NodeId};
 use duck_engine_viewer::common::{decompose_matrix, InnerSpace, Point3, Quaternion, Vector3};
 use duck_engine_viewer::event::{Event, EventContext};
 use duck_engine_viewer::operator::{
     NodeTransformTarget, Operator, SelectionKinds, SelectionMode, TransformCaps, TransformDriver,
     TransformFrame, TransformInteraction, TransformMode, TransformTarget,
 };
-use duck_engine_viewer::scene::{NodeId, Scene};
 use duck_engine_viewer::selection::SelectionItem;
 use opencascade::primitives::FaceOrientation;
 
@@ -172,8 +171,7 @@ impl ModelerTarget {
             // inside bake_transform.
             let delta = ctx
                 .scene
-                .lock()
-                .unwrap()
+                
                 .get_node(node)
                 .map(|n| n.transform().to_matrix());
             if let Some(delta) = delta
@@ -243,7 +241,7 @@ impl TransformTarget for ModelerTarget {
         }
     }
 
-    fn abort(&mut self, scene: &Arc<Mutex<Scene>>) {
+    fn abort(&mut self, scene: &Scene) {
         self.nodes.abort(scene);
         self.face.abort();
         self.active = None;
@@ -339,7 +337,7 @@ impl FaceTweakTarget {
         let camera = ctx.camera();
         let delta = interaction.delta_matrix(&camera, ctx.size);
         let transform = decompose_matrix(&delta);
-        ctx.scene.lock().unwrap().set_node_transform(ghost, transform);
+        ctx.scene.set_node_transform(ghost, transform);
     }
 
     /// Run the tweak on the B-Rep. On success the selection is cleared — the

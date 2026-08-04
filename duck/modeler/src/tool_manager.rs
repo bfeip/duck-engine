@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use duck_engine_viewer::bindings::{InputBinding, InputMap};
+use duck_engine_viewer::scene::Scene;
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext, EventDispatcher};
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers};
 use duck_engine_viewer::operator::{Operator, SelectionMode, SelectionOperator};
-use duck_engine_viewer::scene::Scene;
 
 use crate::cursor::Cursor3d;
 use crate::tool::{ModelingTool, ToolInfo};
@@ -153,7 +153,7 @@ impl ToolManager {
     }
 
     /// Per-frame update. Should be called every frame.
-    pub fn update(&mut self, scene: &Arc<Mutex<Scene>>) {
+    pub fn update(&mut self, scene: &Scene) {
         let requested = self.switcher.lock().unwrap().pending.take();
         if let Some(id) = requested {
             self.activate(Some(id));
@@ -166,7 +166,7 @@ impl ToolManager {
         let target = self
             .active
             .and_then(|i| self.tools[i.0].lock().unwrap().cursor_target());
-        self.cursor.update(target, &mut scene.lock().unwrap());
+        self.cursor.update(target, scene);
     }
 
     /// Palette snapshot for the `ui` module: `(id, info)` per tool.
@@ -311,7 +311,7 @@ mod tests {
         manager.register(MockTool::new("plain", None));
         manager.register(tool);
 
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         manager.switcher.lock().unwrap().handle_key(&key_press('g'), Modifiers::default());
         manager.update(&scene);
 
@@ -327,7 +327,7 @@ mod tests {
         let id = manager.register(tool);
         manager.activate(Some(id));
 
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         manager.switcher.lock().unwrap().handle_key(&key_press('g'), Modifiers::default());
         manager.update(&scene);
 

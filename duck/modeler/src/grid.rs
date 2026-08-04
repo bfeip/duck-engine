@@ -4,7 +4,7 @@ use duck_engine_viewer::common::{
     EuclideanSpace, InnerSpace, Matrix3, Plane, Point3, Quaternion, RgbaColor, Transform, Vector3,
 };
 use duck_engine_viewer::scene::{
-    Instance, LineMaterial, Mesh, MeshIndex, MeshPrimitive, NodeFlags, NodeId, PrimitiveType, Scene,
+    Instance, LineMaterial, Mesh, MeshIndex, MeshPrimitive, NodeFlags, NodeId, PrimitiveType, SceneData, Scene,
     Vertex,
 };
 
@@ -61,7 +61,7 @@ impl Grid {
     /// Creates the grid meshes, materials, and inert instance nodes in `scene`,
     /// oriented to lie on `plane`. When the config is not visible, creates
     /// nothing (an empty grid).
-    pub fn add_to_scene(scene: &mut Scene, config: &GridConfig, plane: &Plane) -> Self {
+    pub fn add_to_scene(scene: &Scene, config: &GridConfig, plane: &Plane) -> Self {
         if !config.visible {
             return Self { nodes: Vec::new() };
         }
@@ -73,6 +73,7 @@ impl Grid {
         let axis_v = build_axis_mesh([0.0, 0.0, 1.0], config.size);
         let axis_n = build_axis_mesh([0.0, 1.0, 0.0], config.normal_axis_length);
 
+        let mut scene = scene.lock();
         let nodes = [
             ("Grid (minor)", minor, config.minor_color),
             ("Grid (major)", major, config.major_color),
@@ -100,7 +101,8 @@ impl Grid {
     }
 
     /// Removes the grid's nodes and their meshes/materials from `scene`.
-    pub fn remove_from_scene(self, scene: &mut Scene) {
+    pub fn remove_from_scene(self, scene: &Scene) {
+        let mut scene = scene.lock();
         for node in self.nodes {
             scene.cleanup_node(node);
         }

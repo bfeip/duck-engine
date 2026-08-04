@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::{tessellate_into, CadTessellationOptions};
-use duck_engine_scene::{NodeId, Scene, Visibility};
+use duck_engine_scene::{NodeId, Scene, SceneData, Visibility};
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
@@ -12,7 +12,7 @@ use crate::document::Document;
 /// [`cancel`](Self::cancel) removes the previews and restores hidden sources;
 /// [`commit`](Self::commit) removes the previews and hands the still-hidden
 /// sources back to the caller to delete. After either — and on drop — the
-/// session is inert. Previews are removed with [`Scene::cleanup_node`] so their
+/// session is inert. Previews are removed with [`SceneData::cleanup_node`] so their
 /// meshes and materials are freed too.
 pub struct PreviewSession {
     document: Arc<Mutex<Document>>,
@@ -27,7 +27,7 @@ impl PreviewSession {
     }
 
     /// The document's current scene.
-    fn scene(&self) -> Arc<Mutex<Scene>> {
+    fn scene(&self) -> Scene {
         self.document.lock().unwrap().scene().clone()
     }
 
@@ -58,8 +58,7 @@ impl PreviewSession {
         name: &str,
     ) -> Option<NodeId> {
         let scene = self.scene();
-        let mut scene = scene.lock().unwrap();
-        let node = tessellate_into(shape, &mut *scene, options, None, Some(name)).ok()?;
+        let node = tessellate_into(shape, &scene, options, None, Some(name)).ok()?;
         self.previews.push(node);
         Some(node)
     }
@@ -79,8 +78,9 @@ impl PreviewSession {
         name: &str,
     ) -> Option<NodeId> {
         let scene = self.scene();
-        let mut scene = scene.lock().unwrap();
-        let node = tessellate_into(shape, &mut *scene, options, None, Some(name)).ok()?;
+        let node = tessellate_into(shape, &scene, options, None, Some(name)).ok()?;
+
+        let mut scene = scene.lock();
         for old in self.previews.drain(..) {
             scene.cleanup_node(old);
         }
@@ -92,7 +92,7 @@ impl PreviewSession {
     /// to be rebuilt from scratch.
     pub fn clear_previews(&mut self) {
         let scene = self.scene();
-        let mut scene = scene.lock().unwrap();
+        let mut scene = scene.lock();
         for node in self.previews.drain(..) {
             scene.cleanup_node(node);
         }
@@ -102,7 +102,7 @@ impl PreviewSession {
     /// Set the visibility of every tracked preview.
     pub fn set_preview_visibility(&self, visibility: Visibility) {
         let scene = self.scene();
-        let mut scene = scene.lock().unwrap();
+        let mut scene = scene.lock();
         for &node in &self.previews {
             scene.set_node_visibility(node, visibility);
         }
@@ -114,7 +114,7 @@ impl PreviewSession {
         if self.hidden.contains(&node) {
             return;
         }
-        self.scene().lock().unwrap().set_node_visibility(node, Visibility::Invisible);
+        self.scene().set_node_visibility(node, Visibility::Invisible);
         self.hidden.push(node);
     }
 
@@ -122,7 +122,7 @@ impl PreviewSession {
     /// session is inert afterwards.
     pub fn cancel(&mut self) {
         let scene = self.scene();
-        let mut scene = scene.lock().unwrap();
+        let mut scene = scene.lock();
         for node in self.previews.drain(..) {
             scene.cleanup_node(node);
         }
@@ -136,14 +136,14 @@ impl PreviewSession {
     #[must_use = "the returned hidden sources must be deleted by the committing operation"]
     pub fn commit(&mut self) -> Vec<NodeId> {
         let scene = self.scene();
-        let mut scene = scene.lock().unwrap();
+        let mut scene = scene.lock();
         for node in self.previews.drain(..) {
             scene.cleanup_node(node);
         }
         std::mem::take(&mut self.hidden)
     }
 
-    fn restore_hidden(scene: &mut Scene, hidden: &mut Vec<NodeId>) {
+    fn restore_hidden(scene: &mut SceneData, hidden: &mut Vec<NodeId>) {
         for node in hidden.drain(..) {
             scene.set_node_visibility(node, Visibility::Visible);
         }
@@ -158,19 +158,19 @@ impl Drop for PreviewSession {
         if self.is_empty() {
             return;
         }
-        // A panic in drop while a lock is poisoned would abort the process; skip
-        // teardown on poison instead.
+        // A panic in drop while the document lock is poisoned would abort the
+        // process; skip teardown on poison instead. The scene handle absorbs
+        // poison itself, so it needs no such guard.
         let scene = match self.document.lock() {
             Ok(doc) => doc.scene().clone(),
             Err(_) => return,
         };
-        if let Ok(mut scene) = scene.lock() {
-            for &node in &self.previews {
-                scene.cleanup_node(node);
-            }
-            for &node in &self.hidden {
-                scene.set_node_visibility(node, Visibility::Visible);
-            }
+        let mut scene = scene.lock();
+        for &node in &self.previews {
+            scene.cleanup_node(node);
+        }
+        for &node in &self.hidden {
+            scene.set_node_visibility(node, Visibility::Visible);
         }
     }
 }
@@ -180,7 +180,7 @@ mod tests {
     use super::*;
 
     fn document() -> Arc<Mutex<Document>> {
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         Arc::new(Mutex::new(Document::new(scene)))
     }
 
@@ -192,14 +192,13 @@ mod tests {
     /// source part).
     fn add_source(document: &Arc<Mutex<Document>>) -> NodeId {
         let scene = document.lock().unwrap().scene().clone();
-        let mut scene = scene.lock().unwrap();
-        tessellate_into(&unit_shape(), &mut *scene, &CadTessellationOptions::default(), None, Some("src"))
+        tessellate_into(&unit_shape(), &scene, &CadTessellationOptions::default(), None, Some("src"))
             .unwrap()
     }
 
-    fn with_scene<R>(document: &Arc<Mutex<Document>>, f: impl FnOnce(&Scene) -> R) -> R {
+    fn with_scene<R>(document: &Arc<Mutex<Document>>, f: impl FnOnce(&SceneData) -> R) -> R {
         let scene = document.lock().unwrap().scene().clone();
-        let scene = scene.lock().unwrap();
+        let scene = scene.lock();
         f(&scene)
     }
 
@@ -303,7 +302,7 @@ mod tests {
         let mut session = PreviewSession::new(document.clone());
 
         // Swap in a fresh scene, as new-document / file-load does.
-        document.lock().unwrap().set_scene(Arc::new(Mutex::new(Scene::new())));
+        document.lock().unwrap().set_scene(Scene::default());
 
         // The preview must land in the new scene, not the one present at construction.
         session.add_preview_from_shape(&unit_shape(), &CadTessellationOptions::default(), "p");

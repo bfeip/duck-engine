@@ -138,15 +138,12 @@ pub fn preview_boolean(
     options: &CadTessellationOptions,
 ) -> Result<NodeId> {
     let computed = compute_boolean(kind, target, tools, doc)?;
-    let mut scene = doc.scene().lock().unwrap();
-    tessellate_into(&computed.shape, &mut *scene, options, None, Some("Boolean preview"))
+    tessellate_into(&computed.shape, doc.scene(), options, None, Some("Boolean preview"))
         .context("Failed to tessellate boolean preview")
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use duck_engine_scene::Scene;
     use glam::dvec3;
 
@@ -154,7 +151,7 @@ mod tests {
     use crate::document::PartKind;
 
     fn doc_with_box_and_sphere() -> (Document, NodeId, NodeId) {
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         let mut doc = Document::new(scene);
         let options = CadTessellationOptions::default();
         let box_part = doc
@@ -199,7 +196,7 @@ mod tests {
     fn subtract_rescues_near_coincident_sphere() {
         use opencascade::primitives::{Face, Wire};
 
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         let mut doc = Document::new(scene);
         let options = CadTessellationOptions::default();
 

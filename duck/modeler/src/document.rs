@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use duck_engine_scene::{Id, Instance, Node, NodeFlags, NodeId, NodePayload, Scene, Visibility};
@@ -70,12 +69,12 @@ pub struct Document {
     parts: Vec<CadPart>,
     part_to_node: HashMap<PartId, NodeId>,
     node_to_part: HashMap<NodeId, PartId>,
-    scene: Arc<Mutex<Scene>>,
+    scene: Scene,
     history: History,
 }
 
 impl Document {
-    pub fn new(scene: Arc<Mutex<Scene>>) -> Self {
+    pub fn new(scene: Scene) -> Self {
         Self {
             parts: Vec::new(),
             part_to_node: HashMap::new(),
@@ -85,12 +84,12 @@ impl Document {
         }
     }
 
-    pub fn set_scene(&mut self, scene: Arc<Mutex<Scene>>) {
+    pub fn set_scene(&mut self, scene: Scene) {
         self.scene = scene;
         self.history.clear();
     }
 
-    pub fn scene(&self) -> &Arc<Mutex<Scene>> {
+    pub fn scene(&self) -> &Scene {
         &self.scene
     }
 
@@ -103,11 +102,8 @@ impl Document {
         options: &CadTessellationOptions,
     ) -> Result<PartId> {
         let name = name.into();
-        let node = {
-            let mut scene = self.scene.lock().unwrap();
-            tessellate_into(&shape, &mut *scene, options, None, Some(&name))
-                .context("Failed to tessellate part")?
-        };
+        let node = tessellate_into(&shape, &self.scene, options, None, Some(&name))
+            .context("Failed to tessellate part")?;
         let id = PartId::new();
         self.parts.push(CadPart { id, name, shape, options: options.clone() });
         self.part_to_node.insert(id, node);
@@ -135,7 +131,7 @@ impl Document {
         self.parts.retain(|p| p.id != id);
         if let Some(node) = self.part_to_node.remove(&id) {
             self.node_to_part.remove(&node);
-            self.scene.lock().unwrap().cleanup_node(node);
+            self.scene.cleanup_node(node);
         }
     }
 
@@ -150,14 +146,14 @@ impl Document {
     /// Current visibility of the part's scene node, or `None` if the part is unknown.
     pub fn part_visibility(&self, id: PartId) -> Option<Visibility> {
         let node = self.node_for_part(id)?;
-        let scene = self.scene.lock().unwrap();
+        let scene = self.scene.lock();
         scene.get_node(node).map(|n| n.visibility())
     }
 
     /// Set the visibility of the part's scene node. No-op for an unknown part.
     pub fn set_part_visibility(&mut self, id: PartId, visibility: Visibility) {
         if let Some(node) = self.node_for_part(id) {
-            self.scene.lock().unwrap().set_node_visibility(node, visibility);
+            self.scene.set_node_visibility(node, visibility);
         }
     }
 
@@ -196,9 +192,8 @@ impl Document {
             let cad_part = self
                 .get_part(part)
                 .context("bake_transform: part not found")?;
-            let mut scene = self.scene.lock().unwrap();
-            retessellate_node(&cad_part.shape, &mut scene, options, node)?;
-            scene.set_node_transform(node, Transform::IDENTITY);
+            retessellate_node(&cad_part.shape, &self.scene, options, node)?;
+            self.scene.set_node_transform(node, Transform::IDENTITY);
             cad_part.shape.clone()
         };
 
@@ -243,10 +238,9 @@ impl Document {
             cad_part.shape.tweak_faces(faces, mat)?
         };
 
-        {
-            let mut scene = self.scene.lock().unwrap();
-            retessellate_node(&tweaked, &mut scene, options, node)?;
-        }
+
+        retessellate_node(&tweaked, &self.scene, options, node)?;
+
         let cad_part = self.get_part_mut(part).context("tweak_faces: part not found")?;
         let before = std::mem::replace(&mut cad_part.shape, tweaked.clone());
         cad_part.options = options.clone();
@@ -334,7 +328,7 @@ impl Document {
     fn snapshot_part(&self, id: PartId) -> Option<PartSnapshot> {
         let part = self.get_part(id)?;
         let node = self.node_for_part(id)?;
-        let scene = self.scene.lock().unwrap();
+        let scene = self.scene.lock();
         let NodePayload::Instance(instance_id) = *scene.get_node(node)?.payload() else {
             return None;
         };
@@ -363,7 +357,7 @@ impl Document {
             snapshot.options.include_points,
         )?;
         {
-            let mut scene = self.scene.lock().unwrap();
+            let mut scene = self.scene.lock();
             let face_mat = scene.add_face_material(snapshot.face_material.clone());
             let line_mat = scene.add_line_material(snapshot.line_material.clone());
             let mesh_id = scene.add_mesh(mesh);
@@ -401,11 +395,9 @@ impl Document {
         options: &CadTessellationOptions,
     ) -> Result<()> {
         let node = self.node_for_part(part).context("reshape: no node for part")?;
-        {
-            let mut scene = self.scene.lock().unwrap();
-            retessellate_node(shape, &mut scene, options, node)?;
-            scene.set_node_transform(node, Transform::IDENTITY);
-        }
+        retessellate_node(shape, &self.scene, options, node)?;
+        self.scene.set_node_transform(node, Transform::IDENTITY);
+
         let cad_part = self.get_part_mut(part).context("reshape: part not found")?;
         cad_part.shape = shape.clone();
         cad_part.options = options.clone();
@@ -485,7 +477,7 @@ mod tests {
     use duck_engine_scene::common::Vector3;
 
     fn doc_with_box() -> (Document, PartId, NodeId) {
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         let mut doc = Document::new(scene);
         let part = doc
             .add_part("box", opencascade::primitives::Shape::cube(2.0), &CadTessellationOptions::default())
@@ -587,7 +579,7 @@ mod tests {
         assert_eq!(label.as_deref(), Some("Add box"));
         assert_eq!(doc.parts().count(), 0);
         assert!(doc.node_for_part(part).is_none());
-        let scene = doc.scene().lock().unwrap();
+        let scene = doc.scene().lock();
         assert!(scene.get_node(node).is_none());
         assert_eq!(scene.mesh_count(), 0);
         assert_eq!(scene.face_material_count(), 0);
@@ -598,7 +590,7 @@ mod tests {
     fn undo_remove_resurrects_with_stable_ids() {
         let (mut doc, part, node) = doc_with_box();
         let face_material = {
-            let scene = doc.scene().lock().unwrap();
+            let scene = doc.scene().lock();
             let NodePayload::Instance(instance) = *scene.get_node(node).unwrap().payload()
             else {
                 panic!("expected instance payload");
@@ -616,7 +608,7 @@ mod tests {
         assert_eq!(doc.part_for_node(node), Some(part));
         assert_eq!(doc.part_visibility(part), Some(Visibility::Visible));
         assert!((max_y(&doc, part) - 2.0).abs() < 1e-6, "geometry restored");
-        let scene = doc.scene().lock().unwrap();
+        let scene = doc.scene().lock();
         assert!(
             scene.get_face_material(face_material).is_some(),
             "face material resurrected under its original id"
@@ -717,7 +709,7 @@ mod tests {
 
     #[test]
     fn empty_stacks_are_a_no_op() {
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         let mut doc = Document::new(scene);
         assert!(doc.undo().expect("empty undo ok").is_none());
         assert!(doc.redo().expect("empty redo ok").is_none());

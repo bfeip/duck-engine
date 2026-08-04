@@ -12,7 +12,7 @@
 use duck_engine_viewer::common::{Point3, RgbaColor, Transform};
 use duck_engine_viewer::scene::{
     AlphaMode, DisplayBehavior, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh,
-    NodeFlags, NodeId, PrimitiveType, RenderLayer, Scene, Texture, Visibility,
+    NodeFlags, NodeId, PrimitiveType, RenderLayer, Scene, SceneData, Texture, Visibility,
 };
 
 /// On-screen diameter of the dot, in pixels. The quad's half-width (0.5) is
@@ -57,7 +57,8 @@ impl Default for Cursor3d {
 
 impl Cursor3d {
     /// Places the cursor at `target`, or hides it when `target` is `None`.
-    pub fn update(&mut self, target: Option<Point3>, scene: &mut Scene) {
+    pub fn update(&mut self, target: Option<Point3>, scene: &Scene) {
+        let mut scene = scene.lock();
         let Some(position) = target else {
             if self.shown.take().is_some() {
                 if let Some(node) = self.node {
@@ -71,7 +72,7 @@ impl Cursor3d {
             return;
         }
 
-        let node = self.ensure_node(scene);
+        let node = self.ensure_node(&mut scene);
         scene.set_node_transform(node, Transform::from_position(position));
         scene.set_node_visibility(node, Visibility::Visible);
         self.shown = Some(position);
@@ -79,10 +80,10 @@ impl Cursor3d {
 
     /// Sets the dot color. Takes effect immediately if the node already exists,
     /// otherwise it is applied when the node is first created.
-    pub fn set_color(&mut self, color: RgbaColor, scene: &mut Scene) {
+    pub fn set_color(&mut self, color: RgbaColor, scene: &Scene) {
         self.color = color;
         if let Some(material) = self.material {
-            if let Some(mat) = scene.get_face_material_mut(material) {
+            if let Some(mat) = scene.lock().get_face_material_mut(material) {
                 mat.set_base_color_factor(color);
             }
         }
@@ -90,7 +91,7 @@ impl Cursor3d {
 
     /// Returns the marker node, creating its mesh/material/texture/node on first
     /// use.
-    fn ensure_node(&mut self, scene: &mut Scene) -> NodeId {
+    fn ensure_node(&mut self, scene: &mut SceneData) -> NodeId {
         if let Some(node) = self.node {
             return node;
         }

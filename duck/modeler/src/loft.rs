@@ -65,8 +65,7 @@ pub fn preview_loft(
 ) -> Result<NodeId> {
     let wires = resolve_profiles(doc, profiles)?;
     let shape = build_loft(&wires, kind);
-    let mut scene = doc.scene().lock().unwrap();
-    tessellate_into(&shape, &mut *scene, options, None, Some("Loft preview"))
+    tessellate_into(&shape, doc.scene(), options, None, Some("Loft preview"))
         .context("Failed to tessellate loft preview")
 }
 
@@ -91,7 +90,6 @@ pub fn execute_loft(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
 
     use duck_engine_scene::Scene;
     use opencascade::primitives::{Face, ShapeType};
@@ -99,7 +97,7 @@ mod tests {
     /// A document holding two stacked square profiles (closed wires), returning the
     /// nodes and the index of one edge per profile.
     fn doc_with_two_squares() -> (Document, [LoftProfile; 2]) {
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         let mut doc = Document::new(scene);
 
         let square = |y: f64| {

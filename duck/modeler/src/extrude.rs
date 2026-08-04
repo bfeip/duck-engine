@@ -95,8 +95,7 @@ pub fn preview_extrude(
 ) -> Result<ExtrudePreview> {
     let raw = raw_extrude(doc, target, frame, length)?;
     let hide_source = !raw.source_is_solid;
-    let mut scene = doc.scene().lock().unwrap();
-    let node = tessellate_into(&raw.prism, &mut *scene, options, None, Some("Extrude preview"))
+    let node = tessellate_into(&raw.prism, doc.scene(), options, None, Some("Extrude preview"))
         .context("Failed to tessellate extrude preview")?;
     Ok(ExtrudePreview { node, hide_source })
 }
@@ -219,7 +218,7 @@ mod tests {
     }
 
     fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
-        let scene = Arc::new(Mutex::new(Scene::new()));
+        let scene = Scene::default();
         let mut doc = Document::new(scene);
         let part = doc
             .add_part("part", shape, &CadTessellationOptions::default())

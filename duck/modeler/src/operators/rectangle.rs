@@ -225,7 +225,7 @@ impl RectangleOperator {
         if let Phase::Defining { center, plane } = self.phase {
             let dims = snap.map(|s| Self::footprint_dims(center, s.position, &plane));
             if let Some(preview_node) = self.preview.preview_node() {
-                let mut scene = ctx.scene.lock().unwrap();
+                let mut scene = ctx.scene.lock();
                 match dims {
                     Some((width, depth)) if Self::footprint_valid(width, depth) => {
                         scene.set_node_visibility(preview_node, Visibility::Visible);
