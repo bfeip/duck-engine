@@ -290,7 +290,7 @@ impl Node {
     /// Sets the parent node ID without maintaining tree consistency.
     ///
     /// The caller must ensure the parent-child relationship is consistent
-    /// on both sides. Prefer `Scene` methods for safe tree manipulation.
+    /// on both sides. Prefer `SceneData` methods for safe tree manipulation.
     pub fn set_parent_unchecked(&mut self, parent: Option<NodeId>) {
         self.parent = parent;
         self.mark_transform_dirty();
@@ -305,7 +305,7 @@ impl Node {
     /// Adds a child node ID without maintaining tree consistency.
     ///
     /// The caller must ensure the child's parent pointer is set correspondingly.
-    /// Prefer `Scene` methods for safe tree manipulation.
+    /// Prefer `SceneData` methods for safe tree manipulation.
     pub fn add_child_unchecked(&mut self, child: NodeId) {
         if !self.children.contains(&child) {
             self.children.push(child);
@@ -316,7 +316,7 @@ impl Node {
     /// Removes a child node ID without maintaining tree consistency.
     ///
     /// The caller must ensure the child's parent pointer is updated correspondingly.
-    /// Prefer `Scene` methods for safe tree manipulation.
+    /// Prefer `SceneData` methods for safe tree manipulation.
     pub fn remove_child_unchecked(&mut self, child: NodeId) {
         self.children.retain(|&id| id != child);
         self.mark_bounds_dirty();
@@ -325,7 +325,7 @@ impl Node {
     /// Replaces the children list without maintaining tree consistency.
     ///
     /// The caller must ensure all child IDs reference valid nodes and that
-    /// their parent pointers are consistent. Prefer `Scene` methods for safe tree manipulation.
+    /// their parent pointers are consistent. Prefer `SceneData` methods for safe tree manipulation.
     pub fn set_children_unchecked(&mut self, children: Vec<NodeId>) {
         self.children = children;
         self.mark_bounds_dirty();
@@ -347,7 +347,7 @@ impl Node {
 
     /// Sets the node's payload and invalidates this node's bounds cache.
     ///
-    /// Ancestor bounds propagation is the caller's (Scene's) responsibility.
+    /// Ancestor bounds propagation is the caller's (SceneData's) responsibility.
     pub fn set_payload(&mut self, payload: NodePayload) {
         self.payload = payload;
         self.cached_bounds.set(None);
@@ -389,7 +389,7 @@ impl Node {
     // ============== Dirty State ==============
 
     /// Marks this node's world transform as dirty (needs recomputation).
-    /// Note: This only marks this node, not descendants. The Scene is responsible
+    /// Note: This only marks this node, not descendants. The SceneData is responsible
     /// for propagating dirty flags to children.
     pub(super) fn mark_transform_dirty(&self) {
         self.cached_world_transform.set(None);
@@ -410,7 +410,7 @@ impl Node {
     }
 
     /// Gets the cached world transform if valid
-    /// You probably want [crate::Scene::nodes_transform]
+    /// You probably want [crate::SceneData::nodes_transform]
     pub fn cached_world_transform(&self) -> Option<Matrix4> {
         self.cached_world_transform.get()
     }
@@ -421,7 +421,7 @@ impl Node {
     }
 
     /// Gets the cached bounding box if valid
-    /// You probably want [crate::Scene::nodes_bounding]
+    /// You probably want [crate::SceneData::nodes_bounding]
     pub(super) fn cached_bounds(&self) -> Option<Aabb> {
         self.cached_bounds.get()
     }

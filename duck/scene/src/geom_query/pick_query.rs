@@ -2,7 +2,7 @@ use duck_engine_common::{Matrix4, SquareMatrix};
 
 use crate::common::Aabb;
 use crate::{
-    DisplayBehavior, InstanceId, Mesh, NodeFlags, NodeId, NodePayload, PositionedCamera, Scene,
+    DisplayBehavior, InstanceId, Mesh, NodeFlags, NodeId, NodePayload, PositionedCamera, Scene, SceneData,
 };
 
 /// A query that can pick objects by traversing the scene tree.
@@ -81,10 +81,11 @@ pub fn pick_all_with_view<Q: PickQuery>(
     scene: &Scene,
     view: Option<&PickView>,
 ) -> Vec<Q::Result> {
+    let scene = scene.lock();
     let mut results = Vec::new();
 
     for &root_id in scene.root_nodes() {
-        pick_node(query, root_id, scene, DisplayBehavior::default(), view, &mut results);
+        pick_node(query, root_id, &scene, DisplayBehavior::default(), view, &mut results);
     }
 
     results
@@ -94,7 +95,7 @@ pub fn pick_all_with_view<Q: PickQuery>(
 fn pick_node<Q: PickQuery>(
     query: &Q,
     node_id: NodeId,
-    scene: &Scene,
+    scene: &SceneData,
     parent_display: DisplayBehavior,
     view: Option<&PickView>,
     results: &mut Vec<Q::Result>,
@@ -155,7 +156,7 @@ fn pick_node<Q: PickQuery>(
 /// world transform. Returns `None` while the node's world transform is
 /// unavailable.
 fn pick_transform(
-    scene: &Scene,
+    scene: &SceneData,
     node_id: NodeId,
     display: DisplayBehavior,
     view: Option<&PickView>,
@@ -176,7 +177,7 @@ fn collect_instance_hits<Q: PickQuery>(
     query: &Q,
     node_id: NodeId,
     instance_id: InstanceId,
-    scene: &Scene,
+    scene: &SceneData,
     transform: &Matrix4,
     results: &mut Vec<Q::Result>,
 ) {
@@ -192,7 +193,7 @@ mod tests {
     use super::*;
     use duck_engine_common::Matrix4;
     use crate::{
-        Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Scene, Vertex,
+        Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Vertex,
         common::Transform,
     };
 
@@ -222,6 +223,8 @@ mod tests {
     }
 
     fn make_geometry_node(scene: &mut Scene, parent: Option<NodeId>, flags: NodeFlags) -> NodeId {
+        let mut scene = scene.lock();
+
         let mesh = Mesh::from_raw(
             vec![
                 Vertex { position: [0.0, 0.0, 0.0], tex_coords: [0.0, 0.0, 0.0], normal: [0.0, 1.0, 0.0] },
@@ -237,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_normal_node_is_pickable() {
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         let node_id = make_geometry_node(&mut scene, None, NodeFlags::NONE);
 
         let hits = pick_all(&AlwaysHitQuery, &scene);
@@ -246,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_do_not_select_skips_node() {
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         let _node_id = make_geometry_node(&mut scene, None, NodeFlags::DO_NOT_SELECT);
 
         let hits = pick_all(&AlwaysHitQuery, &scene);
@@ -255,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_do_not_select_skips_children() {
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         // DO_NOT_SELECT group parent with a selectable child
         let parent = scene.add_node(None, None, Transform::IDENTITY, NodeFlags::DO_NOT_SELECT).unwrap();
         let _child = make_geometry_node(&mut scene, Some(parent), NodeFlags::NONE);

@@ -845,9 +845,9 @@ mod tests {
 
     #[test]
     fn positioned_camera_for_node_uses_given_aspect() {
-        use crate::{NodeFlags, NodePayload, Scene, common};
+        use crate::{NodeFlags, NodePayload, SceneData, common};
 
-        let mut scene = Scene::new();
+        let mut scene = SceneData::new();
         let camera = scene
             .add_node(None, Some("cam".into()), common::Transform::IDENTITY, NodeFlags::NONE)
             .unwrap();

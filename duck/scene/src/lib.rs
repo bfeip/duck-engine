@@ -9,6 +9,7 @@ mod camera;
 mod display;
 mod environment;
 pub mod geom_query;
+mod handle;
 mod instance;
 mod coordinate_space;
 mod light;
@@ -33,6 +34,7 @@ pub use node::NodeId;
 pub use texture::TextureId;
 
 pub use camera::{CameraProjection, PositionedCamera};
+pub use handle::{Scene, SceneGuard};
 pub use display::{DisplayBehavior, RenderLayer};
 pub use coordinate_space::CoordinateSpace;
 pub use view::{View, ViewId};
@@ -81,17 +83,17 @@ pub struct BoundingResult {
 
 /// The scene container holding all meshes, materials, textures, instances, nodes, and lights.
 ///
-/// Scene provides device-free APIs for creating and managing scene objects.
+/// SceneData provides device-free APIs for creating and managing scene objects.
 ///
 /// # Examples
 ///
 /// ```
 /// use duck_engine_scene::{
-///     common, FaceMaterial, Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Scene, Vertex,
+///     common, FaceMaterial, Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SceneData, Vertex,
 /// };
 /// use duck_engine_scene::common::RgbaColor;
 ///
-/// let mut scene = Scene::new();
+/// let mut scene = SceneData::new();
 ///
 /// // Add a mesh (no device needed)
 /// let vertices = vec![
@@ -121,7 +123,7 @@ pub struct BoundingResult {
 /// );
 /// ```
 #[derive(Clone)]
-pub struct Scene {
+pub struct SceneData {
     meshes: HashMap<MeshId, Mesh>,
     instances: HashMap<InstanceId, Instance>,
 
@@ -147,7 +149,7 @@ pub struct Scene {
     node_generation: u64,
 }
 
-impl Scene {
+impl SceneData {
     /// Creates a new empty scene.
     pub fn new() -> Self {
         Self {

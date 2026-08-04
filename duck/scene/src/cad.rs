@@ -3,8 +3,8 @@ use opencascade::primitives::{EdgeType, Shape, ShapeType};
 
 use crate::common::{RgbaColor, Transform};
 use crate::{
-    FaceMaterial, Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, NodePayload,
-    PrimitiveType, Scene, SubMeshRange, Topology, Vertex,
+    FaceMaterial, Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId,
+    NodePayload, PrimitiveType, Scene, SceneData, SubMeshRange, Topology, Vertex,
 };
 
 /// Whether a shape bounds a volume, or is free geometry that does not.
@@ -242,11 +242,13 @@ pub fn tessellate_occ_shape(
 /// Returns the [`NodeId`] of the created node.
 pub fn tessellate_into(
     shape: &Shape,
-    scene: &mut Scene,
+    scene: &Scene,
     options: &CadTessellationOptions,
     parent: Option<NodeId>,
     name: Option<&str>,
 ) -> Result<NodeId> {
+    let mut scene = scene.lock();
+
     let mesh = tessellate_occ_shape(
         shape,
         options.tessellation_tolerance,
@@ -282,10 +284,12 @@ pub fn tessellate_into(
 /// creating a new node instead.
 pub fn retessellate_node(
     shape: &Shape,
-    scene: &mut Scene,
+    scene: &Scene,
     options: &CadTessellationOptions,
     node: NodeId,
 ) -> Result<()> {
+    let mut scene = scene.lock();
+
     let NodePayload::Instance(old_instance_id) = *scene
         .get_node(node)
         .context("node not found")?
@@ -338,7 +342,7 @@ mod tests {
     #[test]
     fn sphere_tessellates_to_nonempty_mesh() {
         let shape = opencascade::primitives::Shape::sphere(1.0).build();
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         tessellate_into(&shape, &mut scene, &default_options(), None, Some("sphere"))
             .expect("tessellation failed");
         assert!(scene.mesh_count() > 0);
@@ -348,7 +352,7 @@ mod tests {
     #[test]
     fn cuboid_tessellates_to_nonempty_mesh() {
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         tessellate_into(&shape, &mut scene, &default_options(), None, Some("box"))
             .expect("tessellation failed");
         assert!(scene.mesh_count() > 0);
@@ -359,7 +363,7 @@ mod tests {
         let a = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
         let b = opencascade::primitives::Shape::sphere(1.5).build();
         let combined = a.union(&b).expect("fuse succeeds").shape;
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         tessellate_into(&combined, &mut scene, &default_options(), None, None)
             .expect("union tessellation failed");
         assert!(scene.mesh_count() > 0);
@@ -368,7 +372,7 @@ mod tests {
     #[test]
     fn cylinder_tessellates() {
         let shape = opencascade::primitives::Shape::cylinder_radius_height(0.5, 2.0);
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         tessellate_into(&shape, &mut scene, &default_options(), None, None).unwrap();
         assert!(scene.mesh_count() > 0);
     }
@@ -376,7 +380,7 @@ mod tests {
     #[test]
     fn torus_tessellates() {
         let shape = opencascade::primitives::Shape::torus().radius_1(2.0).radius_2(0.5).build();
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         tessellate_into(&shape, &mut scene, &default_options(), None, None).unwrap();
         assert!(scene.mesh_count() > 0);
     }
@@ -431,11 +435,12 @@ mod tests {
         // one options value must produce a distinct material per part, otherwise
         // they collide on the same id in the scene's material maps.
         let options = default_options();
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         for _ in 0..3 {
             let shape = opencascade::primitives::Shape::box_centered(1.0, 1.0, 1.0);
             tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
         }
+        let scene = scene.lock();
         assert_eq!(scene.face_material_count(), 3);
         assert_eq!(scene.line_material_count(), 3);
     }
@@ -455,6 +460,8 @@ mod tests {
 
     /// The face and line colors the node's instance actually resolves to.
     fn node_colors(scene: &Scene, node: NodeId) -> (RgbaColor, RgbaColor) {
+        let scene = scene.lock();
+
         let NodePayload::Instance(instance_id) = *scene.get_node(node).unwrap().payload() else {
             panic!("expected instance payload");
         };
@@ -538,7 +545,7 @@ mod tests {
     #[test]
     fn free_shapes_use_the_free_materials() {
         let options = classified_options();
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
 
         for shape in [open_wire(), planar_face()] {
             let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
@@ -551,7 +558,7 @@ mod tests {
     #[test]
     fn solids_use_the_default_materials() {
         let options = classified_options();
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::cube(2.0);
         let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
 
@@ -564,7 +571,7 @@ mod tests {
     fn unset_free_materials_fall_back_to_the_defaults() {
         // Callers that never opt in (glTF/STEP import) must see no change.
         let options = default_options();
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         let node = tessellate_into(&open_wire(), &mut scene, &options, None, None).unwrap();
 
         let (face, line) = node_colors(&scene, node);
@@ -584,7 +591,7 @@ mod tests {
             [0.0, 0.0, 0.0, 1.0],
         ]);
 
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         let node = tessellate_into(&scaled, &mut scene, &default_options(), None, None).unwrap();
         let aabb = scene.nodes_bounding(node).bounds.expect("scaled box has bounds");
         let (sx, sy, sz) = aabb.size();
@@ -596,7 +603,7 @@ mod tests {
     #[test]
     fn retessellate_node_preserves_node_id_and_updates_geometry() {
         let options = default_options();
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
         let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
 
@@ -625,7 +632,7 @@ mod tests {
     #[test]
     fn retessellate_node_keeps_shared_instance_and_mesh() {
         let options = default_options();
-        let mut scene = Scene::new();
+        let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
         let node1 = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
 
@@ -647,6 +654,7 @@ mod tests {
         ]);
         retessellate_node(&scaled, &mut scene, &options, node1).unwrap();
 
+        let scene = scene.lock();
         // The shared instance and mesh must survive — node2 still references them.
         assert!(scene.get_instance(instance_id).is_some(), "shared instance must survive");
         assert!(scene.get_mesh(mesh_id).is_some(), "shared mesh must survive");

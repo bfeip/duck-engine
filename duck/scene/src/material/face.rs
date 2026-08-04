@@ -17,12 +17,12 @@ pub type FaceMaterialId = crate::Id<FaceMaterial>;
 /// # Examples
 ///
 /// ```
-/// use duck_engine_scene::{FaceMaterial, Scene};
+/// use duck_engine_scene::{FaceMaterial, SceneData};
 /// use duck_engine_scene::common::RgbaColor;
 ///
 /// let face = FaceMaterial::new().with_base_color_factor(RgbaColor::RED);
 ///
-/// let mut scene = Scene::new();
+/// let mut scene = SceneData::new();
 /// let face_id = scene.add_face_material(face);
 /// ```
 #[derive(Clone)]

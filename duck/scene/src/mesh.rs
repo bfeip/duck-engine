@@ -257,7 +257,7 @@ pub enum MeshDescriptor<'a> {
 /// # Examples
 ///
 /// ```
-/// use duck_engine_scene::{Mesh, MeshPrimitive, Vertex, Scene, PrimitiveType};
+/// use duck_engine_scene::{Mesh, MeshPrimitive, Vertex, SceneData, PrimitiveType};
 ///
 /// // Create from raw data (no device needed)
 /// let vertices = vec![
@@ -272,7 +272,7 @@ pub enum MeshDescriptor<'a> {
 /// let mesh = Mesh::from_raw(vertices, primitives);
 ///
 /// // Add to scene
-/// let mut scene = Scene::new();
+/// let mut scene = SceneData::new();
 /// let mesh_id = scene.add_mesh(mesh);
 ///
 /// // GPU resources are created automatically during rendering
@@ -280,7 +280,7 @@ pub enum MeshDescriptor<'a> {
 #[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Mesh {
-    /// Unique identifier for this mesh (assigned by Scene)
+    /// Unique identifier for this mesh
     pub id: MeshId,
     /// CPU-side vertex data
     vertices: Vec<Vertex>,

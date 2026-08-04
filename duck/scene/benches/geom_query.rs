@@ -10,7 +10,7 @@ use duck_engine_scene::geom_query::{
     intersect_ray, intersect_ray_nearest, intersect_ray_with_lines, pick_all_from_ray,
     MeshSpatialIndex, RayPickQuery,
 };
-use duck_engine_scene::{Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Scene, Vertex};
+use duck_engine_scene::{Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SceneData, Vertex};
 
 /// World-space tolerance for line picks, roughly a few pixels at working distance.
 const LINE_TOLERANCE: f32 = 0.05;
@@ -76,8 +76,8 @@ fn grid_mesh(n: usize, size: f32) -> Mesh {
 
 /// A scene with `count`×`count` instances of one shared dense mesh, laid out on
 /// a grid with gaps so a ray hits at most one instance.
-fn instanced_scene(mesh: Mesh, count: usize, spacing: f32) -> Scene {
-    let mut scene = Scene::new();
+fn instanced_scene(mesh: Mesh, count: usize, spacing: f32) -> SceneData {
+    let mut scene = SceneData::new();
     let mesh_id = scene.add_mesh(mesh);
     for j in 0..count {
         for i in 0..count {

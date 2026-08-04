@@ -310,7 +310,7 @@ mod tests {
     use crate::geom_query::PickView;
     use crate::{
         DisplayBehavior, FaceMaterial, Instance, Mesh, NodeFlags, PositionedCamera, PrimitiveType,
-        RenderLayer, Scene,
+        RenderLayer,
     };
 
     fn camera() -> PositionedCamera {
@@ -331,7 +331,7 @@ mod tests {
     /// on-screen extents hits only when the pick is view-aware.
     #[test]
     fn screen_sized_node_picked_at_on_screen_extent() {
-        let mut scene = Scene::new();
+        let scene = Scene::default();
         // Unit cube at the origin: authored half-extent 0.5.
         let mesh_id = scene.add_mesh(Mesh::cube(1.0, PrimitiveType::TriangleList));
         let mat_id = scene.add_face_material(FaceMaterial::new());
