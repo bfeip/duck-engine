@@ -3,8 +3,9 @@ use opencascade::primitives::{EdgeType, Shape, ShapeType};
 
 use crate::common::{RgbaColor, Transform};
 use crate::{
-    FaceMaterial, Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId,
-    NodePayload, PrimitiveType, Scene, SubMeshRange, Topology, Vertex,
+    FaceMaterial, FaceMaterialHandle, Instance, LineMaterial, LineMaterialHandle, Mesh,
+    MeshPrimitive, NodeFlags, NodeHandle, NodeId, NodePayload, PrimitiveType, Scene, SceneData,
+    SubMeshRange, Topology, Vertex,
 };
 
 /// Whether a shape bounds a volume, or is free geometry that does not.
@@ -239,14 +240,16 @@ pub fn tessellate_occ_shape(
 
 /// Tessellates `shape` and wires it into `scene` as a mesh + material + instance + node.
 ///
-/// Returns the [`NodeId`] of the created node.
+/// The material templates from `options` are instantiated fresh for the part.
+/// To share materials across parts — say, repeated preview tessellations — use
+/// [`tessellate_into_with_materials`].
 pub fn tessellate_into(
     shape: &Shape,
     scene: &Scene,
     options: &CadTessellationOptions,
     parent: Option<NodeId>,
     name: Option<&str>,
-) -> Result<NodeId> {
+) -> Result<NodeHandle> {
     let mut scene = scene.lock();
 
     let mesh = tessellate_occ_shape(
@@ -259,25 +262,59 @@ pub fn tessellate_into(
     let (face_template, line_template) = options.materials_for(shape);
     let face_mat = scene.add_face_material(face_template.clone().with_fresh_id());
     let line_mat = scene.add_line_material(line_template.clone().with_fresh_id());
-    let mesh_id = scene.add_mesh(mesh);
-    let instance_id = scene.add_instance(
-        Instance::new(mesh_id)
-            .with_face_material(face_mat)
-            .with_line_material(line_mat),
+    tessellate_finish(&mut scene, mesh, face_mat, line_mat, parent, name)
+}
+
+/// Like [`tessellate_into`], but the node shares the given materials instead of
+/// instantiating fresh ones from the option templates.
+pub fn tessellate_into_with_materials(
+    shape: &Shape,
+    scene: &Scene,
+    options: &CadTessellationOptions,
+    face_material: &FaceMaterialHandle,
+    line_material: &LineMaterialHandle,
+    parent: Option<NodeId>,
+    name: Option<&str>,
+) -> Result<NodeHandle> {
+    let mut scene = scene.lock();
+
+    let mesh = tessellate_occ_shape(
+        shape,
+        options.tessellation_tolerance,
+        options.scale_factor,
+        options.include_edges,
+        options.include_points,
+    )?;
+    tessellate_finish(&mut scene, mesh, face_material.clone(), line_material.clone(), parent, name)
+}
+
+fn tessellate_finish(
+    scene: &mut SceneData,
+    mesh: Mesh,
+    face_material: FaceMaterialHandle,
+    line_material: LineMaterialHandle,
+    parent: Option<NodeId>,
+    name: Option<&str>,
+) -> Result<NodeHandle> {
+    let mesh = scene.add_mesh(mesh);
+    let instance = scene.add_instance(
+        Instance::new(mesh)
+            .with_face_material(face_material)
+            .with_line_material(line_material),
     );
 
-    let node_name = name.map(|s| s.to_string());
     let node = scene
-        .add_node(parent, node_name, Transform::IDENTITY, NodeFlags::NONE)
+        .add_node(parent, name.map(str::to_string), Transform::IDENTITY, NodeFlags::NONE)
         .context("Failed to add shape node")?;
-    scene.set_node_payload(node, NodePayload::Instance(instance_id));
+    scene.set_node_payload(node.id(), NodePayload::Instance(instance));
 
     Ok(node)
 }
 
 /// Re-tessellates `shape` into an existing `node`, preserving its [`NodeId`] and
 /// reusing its material slots. The node must already carry a
-/// [`NodePayload::Instance`]; the previous mesh and instance are removed.
+/// [`NodePayload::Instance`]; the previous mesh and instance are released and
+/// removed unless shared.
 ///
 /// Because the material slots are reused verbatim, the node keeps whichever
 /// materials it was first tessellated with. re-classify by
@@ -290,19 +327,16 @@ pub fn retessellate_node(
 ) -> Result<()> {
     let mut scene = scene.lock();
 
-    let NodePayload::Instance(old_instance_id) = *scene
-        .get_node(node)
-        .context("node not found")?
-        .payload()
-    else {
-        anyhow::bail!("node has no instance payload");
+    let old_instance = match scene.get_node(node).context("node not found")?.payload() {
+        NodePayload::Instance(h) => h.clone(),
+        _ => anyhow::bail!("node has no instance payload"),
     };
 
-    let (old_mesh_id, face_mat, line_mat) = {
+    let (face_mat, line_mat) = {
         let old = scene
-            .get_instance(old_instance_id)
+            .get_instance(old_instance.id())
             .context("instance not found")?;
-        (old.mesh(), old.face_material(), old.line_material())
+        (old.face_material_handle().cloned(), old.line_material_handle().cloned())
     };
 
     let mesh = tessellate_occ_shape(
@@ -312,21 +346,16 @@ pub fn retessellate_node(
         options.include_edges,
         options.include_points,
     )?;
-    let mesh_id = scene.add_mesh(mesh);
+    let mesh = scene.add_mesh(mesh);
 
-    let mut instance = Instance::new(mesh_id);
-    instance.set_face_material_unchecked(face_mat);
-    instance.set_line_material_unchecked(line_mat);
-    let instance_id = scene.add_instance(instance);
+    let mut instance = Instance::new(mesh);
+    instance.set_face_material(face_mat);
+    instance.set_line_material(line_mat);
+    let instance = scene.add_instance(instance);
 
-    scene.set_node_payload(node, NodePayload::Instance(instance_id));
-
-    if scene.is_instance_orphaned(old_instance_id) {
-        scene.remove_instance(old_instance_id);
-    }
-    if scene.is_mesh_orphaned(old_mesh_id) {
-        scene.remove_mesh(old_mesh_id);
-    }
+    // Replacing the payload releases the node's old instance; it and its mesh
+    // are reaped when the guard drops unless another node still shares them.
+    scene.set_node_payload(node, NodePayload::Instance(instance));
 
     Ok(())
 }
@@ -462,10 +491,10 @@ mod tests {
     fn node_colors(scene: &Scene, node: NodeId) -> (RgbaColor, RgbaColor) {
         let scene = scene.lock();
 
-        let NodePayload::Instance(instance_id) = *scene.get_node(node).unwrap().payload() else {
+        let NodePayload::Instance(instance) = scene.get_node(node).unwrap().payload() else {
             panic!("expected instance payload");
         };
-        let instance = scene.get_instance(instance_id).unwrap();
+        let instance = scene.get_instance(instance.id()).unwrap();
         let face = scene.get_face_material(instance.face_material().unwrap()).unwrap();
         let line = scene.get_line_material(instance.line_material().unwrap()).unwrap();
         (face.base_color_factor(), line.color())
@@ -548,7 +577,7 @@ mod tests {
         let mut scene = Scene::default();
 
         for shape in [open_wire(), planar_face()] {
-            let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
+            let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap().id();
             let (face, line) = node_colors(&scene, node);
             assert_color_eq(face, FREE_FACE, "face");
             assert_color_eq(line, FREE_LINE, "line");
@@ -560,7 +589,7 @@ mod tests {
         let options = classified_options();
         let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::cube(2.0);
-        let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
+        let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap().id();
 
         let (face, line) = node_colors(&scene, node);
         assert_color_eq(face, options.face_material.base_color_factor(), "face");
@@ -572,7 +601,7 @@ mod tests {
         // Callers that never opt in (glTF/STEP import) must see no change.
         let options = default_options();
         let mut scene = Scene::default();
-        let node = tessellate_into(&open_wire(), &mut scene, &options, None, None).unwrap();
+        let node = tessellate_into(&open_wire(), &mut scene, &options, None, None).unwrap().id();
 
         let (face, line) = node_colors(&scene, node);
         assert_color_eq(face, options.face_material.base_color_factor(), "face");
@@ -592,7 +621,7 @@ mod tests {
         ]);
 
         let mut scene = Scene::default();
-        let node = tessellate_into(&scaled, &mut scene, &default_options(), None, None).unwrap();
+        let node = tessellate_into(&scaled, &mut scene, &default_options(), None, None).unwrap().id();
         let aabb = scene.nodes_bounding(node).bounds.expect("scaled box has bounds");
         let (sx, sy, sz) = aabb.size();
         assert!((sx - 6.0).abs() < 1e-3, "expected X extent ~6, got {sx}");
@@ -605,7 +634,7 @@ mod tests {
         let options = default_options();
         let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
-        let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
+        let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap().id();
 
         let before = scene.nodes_bounding(node).bounds.expect("box has bounds");
         let (bx, _, _) = before.size();
@@ -634,17 +663,19 @@ mod tests {
         let options = default_options();
         let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
-        let node1 = tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
+        let node1 = tessellate_into(&shape, &mut scene, &options, None, None).unwrap().id();
 
         // Capture the instance + mesh the part created.
-        let NodePayload::Instance(instance_id) = *scene.get_node(node1).unwrap().payload() else {
+        let NodePayload::Instance(instance) = scene.get_node(node1).unwrap().payload().clone()
+        else {
             panic!("expected instance payload");
         };
+        let instance_id = instance.id();
         let mesh_id = scene.get_instance(instance_id).unwrap().mesh();
 
         // A second node deliberately sharing the same instance.
-        let node2 = scene.add_node(None, None, Transform::IDENTITY, NodeFlags::NONE).unwrap();
-        scene.set_node_payload(node2, NodePayload::Instance(instance_id));
+        let node2 = scene.add_node(None, None, Transform::IDENTITY, NodeFlags::NONE).unwrap().id();
+        scene.set_node_payload(node2, NodePayload::Instance(instance));
 
         let scaled = shape.gtransform([
             [3.0, 0.0, 0.0, 0.0],

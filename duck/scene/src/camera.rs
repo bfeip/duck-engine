@@ -850,7 +850,8 @@ mod tests {
         let mut scene = SceneData::new();
         let camera = scene
             .add_node(None, Some("cam".into()), common::Transform::IDENTITY, NodeFlags::NONE)
-            .unwrap();
+            .unwrap()
+            .id();
         let proj = CameraProjection {
             fovy: 45.0,
             znear: 0.1,

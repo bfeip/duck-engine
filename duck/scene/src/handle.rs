@@ -14,8 +14,9 @@ use std::thread::ThreadId;
 use crate::common::{Matrix4, Point3, Quaternion, Transform, Vector3};
 use crate::{
     BoundingResult, DisplayBehavior, EffectiveVisibility, EnvironmentMap, EnvironmentMapId,
-    FaceMaterial, FaceMaterialId, Instance, InstanceId, Light, LineMaterial, LineMaterialId, Mesh,
-    MeshId, Node, NodeFlags, NodeId, NodePayload, PointMaterial, PointMaterialId, PositionedCamera,
+    FaceMaterial, FaceMaterialHandle, FaceMaterialId, Instance, InstanceHandle, InstanceId, Light,
+    LineMaterial, LineMaterialHandle, LineMaterialId, Mesh, MeshHandle, Node, NodeFlags, NodeHandle,
+    NodeId, NodePayload, PointMaterial, PointMaterialHandle, PointMaterialId, PositionedCamera,
     SceneData, Visibility,
 };
 
@@ -31,12 +32,18 @@ use crate::{
 /// [`lock`](Self::lock)**. In debug builds that mistake panics with both source
 /// locations rather than hanging.
 #[derive(Clone)]
-pub struct Scene(Arc<SceneLock>);
+pub struct Scene(pub(crate) Arc<SceneLock>);
 
 impl Scene {
     /// Wraps scene data in a new handle.
+    ///
+    /// Every handle already minted from the data (during import, say) becomes
+    /// bound to this scene.
     pub fn new(data: SceneData) -> Self {
-        Self(Arc::new(SceneLock::new(data)))
+        let bind = data.bind().clone();
+        let lock = Arc::new(SceneLock::new(data));
+        *bind.lock.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&lock);
+        Self(lock)
     }
 
     /// Borrows the scene data for a compound operation.
@@ -139,7 +146,7 @@ impl Scene {
     /// Copies the root node ids out of the scene.
     #[track_caller]
     pub fn root_nodes(&self) -> Vec<NodeId> {
-        self.lock().root_nodes().to_vec()
+        self.lock().root_nodes().collect()
     }
 
     /// World transform of a node, or `None` if the tree is incomplete.
@@ -175,7 +182,7 @@ impl Scene {
         name: Option<String>,
         transform: Transform,
         flags: NodeFlags,
-    ) -> anyhow::Result<NodeId> {
+    ) -> anyhow::Result<NodeHandle> {
         self.lock().add_node(parent, name, transform, flags)
     }
 
@@ -187,8 +194,14 @@ impl Scene {
         name: Option<String>,
         transform: Transform,
         flags: NodeFlags,
-    ) -> anyhow::Result<NodeId> {
+    ) -> anyhow::Result<NodeHandle> {
         self.lock().add_instance_node(parent, instance, name, transform, flags)
+    }
+
+    /// An owning handle for an existing node.
+    #[track_caller]
+    pub fn node_handle(&self, id: NodeId) -> Option<NodeHandle> {
+        self.lock().node_handle(id)
     }
 
     #[track_caller]
@@ -226,16 +239,16 @@ impl Scene {
         self.lock().set_node_visibility(node_id, visibility);
     }
 
-    /// Removes a node and its subtree, leaving referenced resources in place.
+    /// Detaches a node's subtree; see [`SceneData::remove_node`].
     #[track_caller]
     pub fn remove_node(&self, node_id: NodeId) {
         self.lock().remove_node(node_id);
     }
 
-    /// Removes a node and its subtree along with any resources left orphaned.
+    /// Moves a node under a new parent; see [`SceneData::reparent_node`].
     #[track_caller]
-    pub fn cleanup_node(&self, node_id: NodeId) {
-        self.lock().cleanup_node(node_id);
+    pub fn reparent_node(&self, node_id: NodeId, new_parent: Option<NodeId>) -> anyhow::Result<()> {
+        self.lock().reparent_node(node_id, new_parent)
     }
 
     /// Empties the scene.
@@ -247,7 +260,7 @@ impl Scene {
     // ========== Instances and materials ==========
 
     #[track_caller]
-    pub fn add_instance(&self, instance: Instance) -> InstanceId {
+    pub fn add_instance(&self, instance: Instance) -> InstanceHandle {
         self.lock().add_instance(instance)
     }
 
@@ -257,12 +270,12 @@ impl Scene {
     }
 
     #[track_caller]
-    pub fn add_mesh(&self, mesh: Mesh) -> MeshId {
+    pub fn add_mesh(&self, mesh: Mesh) -> MeshHandle {
         self.lock().add_mesh(mesh)
     }
 
     #[track_caller]
-    pub fn add_face_material(&self, material: FaceMaterial) -> FaceMaterialId {
+    pub fn add_face_material(&self, material: FaceMaterial) -> FaceMaterialHandle {
         self.lock().add_face_material(material)
     }
 
@@ -272,7 +285,7 @@ impl Scene {
     }
 
     #[track_caller]
-    pub fn add_line_material(&self, material: LineMaterial) -> LineMaterialId {
+    pub fn add_line_material(&self, material: LineMaterial) -> LineMaterialHandle {
         self.lock().add_line_material(material)
     }
 
@@ -282,7 +295,7 @@ impl Scene {
     }
 
     #[track_caller]
-    pub fn add_point_material(&self, material: PointMaterial) -> PointMaterialId {
+    pub fn add_point_material(&self, material: PointMaterial) -> PointMaterialHandle {
         self.lock().add_point_material(material)
     }
 
@@ -308,13 +321,16 @@ impl Scene {
         self.lock().light_count()
     }
 
-    /// Collects every light in the scene with the node carrying it.
+    /// Collects every light in the scene with the attached node carrying it.
     #[track_caller]
     pub fn light_nodes(&self) -> Vec<(NodeId, Light)> {
-        self.lock()
+        let scene = self.lock();
+        scene
             .nodes()
             .filter_map(|n| match n.payload() {
-                NodePayload::Light(light) => Some((n.id, light.clone())),
+                NodePayload::Light(light) if scene.is_node_attached(n.id) => {
+                    Some((n.id, light.clone()))
+                }
                 _ => None,
             })
             .collect()
@@ -362,7 +378,7 @@ impl From<SceneData> for Scene {
 
 /// The mutex behind a [`Scene`], with poison handling and debug re-entrancy
 /// detection folded in.
-struct SceneLock {
+pub(crate) struct SceneLock {
     data: Mutex<SceneData>,
     /// Thread and source location of the guard currently held, for the debug
     /// re-entrancy panic.
@@ -386,9 +402,9 @@ impl SceneLock {
     /// renderer cannot tolerate, and refusing to unlock would turn any panic into
     /// a cascade of secondary panics in every later frame.
     #[track_caller]
-    fn lock(&self) -> SceneGuard<'_> {
+    pub(crate) fn lock(&self) -> SceneGuard<'_> {
         #[cfg(debug_assertions)]
-        {
+        let mut guard = {
             let caller = std::panic::Location::caller();
             let guard = match self.data.try_lock() {
                 Ok(guard) => guard,
@@ -412,12 +428,16 @@ impl SceneLock {
                 *held = Some((std::thread::current().id(), caller));
             }
             SceneGuard { inner: guard, lock: self }
-        }
+        };
 
         #[cfg(not(debug_assertions))]
-        SceneGuard {
+        let mut guard = SceneGuard {
             inner: self.data.lock().unwrap_or_else(|e| e.into_inner()),
-        }
+        };
+
+        // Every guard observes a fully-reaped scene.
+        guard.reap();
+        guard
     }
 }
 
@@ -442,9 +462,12 @@ impl DerefMut for SceneGuard<'_> {
     }
 }
 
-#[cfg(debug_assertions)]
 impl Drop for SceneGuard<'_> {
     fn drop(&mut self) {
+        // Handles dropped while this guard was held are reaped before the
+        // scene unlocks.
+        self.inner.reap();
+        #[cfg(debug_assertions)]
         if let Ok(mut held) = self.lock.held_by.lock() {
             *held = None;
         }
@@ -465,7 +488,8 @@ mod tests {
         let id = scene
             .lock()
             .add_node(None, Some("n".into()), Transform::IDENTITY, NodeFlags::NONE)
-            .unwrap();
+            .unwrap()
+            .id();
 
         assert!(other.lock().has_node(id));
         assert!(scene.ptr_eq(&other));

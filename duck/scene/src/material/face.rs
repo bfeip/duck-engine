@@ -1,4 +1,5 @@
 use crate::common::RgbaColor;
+use crate::resource_handle::TextureHandle;
 use crate::TextureId;
 
 use super::{
@@ -31,12 +32,12 @@ pub struct FaceMaterial {
     /// Unique identifier for this material
     pub id: FaceMaterialId,
 
-    /// Base color texture (albedo)
-    base_color_texture: Option<TextureId>,
-    /// Normal map texture
-    normal_texture: Option<TextureId>,
-    /// Metallic-roughness texture (G=roughness, B=metallic per glTF spec)
-    metallic_roughness_texture: Option<TextureId>,
+    /// Base color texture (albedo).
+    base_color_texture: Option<TextureHandle>,
+    /// Normal map texture.
+    normal_texture: Option<TextureHandle>,
+    /// Metallic-roughness texture (G=roughness, B=metallic per glTF spec).
+    metallic_roughness_texture: Option<TextureHandle>,
 
     /// Base color factor (multiplied with texture if present)
     base_color_factor: RgbaColor,
@@ -85,17 +86,17 @@ impl FaceMaterial {
 
     /// Get the base color texture ID.
     pub fn base_color_texture(&self) -> Option<TextureId> {
-        self.base_color_texture
+        self.base_color_texture.as_ref().map(TextureHandle::id)
     }
 
     /// Get the normal map texture ID.
     pub fn normal_texture(&self) -> Option<TextureId> {
-        self.normal_texture
+        self.normal_texture.as_ref().map(TextureHandle::id)
     }
 
     /// Get the metallic-roughness texture ID.
     pub fn metallic_roughness_texture(&self) -> Option<TextureId> {
-        self.metallic_roughness_texture
+        self.metallic_roughness_texture.as_ref().map(TextureHandle::id)
     }
 
     /// Get the base color factor.
@@ -172,20 +173,20 @@ impl FaceMaterial {
     }
 
     /// Set the base color texture.
-    pub fn with_base_color_texture(mut self, texture_id: TextureId) -> Self {
-        self.set_base_color_texture(texture_id);
+    pub fn with_base_color_texture(mut self, texture: TextureHandle) -> Self {
+        self.set_base_color_texture(texture);
         self
     }
 
     /// Set the normal map texture.
-    pub fn with_normal_texture(mut self, texture_id: TextureId) -> Self {
-        self.set_normal_texture(texture_id);
+    pub fn with_normal_texture(mut self, texture: TextureHandle) -> Self {
+        self.set_normal_texture(texture);
         self
     }
 
     /// Set the metallic-roughness texture.
-    pub fn with_metallic_roughness_texture(mut self, texture_id: TextureId) -> Self {
-        self.set_metallic_roughness_texture(texture_id);
+    pub fn with_metallic_roughness_texture(mut self, texture: TextureHandle) -> Self {
+        self.set_metallic_roughness_texture(texture);
         self
     }
 
@@ -234,8 +235,8 @@ impl FaceMaterial {
     // ========== Mutation methods (increment generation) ==========
 
     /// Set the base color texture, marking the material as dirty.
-    pub fn set_base_color_texture(&mut self, texture_id: TextureId) {
-        self.base_color_texture = Some(texture_id);
+    pub fn set_base_color_texture(&mut self, texture: TextureHandle) {
+        self.base_color_texture = Some(texture);
         self.generation += 1;
     }
 
@@ -246,14 +247,14 @@ impl FaceMaterial {
     }
 
     /// Set the normal map texture, marking the material as dirty.
-    pub fn set_normal_texture(&mut self, texture_id: TextureId) {
-        self.normal_texture = Some(texture_id);
+    pub fn set_normal_texture(&mut self, texture: TextureHandle) {
+        self.normal_texture = Some(texture);
         self.generation += 1;
     }
 
     /// Set the metallic-roughness texture, marking the material as dirty.
-    pub fn set_metallic_roughness_texture(&mut self, texture_id: TextureId) {
-        self.metallic_roughness_texture = Some(texture_id);
+    pub fn set_metallic_roughness_texture(&mut self, texture: TextureHandle) {
+        self.metallic_roughness_texture = Some(texture);
         self.generation += 1;
     }
 

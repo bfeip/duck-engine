@@ -10,7 +10,9 @@ use duck_engine_scene::geom_query::{
     intersect_ray, intersect_ray_nearest, intersect_ray_with_lines, pick_all_from_ray,
     MeshSpatialIndex, RayPickQuery,
 };
-use duck_engine_scene::{Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SceneData, Vertex};
+use duck_engine_scene::{
+    Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Scene, SceneData, Vertex,
+};
 
 /// World-space tolerance for line picks, roughly a few pixels at working distance.
 const LINE_TOLERANCE: f32 = 0.05;
@@ -76,16 +78,16 @@ fn grid_mesh(n: usize, size: f32) -> Mesh {
 
 /// A scene with `count`×`count` instances of one shared dense mesh, laid out on
 /// a grid with gaps so a ray hits at most one instance.
-fn instanced_scene(mesh: Mesh, count: usize, spacing: f32) -> SceneData {
+fn instanced_scene(mesh: Mesh, count: usize, spacing: f32) -> Scene {
     let mut scene = SceneData::new();
-    let mesh_id = scene.add_mesh(mesh);
+    let mesh = scene.add_mesh(mesh);
     for j in 0..count {
         for i in 0..count {
             let position = Point3::new(i as f32 * spacing, 0.0, j as f32 * spacing);
             scene
                 .add_instance_node(
                     None,
-                    Instance::new(mesh_id),
+                    Instance::new(mesh.clone()),
                     Some(format!("part_{i}_{j}")),
                     Transform::from_position(position),
                     NodeFlags::NONE,
@@ -93,7 +95,7 @@ fn instanced_scene(mesh: Mesh, count: usize, spacing: f32) -> SceneData {
                 .expect("instance node");
         }
     }
-    scene
+    Scene::new(scene)
 }
 
 /// Straight-down ray through `(x, z)`.

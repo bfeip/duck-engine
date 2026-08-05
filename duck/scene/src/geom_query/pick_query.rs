@@ -85,7 +85,7 @@ pub fn pick_all_with_view<Q: PickQuery>(
     let scene = scene.lock();
     let mut results = Vec::new();
 
-    for &root_id in scene.root_nodes() {
+    for root_id in scene.root_nodes() {
         pick_node(query, root_id, &scene, DisplayBehavior::default(), view, &mut results);
     }
 
@@ -140,11 +140,11 @@ fn pick_node<Q: PickQuery>(
     if let NodePayload::Instance(instance_id) = node.payload()
         && let Some(transform) = pick_transform(scene, node_id, display, view)
     {
-        collect_instance_hits(query, node, *instance_id, scene, &transform, results);
+        collect_instance_hits(query, node, instance_id.id(), scene, &transform, results);
     }
 
     // Recurse to children. Missing child nodes are silently skipped.
-    for &child_id in node.children() {
+    for child_id in node.children() {
         pick_node(query, child_id, scene, display, view, results);
     }
 }
@@ -234,9 +234,10 @@ mod tests {
             ],
             vec![MeshPrimitive { primitive_type: PrimitiveType::TriangleList, indices: vec![0, 1, 2] }],
         );
-        let mesh_id = scene.add_mesh(mesh);
-        let instance = crate::Instance::new(mesh_id).with_face_material(crate::FaceMaterialId::new());
-        scene.add_instance_node(parent, instance, None, Transform::IDENTITY, flags).unwrap()
+        let mesh = scene.add_mesh(mesh);
+        let material = scene.add_face_material(crate::FaceMaterial::new());
+        let instance = crate::Instance::new(mesh).with_face_material(material);
+        scene.add_instance_node(parent, instance, None, Transform::IDENTITY, flags).unwrap().id()
     }
 
     #[test]
@@ -261,7 +262,7 @@ mod tests {
     fn test_do_not_select_skips_children() {
         let mut scene = Scene::default();
         // DO_NOT_SELECT group parent with a selectable child
-        let parent = scene.add_node(None, None, Transform::IDENTITY, NodeFlags::DO_NOT_SELECT).unwrap();
+        let parent = scene.add_node(None, None, Transform::IDENTITY, NodeFlags::DO_NOT_SELECT).unwrap().id();
         let _child = make_geometry_node(&mut scene, Some(parent), NodeFlags::NONE);
 
         let hits = pick_all(&AlwaysHitQuery, &scene);

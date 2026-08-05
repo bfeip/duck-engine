@@ -16,13 +16,16 @@ mod light;
 mod material;
 mod mesh;
 mod node;
+mod resource_handle;
 mod texture;
 mod view;
 
 use duck_engine_common::{Deg, Matrix4, Point3, Quaternion, Rotation3, SquareMatrix, Vector3};
 use image::DynamicImage;
+use resource_handle::{HandleCore, SceneBind};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 // ID types
 pub use id::{GenericId, Id};
@@ -35,6 +38,10 @@ pub use texture::TextureId;
 
 pub use camera::{CameraProjection, PositionedCamera};
 pub use handle::{Scene, SceneGuard};
+pub use resource_handle::{
+    FaceMaterialHandle, Handle, InstanceHandle, LineMaterialHandle, MeshHandle, NodeHandle,
+    PointMaterialHandle, ResourceKind, SceneResource, TextureHandle, WeakHandle,
+};
 pub use display::{DisplayBehavior, RenderLayer};
 pub use coordinate_space::CoordinateSpace;
 pub use view::{View, ViewId};
@@ -106,15 +113,15 @@ pub struct BoundingResult {
 ///     indices: vec![0, 1, 2],
 /// }];
 /// let mesh = Mesh::from_raw(vertices, primitives);
-/// let mesh_id = scene.add_mesh(mesh);
+/// let mesh = scene.add_mesh(mesh);
 ///
 /// // Add a face material (no device needed)
 /// let material = FaceMaterial::new().with_base_color_factor(RgbaColor::RED);
-/// let mat_id = scene.add_face_material(material);
+/// let material = scene.add_face_material(material);
 ///
 /// // Create an instance node
-/// let instance = Instance::new(mesh_id).with_face_material(mat_id);
-/// let node_id = scene.add_instance_node(
+/// let instance = Instance::new(mesh).with_face_material(material);
+/// let node = scene.add_instance_node(
 ///     None,
 ///     instance,
 ///     None,
@@ -122,14 +129,14 @@ pub struct BoundingResult {
 ///     NodeFlags::NONE,
 /// );
 /// ```
-#[derive(Clone)]
 pub struct SceneData {
     meshes: HashMap<MeshId, Mesh>,
     instances: HashMap<InstanceId, Instance>,
 
     // Scene tree
     nodes: HashMap<NodeId, Node>,
-    root_nodes: Vec<NodeId>,
+    /// Owning references: root nodes are kept alive by this list.
+    root_nodes: Vec<NodeHandle>,
 
     face_materials: HashMap<FaceMaterialId, FaceMaterial>,
     line_materials: HashMap<LineMaterialId, LineMaterial>,
@@ -147,6 +154,16 @@ pub struct SceneData {
     /// Generation counter that increments on any node add, remove, or mutation.
     /// Used by the renderer to detect when scene data need re-collection.
     node_generation: u64,
+
+    /// Shared with every handle minted from this scene; carries the pending
+    /// drop queue. See [`resource_handle`].
+    bind: Arc<SceneBind>,
+    /// Canonical live handle core per resource, so re-minting a handle for an
+    /// id shares the refcount of every existing handle for it.
+    slots: HashMap<GenericId, std::sync::Weak<HandleCore>>,
+    /// Resources removed since the last [`take_removals`](Self::take_removals);
+    /// the renderer drains this to evict GPU resources.
+    removals: Vec<(ResourceKind, GenericId)>,
 }
 
 impl SceneData {
@@ -170,20 +187,146 @@ impl SceneData {
             active_camera: None,
 
             node_generation: initial_generation(),
+
+            bind: Arc::new(SceneBind::new()),
+            slots: HashMap::new(),
+            removals: Vec::new(),
         }
+    }
+
+    // ========== Handles ==========
+
+    /// The bind shared with handles; `Scene::new` points it at the lock.
+    pub(crate) fn bind(&self) -> &Arc<SceneBind> {
+        &self.bind
+    }
+
+    /// The canonical core for `id`, minting one if none is live.
+    fn mint_core(&mut self, id: GenericId, kind: ResourceKind) -> Arc<HandleCore> {
+        if let Some(weak) = self.slots.get(&id)
+            && let Some(core) = weak.upgrade()
+        {
+            return core;
+        }
+        let core = Arc::new(HandleCore { id, kind, bind: Arc::downgrade(&self.bind) });
+        self.slots.insert(id, Arc::downgrade(&core));
+        core
+    }
+
+    fn mint<K>(&mut self, id: Id<K>, kind: ResourceKind) -> Handle<K> {
+        Handle::from_core(self.mint_core(id.erased(), kind))
+    }
+
+    /// An owning handle for an existing mesh.
+    pub fn mesh_handle(&mut self, id: MeshId) -> Option<MeshHandle> {
+        self.meshes.contains_key(&id).then(|| self.mint(id, ResourceKind::Mesh))
+    }
+
+    /// An owning handle for an existing instance.
+    pub fn instance_handle(&mut self, id: InstanceId) -> Option<InstanceHandle> {
+        self.instances.contains_key(&id).then(|| self.mint(id, ResourceKind::Instance))
+    }
+
+    /// An owning handle for an existing node.
+    pub fn node_handle(&mut self, id: NodeId) -> Option<NodeHandle> {
+        self.nodes.contains_key(&id).then(|| self.mint(id, ResourceKind::Node))
+    }
+
+    /// An owning handle for an existing face material.
+    pub fn face_material_handle(&mut self, id: FaceMaterialId) -> Option<FaceMaterialHandle> {
+        self.face_materials.contains_key(&id).then(|| self.mint(id, ResourceKind::FaceMaterial))
+    }
+
+    /// An owning handle for an existing line material.
+    pub fn line_material_handle(&mut self, id: LineMaterialId) -> Option<LineMaterialHandle> {
+        self.line_materials.contains_key(&id).then(|| self.mint(id, ResourceKind::LineMaterial))
+    }
+
+    /// An owning handle for an existing point material.
+    pub fn point_material_handle(&mut self, id: PointMaterialId) -> Option<PointMaterialHandle> {
+        self.point_materials.contains_key(&id).then(|| self.mint(id, ResourceKind::PointMaterial))
+    }
+
+    /// An owning handle for an existing texture.
+    pub fn texture_handle(&mut self, id: TextureId) -> Option<TextureHandle> {
+        self.textures.contains_key(&id).then(|| self.mint(id, ResourceKind::Texture))
+    }
+
+    /// Removes resources whose last handle has dropped, cascading through
+    /// the references they owned.
+    ///
+    /// Runs automatically when the scene lock is taken or released; call it
+    /// directly on a standalone `SceneData`.
+    pub fn reap(&mut self) {
+        let bind = self.bind.clone();
+        loop {
+            let batch = std::mem::take(
+                &mut *bind.dropped.lock().unwrap_or_else(|e| e.into_inner()),
+            );
+            if batch.is_empty() {
+                break;
+            }
+            for (kind, id) in batch {
+                // Revived: a new handle was minted after the drop enqueued.
+                if self.slots.get(&id).is_some_and(|w| w.strong_count() > 0) {
+                    continue;
+                }
+                let removed = match kind {
+                    ResourceKind::Mesh => self.meshes.remove(&id.cast()).is_some(),
+                    ResourceKind::Instance => self.instances.remove(&id.cast()).is_some(),
+                    ResourceKind::FaceMaterial => self.face_materials.remove(&id.cast()).is_some(),
+                    ResourceKind::LineMaterial => self.line_materials.remove(&id.cast()).is_some(),
+                    ResourceKind::PointMaterial => {
+                        self.point_materials.remove(&id.cast()).is_some()
+                    }
+                    ResourceKind::Texture => self.textures.remove(&id.cast()).is_some(),
+                    ResourceKind::Node => match self.nodes.remove(&id.cast()) {
+                        Some(node) => {
+                            // Children still alive through other handles are now
+                            // detached roots.
+                            for child in node.child_handles() {
+                                if let Some(c) = self.nodes.get_mut(&child.id()) {
+                                    c.set_parent_unchecked(None);
+                                }
+                            }
+                            if self.active_camera == Some(id.cast()) {
+                                self.active_camera = None;
+                            }
+                            self.node_generation += 1;
+                            true
+                            // Dropping `node` here releases its children and
+                            // payload; the next loop iteration reaps them.
+                        }
+                        None => false,
+                    },
+                };
+                if removed {
+                    self.slots.remove(&id);
+                    self.removals.push((kind, id));
+                }
+            }
+        }
+    }
+
+    /// Drains the log of resources removed since the last call.
+    ///
+    /// Renderers use this to evict cached GPU resources. The log has a single
+    /// consumer: draining it hands the removals to the caller.
+    pub fn take_removals(&mut self) -> Vec<(ResourceKind, GenericId)> {
+        std::mem::take(&mut self.removals)
     }
 
     // ========== Mesh API ==========
 
-    /// Adds a mesh to the scene.
-    pub fn add_mesh(&mut self, mesh: Mesh) -> MeshId {
+    /// Adds a mesh to the scene, returning its owning handle.
+    pub fn add_mesh(&mut self, mesh: Mesh) -> MeshHandle {
         let id = mesh.id;
         self.meshes.insert(id, mesh);
-        id
+        self.mint(id, ResourceKind::Mesh)
     }
 
     /// Creates and adds a mesh from a descriptor.
-    pub fn add_mesh_from_descriptor(&mut self, descriptor: MeshDescriptor) -> anyhow::Result<MeshId> {
+    pub fn add_mesh_from_descriptor(&mut self, descriptor: MeshDescriptor) -> anyhow::Result<MeshHandle> {
         let mesh = Mesh::from_descriptor(descriptor)?;
         Ok(self.add_mesh(mesh))
     }
@@ -213,24 +356,22 @@ impl SceneData {
         self.meshes.len()
     }
 
-    /// Removes a mesh from the scene by ID.
+    /// Force-removes a mesh from the scene by ID, even while handles for it
+    /// exist (they become inert).
     pub fn remove_mesh(&mut self, id: MeshId) {
-        self.meshes.remove(&id);
-    }
-
-    /// Returns true if no instance references this mesh, i.e. removing it would
-    /// orphan nothing.
-    pub fn is_mesh_orphaned(&self, id: MeshId) -> bool {
-        !self.instances.values().any(|inst| inst.mesh() == id)
+        if self.meshes.remove(&id).is_some() {
+            self.slots.remove(&id.erased());
+            self.removals.push((ResourceKind::Mesh, id.erased()));
+        }
     }
 
     // ========== Face material API ==========
 
-    /// Adds a face material to the scene.
-    pub fn add_face_material(&mut self, material: FaceMaterial) -> FaceMaterialId {
+    /// Adds a face material to the scene, returning its owning handle.
+    pub fn add_face_material(&mut self, material: FaceMaterial) -> FaceMaterialHandle {
         let id = material.id;
         self.face_materials.insert(id, material);
-        id
+        self.mint(id, ResourceKind::FaceMaterial)
     }
 
     /// Gets a reference to a face material by ID.
@@ -258,23 +399,22 @@ impl SceneData {
         self.face_materials.len()
     }
 
-    /// Removes a face material from the scene by ID.
+    /// Force-removes a face material from the scene by ID, even while handles
+    /// for it exist (they become inert).
     pub fn remove_face_material(&mut self, id: FaceMaterialId) {
-        self.face_materials.remove(&id);
-    }
-
-    /// Returns true if no instance references this face material.
-    pub fn is_face_material_orphaned(&self, id: FaceMaterialId) -> bool {
-        !self.instances.values().any(|inst| inst.face_material() == Some(id))
+        if self.face_materials.remove(&id).is_some() {
+            self.slots.remove(&id.erased());
+            self.removals.push((ResourceKind::FaceMaterial, id.erased()));
+        }
     }
 
     // ========== Line material API ==========
 
-    /// Adds a line material to the scene.
-    pub fn add_line_material(&mut self, material: LineMaterial) -> LineMaterialId {
+    /// Adds a line material to the scene, returning its owning handle.
+    pub fn add_line_material(&mut self, material: LineMaterial) -> LineMaterialHandle {
         let id = material.id;
         self.line_materials.insert(id, material);
-        id
+        self.mint(id, ResourceKind::LineMaterial)
     }
 
     /// Gets a reference to a line material by ID.
@@ -302,23 +442,22 @@ impl SceneData {
         self.line_materials.len()
     }
 
-    /// Removes a line material from the scene by ID.
+    /// Force-removes a line material from the scene by ID, even while handles
+    /// for it exist (they become inert).
     pub fn remove_line_material(&mut self, id: LineMaterialId) {
-        self.line_materials.remove(&id);
-    }
-
-    /// Returns true if no instance references this line material.
-    pub fn is_line_material_orphaned(&self, id: LineMaterialId) -> bool {
-        !self.instances.values().any(|inst| inst.line_material() == Some(id))
+        if self.line_materials.remove(&id).is_some() {
+            self.slots.remove(&id.erased());
+            self.removals.push((ResourceKind::LineMaterial, id.erased()));
+        }
     }
 
     // ========== Point material API ==========
 
-    /// Adds a point material to the scene.
-    pub fn add_point_material(&mut self, material: PointMaterial) -> PointMaterialId {
+    /// Adds a point material to the scene, returning its owning handle.
+    pub fn add_point_material(&mut self, material: PointMaterial) -> PointMaterialHandle {
         let id = material.id;
         self.point_materials.insert(id, material);
-        id
+        self.mint(id, ResourceKind::PointMaterial)
     }
 
     /// Gets a reference to a point material by ID.
@@ -346,34 +485,33 @@ impl SceneData {
         self.point_materials.len()
     }
 
-    /// Removes a point material from the scene by ID.
+    /// Force-removes a point material from the scene by ID, even while handles
+    /// for it exist (they become inert).
     pub fn remove_point_material(&mut self, id: PointMaterialId) {
-        self.point_materials.remove(&id);
-    }
-
-    /// Returns true if no instance references this point material.
-    pub fn is_point_material_orphaned(&self, id: PointMaterialId) -> bool {
-        !self.instances.values().any(|inst| inst.point_material() == Some(id))
+        if self.point_materials.remove(&id).is_some() {
+            self.slots.remove(&id.erased());
+            self.removals.push((ResourceKind::PointMaterial, id.erased()));
+        }
     }
 
     // ========== Texture API ==========
 
-    /// Adds a texture to the scene.
-    pub fn add_texture(&mut self, texture: Texture) -> TextureId {
+    /// Adds a texture to the scene, returning its owning handle.
+    pub fn add_texture(&mut self, texture: Texture) -> TextureHandle {
         let id = texture.id;
         self.textures.insert(id, texture);
-        id
+        self.mint(id, ResourceKind::Texture)
     }
 
     /// Creates and adds a texture from an image.
-    pub fn add_texture_from_image(&mut self, image: DynamicImage) -> TextureId {
+    pub fn add_texture_from_image(&mut self, image: DynamicImage) -> TextureHandle {
         self.add_texture(Texture::from_image(image))
     }
 
     /// Creates and adds a texture from a file path.
     ///
     /// The image is not loaded immediately - it will be loaded lazily when first needed.
-    pub fn add_texture_from_path(&mut self, path: impl AsRef<Path>) -> TextureId {
+    pub fn add_texture_from_path(&mut self, path: impl AsRef<Path>) -> TextureHandle {
         self.add_texture(Texture::from_path(path.as_ref()))
     }
 
@@ -400,18 +538,6 @@ impl SceneData {
     /// Returns the number of textures in the scene.
     pub fn texture_count(&self) -> usize {
         self.textures.len()
-    }
-
-    /// Returns true if no material references this texture.
-    pub fn is_texture_orphaned(&self, id: TextureId) -> bool {
-        let in_face = self.face_materials.values().any(|m| {
-            m.base_color_texture() == Some(id)
-                || m.normal_texture() == Some(id)
-                || m.metallic_roughness_texture() == Some(id)
-        });
-        let in_line = self.line_materials.values().any(|m| m.base_color_texture() == Some(id));
-        let in_point = self.point_materials.values().any(|m| m.base_color_texture() == Some(id));
-        !(in_face || in_line || in_point)
     }
 
     // ========== Environment Map API (IBL) ==========
@@ -493,11 +619,11 @@ impl SceneData {
 
     // ========== Instance API ==========
 
-    /// Adds an instance to the scene, binding a mesh to a material.
-    pub fn add_instance(&mut self, instance: Instance) -> InstanceId {
+    /// Adds an instance to the scene, returning its owning handle.
+    pub fn add_instance(&mut self, instance: Instance) -> InstanceHandle {
         let id = instance.id;
         self.instances.insert(id, instance);
-        id
+        self.mint(id, ResourceKind::Instance)
     }
 
     /// Gets a reference to an instance by ID.
@@ -525,17 +651,13 @@ impl SceneData {
         self.instances.len()
     }
 
-    /// Removes an instance from the scene by ID.
+    /// Force-removes an instance from the scene by ID, even while handles for
+    /// it exist (they become inert).
     pub fn remove_instance(&mut self, id: InstanceId) {
-        self.instances.remove(&id);
-    }
-
-    /// Returns true if no node references this instance.
-    pub fn is_instance_orphaned(&self, id: InstanceId) -> bool {
-        !self
-            .nodes
-            .values()
-            .any(|node| matches!(node.payload(), NodePayload::Instance(i) if *i == id))
+        if self.instances.remove(&id).is_some() {
+            self.slots.remove(&id.erased());
+            self.removals.push((ResourceKind::Instance, id.erased()));
+        }
     }
 
 
@@ -596,14 +718,23 @@ impl SceneData {
 
     // ========== Light Node Helpers ==========
 
-    /// Returns true if any node in the scene carries a `Light` payload.
+    /// Returns true if any attached node carries a `Light` payload.
+    ///
+    /// Detached nodes (kept alive by a handle after
+    /// [`remove_node`](Self::remove_node)) are not rendered, so their lights
+    /// don't count.
     pub fn has_light_nodes(&self) -> bool {
-        self.nodes.values().any(|n| matches!(n.payload(), NodePayload::Light(_)))
+        self.nodes
+            .values()
+            .any(|n| matches!(n.payload(), NodePayload::Light(_)) && self.is_node_attached(n.id))
     }
 
-    /// Returns the number of nodes with a [`NodePayload::Light`] payload.
+    /// Returns the number of attached nodes with a [`NodePayload::Light`] payload.
     pub fn light_count(&self) -> usize {
-        self.nodes.values().filter(|n| matches!(n.payload(), NodePayload::Light(_))).count()
+        self.nodes
+            .values()
+            .filter(|n| matches!(n.payload(), NodePayload::Light(_)) && self.is_node_attached(n.id))
+            .count()
     }
 
     /// Adds a default key + fill directional light pair as children of `camera_node_id`.
@@ -618,10 +749,10 @@ impl SceneData {
             key_rotation,
             Vector3::new(1.0, 1.0, 1.0),
         );
-        let key_id = self
+        let key = self
             .add_node(Some(camera_node_id), Some("DefaultKeyLight".to_string()), key_transform, NodeFlags::NONE)
             .expect("Failed to create key light node");
-        self.nodes.get_mut(&key_id).unwrap().set_payload(NodePayload::Light(Light::directional(white, 1.0)));
+        self.nodes.get_mut(&key.id()).unwrap().set_payload(NodePayload::Light(Light::directional(white, 1.0)));
         self.node_generation += 1;
         // Lower-right: yaw -45° (toward left), then pitch +45° (upward) — opposite corner.
         let fill_rotation = Quaternion::from_angle_x(Deg(45.0)) * Quaternion::from_angle_y(Deg(-45.0));
@@ -630,10 +761,10 @@ impl SceneData {
             fill_rotation,
             Vector3::new(1.0, 1.0, 1.0),
         );
-        let fill_id = self
+        let fill = self
             .add_node(Some(camera_node_id), Some("DefaultFillLight".to_string()), fill_transform, NodeFlags::NONE)
             .expect("Failed to create fill light node");
-        self.nodes.get_mut(&fill_id).unwrap().set_payload(NodePayload::Light(Light::directional(white, 0.3)));
+        self.nodes.get_mut(&fill.id()).unwrap().set_payload(NodePayload::Light(Light::directional(white, 0.3)));
         self.node_generation += 1;
     }
 
@@ -659,19 +790,23 @@ impl SceneData {
         self.nodes.contains_key(&id)
     }
 
-    /// Returns a slice of root node IDs.
-    pub fn root_nodes(&self) -> &[NodeId] {
-        &self.root_nodes
+    /// Iterates the root node IDs.
+    pub fn root_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.root_nodes.iter().map(NodeHandle::id)
     }
 
-    /// Adds a new node to the scene tree.
+    /// Adds a new node to the scene tree, returning its owning handle.
+    ///
+    /// The tree itself owns attached nodes, so the returned handle may be
+    /// dropped freely; keep it for direct access or to own the node across a
+    /// [`remove_node`](Self::remove_node).
     pub fn add_node(
         &mut self,
         parent: Option<NodeId>,
         name: Option<String>,
         transform: common::Transform,
         flags: NodeFlags
-    ) -> anyhow::Result<NodeId> {
+    ) -> anyhow::Result<NodeHandle> {
         // Validate parent exists if specified
         if let Some(parent_id) = parent
             && !self.nodes.contains_key(&parent_id) {
@@ -680,20 +815,19 @@ impl SceneData {
 
         let mut node = Node::new(name, transform, flags);
         let id = node.id;
+        node.set_parent_unchecked(parent);
+        self.nodes.insert(id, node);
+        let handle = self.mint(id, ResourceKind::Node);
 
-        // Set up parent-child relationship
         if let Some(parent_id) = parent {
-            node.set_parent_unchecked(Some(parent_id));
             // Safe to unwrap since we validated parent exists above
-            self.nodes.get_mut(&parent_id).unwrap().add_child_unchecked(id);
+            self.nodes.get_mut(&parent_id).unwrap().add_child_unchecked(handle.clone());
         } else {
-            // No parent, so this is a root node
-            self.root_nodes.push(id);
+            self.root_nodes.push(handle.clone());
         }
 
-        self.nodes.insert(id, node);
         self.node_generation += 1;
-        Ok(id)
+        Ok(handle)
     }
 
     /// Adds a new node with an instance attached.
@@ -707,138 +841,163 @@ impl SceneData {
         name: Option<String>,
         transform: common::Transform,
         flags: NodeFlags
-    ) -> anyhow::Result<NodeId> {
+    ) -> anyhow::Result<NodeHandle> {
         // Create the instance
-        let instance_id = self.add_instance(instance);
+        let instance = self.add_instance(instance);
 
         // Create the node (validates parent exists)
-        let node_id = self.add_node(parent, name, transform, flags)?;
+        let node = self.add_node(parent, name, transform, flags)?;
 
         // Attach instance to node
         // Safe to unwrap since we just created the node above
-        self.nodes.get_mut(&node_id).unwrap().set_payload(NodePayload::Instance(instance_id));
+        self.nodes.get_mut(&node.id()).unwrap().set_payload(NodePayload::Instance(instance));
 
-        Ok(node_id)
+        Ok(node)
     }
 
     /// Adds a node with default transform (identity).
-    pub fn add_default_node(&mut self, parent: Option<NodeId>, name: Option<String>) -> anyhow::Result<NodeId> {
+    pub fn add_default_node(&mut self, parent: Option<NodeId>, name: Option<String>) -> anyhow::Result<NodeHandle> {
         self.add_node(parent, name, common::Transform::IDENTITY, NodeFlags::NONE)
     }
 
-    /// Inserts a pre-built node using its existing ID.
+    /// Inserts a pre-built node using its existing ID, returning its owning
+    /// handle.
     ///
-    /// Automatically appends to `root_nodes` when the node has no parent.
-    /// Parent/child links are the caller's responsibility (e.g. the node carries
-    /// its children list from deserialization).
-    pub fn insert_node(&mut self, node: Node) {
-        if node.parent().is_none() {
-            self.root_nodes.push(node.id);
+    /// The node is attached under its recorded parent when that parent exists,
+    /// or to the roots when it has none. With a recorded parent that is absent
+    /// from the scene, the node stays detached: the returned handle is then its
+    /// only owner.
+    pub fn insert_node(&mut self, node: Node) -> NodeHandle {
+        let id = node.id;
+        let parent = node.parent();
+        self.nodes.insert(id, node);
+        let handle = self.mint(id, ResourceKind::Node);
+        match parent {
+            None => self.root_nodes.push(handle.clone()),
+            Some(parent_id) => {
+                if let Some(parent_node) = self.nodes.get_mut(&parent_id) {
+                    parent_node.add_child_unchecked(handle.clone());
+                }
+            }
         }
-        self.nodes.insert(node.id, node);
         self.node_generation += 1;
+        handle
     }
 
-    /// Removes a node and all its children from the scene tree.
+    /// Detaches a node's subtree from the scene tree.
     ///
-    /// This recursively removes all descendant nodes and cleans up
-    /// parent-child relationships. Cached bounds in all ancestor nodes
-    /// are invalidated since the removed subtree affects their bounds.
+    /// The tree's ownership of the node is released: unless other handles for
+    /// it exist, the node, its descendants, and the resources they exclusively
+    /// own are removed. A node kept alive by an outstanding handle survives
+    /// detached — still in the scene but not rendered or traversed — and can be
+    /// reattached with [`reparent_node`](Self::reparent_node).
     pub fn remove_node(&mut self, node_id: NodeId) {
-        // Store the parent before removal so we can invalidate ancestors
-        let parent = self.nodes.get(&node_id).and_then(|node| node.parent());
-
-        // Perform the recursive removal
-        self.remove_node_recursive(node_id);
-
-        // Invalidate cached bounds for all ancestors
-        if let Some(parent_id) = parent {
-            self.invalidate_ancestor_bounds(parent_id);
-        }
-    }
-
-    /// Removes a node along with the resources it owns.
-    /// 
-    /// Removes this Node's instance, that instance's mesh, and its
-    /// face/line/point materials — but only those left orphaned afterwards,
-    /// so resources still shared by other instances survive.
-    ///
-    /// Use this (rather than [`remove_node`](Self::remove_node), which only unlinks
-    /// the node) to fully discard self-contained geometry such as a transient
-    /// preview, avoiding orphaned meshes and materials.
-    pub fn cleanup_node(&mut self, node_id: NodeId) {
-        let instance_id = match self.get_node(node_id).map(|n| n.payload()) {
-            Some(NodePayload::Instance(id)) => Some(*id),
-            _ => None,
-        };
-
-        self.remove_node(node_id);
-
-        let Some(instance_id) = instance_id else { return };
-        let Some((mesh_id, face_mat, line_mat, point_mat)) = self
-            .get_instance(instance_id)
-            .map(|i| (i.mesh(), i.face_material(), i.line_material(), i.point_material()))
-        else {
+        let Some(node) = self.nodes.get(&node_id) else {
             return;
         };
-
-        if self.is_instance_orphaned(instance_id) {
-            self.remove_instance(instance_id);
-        }
-        if self.is_mesh_orphaned(mesh_id) {
-            self.remove_mesh(mesh_id);
-        }
-        if let Some(id) = face_mat {
-            if self.is_face_material_orphaned(id) {
-                self.remove_face_material(id);
+        match node.parent() {
+            Some(parent_id) => {
+                if let Some(parent_node) = self.nodes.get_mut(&parent_id) {
+                    parent_node.remove_child_unchecked(node_id);
+                }
+                if let Some(node) = self.nodes.get_mut(&node_id) {
+                    node.set_parent_unchecked(None);
+                }
+                self.invalidate_ancestor_bounds(parent_id);
+            }
+            None => {
+                self.root_nodes.retain(|h| h.id() != node_id);
             }
         }
-        if let Some(id) = line_mat {
-            if self.is_line_material_orphaned(id) {
-                self.remove_line_material(id);
-            }
-        }
-        if let Some(id) = point_mat {
-            if self.is_point_material_orphaned(id) {
-                self.remove_point_material(id);
-            }
-        }
+        self.node_generation += 1;
+        self.reap();
     }
 
-    /// Recursive helper for removing a node and all its children.
+    /// Moves a node under a new parent, or to the roots with `None`.
     ///
-    /// This does NOT invalidate ancestor bounds. The caller is responsible
-    /// for invalidating bounds after the entire removal is complete.
-    fn remove_node_recursive(&mut self, node_id: NodeId) {
-        // Get the node to find its parent and children
-        let Some(node) = self.nodes.get(&node_id) else {
-            return; // Node doesn't exist
-        };
-
-        let parent = node.parent();
-        let children: Vec<NodeId> = node.children().to_vec();
-
-        // Recursively remove all children first
-        for child_id in children {
-            self.remove_node_recursive(child_id);
-        }
-
-        // Remove this node from its parent's children list
-        if let Some(parent_id) = parent {
-            if let Some(parent_node) = self.nodes.get_mut(&parent_id) {
-                parent_node.remove_child_unchecked(node_id);
+    /// Also reattaches a node that was detached by
+    /// [`remove_node`](Self::remove_node) while a handle kept it alive.
+    ///
+    /// # Errors
+    ///
+    /// Fails if either node is missing or the move would create a cycle.
+    pub fn reparent_node(&mut self, node_id: NodeId, new_parent: Option<NodeId>) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.nodes.contains_key(&node_id),
+            "Node with ID {} not found in scene",
+            node_id
+        );
+        if let Some(parent_id) = new_parent {
+            anyhow::ensure!(
+                self.nodes.contains_key(&parent_id),
+                "Parent node with ID {} not found in scene",
+                parent_id
+            );
+            // The new parent must not be the node itself or one of its
+            // descendants; climbing from the parent to the root must not pass
+            // through the node.
+            let mut current = Some(parent_id);
+            while let Some(id) = current {
+                anyhow::ensure!(
+                    id != node_id,
+                    "Reparenting node {} under {} would create a cycle",
+                    node_id,
+                    parent_id
+                );
+                current = self.nodes.get(&id).and_then(|n| n.parent());
             }
-        } else {
-            // This is a root node, remove from root_nodes list
-            self.root_nodes.retain(|&id| id != node_id);
         }
 
-        // Finally, remove the node itself
-        self.nodes.remove(&node_id);
+        // Take the tree's owning handle (or mint one for a detached node).
+        let old_parent = self.nodes.get(&node_id).and_then(|n| n.parent());
+        let handle = match old_parent {
+            Some(parent_id) => self
+                .nodes
+                .get_mut(&parent_id)
+                .and_then(|p| p.take_child_unchecked(node_id)),
+            None => self
+                .root_nodes
+                .iter()
+                .position(|h| h.id() == node_id)
+                .map(|pos| self.root_nodes.remove(pos)),
+        }
+        .unwrap_or_else(|| self.mint(node_id, ResourceKind::Node));
+        if let Some(parent_id) = old_parent {
+            self.invalidate_ancestor_bounds(parent_id);
+        }
+
+        self.nodes.get_mut(&node_id).unwrap().set_parent_unchecked(new_parent);
+        match new_parent {
+            Some(parent_id) => {
+                self.nodes.get_mut(&parent_id).unwrap().add_child_unchecked(handle);
+                self.invalidate_ancestor_bounds(parent_id);
+            }
+            None => self.root_nodes.push(handle),
+        }
+        self.invalidate_subtree_transforms(node_id);
         self.node_generation += 1;
+        Ok(())
+    }
+
+    /// Returns true if the node exists and its subtree hangs off the scene
+    /// roots (as opposed to being detached but kept alive by a handle).
+    pub fn is_node_attached(&self, node_id: NodeId) -> bool {
+        let mut current = node_id;
+        loop {
+            let Some(node) = self.nodes.get(&current) else {
+                return false;
+            };
+            match node.parent() {
+                Some(parent_id) => current = parent_id,
+                None => return self.root_nodes.iter().any(|h| h.id() == current),
+            }
+        }
     }
 
     /// Clears all nodes from the scene, resetting it to an empty state.
+    ///
+    /// Forceful: resources are removed even while handles for them exist;
+    /// those handles become inert.
     pub fn clear(&mut self) {
         self.nodes.clear();
         self.root_nodes.clear();
@@ -852,69 +1011,9 @@ impl SceneData {
         self.active_environment_map = None;
         self.active_camera = None;
         self.node_generation += 1;
-    }
-
-    /// Removes orphaned resources not referenced by any node in the scene.
-    ///
-    /// Walks the scene tree to find all referenced instances, meshes, materials,
-    /// and textures, then removes any that are unreferenced. The default material
-    /// is always retained.
-    pub fn cleanup(&mut self) {
-        use std::collections::HashSet;
-
-        // Collect all instance IDs referenced by nodes
-        let referenced_instances: HashSet<InstanceId> = self
-            .nodes
-            .values()
-            .filter_map(|node| match node.payload() {
-                NodePayload::Instance(id) => Some(*id),
-                _ => None,
-            })
-            .collect();
-
-        // Collect mesh and material IDs referenced by retained instances
-        let mut referenced_meshes = HashSet::new();
-        let mut referenced_face_materials = HashSet::new();
-        let mut referenced_line_materials = HashSet::new();
-        let mut referenced_point_materials = HashSet::new();
-        for &inst_id in &referenced_instances {
-            if let Some(inst) = self.instances.get(&inst_id) {
-                referenced_meshes.insert(inst.mesh());
-                if let Some(id) = inst.face_material() {
-                    referenced_face_materials.insert(id);
-                }
-                if let Some(id) = inst.line_material() {
-                    referenced_line_materials.insert(id);
-                }
-                if let Some(id) = inst.point_material() {
-                    referenced_point_materials.insert(id);
-                }
-            }
-        }
-
-        // Collect texture IDs referenced by retained face materials
-        let mut referenced_textures = HashSet::new();
-        for &mat_id in &referenced_face_materials {
-            if let Some(mat) = self.face_materials.get(&mat_id) {
-                if let Some(tex) = mat.base_color_texture() {
-                    referenced_textures.insert(tex);
-                }
-                if let Some(tex) = mat.normal_texture() {
-                    referenced_textures.insert(tex);
-                }
-                if let Some(tex) = mat.metallic_roughness_texture() {
-                    referenced_textures.insert(tex);
-                }
-            }
-        }
-
-        // Remove unreferenced resources
-        self.instances.retain(|id, _| referenced_instances.contains(id));
-        self.meshes.retain(|id, _| referenced_meshes.contains(id));
-        self.face_materials.retain(|id, _| referenced_face_materials.contains(id));
-        self.line_materials.retain(|id, _| referenced_line_materials.contains(id));
-        self.point_materials.retain(|id, _| referenced_point_materials.contains(id));
-        self.textures.retain(|id, _| referenced_textures.contains(id));
+        self.slots.clear();
+        self.removals.clear();
+        self.bind.dropped.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// Invalidates cached bounds for a node and all its ancestors.
@@ -943,7 +1042,7 @@ impl SceneData {
         };
         node.mark_transform_dirty();
         node.mark_bounds_dirty();
-        let children: Vec<NodeId> = node.children().to_vec();
+        let children: Vec<NodeId> = node.children().collect();
         for child_id in children {
             self.invalidate_subtree_transforms(child_id);
         }
@@ -1004,6 +1103,21 @@ impl SceneData {
         self.node_generation += 1;
     }
 
+    /// Sets a node's name.
+    pub fn set_node_name(&mut self, node_id: NodeId, name: Option<String>) {
+        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        node.name = name;
+        self.node_generation += 1;
+    }
+
+    /// Sets a node's behavior flags and invalidates dependent bounds.
+    pub fn set_node_flags(&mut self, node_id: NodeId, flags: NodeFlags) {
+        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        node.set_flags(flags);
+        self.invalidate_ancestor_bounds(node_id);
+        self.node_generation += 1;
+    }
+
     // ========== Visibility API ==========
 
     /// Sets the visibility of a node and propagates invisibility to descendants.
@@ -1033,7 +1147,7 @@ impl SceneData {
             return;
         };
         node.set_visibility(visibility);
-        let children: Vec<NodeId> = node.children().to_vec();
+        let children: Vec<NodeId> = node.children().collect();
 
         for child_id in children {
             self.set_subtree_visibility_recursive(child_id, visibility);
@@ -1080,7 +1194,7 @@ impl SceneData {
         }
 
         let mut all_visible = true;
-        for &child_id in node.children() {
+        for child_id in node.children() {
             let child_effective = self.node_effective_visibility(child_id);
             if child_effective != node::EffectiveVisibility::Visible {
                 all_visible = false;
@@ -1157,7 +1271,7 @@ impl SceneData {
         let mut merged_bounds: Option<Aabb> = None;
         let mut incomplete = false;
 
-        for &root_id in &self.root_nodes {
+        for root_id in self.root_nodes.iter().map(NodeHandle::id) {
             let result = self.nodes_bounding(root_id);
             if result.incomplete {
                 incomplete = true;
@@ -1198,7 +1312,7 @@ impl SceneData {
         let mut incomplete = false;
         let mut merged_bounds: Option<Aabb> = None;
 
-        for &child_id in node.children() {
+        for child_id in node.children() {
             if self.get_node(child_id).is_none() {
                 // Child listed in the tree but not yet in the scene.
                 incomplete = true;
@@ -1217,12 +1331,12 @@ impl SceneData {
         }
 
         let bounds = match node.payload() {
-            NodePayload::Instance(instance_id) => {
+            NodePayload::Instance(instance) => {
                 let Some(world_transform) = self.nodes_transform(node_id) else {
                     incomplete = true;
                     return BoundingResult { bounds: merged_bounds, incomplete };
                 };
-                let Some(instance) = self.get_instance(*instance_id) else {
+                let Some(instance) = self.get_instance(instance.id()) else {
                     incomplete = true;
                     return BoundingResult { bounds: merged_bounds, incomplete };
                 };
@@ -1260,13 +1374,13 @@ impl SceneData {
     /// scene has settled.
     pub fn is_complete(&self) -> bool {
         for node in self.nodes.values() {
-            for &child_id in node.children() {
+            for child_id in node.children() {
                 if !self.nodes.contains_key(&child_id) {
                     return false;
                 }
             }
-            if let NodePayload::Instance(instance_id) = node.payload() {
-                let Some(instance) = self.instances.get(instance_id) else {
+            if let NodePayload::Instance(instance) = node.payload() {
+                let Some(instance) = self.instances.get(&instance.id()) else {
                     return false;
                 };
                 if !self.meshes.contains_key(&instance.mesh()) {
@@ -1290,6 +1404,188 @@ impl SceneData {
             }
         }
         true
+    }
+
+    /// Rebuilds handle ownership from the tree structure.
+    ///
+    /// For scene data whose handles do not reflect ownership — a clone (its
+    /// handles share refcounts with the original) or deserialized data (its
+    /// handles are unbound): every stored handle is replaced with a canonical
+    /// one on a fresh bind, and resources nothing owns are dropped. Existing
+    /// external handles into this data are disconnected.
+    pub fn rebind(&mut self) {
+        use std::collections::HashSet;
+
+        self.bind = Arc::new(SceneBind::new());
+        self.slots.clear();
+        self.removals.clear();
+
+        // Mark: walk the ownership edges from the roots.
+        let mut live_nodes: HashSet<NodeId> = HashSet::new();
+        let mut stack: Vec<NodeId> = self.root_nodes.iter().map(NodeHandle::id).collect();
+        while let Some(id) = stack.pop() {
+            if self.nodes.contains_key(&id) && live_nodes.insert(id) {
+                stack.extend(self.nodes[&id].children());
+            }
+        }
+        let mut live_instances: HashSet<InstanceId> = HashSet::new();
+        for id in &live_nodes {
+            if let NodePayload::Instance(h) = self.nodes[id].payload() {
+                live_instances.insert(h.id());
+            }
+        }
+        let mut live_meshes: HashSet<MeshId> = HashSet::new();
+        let mut live_face: HashSet<FaceMaterialId> = HashSet::new();
+        let mut live_line: HashSet<LineMaterialId> = HashSet::new();
+        let mut live_point: HashSet<PointMaterialId> = HashSet::new();
+        for id in &live_instances {
+            if let Some(inst) = self.instances.get(id) {
+                live_meshes.insert(inst.mesh());
+                live_face.extend(inst.face_material());
+                live_line.extend(inst.line_material());
+                live_point.extend(inst.point_material());
+            }
+        }
+        let mut live_textures: HashSet<TextureId> = HashSet::new();
+        for id in &live_face {
+            if let Some(m) = self.face_materials.get(id) {
+                live_textures.extend(m.base_color_texture());
+                live_textures.extend(m.normal_texture());
+                live_textures.extend(m.metallic_roughness_texture());
+            }
+        }
+        for id in &live_line {
+            if let Some(m) = self.line_materials.get(id) {
+                live_textures.extend(m.base_color_texture());
+            }
+        }
+        for id in &live_point {
+            if let Some(m) = self.point_materials.get(id) {
+                live_textures.extend(m.base_color_texture());
+            }
+        }
+
+        // Sweep what nothing owns.
+        self.nodes.retain(|id, _| live_nodes.contains(id));
+        self.instances.retain(|id, _| live_instances.contains(id));
+        self.meshes.retain(|id, _| live_meshes.contains(id));
+        self.face_materials.retain(|id, _| live_face.contains(id));
+        self.line_materials.retain(|id, _| live_line.contains(id));
+        self.point_materials.retain(|id, _| live_point.contains(id));
+        self.textures.retain(|id, _| live_textures.contains(id));
+        if let Some(id) = self.active_camera
+            && !self.nodes.contains_key(&id)
+        {
+            self.active_camera = None;
+        }
+
+        // Re-point every stored handle at a canonical core on the fresh bind.
+        let bind = self.bind.clone();
+        let mut cores: HashMap<GenericId, Arc<HandleCore>> = HashMap::new();
+        fn canon<K>(
+            cores: &mut HashMap<GenericId, Arc<HandleCore>>,
+            bind: &Arc<SceneBind>,
+            id: Id<K>,
+            kind: ResourceKind,
+        ) -> Handle<K> {
+            let core = cores
+                .entry(id.erased())
+                .or_insert_with(|| {
+                    Arc::new(HandleCore { id: id.erased(), kind, bind: Arc::downgrade(bind) })
+                })
+                .clone();
+            Handle::from_core(core)
+        }
+
+        for inst in self.instances.values_mut() {
+            inst.set_mesh(canon(&mut cores, &bind, inst.mesh(), ResourceKind::Mesh));
+            if let Some(id) = inst.face_material() {
+                inst.set_face_material(Some(canon(&mut cores, &bind, id, ResourceKind::FaceMaterial)));
+            }
+            if let Some(id) = inst.line_material() {
+                inst.set_line_material(Some(canon(&mut cores, &bind, id, ResourceKind::LineMaterial)));
+            }
+            if let Some(id) = inst.point_material() {
+                inst.set_point_material(Some(canon(&mut cores, &bind, id, ResourceKind::PointMaterial)));
+            }
+        }
+        for mat in self.face_materials.values_mut() {
+            if let Some(id) = mat.base_color_texture() {
+                mat.set_base_color_texture(canon(&mut cores, &bind, id, ResourceKind::Texture));
+            }
+            if let Some(id) = mat.normal_texture() {
+                mat.set_normal_texture(canon(&mut cores, &bind, id, ResourceKind::Texture));
+            }
+            if let Some(id) = mat.metallic_roughness_texture() {
+                mat.set_metallic_roughness_texture(canon(&mut cores, &bind, id, ResourceKind::Texture));
+            }
+        }
+        for mat in self.line_materials.values_mut() {
+            if let Some(id) = mat.base_color_texture() {
+                mat.set_base_color_texture(canon(&mut cores, &bind, id, ResourceKind::Texture));
+            }
+        }
+        for mat in self.point_materials.values_mut() {
+            if let Some(id) = mat.base_color_texture() {
+                mat.set_base_color_texture(canon(&mut cores, &bind, id, ResourceKind::Texture));
+            }
+        }
+        for node in self.nodes.values_mut() {
+            let instance_id = match node.payload() {
+                NodePayload::Instance(h) => Some(h.id()),
+                _ => None,
+            };
+            if let Some(id) = instance_id {
+                node.set_payload(NodePayload::Instance(canon(
+                    &mut cores,
+                    &bind,
+                    id,
+                    ResourceKind::Instance,
+                )));
+            }
+            let children: Vec<NodeHandle> = node
+                .children()
+                .map(|id| canon(&mut cores, &bind, id, ResourceKind::Node))
+                .collect();
+            node.set_children_unchecked(children);
+        }
+        let root_ids: Vec<NodeId> = self.root_nodes.iter().map(NodeHandle::id).collect();
+        self.root_nodes = root_ids
+            .into_iter()
+            .map(|id| canon(&mut cores, &bind, id, ResourceKind::Node))
+            .collect();
+
+        self.slots = cores.iter().map(|(id, core)| (*id, Arc::downgrade(core))).collect();
+    }
+}
+
+impl Clone for SceneData {
+    /// Clones the scene contents into an independent scene.
+    ///
+    /// Handle ownership is rebuilt from the tree via
+    /// [`rebind`](SceneData::rebind), so the clone shares no refcounts with the
+    /// original; resources kept alive in the original only by external handles
+    /// are not carried over.
+    fn clone(&self) -> Self {
+        let mut clone = Self {
+            meshes: self.meshes.clone(),
+            instances: self.instances.clone(),
+            nodes: self.nodes.clone(),
+            root_nodes: self.root_nodes.clone(),
+            face_materials: self.face_materials.clone(),
+            line_materials: self.line_materials.clone(),
+            point_materials: self.point_materials.clone(),
+            textures: self.textures.clone(),
+            environment_maps: self.environment_maps.clone(),
+            active_environment_map: self.active_environment_map,
+            active_camera: self.active_camera,
+            node_generation: self.node_generation,
+            bind: Arc::new(SceneBind::new()),
+            slots: HashMap::new(),
+            removals: Vec::new(),
+        };
+        clone.rebind();
+        clone
     }
 }
 

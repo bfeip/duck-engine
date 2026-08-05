@@ -334,17 +334,18 @@ mod tests {
     fn screen_sized_node_picked_at_on_screen_extent() {
         let scene = Scene::default();
         // Unit cube at the origin: authored half-extent 0.5.
-        let mesh_id = scene.add_mesh(Mesh::cube(1.0, PrimitiveType::TriangleList));
-        let mat_id = scene.add_face_material(FaceMaterial::new());
+        let mesh = scene.add_mesh(Mesh::cube(1.0, PrimitiveType::TriangleList));
+        let material = scene.add_face_material(FaceMaterial::new());
         let node = scene
             .add_instance_node(
                 None,
-                Instance::new(mesh_id).with_face_material(mat_id),
+                Instance::new(mesh).with_face_material(material),
                 None,
                 Transform::IDENTITY,
                 NodeFlags::NONE,
             )
-            .unwrap();
+            .unwrap()
+            .id();
         let display = DisplayBehavior {
             screen_size: Some(200.0),
             layer: RenderLayer::Overlay,

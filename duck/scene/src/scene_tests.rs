@@ -9,7 +9,7 @@ fn test_scene_new() {
     assert_eq!(scene.mesh_count(), 0);
     assert_eq!(scene.instance_count(), 0);
     assert_eq!(scene.node_count(), 0);
-    assert_eq!(scene.root_nodes().len(), 0);
+    assert_eq!(scene.root_nodes().count(), 0);
 }
 
 #[test]
@@ -18,10 +18,13 @@ fn test_add_instance() {
     let mesh_id = MeshId::new();
     let mat_id = FaceMaterialId::new();
 
-    let instance_id = scene.add_instance(Instance::new(mesh_id).with_face_material(mat_id));
+    let instance = scene.add_instance(
+        Instance::new(MeshHandle::unbound(mesh_id))
+            .with_face_material(FaceMaterialHandle::unbound(mat_id)),
+    );
     assert_eq!(scene.instance_count(), 1);
 
-    let instance = scene.get_instance(instance_id).unwrap();
+    let instance = scene.get_instance(instance.id()).unwrap();
     assert_eq!(instance.mesh(), mesh_id);
     assert_eq!(instance.face_material(), Some(mat_id));
 }
@@ -30,9 +33,9 @@ fn test_add_instance() {
 fn test_add_multiple_instances() {
     let mut scene = SceneData::new();
 
-    let id1 = scene.add_instance(Instance::new(MeshId::new()));
-    let id2 = scene.add_instance(Instance::new(MeshId::new()));
-    let id3 = scene.add_instance(Instance::new(MeshId::new()));
+    let id1 = scene.add_instance(Instance::new(MeshHandle::unbound(MeshId::new())));
+    let id2 = scene.add_instance(Instance::new(MeshHandle::unbound(MeshId::new())));
+    let id3 = scene.add_instance(Instance::new(MeshHandle::unbound(MeshId::new())));
 
     assert_ne!(id1, id2);
     assert_ne!(id1, id3);
@@ -44,31 +47,31 @@ fn test_add_multiple_instances() {
 fn test_add_root_node() {
     let mut scene = SceneData::new();
 
-    let node_id = scene.add_default_node(None, None).unwrap();
+    let node_id = scene.add_default_node(None, None).unwrap().id();
 
     assert_eq!(scene.node_count(), 1);
-    assert_eq!(scene.root_nodes().len(), 1);
-    assert_eq!(scene.root_nodes()[0], node_id);
+    assert_eq!(scene.root_nodes().count(), 1);
+    assert_eq!(scene.root_nodes().next(), Some(node_id));
 
     let node = scene.get_node(node_id).unwrap();
     assert_eq!(node.parent(), None);
-    assert_eq!(node.children().len(), 0);
+    assert_eq!(node.child_count(), 0);
 }
 
 #[test]
 fn test_add_child_node() {
     let mut scene = SceneData::new();
 
-    let root = scene.add_default_node(None, None).unwrap();
-    let child = scene.add_default_node(Some(root), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child = scene.add_default_node(Some(root), None).unwrap().id();
 
     assert_eq!(scene.node_count(), 2);
-    assert_eq!(scene.root_nodes().len(), 1);
+    assert_eq!(scene.root_nodes().count(), 1);
 
     // Verify parent-child relationship is bidirectional
     let root_node = scene.get_node(root).unwrap();
-    assert_eq!(root_node.children().len(), 1);
-    assert_eq!(root_node.children()[0], child);
+    assert_eq!(root_node.child_count(), 1);
+    assert_eq!(root_node.children().next(), Some(child));
 
     let child_node = scene.get_node(child).unwrap();
     assert_eq!(child_node.parent(), Some(root));
@@ -78,16 +81,16 @@ fn test_add_child_node() {
 fn test_add_multiple_children() {
     let mut scene = SceneData::new();
 
-    let root = scene.add_default_node(None, None).unwrap();
-    let child1 = scene.add_default_node(Some(root), None).unwrap();
-    let child2 = scene.add_default_node(Some(root), None).unwrap();
-    let child3 = scene.add_default_node(Some(root), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child1 = scene.add_default_node(Some(root), None).unwrap().id();
+    let child2 = scene.add_default_node(Some(root), None).unwrap().id();
+    let child3 = scene.add_default_node(Some(root), None).unwrap().id();
 
     let root_node = scene.get_node(root).unwrap();
-    assert_eq!(root_node.children().len(), 3);
-    assert!(root_node.children().contains(&child1));
-    assert!(root_node.children().contains(&child2));
-    assert!(root_node.children().contains(&child3));
+    assert_eq!(root_node.child_count(), 3);
+    assert!(root_node.has_child(child1));
+    assert!(root_node.has_child(child2));
+    assert!(root_node.has_child(child3));
 
     // Verify all children point back to root
     assert_eq!(scene.get_node(child1).unwrap().parent(), Some(root));
@@ -100,10 +103,10 @@ fn test_deep_hierarchy() {
     let mut scene = SceneData::new();
 
     // Create a chain: root -> child1 -> child2 -> child3
-    let root = scene.add_default_node(None, None).unwrap();
-    let child1 = scene.add_default_node(Some(root), None).unwrap();
-    let child2 = scene.add_default_node(Some(child1), None).unwrap();
-    let child3 = scene.add_default_node(Some(child2), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child1 = scene.add_default_node(Some(root), None).unwrap().id();
+    let child2 = scene.add_default_node(Some(child1), None).unwrap().id();
+    let child3 = scene.add_default_node(Some(child2), None).unwrap().id();
 
     // Verify the chain is correct
     assert_eq!(scene.get_node(root).unwrap().parent(), None);
@@ -112,24 +115,24 @@ fn test_deep_hierarchy() {
     assert_eq!(scene.get_node(child3).unwrap().parent(), Some(child2));
 
     // Verify each node has the correct children
-    assert_eq!(scene.get_node(root).unwrap().children().len(), 1);
-    assert_eq!(scene.get_node(child1).unwrap().children().len(), 1);
-    assert_eq!(scene.get_node(child2).unwrap().children().len(), 1);
-    assert_eq!(scene.get_node(child3).unwrap().children().len(), 0);
+    assert_eq!(scene.get_node(root).unwrap().child_count(), 1);
+    assert_eq!(scene.get_node(child1).unwrap().child_count(), 1);
+    assert_eq!(scene.get_node(child2).unwrap().child_count(), 1);
+    assert_eq!(scene.get_node(child3).unwrap().child_count(), 0);
 }
 
 #[test]
 fn test_multiple_root_nodes() {
     let mut scene = SceneData::new();
 
-    let root1 = scene.add_default_node(None, None).unwrap();
-    let root2 = scene.add_default_node(None, None).unwrap();
-    let root3 = scene.add_default_node(None, None).unwrap();
+    let root1 = scene.add_default_node(None, None).unwrap().id();
+    let root2 = scene.add_default_node(None, None).unwrap().id();
+    let root3 = scene.add_default_node(None, None).unwrap().id();
 
-    assert_eq!(scene.root_nodes().len(), 3);
-    assert!(scene.root_nodes().contains(&root1));
-    assert!(scene.root_nodes().contains(&root2));
-    assert!(scene.root_nodes().contains(&root3));
+    assert_eq!(scene.root_nodes().count(), 3);
+    assert!(scene.root_nodes().any(|id| id == root1));
+    assert!(scene.root_nodes().any(|id| id == root2));
+    assert!(scene.root_nodes().any(|id| id == root3));
 
     // Verify all are truly roots
     assert_eq!(scene.get_node(root1).unwrap().parent(), None);
@@ -148,30 +151,30 @@ fn test_complex_tree_structure() {
     //   /  \      \
     //  gc1  gc2   gc3
 
-    let root = scene.add_default_node(None, None).unwrap();
-    let c1 = scene.add_default_node(Some(root), None).unwrap();
-    let c2 = scene.add_default_node(Some(root), None).unwrap();
-    let gc1 = scene.add_default_node(Some(c1), None).unwrap();
-    let gc2 = scene.add_default_node(Some(c1), None).unwrap();
-    let gc3 = scene.add_default_node(Some(c2), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let c1 = scene.add_default_node(Some(root), None).unwrap().id();
+    let c2 = scene.add_default_node(Some(root), None).unwrap().id();
+    let gc1 = scene.add_default_node(Some(c1), None).unwrap().id();
+    let gc2 = scene.add_default_node(Some(c1), None).unwrap().id();
+    let gc3 = scene.add_default_node(Some(c2), None).unwrap().id();
 
     // Verify structure
-    assert_eq!(scene.root_nodes().len(), 1);
+    assert_eq!(scene.root_nodes().count(), 1);
     assert_eq!(scene.node_count(), 6);
 
     let root_node = scene.get_node(root).unwrap();
-    assert_eq!(root_node.children().len(), 2);
+    assert_eq!(root_node.child_count(), 2);
 
     let c1_node = scene.get_node(c1).unwrap();
-    assert_eq!(c1_node.children().len(), 2);
+    assert_eq!(c1_node.child_count(), 2);
 
     let c2_node = scene.get_node(c2).unwrap();
-    assert_eq!(c2_node.children().len(), 1);
+    assert_eq!(c2_node.child_count(), 1);
 
     // Verify leaf nodes have no children
-    assert_eq!(scene.get_node(gc1).unwrap().children().len(), 0);
-    assert_eq!(scene.get_node(gc2).unwrap().children().len(), 0);
-    assert_eq!(scene.get_node(gc3).unwrap().children().len(), 0);
+    assert_eq!(scene.get_node(gc1).unwrap().child_count(), 0);
+    assert_eq!(scene.get_node(gc2).unwrap().child_count(), 0);
+    assert_eq!(scene.get_node(gc3).unwrap().child_count(), 0);
 }
 
 #[test]
@@ -180,9 +183,10 @@ fn test_add_instance_node() {
     let mesh_id = MeshId::new();
     let mat_id = FaceMaterialId::new();
 
-    let node_id = scene.add_instance_node(
+    let node = scene.add_instance_node(
         None,
-        Instance::new(mesh_id).with_face_material(mat_id),
+        Instance::new(MeshHandle::unbound(mesh_id))
+            .with_face_material(FaceMaterialHandle::unbound(mat_id)),
         None,
         Transform::IDENTITY,
         NodeFlags::NONE,
@@ -191,9 +195,9 @@ fn test_add_instance_node() {
     assert_eq!(scene.node_count(), 1);
     assert_eq!(scene.instance_count(), 1);
 
-    let node = scene.get_node(node_id).unwrap();
+    let node = scene.get_node(node.id()).unwrap();
     let instance_id = match node.payload() {
-        NodePayload::Instance(id) => *id,
+        NodePayload::Instance(h) => h.id(),
         _ => panic!("expected Instance payload"),
     };
     let instance = scene.get_instance(instance_id).unwrap();
@@ -204,7 +208,7 @@ fn test_add_instance_node() {
 #[test]
 fn test_root_node_identity_transform() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
 
     let transform = scene.nodes_transform(root).unwrap();
     let identity = Matrix4::identity();
@@ -231,7 +235,7 @@ fn test_child_transform_accumulation() {
         None,
         Transform::from_position(Point3::new(10.0, 0.0, 0.0)),
         NodeFlags::NONE,
-    ).unwrap();
+    ).unwrap().id();
 
     // Child at (5, 0, 0) relative to parent
     let child = scene.add_node(
@@ -239,7 +243,7 @@ fn test_child_transform_accumulation() {
         None,
         Transform::from_position(Point3::new(5.0, 0.0, 0.0)),
         NodeFlags::NONE,
-    ).unwrap();
+    ).unwrap().id();
 
     let child_transform = scene.nodes_transform(child).unwrap();
 
@@ -263,7 +267,7 @@ fn test_transform_with_scale() {
             Vector3::new(2.0, 2.0, 2.0),
         ),
         NodeFlags::NONE,
-    ).unwrap();
+    ).unwrap().id();
 
     // Child at (1, 0, 0)
     let child = scene.add_node(
@@ -271,7 +275,7 @@ fn test_transform_with_scale() {
         None,
         Transform::from_position(Point3::new(1.0, 0.0, 0.0)),
         NodeFlags::NONE,
-    ).unwrap();
+    ).unwrap().id();
 
     let child_transform = scene.nodes_transform(child).unwrap();
 
@@ -282,7 +286,7 @@ fn test_transform_with_scale() {
 #[test]
 fn test_transform_caching() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
 
     // First computation
     let transform1 = scene.nodes_transform(root).unwrap();
@@ -305,7 +309,7 @@ fn test_transform_caching() {
 #[test]
 fn test_transform_invalidation_on_change() {
     let mut scene = SceneData::new();
-    let node_id = scene.add_default_node(None, None).unwrap();
+    let node_id = scene.add_default_node(None, None).unwrap().id();
 
     // Compute transform to populate cache
     let _transform = scene.nodes_transform(node_id).unwrap();
@@ -323,10 +327,10 @@ fn test_tree_consistency_after_multiple_operations() {
     let mut scene = SceneData::new();
 
     // Build a tree
-    let root = scene.add_default_node(None, None).unwrap();
-    let child1 = scene.add_default_node(Some(root), None).unwrap();
-    let child2 = scene.add_default_node(Some(root), None).unwrap();
-    let grandchild = scene.add_default_node(Some(child1), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child1 = scene.add_default_node(Some(root), None).unwrap().id();
+    let child2 = scene.add_default_node(Some(root), None).unwrap().id();
+    let grandchild = scene.add_default_node(Some(child1), None).unwrap().id();
 
     // Verify every node can be accessed
     assert!(scene.get_node(root).is_some());
@@ -344,14 +348,15 @@ fn test_tree_consistency_after_multiple_operations() {
 
     // Verify every child reference is valid
     for node in scene.nodes() {
-        for &child_id in node.children() {
+        for child_id in node.children() {
             assert!(scene.get_node(child_id).is_some(),
                 "Node references non-existent child");
         }
     }
 
     // Verify all root nodes are actually roots
-    for &root_id in scene.root_nodes() {
+    let roots: Vec<NodeId> = scene.root_nodes().collect();
+    for root_id in roots {
         let node = scene.get_node(root_id).unwrap();
         assert!(node.parent().is_none(),
             "Root node has a parent");
@@ -362,12 +367,12 @@ fn test_tree_consistency_after_multiple_operations() {
 fn test_bidirectional_consistency() {
     let mut scene = SceneData::new();
 
-    let parent = scene.add_default_node(None, None).unwrap();
-    let child = scene.add_default_node(Some(parent), None).unwrap();
+    let parent = scene.add_default_node(None, None).unwrap().id();
+    let child = scene.add_default_node(Some(parent), None).unwrap().id();
 
     // Parent should list child
     let parent_node = scene.get_node(parent).unwrap();
-    assert!(parent_node.children().contains(&child));
+    assert!(parent_node.has_child(child));
 
     // Child should reference parent
     let child_node = scene.get_node(child).unwrap();
@@ -378,8 +383,8 @@ fn test_bidirectional_consistency() {
 fn test_no_orphaned_nodes() {
     let mut scene = SceneData::new();
 
-    let root1 = scene.add_default_node(None, None).unwrap();
-    let root2 = scene.add_default_node(None, None).unwrap();
+    let root1 = scene.add_default_node(None, None).unwrap().id();
+    let root2 = scene.add_default_node(None, None).unwrap().id();
     let _child1 = scene.add_default_node(Some(root1), None).unwrap();
     let _child2 = scene.add_default_node(Some(root2), None).unwrap();
 
@@ -393,12 +398,13 @@ fn test_no_orphaned_nodes() {
     ) {
         reachable.insert(node_id);
         let node = scene.get_node(node_id).unwrap();
-        for &child_id in node.children() {
+        for child_id in node.children() {
             visit_tree(scene, child_id, reachable);
         }
     }
 
-    for &root_id in scene.root_nodes() {
+    let roots: Vec<NodeId> = scene.root_nodes().collect();
+    for root_id in roots {
         visit_tree(&scene, root_id, &mut reachable);
     }
 
@@ -410,18 +416,18 @@ fn test_no_orphaned_nodes() {
 fn test_large_tree_consistency() {
     let mut scene = SceneData::new();
 
-    let root = scene.add_default_node(None, None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
 
     // Create 100 children
     let mut children = Vec::new();
     for _ in 0..100 {
-        let child = scene.add_default_node(Some(root), None).unwrap();
+        let child = scene.add_default_node(Some(root), None).unwrap().id();
         children.push(child);
     }
 
     // Verify all children are registered
     let root_node = scene.get_node(root).unwrap();
-    assert_eq!(root_node.children().len(), 100);
+    assert_eq!(root_node.child_count(), 100);
 
     // Verify all children reference the parent
     for &child_id in &children {
@@ -464,7 +470,8 @@ fn test_add_instance_node_with_invalid_parent_fails() {
 
     let result = scene.add_instance_node(
         Some(nonexistent),
-        Instance::new(MeshId::new()).with_face_material(FaceMaterialId::new()),
+        Instance::new(MeshHandle::unbound(MeshId::new()))
+            .with_face_material(FaceMaterialHandle::unbound(FaceMaterialId::new())),
         None,
         Transform::IDENTITY,
         NodeFlags::NONE,
@@ -473,14 +480,16 @@ fn test_add_instance_node_with_invalid_parent_fails() {
     assert!(result.is_err());
     // No node should be created
     assert_eq!(scene.node_count(), 0);
-    // But instance is created before the node validation - this is a side effect
-    // that could be improved in the future
+    // The instance created before node validation has no owner left, so the
+    // next reap collects it.
+    scene.reap();
+    assert_eq!(scene.instance_count(), 0);
 }
 
 #[test]
 fn test_set_node_visibility_to_invisible() {
     let mut scene = SceneData::new();
-    let node = scene.add_default_node(None, None).unwrap();
+    let node = scene.add_default_node(None, None).unwrap().id();
 
     // Default is visible
     assert_eq!(scene.get_node(node).unwrap().visibility(), Visibility::Visible);
@@ -493,7 +502,7 @@ fn test_set_node_visibility_to_invisible() {
 #[test]
 fn test_set_node_visibility_to_visible() {
     let mut scene = SceneData::new();
-    let node = scene.add_default_node(None, None).unwrap();
+    let node = scene.add_default_node(None, None).unwrap().id();
 
     // Set to invisible first
     scene.set_node_visibility(node, Visibility::Invisible);
@@ -507,9 +516,9 @@ fn test_set_node_visibility_to_visible() {
 #[test]
 fn test_visibility_propagation_to_children() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
-    let child1 = scene.add_default_node(Some(root), None).unwrap();
-    let child2 = scene.add_default_node(Some(child1), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child1 = scene.add_default_node(Some(root), None).unwrap().id();
+    let child2 = scene.add_default_node(Some(child1), None).unwrap().id();
 
     // All default to visible
     assert_eq!(scene.get_node(root).unwrap().visibility(), Visibility::Visible);
@@ -526,10 +535,10 @@ fn test_visibility_propagation_to_children() {
 #[test]
 fn test_visibility_propagation_to_multiple_children() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
-    let child1 = scene.add_default_node(Some(root), None).unwrap();
-    let child2 = scene.add_default_node(Some(root), None).unwrap();
-    let child3 = scene.add_default_node(Some(root), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child1 = scene.add_default_node(Some(root), None).unwrap().id();
+    let child2 = scene.add_default_node(Some(root), None).unwrap().id();
+    let child3 = scene.add_default_node(Some(root), None).unwrap().id();
 
     // Set root invisible - all children should become invisible
     scene.set_node_visibility(root, Visibility::Invisible);
@@ -541,8 +550,8 @@ fn test_visibility_propagation_to_multiple_children() {
 #[test]
 fn test_visibility_no_propagation_when_setting_visible() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
-    let child = scene.add_default_node(Some(root), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child = scene.add_default_node(Some(root), None).unwrap().id();
 
     // Set root invisible (propagates to child)
     scene.set_node_visibility(root, Visibility::Invisible);
@@ -557,9 +566,9 @@ fn test_visibility_no_propagation_when_setting_visible() {
 #[test]
 fn test_effective_visibility_all_visible() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
-    let child1 = scene.add_default_node(Some(root), None).unwrap();
-    let child2 = scene.add_default_node(Some(child1), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child1 = scene.add_default_node(Some(root), None).unwrap().id();
+    let child2 = scene.add_default_node(Some(child1), None).unwrap().id();
 
     // All nodes visible - effective visibility should be Visible
     assert_eq!(scene.node_effective_visibility(root), EffectiveVisibility::Visible);
@@ -570,7 +579,7 @@ fn test_effective_visibility_all_visible() {
 #[test]
 fn test_effective_visibility_node_invisible() {
     let mut scene = SceneData::new();
-    let node = scene.add_default_node(None, None).unwrap();
+    let node = scene.add_default_node(None, None).unwrap().id();
 
     scene.set_node_visibility(node, Visibility::Invisible);
     assert_eq!(scene.node_effective_visibility(node), EffectiveVisibility::Invisible);
@@ -579,9 +588,9 @@ fn test_effective_visibility_node_invisible() {
 #[test]
 fn test_effective_visibility_mixed() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
-    let child1 = scene.add_default_node(Some(root), None).unwrap();
-    let child2 = scene.add_default_node(Some(root), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child1 = scene.add_default_node(Some(root), None).unwrap().id();
+    let child2 = scene.add_default_node(Some(root), None).unwrap().id();
 
     // Make child1 invisible
     scene.set_node_visibility(child1, Visibility::Invisible);
@@ -597,7 +606,7 @@ fn test_effective_visibility_mixed() {
 #[test]
 fn test_effective_visibility_caching() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
     let _child = scene.add_default_node(Some(root), None).unwrap();
 
     // First call computes and caches
@@ -615,8 +624,8 @@ fn test_effective_visibility_caching() {
 #[test]
 fn test_effective_visibility_cache_invalidation_on_child_change() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
-    let child = scene.add_default_node(Some(root), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child = scene.add_default_node(Some(root), None).unwrap().id();
 
     // Compute and cache root's effective visibility
     assert_eq!(scene.node_effective_visibility(root), EffectiveVisibility::Visible);
@@ -633,11 +642,11 @@ fn test_effective_visibility_cache_invalidation_on_child_change() {
 #[test]
 fn test_deep_hierarchy_visibility_propagation() {
     let mut scene = SceneData::new();
-    let level0 = scene.add_default_node(None, None).unwrap();
-    let level1 = scene.add_default_node(Some(level0), None).unwrap();
-    let level2 = scene.add_default_node(Some(level1), None).unwrap();
-    let level3 = scene.add_default_node(Some(level2), None).unwrap();
-    let level4 = scene.add_default_node(Some(level3), None).unwrap();
+    let level0 = scene.add_default_node(None, None).unwrap().id();
+    let level1 = scene.add_default_node(Some(level0), None).unwrap().id();
+    let level2 = scene.add_default_node(Some(level1), None).unwrap().id();
+    let level3 = scene.add_default_node(Some(level2), None).unwrap().id();
+    let level4 = scene.add_default_node(Some(level3), None).unwrap().id();
 
     // Set level2 invisible - should propagate to level3 and level4
     scene.set_node_visibility(level2, Visibility::Invisible);
@@ -667,14 +676,14 @@ fn test_visibility_with_complex_tree() {
     //  / \     / \
     // d   e   f   g
 
-    let root = scene.add_default_node(None, None).unwrap();
-    let a = scene.add_default_node(Some(root), None).unwrap();
-    let b = scene.add_default_node(Some(root), None).unwrap();
-    let c = scene.add_default_node(Some(root), None).unwrap();
-    let d = scene.add_default_node(Some(a), None).unwrap();
-    let e = scene.add_default_node(Some(a), None).unwrap();
-    let f = scene.add_default_node(Some(c), None).unwrap();
-    let g = scene.add_default_node(Some(c), None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let a = scene.add_default_node(Some(root), None).unwrap().id();
+    let b = scene.add_default_node(Some(root), None).unwrap().id();
+    let c = scene.add_default_node(Some(root), None).unwrap().id();
+    let d = scene.add_default_node(Some(a), None).unwrap().id();
+    let e = scene.add_default_node(Some(a), None).unwrap().id();
+    let f = scene.add_default_node(Some(c), None).unwrap().id();
+    let g = scene.add_default_node(Some(c), None).unwrap().id();
 
     // Make 'a' invisible (affects d and e)
     scene.set_node_visibility(a, Visibility::Invisible);
@@ -706,7 +715,7 @@ fn test_visibility_with_complex_tree() {
 #[test]
 fn test_visibility_leaf_node_always_visible_or_invisible() {
     let mut scene = SceneData::new();
-    let leaf = scene.add_default_node(None, None).unwrap();
+    let leaf = scene.add_default_node(None, None).unwrap().id();
 
     // Leaf nodes can only be Visible or Invisible, never Mixed
     assert_eq!(scene.node_effective_visibility(leaf), EffectiveVisibility::Visible);
@@ -813,9 +822,10 @@ fn make_unit_mesh() -> Mesh {
 }
 
 fn add_geometry_node(scene: &mut SceneData, parent: Option<NodeId>, flags: NodeFlags) -> NodeId {
-    let mesh_id = scene.add_mesh(make_unit_mesh());
-    let instance = Instance::new(mesh_id).with_face_material(FaceMaterialId::new());
-    scene.add_instance_node(parent, instance, None, Transform::IDENTITY, flags).unwrap()
+    let mesh = scene.add_mesh(make_unit_mesh());
+    let material = scene.add_face_material(FaceMaterial::new());
+    let instance = Instance::new(mesh).with_face_material(material);
+    scene.add_instance_node(parent, instance, None, Transform::IDENTITY, flags).unwrap().id()
 }
 
 #[test]
@@ -831,7 +841,7 @@ fn test_does_not_contribute_bounding_returns_no_bounds() {
 #[test]
 fn test_does_not_contribute_bounding_excluded_from_parent() {
     let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap();
+    let root = scene.add_default_node(None, None).unwrap().id();
     let _normal = add_geometry_node(&mut scene, Some(root), NodeFlags::NONE);
     let _flagged = add_geometry_node(&mut scene, Some(root), NodeFlags::DOES_NOT_CONTRIBUTE_BOUNDING);
 
@@ -852,7 +862,7 @@ fn test_does_not_contribute_bounding_excluded_from_parent() {
 fn test_does_not_contribute_bounding_children_also_excluded() {
     let mut scene = SceneData::new();
     // Flagged parent whose only child has real geometry.
-    let flagged_parent = scene.add_node(None, None, Transform::IDENTITY, NodeFlags::DOES_NOT_CONTRIBUTE_BOUNDING).unwrap();
+    let flagged_parent = scene.add_node(None, None, Transform::IDENTITY, NodeFlags::DOES_NOT_CONTRIBUTE_BOUNDING).unwrap().id();
     let _child = add_geometry_node(&mut scene, Some(flagged_parent), NodeFlags::NONE);
 
     let result = scene.nodes_bounding(flagged_parent);
@@ -870,85 +880,138 @@ fn test_normal_node_contributes_bounding() {
     assert!(!result.incomplete);
 }
 
+// ============== Ownership / reap tests ==============
+
 #[test]
-fn test_is_instance_orphaned() {
+fn test_remove_node_cascades_owned_resources() {
     let mut scene = SceneData::new();
-    let mesh_id = scene.add_mesh(make_unit_mesh());
+    let node_id = add_geometry_node(&mut scene, None, NodeFlags::NONE);
+    assert_eq!(scene.mesh_count(), 1);
+    assert_eq!(scene.face_material_count(), 1);
+    assert_eq!(scene.instance_count(), 1);
 
-    // Referenced by a node → not orphaned.
-    let referenced = scene.add_instance(Instance::new(mesh_id));
-    scene
-        .add_instance_node(None, Instance::new(mesh_id), None, Transform::IDENTITY, NodeFlags::NONE)
-        .unwrap();
-    let node_instance = match scene.nodes().find_map(|n| match n.payload() {
-        NodePayload::Instance(i) => Some(*i),
-        _ => None,
-    }) {
-        Some(i) => i,
-        None => panic!("expected an instance-bearing node"),
-    };
-    assert!(!scene.is_instance_orphaned(node_instance));
-
-    // Added but never attached to a node → orphaned.
-    assert!(scene.is_instance_orphaned(referenced));
+    scene.remove_node(node_id);
+    assert_eq!(scene.node_count(), 0);
+    assert_eq!(scene.instance_count(), 0);
+    assert_eq!(scene.mesh_count(), 0);
+    assert_eq!(scene.face_material_count(), 0);
 }
 
 #[test]
-fn test_is_mesh_orphaned_respects_sharing() {
+fn test_shared_resources_survive_node_removal() {
     let mut scene = SceneData::new();
-    let shared_mesh = scene.add_mesh(make_unit_mesh());
-    let lone_mesh = scene.add_mesh(make_unit_mesh());
+    let mesh = scene.add_mesh(make_unit_mesh());
+    let a = scene
+        .add_instance_node(None, Instance::new(mesh.clone()), None, Transform::IDENTITY, NodeFlags::NONE)
+        .unwrap()
+        .id();
+    let b = scene
+        .add_instance_node(None, Instance::new(mesh), None, Transform::IDENTITY, NodeFlags::NONE)
+        .unwrap()
+        .id();
+    // The local `mesh` binding was moved into the second instance; both
+    // instances share the mesh.
+    assert_eq!(scene.mesh_count(), 1);
 
-    // Two instances reference the shared mesh; one references the lone mesh.
-    let a = scene.add_instance(Instance::new(shared_mesh));
-    let _b = scene.add_instance(Instance::new(shared_mesh));
-    let c = scene.add_instance(Instance::new(lone_mesh));
+    scene.remove_node(a);
+    assert_eq!(scene.node_count(), 1);
+    assert_eq!(scene.mesh_count(), 1);
 
-    assert!(!scene.is_mesh_orphaned(shared_mesh));
-    assert!(!scene.is_mesh_orphaned(lone_mesh));
-
-    // Removing one referrer of the shared mesh leaves it referenced; removing the
-    // sole referrer of the lone mesh orphans it.
-    scene.remove_instance(a);
-    assert!(!scene.is_mesh_orphaned(shared_mesh));
-    scene.remove_instance(c);
-    assert!(scene.is_mesh_orphaned(lone_mesh));
-
-    // A mesh no instance ever referenced is orphaned.
-    let unused = scene.add_mesh(make_unit_mesh());
-    assert!(scene.is_mesh_orphaned(unused));
+    scene.remove_node(b);
+    assert_eq!(scene.node_count(), 0);
+    assert_eq!(scene.mesh_count(), 0);
 }
 
 #[test]
-fn test_is_material_orphaned() {
+fn test_material_owns_texture() {
     let mut scene = SceneData::new();
-    let mesh_id = scene.add_mesh(make_unit_mesh());
-    let face = scene.add_face_material(FaceMaterial::new());
-    let line = scene.add_line_material(LineMaterial::new(common::RgbaColor::WHITE));
+    let mesh = scene.add_mesh(make_unit_mesh());
+    let texture = scene.add_texture_from_image(image::DynamicImage::new_rgba8(2, 2));
+    let material = scene.add_face_material(FaceMaterial::new().with_base_color_texture(texture));
+    let node = scene
+        .add_instance_node(
+            None,
+            Instance::new(mesh).with_face_material(material),
+            None,
+            Transform::IDENTITY,
+            NodeFlags::NONE,
+        )
+        .unwrap()
+        .id();
+    assert_eq!(scene.texture_count(), 1);
 
-    scene.add_instance(Instance::new(mesh_id).with_face_material(face));
-
-    assert!(!scene.is_face_material_orphaned(face));
-    // The line material exists but no instance uses it.
-    assert!(scene.is_line_material_orphaned(line));
-    // A point material no one references is orphaned.
-    let point = scene.add_point_material(PointMaterial::new(common::RgbaColor::WHITE));
-    assert!(scene.is_point_material_orphaned(point));
+    scene.remove_node(node);
+    assert_eq!(scene.face_material_count(), 0);
+    assert_eq!(scene.texture_count(), 0);
 }
 
+#[test]
+fn test_reparent_node_moves_subtree() {
+    let mut scene = SceneData::new();
+    let a = scene.add_default_node(None, None).unwrap().id();
+    let b = scene.add_default_node(None, None).unwrap().id();
+    let child = scene.add_default_node(Some(a), None).unwrap().id();
+
+    scene.reparent_node(child, Some(b)).unwrap();
+    assert!(!scene.get_node(a).unwrap().has_child(child));
+    assert!(scene.get_node(b).unwrap().has_child(child));
+    assert_eq!(scene.get_node(child).unwrap().parent(), Some(b));
+
+    // To the roots.
+    scene.reparent_node(child, None).unwrap();
+    assert_eq!(scene.get_node(child).unwrap().parent(), None);
+    assert!(scene.root_nodes().any(|id| id == child));
+    assert_eq!(scene.node_count(), 3);
+}
+
+#[test]
+fn test_reparent_node_rejects_cycles() {
+    let mut scene = SceneData::new();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let child = scene.add_default_node(Some(root), None).unwrap().id();
+    let grandchild = scene.add_default_node(Some(child), None).unwrap().id();
+
+    assert!(scene.reparent_node(root, Some(grandchild)).is_err());
+    assert!(scene.reparent_node(root, Some(root)).is_err());
+    // Structure unchanged.
+    assert!(scene.is_node_attached(grandchild));
+    assert_eq!(scene.get_node(grandchild).unwrap().parent(), Some(child));
+}
+
+#[test]
+fn test_scene_clone_is_independent() {
+    let mut scene = SceneData::new();
+    let node_id = add_geometry_node(&mut scene, None, NodeFlags::NONE);
+
+    let mut clone = scene.clone();
+    assert_eq!(clone.node_count(), 1);
+    assert_eq!(clone.mesh_count(), 1);
+
+    // Removing from the original must not affect the clone.
+    scene.remove_node(node_id);
+    assert_eq!(scene.mesh_count(), 0);
+    clone.reap();
+    assert_eq!(clone.node_count(), 1);
+    assert_eq!(clone.mesh_count(), 1);
+
+    // And vice versa.
+    clone.remove_node(node_id);
+    assert_eq!(clone.mesh_count(), 0);
+}
 
 // ============== SceneData completeness tests ==============
 
 #[test]
 fn test_is_complete_fully_populated_scene() {
     let mut scene = SceneData::new();
-    let mesh_id = scene.add_mesh(make_unit_mesh());
+    let mesh = scene.add_mesh(make_unit_mesh());
     let face = scene.add_face_material(FaceMaterial::new());
     let line = scene.add_line_material(LineMaterial::new(common::RgbaColor::WHITE));
-    let instance = Instance::new(mesh_id).with_face_material(face).with_line_material(line);
+    let instance = Instance::new(mesh).with_face_material(face).with_line_material(line);
     let parent = scene
         .add_instance_node(None, instance, None, Transform::IDENTITY, NodeFlags::NONE)
-        .unwrap();
+        .unwrap()
+        .id();
     scene.add_default_node(Some(parent), None).unwrap();
 
     assert!(scene.is_complete());
@@ -958,8 +1021,8 @@ fn test_is_complete_fully_populated_scene() {
 fn test_is_complete_missing_mesh() {
     let mut scene = SceneData::new();
     let face = scene.add_face_material(FaceMaterial::new());
-    // The mesh ID is never added to the scene.
-    let instance = Instance::new(MeshId::new()).with_face_material(face);
+    // The mesh is never added to the scene.
+    let instance = Instance::new(MeshHandle::unbound(MeshId::new())).with_face_material(face);
     scene
         .add_instance_node(None, instance, None, Transform::IDENTITY, NodeFlags::NONE)
         .unwrap();
@@ -970,9 +1033,10 @@ fn test_is_complete_missing_mesh() {
 #[test]
 fn test_is_complete_missing_material() {
     let mut scene = SceneData::new();
-    let mesh_id = scene.add_mesh(make_unit_mesh());
-    // The face material ID is never added to the scene.
-    let instance = Instance::new(mesh_id).with_face_material(FaceMaterialId::new());
+    let mesh = scene.add_mesh(make_unit_mesh());
+    // The face material is never added to the scene.
+    let instance =
+        Instance::new(mesh).with_face_material(FaceMaterialHandle::unbound(FaceMaterialId::new()));
     scene
         .add_instance_node(None, instance, None, Transform::IDENTITY, NodeFlags::NONE)
         .unwrap();
@@ -985,8 +1049,8 @@ fn test_is_complete_dangling_child() {
     let mut scene = SceneData::new();
     // A node whose child was listed but never inserted, as during a partial import.
     let mut node = Node::new(None, Transform::IDENTITY, NodeFlags::NONE);
-    node.add_child_unchecked(NodeId::new());
-    scene.insert_node(node);
+    node.add_child_unchecked(NodeHandle::unbound(NodeId::new()));
+    let _handle = scene.insert_node(node);
 
     assert!(!scene.is_complete());
 }

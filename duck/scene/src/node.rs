@@ -1,5 +1,5 @@
-use super::InstanceId;
 use crate::CameraProjection;
+use crate::resource_handle::{InstanceHandle, NodeHandle};
 use crate::DisplayBehavior;
 use crate::Light;
 use crate::RenderLayer;
@@ -26,8 +26,9 @@ pub trait CustomNodePayload: Send + Sync {}
 pub enum NodePayload {
     /// Structural container with no content (default).
     None,
-    /// References a mesh+material pair to be rendered.
-    Instance(InstanceId),
+    /// References a mesh+material pair to be rendered. The handle owns the
+    /// instance: it is removed when no longer referenced by any node or handle.
+    Instance(InstanceHandle),
     /// A camera. Projection intrinsics are stored here; pose lives in the node's Transform.
     Camera(CameraProjection),
     /// A light source. Position and direction are derived from the node's world transform:
@@ -49,7 +50,7 @@ impl std::fmt::Debug for NodePayload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => write!(f, "None"),
-            Self::Instance(id) => f.debug_tuple("Instance").field(id).finish(),
+            Self::Instance(h) => f.debug_tuple("Instance").field(&h.id()).finish(),
             Self::Camera(c) => f.debug_tuple("Camera").field(c).finish(),
             Self::Light(l) => f.debug_tuple("Light").field(l).finish(),
             Self::Custom(_) => f.debug_tuple("Custom").field(&"..").finish(),
@@ -61,7 +62,7 @@ impl Clone for NodePayload {
     fn clone(&self) -> Self {
         match self {
             Self::None => Self::None,
-            Self::Instance(id) => Self::Instance(*id),
+            Self::Instance(h) => Self::Instance(h.clone()),
             Self::Camera(c) => Self::Camera(c.clone()),
             Self::Light(l) => Self::Light(l.clone()),
             Self::Custom(_) => Self::None,
@@ -124,7 +125,9 @@ pub struct Node {
     transform: Transform,
 
     parent: Option<NodeId>,
-    children: Vec<NodeId>,
+    /// Owning references: an attached node is kept alive by its parent's entry
+    /// here (or by the scene's root list).
+    children: Vec<NodeHandle>,
     flags: NodeFlags,
 
     payload: NodePayload,
@@ -297,36 +300,60 @@ impl Node {
         self.mark_bounds_dirty();
     }
 
-    /// Gets the list of child node IDs.
-    pub fn children(&self) -> &[NodeId] {
+    /// Iterates the child node IDs.
+    pub fn children(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.children.iter().map(NodeHandle::id)
+    }
+
+    /// Returns the number of children.
+    pub fn child_count(&self) -> usize {
+        self.children.len()
+    }
+
+    /// Returns true if `child` is a direct child of this node.
+    pub fn has_child(&self, child: NodeId) -> bool {
+        self.children.iter().any(|h| h.id() == child)
+    }
+
+    /// The owning child handles.
+    pub(super) fn child_handles(&self) -> &[NodeHandle] {
         &self.children
     }
 
-    /// Adds a child node ID without maintaining tree consistency.
+    /// Adds an owning child handle without maintaining tree consistency.
     ///
     /// The caller must ensure the child's parent pointer is set correspondingly.
     /// Prefer `SceneData` methods for safe tree manipulation.
-    pub fn add_child_unchecked(&mut self, child: NodeId) {
+    pub fn add_child_unchecked(&mut self, child: NodeHandle) {
         if !self.children.contains(&child) {
             self.children.push(child);
             self.mark_bounds_dirty();
         }
     }
 
-    /// Removes a child node ID without maintaining tree consistency.
+    /// Removes a child without maintaining tree consistency, dropping the
+    /// owning handle.
     ///
     /// The caller must ensure the child's parent pointer is updated correspondingly.
     /// Prefer `SceneData` methods for safe tree manipulation.
     pub fn remove_child_unchecked(&mut self, child: NodeId) {
-        self.children.retain(|&id| id != child);
+        self.children.retain(|h| h.id() != child);
         self.mark_bounds_dirty();
+    }
+
+    /// Removes and returns a child's owning handle without maintaining tree
+    /// consistency.
+    pub(super) fn take_child_unchecked(&mut self, child: NodeId) -> Option<NodeHandle> {
+        let pos = self.children.iter().position(|h| h.id() == child)?;
+        self.mark_bounds_dirty();
+        Some(self.children.remove(pos))
     }
 
     /// Replaces the children list without maintaining tree consistency.
     ///
-    /// The caller must ensure all child IDs reference valid nodes and that
+    /// The caller must ensure all children reference valid nodes and that
     /// their parent pointers are consistent. Prefer `SceneData` methods for safe tree manipulation.
-    pub fn set_children_unchecked(&mut self, children: Vec<NodeId>) {
+    pub fn set_children_unchecked(&mut self, children: Vec<NodeHandle>) {
         self.children = children;
         self.mark_bounds_dirty();
     }
@@ -494,7 +521,7 @@ mod tests {
 
         assert_eq!(node.name, None);
         assert_eq!(node.parent(), None);
-        assert_eq!(node.children().len(), 0);
+        assert_eq!(node.child_count(), 0);
         assert!(matches!(node.payload(), NodePayload::None));
     }
 
@@ -630,25 +657,25 @@ mod tests {
         let child1_id = child1.id;
         let child2_id = child2.id;
 
-        assert_eq!(parent.children().len(), 0);
+        assert_eq!(parent.child_count(), 0);
         assert_eq!(child1.parent(), None);
         assert_eq!(child2.parent(), None);
 
         // Add first child (bidirectional setup)
-        parent.add_child_unchecked(child1_id);
+        parent.add_child_unchecked(NodeHandle::unbound(child1_id));
         child1.set_parent_unchecked(Some(parent_id));
 
-        assert_eq!(parent.children().len(), 1);
-        assert_eq!(parent.children()[0], child1_id);
+        assert_eq!(parent.child_count(), 1);
+        assert_eq!(parent.children().next(), Some(child1_id));
         assert_eq!(child1.parent(), Some(parent_id));
 
         // Add second child (bidirectional setup)
-        parent.add_child_unchecked(child2_id);
+        parent.add_child_unchecked(NodeHandle::unbound(child2_id));
         child2.set_parent_unchecked(Some(parent_id));
 
-        assert_eq!(parent.children().len(), 2);
-        assert!(parent.children().contains(&child1_id));
-        assert!(parent.children().contains(&child2_id));
+        assert_eq!(parent.child_count(), 2);
+        assert!(parent.has_child(child1_id));
+        assert!(parent.has_child(child2_id));
         assert_eq!(child1.parent(), Some(parent_id));
         assert_eq!(child2.parent(), Some(parent_id));
     }
@@ -658,13 +685,13 @@ mod tests {
         let mut node = Node::new_default();
         let child_id = crate::Id::new();
 
-        node.add_child_unchecked(child_id);
-        node.add_child_unchecked(child_id); // Duplicate
-        node.add_child_unchecked(child_id); // Duplicate
+        node.add_child_unchecked(NodeHandle::unbound(child_id));
+        node.add_child_unchecked(NodeHandle::unbound(child_id)); // Duplicate
+        node.add_child_unchecked(NodeHandle::unbound(child_id)); // Duplicate
 
         // Should only have one child
-        assert_eq!(node.children().len(), 1);
-        assert_eq!(node.children()[0], child_id);
+        assert_eq!(node.child_count(), 1);
+        assert_eq!(node.children().next(), Some(child_id));
     }
 
     #[test]
@@ -674,29 +701,29 @@ mod tests {
         let id_b = crate::Id::new();
         let id_c = crate::Id::new();
 
-        node.add_child_unchecked(id_a);
-        node.add_child_unchecked(id_b);
-        node.add_child_unchecked(id_c);
+        node.add_child_unchecked(NodeHandle::unbound(id_a));
+        node.add_child_unchecked(NodeHandle::unbound(id_b));
+        node.add_child_unchecked(NodeHandle::unbound(id_c));
 
-        assert_eq!(node.children().len(), 3);
+        assert_eq!(node.child_count(), 3);
 
         node.remove_child_unchecked(id_b);
-        assert_eq!(node.children().len(), 2);
-        assert!(node.children().contains(&id_a));
-        assert!(!node.children().contains(&id_b));
-        assert!(node.children().contains(&id_c));
+        assert_eq!(node.child_count(), 2);
+        assert!(node.has_child(id_a));
+        assert!(!node.has_child(id_b));
+        assert!(node.has_child(id_c));
     }
 
     #[test]
     fn test_remove_child_nonexistent() {
         let mut node = Node::new_default();
         let child_id = crate::Id::new();
-        node.add_child_unchecked(child_id);
+        node.add_child_unchecked(NodeHandle::unbound(child_id));
 
         // Removing non-existent child should not panic
         node.remove_child_unchecked(crate::Id::new());
-        assert_eq!(node.children().len(), 1);
-        assert_eq!(node.children()[0], child_id);
+        assert_eq!(node.child_count(), 1);
+        assert_eq!(node.children().next(), Some(child_id));
     }
 
     // ========================================================================
@@ -925,7 +952,7 @@ mod tests {
         assert!(!node.bounds_dirty());
 
         // Add child should only mark bounds dirty, not transform
-        node.add_child_unchecked(crate::Id::new());
+        node.add_child_unchecked(NodeHandle::unbound(crate::Id::new()));
         assert!(!node.transform_dirty());
         assert!(node.bounds_dirty());
     }
@@ -946,11 +973,11 @@ mod tests {
         let instance_id_a = crate::Id::new();
         let instance_id_b = crate::Id::new();
 
-        node.set_payload(NodePayload::Instance(instance_id_a));
-        assert!(matches!(node.payload(), NodePayload::Instance(id) if *id == instance_id_a));
+        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(instance_id_a)));
+        assert!(matches!(node.payload(), NodePayload::Instance(h) if h.id() == instance_id_a));
 
-        node.set_payload(NodePayload::Instance(instance_id_b));
-        assert!(matches!(node.payload(), NodePayload::Instance(id) if *id == instance_id_b));
+        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(instance_id_b)));
+        assert!(matches!(node.payload(), NodePayload::Instance(h) if h.id() == instance_id_b));
     }
 
     #[test]
@@ -958,8 +985,8 @@ mod tests {
         let mut node = Node::new_default();
         let instance_id = crate::Id::new();
 
-        node.set_payload(NodePayload::Instance(instance_id));
-        assert!(matches!(node.payload(), NodePayload::Instance(id) if *id == instance_id));
+        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(instance_id)));
+        assert!(matches!(node.payload(), NodePayload::Instance(h) if h.id() == instance_id));
 
         node.set_payload(NodePayload::None);
         assert!(matches!(node.payload(), NodePayload::None));
@@ -976,7 +1003,7 @@ mod tests {
         )));
         assert!(!node.transform_dirty());
 
-        node.set_payload(NodePayload::Instance(crate::Id::new()));
+        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(crate::Id::new())));
         assert!(!node.transform_dirty()); // payload doesn't affect transform
         assert!(node.bounds_dirty()); // payload affects bounds
     }
@@ -1185,13 +1212,13 @@ mod tests {
         let child_ids: Vec<NodeId> = (0..1000).map(|_| crate::Id::new()).collect();
 
         for &id in &child_ids {
-            parent.add_child_unchecked(id);
+            parent.add_child_unchecked(NodeHandle::unbound(id));
         }
 
-        assert_eq!(parent.children().len(), 1000);
+        assert_eq!(parent.child_count(), 1000);
 
         for &id in &child_ids {
-            assert!(parent.children().contains(&id));
+            assert!(parent.has_child(id));
         }
     }
 }

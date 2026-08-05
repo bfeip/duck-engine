@@ -1,4 +1,5 @@
 use crate::common::RgbaColor;
+use crate::resource_handle::TextureHandle;
 use crate::TextureId;
 
 use super::{AlphaMode, MaterialProperties};
@@ -19,8 +20,8 @@ pub struct LineMaterial {
     /// Line color (tints the base-color texture if present)
     color: RgbaColor,
 
-    /// Optional base-color texture (multiplied by `color`)
-    base_color_texture: Option<TextureId>,
+    /// Optional base-color texture (multiplied by `color`). Owning.
+    base_color_texture: Option<TextureHandle>,
 
     /// Generation counter (for change tracking)
     #[cfg_attr(feature = "serde", serde(skip, default = "crate::initial_generation"))]
@@ -45,7 +46,7 @@ impl LineMaterial {
 
     /// Get the base-color texture id, if any.
     pub fn base_color_texture(&self) -> Option<TextureId> {
-        self.base_color_texture
+        self.base_color_texture.as_ref().map(TextureHandle::id)
     }
 
     /// Get the material properties used to select shaders and pipeline state.
@@ -86,14 +87,14 @@ impl LineMaterial {
     }
 
     /// Set the base-color texture (chainable).
-    pub fn with_base_color_texture(mut self, texture_id: TextureId) -> Self {
-        self.set_base_color_texture(texture_id);
+    pub fn with_base_color_texture(mut self, texture: TextureHandle) -> Self {
+        self.set_base_color_texture(texture);
         self
     }
 
     /// Set the base-color texture, marking the material as dirty.
-    pub fn set_base_color_texture(&mut self, texture_id: TextureId) {
-        self.base_color_texture = Some(texture_id);
+    pub fn set_base_color_texture(&mut self, texture: TextureHandle) {
+        self.base_color_texture = Some(texture);
         self.generation += 1;
     }
 }
