@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use duck_engine_scene::cad::{tessellate_into, CadTessellationOptions};
-use duck_engine_scene::{NodeId, Scene, SceneData, Visibility};
+use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions};
+use duck_engine_scene::{FaceMaterialHandle, LineMaterialHandle, NodeId, Scene, SceneData, Visibility};
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
@@ -12,23 +12,53 @@ use crate::document::Document;
 /// [`cancel`](Self::cancel) removes the previews and restores hidden sources;
 /// [`commit`](Self::commit) removes the previews and hands the still-hidden
 /// sources back to the caller to delete. After either — and on drop — the
-/// session is inert. Previews are removed with [`SceneData::cleanup_node`] so their
-/// meshes and materials are freed too.
+/// session is inert. Removing a preview node releases everything it owned, so
+/// its mesh (and, at session end, the shared materials) are freed too.
 pub struct PreviewSession {
     document: Arc<Mutex<Document>>,
     previews: Vec<NodeId>,
     hidden: Vec<NodeId>,
+    /// One material pair shared by every preview tessellation in this session,
+    /// so repeated rebuilds (e.g. per cursor move during a drag) don't mint a
+    /// fresh pair each time. Created on first use, dropped with the session.
+    materials: Option<(FaceMaterialHandle, LineMaterialHandle)>,
 }
 
 impl PreviewSession {
     /// A session with no previews and no hidden sources, bound to `document`.
     pub fn new(document: Arc<Mutex<Document>>) -> Self {
-        Self { document, previews: Vec::new(), hidden: Vec::new() }
+        Self { document, previews: Vec::new(), hidden: Vec::new(), materials: None }
     }
 
     /// The document's current scene.
     fn scene(&self) -> Scene {
         self.document.lock().unwrap().scene().clone()
+    }
+
+    /// The session's shared preview materials, instantiated from the option
+    /// templates on first use (honoring `shape`'s geometry class).
+    fn materials(
+        &mut self,
+        scene: &Scene,
+        shape: &Shape,
+        options: &CadTessellationOptions,
+    ) -> (FaceMaterialHandle, LineMaterialHandle) {
+        // A pair from a previous scene (after a scene swap) is stale; replace it.
+        if let Some((face, _)) = &self.materials
+            && scene.get_face_material(face.id()).is_none()
+        {
+            self.materials = None;
+        }
+        self.materials
+            .get_or_insert_with(|| {
+                let (face, line) = options.materials_for(shape);
+                let mut scene = scene.lock();
+                (
+                    scene.add_face_material(face.clone().with_fresh_id()),
+                    scene.add_line_material(line.clone().with_fresh_id()),
+                )
+            })
+            .clone()
     }
 
     /// True while no previews are tracked and no sources are hidden.
@@ -58,7 +88,11 @@ impl PreviewSession {
         name: &str,
     ) -> Option<NodeId> {
         let scene = self.scene();
-        let node = tessellate_into(shape, &scene, options, None, Some(name)).ok()?;
+        let (face, line) = self.materials(&scene, shape, options);
+        let node =
+            tessellate_into_with_materials(shape, &scene, options, &face, &line, None, Some(name))
+                .ok()?
+                .id();
         self.previews.push(node);
         Some(node)
     }
@@ -78,11 +112,15 @@ impl PreviewSession {
         name: &str,
     ) -> Option<NodeId> {
         let scene = self.scene();
-        let node = tessellate_into(shape, &scene, options, None, Some(name)).ok()?;
+        let (face, line) = self.materials(&scene, shape, options);
+        let node =
+            tessellate_into_with_materials(shape, &scene, options, &face, &line, None, Some(name))
+                .ok()?
+                .id();
 
         let mut scene = scene.lock();
         for old in self.previews.drain(..) {
-            scene.cleanup_node(old);
+            scene.remove_node(old);
         }
         self.previews.push(node);
         Some(node)
@@ -94,7 +132,7 @@ impl PreviewSession {
         let scene = self.scene();
         let mut scene = scene.lock();
         for node in self.previews.drain(..) {
-            scene.cleanup_node(node);
+            scene.remove_node(node);
         }
         Self::restore_hidden(&mut scene, &mut self.hidden);
     }
@@ -124,9 +162,11 @@ impl PreviewSession {
         let scene = self.scene();
         let mut scene = scene.lock();
         for node in self.previews.drain(..) {
-            scene.cleanup_node(node);
+            scene.remove_node(node);
         }
         Self::restore_hidden(&mut scene, &mut self.hidden);
+        // Dropped under the guard; reaped when it releases.
+        self.materials = None;
     }
 
     /// Remove all previews and return the still-hidden source nodes, transferring
@@ -138,8 +178,9 @@ impl PreviewSession {
         let scene = self.scene();
         let mut scene = scene.lock();
         for node in self.previews.drain(..) {
-            scene.cleanup_node(node);
+            scene.remove_node(node);
         }
+        self.materials = None;
         std::mem::take(&mut self.hidden)
     }
 
@@ -167,7 +208,7 @@ impl Drop for PreviewSession {
         };
         let mut scene = scene.lock();
         for &node in &self.previews {
-            scene.cleanup_node(node);
+            scene.remove_node(node);
         }
         for &node in &self.hidden {
             scene.set_node_visibility(node, Visibility::Visible);
@@ -192,8 +233,15 @@ mod tests {
     /// source part).
     fn add_source(document: &Arc<Mutex<Document>>) -> NodeId {
         let scene = document.lock().unwrap().scene().clone();
-        tessellate_into(&unit_shape(), &scene, &CadTessellationOptions::default(), None, Some("src"))
-            .unwrap()
+        duck_engine_scene::cad::tessellate_into(
+            &unit_shape(),
+            &scene,
+            &CadTessellationOptions::default(),
+            None,
+            Some("src"),
+        )
+        .unwrap()
+        .id()
     }
 
     fn with_scene<R>(document: &Arc<Mutex<Document>>, f: impl FnOnce(&SceneData) -> R) -> R {
@@ -221,6 +269,31 @@ mod tests {
             assert_eq!(s.node_count(), 0);
             assert_eq!(s.mesh_count(), 0);
             assert_eq!(s.instance_count(), 0);
+        });
+    }
+
+    #[test]
+    fn preview_replacements_share_one_material_pair() {
+        let document = document();
+        let mut session = PreviewSession::new(document.clone());
+        // Simulates a drag: the preview is rebuilt repeatedly. Every rebuild
+        // must reuse the session's material pair instead of minting a new one.
+        for _ in 0..3 {
+            assert!(session
+                .try_replace_preview(&unit_shape(), &CadTessellationOptions::default(), "p")
+                .is_some());
+        }
+        with_scene(&document, |s| {
+            assert_eq!(s.face_material_count(), 1);
+            assert_eq!(s.line_material_count(), 1);
+            assert_eq!(s.mesh_count(), 1, "replaced preview meshes must be freed");
+        });
+
+        session.cancel();
+        with_scene(&document, |s| {
+            assert_eq!(s.face_material_count(), 0);
+            assert_eq!(s.line_material_count(), 0);
+            assert_eq!(s.mesh_count(), 0);
         });
     }
 

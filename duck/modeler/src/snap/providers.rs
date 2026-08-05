@@ -758,6 +758,7 @@ mod tests {
                 NodeFlags::NONE,
             )
             .expect("instance node");
+        let node = node.id();
         (scene, node)
     }
 

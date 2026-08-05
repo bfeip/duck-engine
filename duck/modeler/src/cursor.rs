@@ -11,8 +11,9 @@
 
 use duck_engine_viewer::common::{Point3, RgbaColor, Transform};
 use duck_engine_viewer::scene::{
-    AlphaMode, DisplayBehavior, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh,
-    NodeFlags, NodeId, PrimitiveType, RenderLayer, Scene, SceneData, Texture, Visibility,
+    AlphaMode, DisplayBehavior, FaceMaterial, FaceMaterialHandle, Instance, MaterialFlags, Mesh,
+    NodeFlags, NodeHandle, NodeId, PrimitiveType, RenderLayer, Scene, SceneData, Texture,
+    Visibility,
 };
 
 /// On-screen diameter of the dot, in pixels. The quad's half-width (0.5) is
@@ -33,10 +34,11 @@ const DOT_TEXTURE_SIZE: u32 = 64;
 /// is created lazily on first show; redundant updates are skipped so it is cheap
 /// to call every frame.
 pub struct Cursor3d {
-    node: Option<NodeId>,
+    /// Owning handle: keeps the marker (and its mesh/material/texture) alive.
+    node: Option<NodeHandle>,
     /// Material backing the dot; kept so [`set_color`](Self::set_color) can
     /// retint the white disc.
-    material: Option<FaceMaterialId>,
+    material: Option<FaceMaterialHandle>,
     /// Desired dot color; applied to the material as its base-color factor.
     color: RgbaColor,
     /// Last position actually written, to skip redundant writes. Scale is now
@@ -61,8 +63,10 @@ impl Cursor3d {
         let mut scene = scene.lock();
         let Some(position) = target else {
             if self.shown.take().is_some() {
-                if let Some(node) = self.node {
-                    scene.set_node_visibility(node, Visibility::Invisible);
+                if let Some(node) = &self.node
+                    && scene.has_node(node.id())
+                {
+                    scene.set_node_visibility(node.id(), Visibility::Invisible);
                 }
             }
             return;
@@ -82,8 +86,8 @@ impl Cursor3d {
     /// otherwise it is applied when the node is first created.
     pub fn _set_color(&mut self, color: RgbaColor, scene: &Scene) {
         self.color = color;
-        if let Some(material) = self.material {
-            if let Some(mat) = scene.lock().get_face_material_mut(material) {
+        if let Some(material) = &self.material {
+            if let Some(mat) = scene.lock().get_face_material_mut(material.id()) {
                 mat.set_base_color_factor(color);
             }
         }
@@ -92,8 +96,16 @@ impl Cursor3d {
     /// Returns the marker node, creating its mesh/material/texture/node on first
     /// use.
     fn ensure_node(&mut self, scene: &mut SceneData) -> NodeId {
-        if let Some(node) = self.node {
-            return node;
+        // A marker from a previous scene (after a scene swap) is stale; rebuild.
+        if let Some(node) = &self.node
+            && !scene.has_node(node.id())
+        {
+            self.node = None;
+            self.material = None;
+            self.shown = None;
+        }
+        if let Some(node) = &self.node {
+            return node.id();
         }
         let mesh = scene.add_mesh(Mesh::quad(1.0, 1.0, PrimitiveType::TriangleList));
         let texture = scene.add_texture(build_dot_texture());
@@ -109,7 +121,7 @@ impl Cursor3d {
         let node = scene
             .add_instance_node(
                 None,
-                Instance::new(mesh).with_face_material(material),
+                Instance::new(mesh).with_face_material(material.clone()),
                 Some("3D cursor".to_owned()),
                 Transform::IDENTITY,
                 // Inert: not selectable (keeps it out of geometry snapping), not
@@ -119,16 +131,17 @@ impl Cursor3d {
             .expect("Failed to create 3D cursor node");
         // Billboard, constant pixel size, always drawn on top.
         scene.set_node_display(
-            node,
+            node.id(),
             DisplayBehavior {
                 screen_facing: true,
                 screen_size: Some(CURSOR_PIXELS),
                 layer: RenderLayer::Overlay,
             },
         );
+        let id = node.id();
         self.material = Some(material);
         self.node = Some(node);
-        node
+        id
     }
 }
 

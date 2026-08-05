@@ -223,7 +223,7 @@ impl ViewerState<'static> {
                 Some("Main camera".to_owned()),
                 camera_transform,
                 NodeFlags::NONE
-            ).expect("Failed to add camera on default scene");
+            ).expect("Failed to add camera on default scene").id();
             scene.set_node_payload(camera_node_id, NodePayload::Camera(camera_projection));
             scene.set_active_camera(Some(camera_node_id));
             scene.set_default_light_nodes(camera_node_id);

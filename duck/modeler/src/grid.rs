@@ -94,6 +94,7 @@ impl Grid {
                     NodeFlags::inert(),
                 )
                 .expect("Grid instance node creation failed")
+                .id()
         })
         .collect();
 
@@ -104,7 +105,7 @@ impl Grid {
     pub fn remove_from_scene(self, scene: &Scene) {
         let mut scene = scene.lock();
         for node in self.nodes {
-            scene.cleanup_node(node);
+            scene.remove_node(node);
         }
     }
 }

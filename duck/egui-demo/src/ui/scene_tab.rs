@@ -46,7 +46,7 @@ pub fn render_node_tree(
         return;
     };
 
-    let has_children = !node.children().is_empty();
+    let has_children = node.child_count() > 0;
     let has_instance = matches!(node.payload(), NodePayload::Instance(_));
 
     let visibility = node.visibility();
@@ -71,7 +71,7 @@ pub fn render_node_tree(
         1.0
     };
 
-    let children: Vec<NodeId> = node.children().to_vec();
+    let children: Vec<NodeId> = node.children().collect();
 
     if has_children {
         let id = ui.make_persistent_id(format!("node_{}", node_id));

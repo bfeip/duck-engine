@@ -96,7 +96,8 @@ pub fn preview_extrude(
     let raw = raw_extrude(doc, target, frame, length)?;
     let hide_source = !raw.source_is_solid;
     let node = tessellate_into(&raw.prism, doc.scene(), options, None, Some("Extrude preview"))
-        .context("Failed to tessellate extrude preview")?;
+        .context("Failed to tessellate extrude preview")?
+        .id();
     Ok(ExtrudePreview { node, hide_source })
 }
 

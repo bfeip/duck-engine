@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::{FaceMaterial, LineMaterial, NodeId};
+use duck_engine_scene::NodeHandle;
 use opencascade::primitives::Shape;
 
 use crate::document::PartId;
@@ -32,18 +32,17 @@ pub enum Delta {
 
 /// Everything needed to remove or resurrect a part with stable ids.
 ///
-/// Shapes are shallow clones: committed shapes are never mutated in place, so a
-/// refcounted handle stays an exact snapshot. Materials are captured live from
-/// the scene — they may have diverged from the tessellation template (e.g.
-/// import colors) — and the options carry the retessellation parameters, which
-/// `remove_part` does not otherwise receive.
+/// The node handle owns the part's whole scene chain (node → instance → mesh
+/// and materials): removal only detaches the subtree, and this snapshot keeps
+/// it alive off-tree until resurrected or evicted from history. Shapes are
+/// shallow clones: committed shapes are never mutated in place, so a refcounted
+/// handle stays an exact snapshot. The options carry the retessellation
+/// parameters, which `remove_part` does not otherwise receive.
 pub struct PartSnapshot {
     pub part: PartId,
-    pub node: NodeId,
+    pub node: NodeHandle,
     pub name: String,
     pub shape: Shape,
-    pub face_material: FaceMaterial,
-    pub line_material: LineMaterial,
     pub options: CadTessellationOptions,
 }
 
@@ -134,15 +133,12 @@ mod tests {
     use super::*;
 
     fn snapshot(name: &str) -> PartSnapshot {
-        let options = CadTessellationOptions::default();
         PartSnapshot {
             part: PartId::new(),
-            node: NodeId::new(),
+            node: NodeHandle::unbound(duck_engine_scene::NodeId::new()),
             name: name.to_string(),
             shape: Shape::cube(1.0),
-            face_material: options.face_material.clone(),
-            line_material: options.line_material.clone(),
-            options,
+            options: CadTessellationOptions::default(),
         }
     }
 

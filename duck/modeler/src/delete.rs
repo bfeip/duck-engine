@@ -191,7 +191,8 @@ mod tests {
         let doc = doc.lock().unwrap();
         assert!(doc.get_part(deleted_part).is_none());
         assert_eq!(doc.node_for_part(deleted_part), None);
-        assert!(doc.scene().get_node(deleted_node).is_none());
+        // The undo snapshot keeps the node alive, but detached from the tree.
+        assert!(!doc.scene().lock().is_node_attached(deleted_node));
         assert!(!selection.is_node_selected(deleted_node), "selection entries must be purged");
 
         assert!(doc.get_part(kept_part).is_some(), "sub-geometry selection must not delete");
@@ -208,7 +209,8 @@ mod tests {
             .scene()
             .lock()
             .add_node(None, Some("free node".into()), Transform::IDENTITY, NodeFlags::NONE)
-            .expect("node adds");
+            .expect("node adds")
+            .id();
 
         let mut selection = SelectionManager::new();
         selection.add(SelectionItem::Node(unmapped));

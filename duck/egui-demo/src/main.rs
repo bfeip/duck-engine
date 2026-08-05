@@ -410,7 +410,7 @@ impl<'a> App<'a> {
 
         let scene_arc = viewer.scene();
         let mut scene = scene_arc.lock();
-        let node_id = scene.add_node(None, None, transform, NodeFlags::NONE).expect("add light node");
+        let node_id = scene.add_node(None, None, transform, NodeFlags::NONE).expect("add light node").id();
         scene.set_node_payload(node_id, NodePayload::Light(light));
         log::info!("Added {:?} light", light_type);
     }

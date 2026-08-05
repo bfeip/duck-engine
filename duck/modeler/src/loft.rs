@@ -66,6 +66,7 @@ pub fn preview_loft(
     let wires = resolve_profiles(doc, profiles)?;
     let shape = build_loft(&wires, kind);
     tessellate_into(&shape, doc.scene(), options, None, Some("Loft preview"))
+        .map(|node| node.id())
         .context("Failed to tessellate loft preview")
 }
 

@@ -2,10 +2,8 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
 use anyhow::{Context, Result};
-use duck_engine_scene::{Id, Instance, Node, NodeFlags, NodeId, NodePayload, Scene, Visibility};
-use duck_engine_scene::cad::{
-    CadTessellationOptions, retessellate_node, tessellate_into, tessellate_occ_shape,
-};
+use duck_engine_scene::{Id, NodeId, Scene, Visibility};
+use duck_engine_scene::cad::{CadTessellationOptions, retessellate_node, tessellate_into};
 use duck_engine_scene::common::{matrix4_to_row_major_f64, Matrix4, Transform};
 use opencascade::primitives::{Edge, Face, Shape, ShapeType, Wire};
 
@@ -103,7 +101,8 @@ impl Document {
     ) -> Result<PartId> {
         let name = name.into();
         let node = tessellate_into(&shape, &self.scene, options, None, Some(&name))
-            .context("Failed to tessellate part")?;
+            .context("Failed to tessellate part")?
+            .id();
         let id = PartId::new();
         self.parts.push(CadPart { id, name, shape, options: options.clone() });
         self.part_to_node.insert(id, node);
@@ -115,8 +114,10 @@ impl Document {
         Ok(id)
     }
 
-    /// Remove a part from the CAD store, the mapping, and the scene,
-    /// including the node's now possibly orphaned mesh and materials.
+    /// Remove a part from the CAD store, the mapping, and the scene tree.
+    ///
+    /// The recorded undo snapshot keeps the detached node chain alive until
+    /// the step leaves history; then its mesh and materials are freed too.
     pub fn remove_part(&mut self, id: PartId) {
         if let Some(snapshot) = self.snapshot_part(id) {
             let label = format!("Delete {}", snapshot.name);
@@ -131,7 +132,7 @@ impl Document {
         self.parts.retain(|p| p.id != id);
         if let Some(node) = self.part_to_node.remove(&id) {
             self.node_to_part.remove(&node);
-            self.scene.cleanup_node(node);
+            self.scene.remove_node(node);
         }
     }
 
@@ -324,65 +325,41 @@ impl Document {
     }
 
     /// Captures the state needed to delete and later resurrect a part.
-    /// `None` for an unknown part or one whose scene wiring is incomplete.
+    /// `None` for an unknown part or one whose scene node is gone.
+    ///
+    /// The snapshot's node handle keeps the part's scene chain (node →
+    /// instance → mesh/materials) alive off-tree after removal, so resurrection
+    /// is a reattach — no retessellation, all ids preserved.
     fn snapshot_part(&self, id: PartId) -> Option<PartSnapshot> {
         let part = self.get_part(id)?;
-        let node = self.node_for_part(id)?;
-        let scene = self.scene.lock();
-        let NodePayload::Instance(instance_id) = *scene.get_node(node)?.payload() else {
-            return None;
-        };
-        let instance = scene.get_instance(instance_id)?;
-        let face_material = scene.get_face_material(instance.face_material()?)?.clone();
-        let line_material = scene.get_line_material(instance.line_material()?)?.clone();
+        let node = self.scene.node_handle(self.node_for_part(id)?)?;
         Some(PartSnapshot {
             part: id,
             node,
             name: part.name.clone(),
             shape: part.shape.clone(),
-            face_material,
-            line_material,
             options: part.options.clone(),
         })
     }
 
-    /// Re-creates a removed part from its snapshot under its original part,
+    /// Reattaches a removed part's still-alive subtree under its original part,
     /// node, and material ids.
     fn resurrect(&mut self, snapshot: &PartSnapshot) -> Result<()> {
-        let mesh = tessellate_occ_shape(
-            &snapshot.shape,
-            snapshot.options.tessellation_tolerance,
-            snapshot.options.scale_factor,
-            snapshot.options.include_edges,
-            snapshot.options.include_points,
-        )?;
-        {
-            let mut scene = self.scene.lock();
-            let face_mat = scene.add_face_material(snapshot.face_material.clone());
-            let line_mat = scene.add_line_material(snapshot.line_material.clone());
-            let mesh_id = scene.add_mesh(mesh);
-            let instance_id = scene.add_instance(
-                Instance::new(mesh_id)
-                    .with_face_material(face_mat)
-                    .with_line_material(line_mat),
-            );
-            let mut node = Node::new(
-                Some(snapshot.name.clone()),
-                Transform::IDENTITY,
-                NodeFlags::NONE,
-            );
-            node.id = snapshot.node;
-            scene.insert_node(node);
-            scene.set_node_payload(snapshot.node, NodePayload::Instance(instance_id));
-        }
+        let node = snapshot.node.id();
+        self.scene
+            .reparent_node(node, None)
+            .context("resurrect: part node no longer exists")?;
+        // Parts hidden at removal time (e.g. sources consumed by a commit)
+        // come back visible.
+        self.scene.set_node_visibility(node, Visibility::Visible);
         self.parts.push(CadPart {
             id: snapshot.part,
             name: snapshot.name.clone(),
             shape: snapshot.shape.clone(),
             options: snapshot.options.clone(),
         });
-        self.part_to_node.insert(snapshot.part, snapshot.node);
-        self.node_to_part.insert(snapshot.node, snapshot.part);
+        self.part_to_node.insert(snapshot.part, node);
+        self.node_to_part.insert(node, snapshot.part);
         Ok(())
     }
 
@@ -475,6 +452,7 @@ impl Drop for UndoScope<'_> {
 mod tests {
     use super::*;
     use duck_engine_scene::common::Vector3;
+    use duck_engine_scene::NodePayload;
 
     fn doc_with_box() -> (Document, PartId, NodeId) {
         let scene = Scene::default();
@@ -572,13 +550,23 @@ mod tests {
     }
 
     #[test]
-    fn undo_add_removes_part_and_scene_resources() {
+    fn undo_add_detaches_part_and_keeps_it_for_redo() {
         let (mut doc, part, node) = doc_with_box();
 
         let label = doc.undo().expect("undo succeeds");
         assert_eq!(label.as_deref(), Some("Add box"));
         assert_eq!(doc.parts().count(), 0);
         assert!(doc.node_for_part(part).is_none());
+        {
+            let scene = doc.scene().lock();
+            // The redo snapshot owns the detached subtree: nothing renders,
+            // but the resources survive for an id-stable redo.
+            assert!(!scene.is_node_attached(node));
+            assert_eq!(scene.mesh_count(), 1);
+        }
+
+        // Dropping the history releases the snapshot; everything is freed.
+        doc.history.clear();
         let scene = doc.scene().lock();
         assert!(scene.get_node(node).is_none());
         assert_eq!(scene.mesh_count(), 0);
@@ -591,11 +579,11 @@ mod tests {
         let (mut doc, part, node) = doc_with_box();
         let face_material = {
             let scene = doc.scene().lock();
-            let NodePayload::Instance(instance) = *scene.get_node(node).unwrap().payload()
+            let NodePayload::Instance(instance) = scene.get_node(node).unwrap().payload()
             else {
                 panic!("expected instance payload");
             };
-            scene.get_instance(instance).unwrap().face_material().unwrap()
+            scene.get_instance(instance.id()).unwrap().face_material().unwrap()
         };
 
         doc.remove_part(part);

@@ -139,6 +139,7 @@ pub fn preview_boolean(
 ) -> Result<NodeId> {
     let computed = compute_boolean(kind, target, tools, doc)?;
     tessellate_into(&computed.shape, doc.scene(), options, None, Some("Boolean preview"))
+        .map(|node| node.id())
         .context("Failed to tessellate boolean preview")
 }
 
