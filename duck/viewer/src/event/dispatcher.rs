@@ -695,7 +695,7 @@ mod tests {
         let mut scene = SceneData::new();
         let cam_id = scene.add_node(
             None, None, camera.to_node_transform(), NodeFlags::NONE
-        ).unwrap();
+        ).unwrap().id();
         scene.set_node_payload(cam_id, NodePayload::Camera(camera.projection()));
         scene.set_active_camera(Some(cam_id));
         (None, Scene::new(scene), SelectionManager::new())

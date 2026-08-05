@@ -236,7 +236,8 @@ impl Viewer {
             ortho: false,
         };
         let id = scene.add_node(None, Some("Camera".to_string()), cam.to_node_transform(), NodeFlags::NONE)
-            .expect("Failed to add default camera node");
+            .expect("Failed to add default camera node")
+            .id();
         scene.set_node_payload(id, NodePayload::Camera(cam.projection()));
         scene.set_active_camera(Some(id));
         return id;

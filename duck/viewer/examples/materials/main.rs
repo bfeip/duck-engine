@@ -39,7 +39,7 @@ fn build_material_scene(viewer: &mut Viewer) {
     // Attach default camera-space key + fill lights to a placeholder camera node.
     let camera_node = scene.add_node(
         None, Some("Camera".to_string()), Default::default(), NodeFlags::NONE
-    ).unwrap();
+    ).unwrap().id();
     scene.set_default_light_nodes(camera_node);
 
     // Shared sphere mesh for all instances
@@ -64,7 +64,7 @@ fn build_material_scene(viewer: &mut Viewer) {
         scene
             .add_instance_node(
                 None,
-                Instance::new(mesh_id).with_face_material(mat_id),
+                Instance::new(mesh_id.clone()).with_face_material(mat_id),
                 Some(format!("Roughness {roughness:.2}")),
                 grid_transform(0, col),
                 NodeFlags::NONE
@@ -83,7 +83,7 @@ fn build_material_scene(viewer: &mut Viewer) {
         scene
             .add_instance_node(
                 None,
-                Instance::new(mesh_id).with_face_material(mat_id),
+                Instance::new(mesh_id.clone()).with_face_material(mat_id),
                 Some(format!("Metallic {metallic:.2}")),
                 grid_transform(1, col),
                 NodeFlags::NONE
@@ -108,7 +108,7 @@ fn build_material_scene(viewer: &mut Viewer) {
         scene
             .add_instance_node(
                 None,
-                Instance::new(mesh_id).with_face_material(mat_id),
+                Instance::new(mesh_id.clone()).with_face_material(mat_id),
                 Some(name.to_string()),
                 grid_transform(2, col),
                 NodeFlags::NONE
@@ -133,7 +133,7 @@ fn build_material_scene(viewer: &mut Viewer) {
         scene
             .add_instance_node(
                 None,
-                Instance::new(mesh_id).with_face_material(mat_id),
+                Instance::new(mesh_id.clone()).with_face_material(mat_id),
                 Some(name.to_string()),
                 grid_transform(3, col),
                 NodeFlags::NONE
@@ -157,7 +157,7 @@ fn build_material_scene(viewer: &mut Viewer) {
         scene
             .add_instance_node(
                 None,
-                Instance::new(mesh_id).with_face_material(mat_id),
+                Instance::new(mesh_id.clone()).with_face_material(mat_id),
                 Some(name.to_string()),
                 grid_transform(4, col),
                 NodeFlags::NONE
@@ -184,7 +184,7 @@ fn build_material_scene(viewer: &mut Viewer) {
         scene
             .add_instance_node(
                 None,
-                Instance::new(line_mesh_id).with_line_material(mat_id),
+                Instance::new(line_mesh_id.clone()).with_line_material(mat_id),
                 Some(name.to_string()),
                 grid_transform(5, col),
                 NodeFlags::NONE
@@ -211,7 +211,7 @@ fn build_material_scene(viewer: &mut Viewer) {
         scene
             .add_instance_node(
                 None,
-                Instance::new(point_mesh_id).with_point_material(mat_id),
+                Instance::new(point_mesh_id.clone()).with_point_material(mat_id),
                 Some(name.to_string()),
                 grid_transform(6, col),
                 NodeFlags::NONE
@@ -232,12 +232,13 @@ fn build_material_scene(viewer: &mut Viewer) {
     let billboard = scene
         .add_instance_node(
             None,
-            Instance::new(quad_mesh).with_face_material(quad_mat),
+            Instance::new(quad_mesh.clone()).with_face_material(quad_mat),
             Some("Billboard".to_string()),
             Transform::from_position(Point3::new(0.0, 2.5, 0.0)),
             NodeFlags::NONE,
         )
-        .unwrap();
+        .unwrap()
+        .id();
     scene.set_node_display(
         billboard,
         DisplayBehavior {

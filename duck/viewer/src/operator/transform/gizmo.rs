@@ -11,8 +11,8 @@ use duck_engine_scene::{NodeFlags, PositionedCamera, Scene, SceneData};
 use crate::common::{Axis, Ray, RgbaColor, Transform};
 use crate::geom_query::{pick_all_from_ray_with_view, PickView, RayPickQuery};
 use crate::scene::{
-    DisplayBehavior, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh,
-    MeshId, NodeId, PrimitiveType, RenderLayer,
+    DisplayBehavior, FaceMaterial, FaceMaterialHandle, FaceMaterialId, Instance, MaterialFlags,
+    Mesh, NodeHandle, PrimitiveType, RenderLayer,
 };
 
 const GIZMO_FLAGS: MaterialFlags = MaterialFlags::DO_NOT_LIGHT
@@ -285,11 +285,11 @@ pub fn build_handles(gizmo_type: GizmoType, size: f32) -> Vec<GizmoHandle> {
     }
 }
 
-/// Scene resources backing one displayed handle.
+/// Scene resources backing one displayed handle. The owning handles keep the
+/// node (and, through its instance, the mesh and material) alive.
 struct HandleResources {
-    node: NodeId,
-    mesh: MeshId,
-    material: FaceMaterialId,
+    node: NodeHandle,
+    material: FaceMaterialHandle,
     id: GizmoHandleId,
 }
 
@@ -300,7 +300,7 @@ struct HandleResources {
 /// they are grouped with other overlay content.
 pub struct GizmoState {
     /// Root node for all gizmo geometry. Created when first needed.
-    root_node: Option<NodeId>,
+    root_node: Option<NodeHandle>,
     /// Scene resources of the currently displayed handles.
     handles: Vec<HandleResources>,
     /// Which handle is currently highlighted (hovered or active).
@@ -339,30 +339,37 @@ impl GizmoState {
     fn show_in(&mut self, gizmo_type: GizmoType, pivot: Point3, scene: &mut SceneData) {
         self.hide_in(scene);
 
-        self.root_node.get_or_insert_with(|| {
-            let id = scene.add_node(
-                None, Some("Gizmo root".to_owned()), Transform::IDENTITY, NodeFlags::NONE
-            ).expect("Failed to create Gizmo root node");
-            // Draw the gizmo on the overlay layer at a constant on-screen size;
-            // handles inherit both.
-            scene.set_node_display(id, DisplayBehavior {
-                screen_size: Some(GIZMO_SCREEN_SIZE),
-                layer: RenderLayer::Overlay,
-                ..Default::default()
-            });
-            id
-        });
+        // A held root from a previous scene (after set_scene) is stale; replace it.
+        if self.root_node.as_ref().is_some_and(|h| !scene.has_node(h.id())) {
+            self.root_node = None;
+        }
+        let root_id = self
+            .root_node
+            .get_or_insert_with(|| {
+                let root = scene.add_node(
+                    None, Some("Gizmo root".to_owned()), Transform::IDENTITY, NodeFlags::NONE
+                ).expect("Failed to create Gizmo root node");
+                // Draw the gizmo on the overlay layer at a constant on-screen size;
+                // handles inherit both.
+                scene.set_node_display(root.id(), DisplayBehavior {
+                    screen_size: Some(GIZMO_SCREEN_SIZE),
+                    layer: RenderLayer::Overlay,
+                    ..Default::default()
+                });
+                root
+            })
+            .id();
 
         let handles = build_handles(gizmo_type, 1.0);
         let pivot_transform = Transform::from_position(pivot);
 
         for handle in handles {
-            let mesh_id = scene.add_mesh(handle.mesh);
-            let material_id = scene.add_face_material(handle.material);
-            let node_id = scene
+            let mesh = scene.add_mesh(handle.mesh);
+            let material = scene.add_face_material(handle.material);
+            let node = scene
                 .add_instance_node(
-                    self.root_node,
-                    Instance::new(mesh_id).with_face_material(material_id),
+                    Some(root_id),
+                    Instance::new(mesh).with_face_material(material.clone()),
                     None,
                     pivot_transform,
                     NodeFlags::NONE
@@ -370,9 +377,8 @@ impl GizmoState {
                 .expect("Failed to add gizmo node");
 
             self.handles.push(HandleResources {
-                node: node_id,
-                mesh: mesh_id,
-                material: material_id,
+                node,
+                material,
                 id: handle.id,
             });
         }
@@ -386,13 +392,12 @@ impl GizmoState {
     }
 
     fn hide_in(&mut self, scene: &mut SceneData) {
-        for handle in &self.handles {
-            scene.remove_node(handle.node);
-            scene.remove_mesh(handle.mesh);
-            scene.remove_face_material(handle.material);
+        // Detach the nodes, then drop the owning handles: the meshes and
+        // materials cascade out with them.
+        for handle in self.handles.drain(..) {
+            scene.remove_node(handle.node.id());
         }
 
-        self.handles.clear();
         self.highlighted = None;
         self.current_type = None;
     }
@@ -401,8 +406,8 @@ impl GizmoState {
     pub fn update_position(&self, pivot: Point3, scene: &Scene) {
         let mut scene = scene.lock();
         for handle in &self.handles {
-            if scene.has_node(handle.node) {
-                scene.set_node_position(handle.node, pivot);
+            if scene.has_node(handle.node.id()) {
+                scene.set_node_position(handle.node.id(), pivot);
             }
         }
     }
@@ -429,7 +434,7 @@ impl GizmoState {
 
         // Find the first hit that matches a gizmo node
         for result in &results {
-            if let Some(handle) = self.handles.iter().find(|h| h.node == result.node_id) {
+            if let Some(handle) = self.handles.iter().find(|h| h.node.id() == result.node_id) {
                 return Some(handle.id);
             }
         }
@@ -439,7 +444,7 @@ impl GizmoState {
 
     /// The material backing a handle, by identity.
     fn handle_material(&self, id: GizmoHandleId) -> Option<FaceMaterialId> {
-        self.handles.iter().find(|h| h.id == id).map(|h| h.material)
+        self.handles.iter().find(|h| h.id == id).map(|h| h.material.id())
     }
 
     /// Highlight a specific handle (or clear highlight with None).
@@ -724,7 +729,8 @@ use crate::geom_query::RayPickQuery;
                     pivot_transform,
                     NodeFlags::NONE
                 )
-                .expect("Failed to add gizmo node");
+                .expect("Failed to add gizmo node")
+                .id();
             node_ids.push(node_id);
         }
 
@@ -801,7 +807,8 @@ use crate::geom_query::RayPickQuery;
                     pivot_transform,
                     NodeFlags::NONE
                 )
-                .expect("Failed to add gizmo node");
+                .expect("Failed to add gizmo node")
+                .id();
             node_ids.push(node_id);
         }
 

@@ -26,7 +26,8 @@ fn main() -> anyhow::Result<()> {
 
         let camera_node = scene
             .add_node(None, Some("Camera".to_string()), Default::default(), NodeFlags::NONE)
-            .unwrap();
+            .unwrap()
+            .id();
         scene.set_default_light_nodes(camera_node);
 
         let mesh_id = scene.add_mesh(Mesh::sphere(0.5, 32, 16, PrimitiveType::TriangleList));
