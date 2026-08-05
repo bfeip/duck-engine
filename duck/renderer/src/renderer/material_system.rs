@@ -16,8 +16,8 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::render_core::{GenCache, GpuTexture};
 use crate::scene::{
-    common::RgbaColor, FaceMaterial, FaceMaterialId, LineMaterial, LineMaterialId, PointMaterial,
-    PointMaterialId, SceneData, TextureId,
+    common::RgbaColor, FaceMaterial, FaceMaterialId, GenericId, LineMaterial, LineMaterialId,
+    PointMaterial, PointMaterialId, ResourceKind, SceneData, TextureId,
 };
 use crate::shaders::ShaderGenerator;
 
@@ -164,6 +164,23 @@ impl MaterialSystem {
         self.face.clear();
         self.line.clear();
         self.point.clear();
+    }
+
+    /// Evict the cached bind group of a removed material. No-op for
+    /// non-material kinds.
+    pub fn remove(&mut self, kind: ResourceKind, id: GenericId) {
+        match kind {
+            ResourceKind::FaceMaterial => {
+                let _ = self.face.remove(id.cast());
+            }
+            ResourceKind::LineMaterial => {
+                let _ = self.line.remove(id.cast());
+            }
+            ResourceKind::PointMaterial => {
+                let _ = self.point.remove(id.cast());
+            }
+            _ => {}
+        }
     }
 
     /// Upload any face/line/point materials whose generation has changed.

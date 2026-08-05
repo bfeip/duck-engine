@@ -86,6 +86,14 @@ impl<K: Copy + Eq + Hash, R> GenCache<K, R> {
         Ok(&self.entries[&key].resource)
     }
 
+    /// Drop the entry for `key`, if any, returning its resource.
+    ///
+    /// Call when the source for `key` is removed, so its GPU resource is
+    /// released instead of lingering until [`clear`](Self::clear).
+    pub fn remove(&mut self, key: K) -> Option<R> {
+        self.entries.remove(&key).map(|e| e.resource)
+    }
+
     /// Drop all entries.
     ///
     /// Call when the source collection is cleared or replaced, so stale
@@ -144,6 +152,17 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(*cache.get(1).unwrap(), "a");
         assert!(cache.needs_upload(1, 2));
+    }
+
+    #[test]
+    fn remove_drops_single_entry() {
+        let mut cache = GenCache::new();
+        cache.insert(1, "a", 1);
+        cache.insert(2, "b", 1);
+        assert_eq!(cache.remove(1), Some("a"));
+        assert_eq!(cache.remove(1), None);
+        assert!(cache.needs_upload(1, 1));
+        assert!(!cache.needs_upload(2, 1));
     }
 
     #[test]

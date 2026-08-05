@@ -17,13 +17,13 @@ use duck_engine_common::{Point3, Vector3};
 use duck_engine_renderer::Renderer;
 use duck_engine_renderer::scene::{
     AlphaMode, FaceMaterial, Instance, Light, LineMaterial, MaterialFlags, Mesh, NodePayload,
-    PointMaterial, PositionedCamera, PrimitiveType, SceneData, Texture, TextureId,
+    PointMaterial, PositionedCamera, PrimitiveType, SceneData, Texture, TextureHandle,
     common::{RgbaColor, Transform},
 };
 use duck_engine_scene::{NodeFlags, Scene};
 
-/// Add a 2×2 solid-color texture and return its id.
-fn solid_texture(scene: &mut SceneData, rgba: [u8; 4]) -> TextureId {
+/// Add a 2×2 solid-color texture and return its handle.
+fn solid_texture(scene: &mut SceneData, rgba: [u8; 4]) -> TextureHandle {
     let pixels: Vec<u8> = rgba.iter().copied().cycle().take(2 * 2 * 4).collect();
     scene.add_texture(Texture::from_rgba8(2, 2, pixels))
 }
@@ -58,36 +58,36 @@ fn main() -> anyhow::Result<()> {
     let m_factor = scene.add_face_material(
         FaceMaterial::new().with_base_color_factor(RgbaColor { r: 0.2, g: 0.6, b: 0.9, a: 1.0 }),
     );
-    place(&mut scene, Instance::new(tris).with_face_material(m_factor), 0, "lit-factor")?;
+    place(&mut scene, Instance::new(tris.clone()).with_face_material(m_factor), 0, "lit-factor")?;
 
-    let m_base = scene.add_face_material(FaceMaterial::new().with_base_color_texture(base));
-    place(&mut scene, Instance::new(tris).with_face_material(m_base), 1, "lit-base")?;
+    let m_base = scene.add_face_material(FaceMaterial::new().with_base_color_texture(base.clone()));
+    place(&mut scene, Instance::new(tris.clone()).with_face_material(m_base), 1, "lit-base")?;
 
     let m_all = scene.add_face_material(
         FaceMaterial::new()
-            .with_base_color_texture(base)
-            .with_normal_texture(normal)
-            .with_metallic_roughness_texture(metal_rough),
+            .with_base_color_texture(base.clone())
+            .with_normal_texture(normal.clone())
+            .with_metallic_roughness_texture(metal_rough.clone()),
     );
-    place(&mut scene, Instance::new(tris).with_face_material(m_all), 2, "lit-all-textures")?;
+    place(&mut scene, Instance::new(tris.clone()).with_face_material(m_all), 2, "lit-all-textures")?;
 
     // --- Unlit face: tinted base-color texture, blended (the "cursor" case) ---
     let m_unlit = scene.add_face_material(
         FaceMaterial::new()
-            .with_base_color_texture(base)
+            .with_base_color_texture(base.clone())
             .with_base_color_factor(RgbaColor { r: 1.0, g: 1.0, b: 0.0, a: 1.0 })
             .with_alpha_mode(AlphaMode::Blend)
             .with_flags(MaterialFlags::DO_NOT_LIGHT | MaterialFlags::DOUBLE_SIDED),
     );
-    place(&mut scene, Instance::new(tris).with_face_material(m_unlit), 3, "unlit-textured")?;
+    place(&mut scene, Instance::new(tris.clone()).with_face_material(m_unlit), 3, "unlit-textured")?;
 
     // --- Line + point materials, with and without a base-color texture --------
     let line_plain = scene.add_line_material(LineMaterial::new(RgbaColor::WHITE));
-    place(&mut scene, Instance::new(lines).with_line_material(line_plain), 4, "line-plain")?;
+    place(&mut scene, Instance::new(lines.clone()).with_line_material(line_plain), 4, "line-plain")?;
 
     let point_tex = scene
-        .add_point_material(PointMaterial::new(RgbaColor::WHITE).with_base_color_texture(base));
-    place(&mut scene, Instance::new(points).with_point_material(point_tex), 5, "point-textured")?;
+        .add_point_material(PointMaterial::new(RgbaColor::WHITE).with_base_color_texture(base.clone()));
+    place(&mut scene, Instance::new(points.clone()).with_point_material(point_tex), 5, "point-textured")?;
 
     // --- Inferred blending: alpha alone, no explicit AlphaMode ---------------
     // Both leave the mode at the default `Auto`, so the sub-1.0 alpha is what
@@ -96,16 +96,17 @@ fn main() -> anyhow::Result<()> {
     let m_auto_blend = scene.add_face_material(
         FaceMaterial::new().with_base_color_factor(RgbaColor { r: 0.2, g: 0.6, b: 0.9, a: 0.3 }),
     );
-    place(&mut scene, Instance::new(tris).with_face_material(m_auto_blend), 6, "auto-blend-face")?;
+    place(&mut scene, Instance::new(tris.clone()).with_face_material(m_auto_blend), 6, "auto-blend-face")?;
 
     let line_translucent =
         scene.add_line_material(LineMaterial::new(RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 0.3 }));
-    place(&mut scene, Instance::new(lines).with_line_material(line_translucent), 7, "auto-blend-line")?;
+    place(&mut scene, Instance::new(lines.clone()).with_line_material(line_translucent), 7, "auto-blend-line")?;
 
     // A white directional light (its direction is the node's -Z axis).
     let light = scene
         .add_node(None, Some("Light".to_string()), Default::default(), NodeFlags::NONE)
-        .unwrap();
+        .unwrap()
+        .id();
     scene.set_node_payload(
         light,
         NodePayload::Light(Light::directional(RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, 2.5)),

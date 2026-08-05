@@ -205,9 +205,9 @@ fn collect_scene_data_recursive(
     let display = DisplayBehavior::inherit(parent_display, node.display());
 
     match node.payload() {
-        NodePayload::Instance(instance_id) => {
+        NodePayload::Instance(instance) => {
             data.instance_transforms.push(
-                InstanceTransform::new(node.id, *instance_id, world_transform).with_display(display),
+                InstanceTransform::new(node.id, instance.id(), world_transform).with_display(display),
             );
         }
         NodePayload::Light(light) => {
@@ -217,7 +217,7 @@ fn collect_scene_data_recursive(
         _ => {}
     }
 
-    for &child_id in node.children() {
+    for child_id in node.children() {
         collect_scene_data_recursive(scene, child_id, world_transform, display, needs_recompute, data);
     }
 }
@@ -228,7 +228,7 @@ pub(crate) fn collect_scene_frame_data(scene: &SceneData) -> SceneFrameData {
         instance_transforms: Vec::new(),
         lights: Vec::new(),
     };
-    for &root_id in scene.root_nodes() {
+    for root_id in scene.root_nodes() {
         collect_scene_data_recursive(
             scene,
             root_id,
@@ -1107,7 +1107,7 @@ mod tests {
         let material_id = scene.add_face_material(crate::scene::FaceMaterial::new());
         let node_id = scene.add_instance_node(
             None, Instance::new(mesh_id).with_face_material(material_id), None, common::Transform::IDENTITY, NodeFlags::NONE
-        ).unwrap();
+        ).unwrap().id();
         (scene, node_id)
     }
 
@@ -1180,11 +1180,13 @@ mod tests {
         let material_id = scene.add_face_material(crate::scene::FaceMaterial::new());
 
         let scene_node = scene
-            .add_instance_node(None, Instance::new(mesh_id).with_face_material(material_id), None, common::Transform::IDENTITY, NodeFlags::NONE)
-            .unwrap();
+            .add_instance_node(None, Instance::new(mesh_id.clone()).with_face_material(material_id.clone()), None, common::Transform::IDENTITY, NodeFlags::NONE)
+            .unwrap()
+            .id();
         let overlay_node = scene
             .add_instance_node(None, Instance::new(mesh_id).with_face_material(material_id), None, common::Transform::IDENTITY, NodeFlags::NONE)
-            .unwrap();
+            .unwrap()
+            .id();
         scene.set_node_display(
             overlay_node,
             DisplayBehavior { layer: RenderLayer::Overlay, ..Default::default() },
@@ -1243,7 +1245,8 @@ mod tests {
                 common::Transform::from_position(p),
                 NodeFlags::NONE,
             )
-            .unwrap();
+            .unwrap()
+            .id();
         scene.set_node_display(node, DisplayBehavior { screen_facing: true, ..Default::default() });
 
         let camera = test_camera();

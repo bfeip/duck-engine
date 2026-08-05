@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::scene::SceneData;
+use crate::scene::{ResourceKind, SceneData};
 
 use super::batching::collect_scene_frame_data;
 use super::mesh::MeshGpuResources;
@@ -20,6 +20,24 @@ impl Renderer {
     // we should keep track of the need for these updates in the scene. I.e. mark things as
     // dirty if they need to be reified.
     pub fn prepare_scene(&mut self, scene: &mut SceneData) -> Result<()> {
+        // 0. Evict GPU resources for scene resources removed since last frame.
+        for (kind, id) in scene.take_removals() {
+            match kind {
+                ResourceKind::Mesh => {
+                    let _ = self.gpu_meshes.remove(id.cast());
+                }
+                ResourceKind::Texture => {
+                    let _ = self.gpu_textures.remove(id.cast());
+                }
+                ResourceKind::FaceMaterial
+                | ResourceKind::LineMaterial
+                | ResourceKind::PointMaterial => self.materials.remove(kind, id),
+                // No per-id GPU cache; the lights uniform re-syncs off
+                // node_generation, which node removal bumps.
+                ResourceKind::Instance | ResourceKind::Node => {}
+            }
+        }
+
         // 1. Textures first (materials sample them).
         for texture in scene.textures() {
             self.gpu_textures.try_ensure(texture.id(), texture.generation(), || {

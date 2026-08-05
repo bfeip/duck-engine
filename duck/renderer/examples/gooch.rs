@@ -119,7 +119,7 @@ fn main() -> anyhow::Result<()> {
     // A warm directional light; direction is the node's -Z axis (identity = toward viewer).
     let light_id = scene.add_node(
         None, Some("DirectionalLight".to_string()), Default::default(), NodeFlags::NONE
-    ).unwrap();
+    ).unwrap().id();
     scene.set_node_payload(light_id, NodePayload::Light(Light::directional(
         RgbaColor { r: 1.0, g: 0.95, b: 0.8, a: 1.0 },
         1.0,

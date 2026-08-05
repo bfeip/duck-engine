@@ -34,7 +34,8 @@ fn main() -> anyhow::Result<()> {
     // A white directional light (its direction is the node's -Z axis).
     let light_id = scene
         .add_node(None, Some("DirectionalLight".to_string()), Default::default(), NodeFlags::NONE)
-        .unwrap();
+        .unwrap()
+        .id();
     scene.set_node_payload(
         light_id,
         NodePayload::Light(Light::directional(RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, 2.0)),
