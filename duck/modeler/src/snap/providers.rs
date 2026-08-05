@@ -780,7 +780,6 @@ mod tests {
     #[test]
     fn might_intersect_bounds_tests_screen_proximity() {
         let cam = dummy_camera();
-        let scene = Scene::default();
         let query = GeometrySnapQuery {
             ray: Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0)),
             camera: &cam,

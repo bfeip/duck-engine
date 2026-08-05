@@ -206,7 +206,6 @@ fn dvec3_to_point(v: DVec3) -> Point3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
 
     use duck_engine_scene::Scene;
     use opencascade::primitives::{Face, Wire};
