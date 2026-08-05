@@ -104,7 +104,7 @@ pub(crate) fn import_xcaf_document(
 
     let root = scene
         .add_node(None, Some("cad_import".to_string()), Transform::IDENTITY, NodeFlags::NONE)
-        .context("Failed to add root CAD node")?;
+        .context("Failed to add root CAD node")?.id();
 
     for label in shape_tool.free_shapes() {
         import_xcaf_label(&label, &shape_tool, &color_tool, scene, options, Some(root))?;
@@ -135,7 +135,8 @@ fn import_xcaf_label(
 
     let node_id = scene
         .add_node(parent, name.clone(), transform, NodeFlags::NONE)
-        .context("Failed to add XCAF node")?;
+        .context("Failed to add XCAF node")?
+        .id();
     if is_assembly {
         for child in shape_tool.components(label) {
             import_xcaf_label(&child, shape_tool, color_tool, scene, options, Some(node_id))?;
@@ -206,7 +207,7 @@ fn import_pmi(
 
     let pmi_root = scene
         .add_node(Some(parent), Some("pmi".to_string()), Transform::IDENTITY, NodeFlags::NONE)
-        .context("Failed to add PMI root node")?;
+        .context("Failed to add PMI root node")?.id();
     let mat = scene.add_line_material(LineMaterial::new(options.pmi_color));
 
     let all_labels = dim_tol_tool
@@ -272,7 +273,7 @@ fn import_pmi(
         scene
             .add_instance_node(
                 Some(pmi_root),
-                Instance::new(mesh_id).with_line_material(mat),
+                Instance::new(mesh_id).with_line_material(mat.clone()),
                 Some(name),
                 Transform::IDENTITY,
                 NodeFlags::NONE,

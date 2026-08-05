@@ -1,19 +1,18 @@
 use std::path::Path;
 use duck_engine_common::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
 use duck_engine_scene::{
-    AlphaMode, FaceMaterial, FaceMaterialId, Instance, MaterialFlags, Mesh, MeshId,
-    MeshPrimitive, NodeFlags, NodeId, PositionedCamera, PrimitiveType, SceneData,
-    Texture, Vertex
+    AlphaMode, FaceMaterial, FaceMaterialHandle, Instance, MaterialFlags, Mesh, MeshHandle, MeshPrimitive,
+    NodeFlags, NodeId, PositionedCamera, PrimitiveType, SceneData, Texture, TextureHandle, Vertex,
 };
 
-/// A loaded primitive from a glTF mesh, containing the scene mesh ID and its material ID.
-type LoadedPrimitive = (MeshId, FaceMaterialId);
+/// A loaded primitive from a glTF mesh: the scene mesh and its material.
+type LoadedPrimitive = (MeshHandle, FaceMaterialHandle);
 
 /// Maps glTF mesh indices to their loaded primitives.
 ///
 /// Each glTF mesh can contain multiple primitives (e.g. different parts with different materials).
 /// Each primitive is loaded as a separate scene mesh, so a single glTF mesh index maps to
-/// potentially multiple (MeshId, FaceMaterialId) pairs.
+/// potentially multiple (mesh, material) pairs.
 type GltfMeshMap = Vec<Vec<LoadedPrimitive>>;
 
 /// Result of loading a glTF scene, containing the scene and optional camera.
@@ -134,13 +133,13 @@ fn map_primitive_mode(mode: gltf::mesh::Mode) -> Option<PrimitiveType> {
 fn get_material_for_primitive(
     primitive: &gltf::Primitive,
     primitive_type: PrimitiveType,
-    material_map: &[FaceMaterialId],
-) -> Option<FaceMaterialId> {
+    material_map: &[FaceMaterialHandle],
+) -> Option<FaceMaterialHandle> {
     match primitive_type {
         PrimitiveType::TriangleList => primitive
             .material()
             .index()
-            .and_then(|idx| material_map.get(idx).copied()),
+            .and_then(|idx| material_map.get(idx).cloned()),
         PrimitiveType::LineList | PrimitiveType::PointList => None,
     }
 }
@@ -240,7 +239,7 @@ fn load_gltf_texture(
     document: &gltf::Document,
     base_path: Option<&Path>,
     scene: &mut SceneData,
-) -> anyhow::Result<duck_engine_scene::TextureId> {
+) -> anyhow::Result<TextureHandle> {
     // For external files, use path-based texture (lazy loading, preserves original format)
     if let Some(path) = resolve_image_path(image_index, document, base_path) {
         let texture = Texture::from_path(path);
@@ -254,14 +253,14 @@ fn load_gltf_texture(
 /// Loads a material from a glTF material definition.
 ///
 /// Extracts full PBR data including base color, metallic-roughness, and normal maps.
-/// Returns the FaceMaterialId of the created material.
+/// Returns the handle of the created material.
 fn load_material(
     gltf_material: &gltf::Material,
     images: &[gltf::image::Data],
     document: &gltf::Document,
     base_path: Option<&Path>,
     scene: &mut SceneData,
-) -> anyhow::Result<FaceMaterialId> {
+) -> anyhow::Result<FaceMaterialHandle> {
     let pbr = gltf_material.pbr_metallic_roughness();
 
     // Start with a new material
@@ -343,8 +342,7 @@ fn load_material(
         }
     }
 
-    let mat_id = scene.add_face_material(material);
-    Ok(mat_id)
+    Ok(scene.add_face_material(material))
 }
 
 /// Converts a glTF transform to a 4x4 matrix.
@@ -548,19 +546,19 @@ pub fn parse_gltf_from_path(path: &Path) -> anyhow::Result<ParsedGltf> {
 pub fn load_gltf_assets(
     parsed: &ParsedGltf,
     scene: &mut SceneData,
-) -> anyhow::Result<(Vec<FaceMaterialId>, GltfMeshMap)> {
+) -> anyhow::Result<(Vec<FaceMaterialHandle>, GltfMeshMap)> {
     let base_path = parsed.base_path.as_deref();
 
     // Load all materials (which also loads their textures)
-    let mut material_map: Vec<FaceMaterialId> = Vec::new();
+    let mut material_map: Vec<FaceMaterialHandle> = Vec::new();
     for material in parsed.document.materials() {
-        let mat_id = load_material(&material, &parsed.images, &parsed.document, base_path, scene)?;
-        material_map.push(mat_id);
+        let mat = load_material(&material, &parsed.images, &parsed.document, base_path, scene)?;
+        material_map.push(mat);
     }
 
     // Load all meshes
     let mut mesh_map: GltfMeshMap = Vec::new();
-    let mut fallback_material_id: Option<FaceMaterialId> = None;
+    let mut fallback_material: Option<FaceMaterialHandle> = None;
     for mesh in parsed.document.meshes() {
         let mut primitives_data = Vec::new();
 
@@ -577,15 +575,16 @@ pub fn load_gltf_assets(
             let vertices = load_vertices(&primitive, &parsed.buffers)?;
             let indices_u32 = load_indices(&primitive, &parsed.buffers)?;
 
-            let material_id = get_material_for_primitive(&primitive, primitive_type, &material_map)
+            let material = get_material_for_primitive(&primitive, primitive_type, &material_map)
                 .unwrap_or_else(|| {
-                    *fallback_material_id
+                    fallback_material
                         .get_or_insert_with(|| scene.add_face_material(FaceMaterial::default()))
+                        .clone()
                 });
 
             let primitive = MeshPrimitive { primitive_type, indices: indices_u32 };
-            let mesh_id = scene.add_mesh(Mesh::from_raw(vertices, vec![primitive]));
-            primitives_data.push((mesh_id, material_id));
+            let mesh = scene.add_mesh(Mesh::from_raw(vertices, vec![primitive]));
+            primitives_data.push((mesh, material));
         }
 
         mesh_map.push(primitives_data);
@@ -674,16 +673,16 @@ fn load_node_recursive(
 
         if primitives.is_empty() {
             // This is likely composed solely of primitives we don't support, like triangle fan
-            scene.add_node(parent, name, transform, NodeFlags::NONE)?
+            scene.add_node(parent, name, transform, NodeFlags::NONE)?.id()
         } else if primitives.len() > 1 {
             // Multi-primitive mesh: create parent node and child nodes for each primitive
-            let parent_node_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?;
+            let parent_node_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?.id();
 
             // Create child nodes for each primitive with identity transform
-            for (mesh_id, material_id) in primitives {
+            for (mesh, material) in primitives {
                 scene.add_instance_node(
                     Some(parent_node_id),
-                    Instance::new(*mesh_id).with_face_material(*material_id),
+                    Instance::new(mesh.clone()).with_face_material(material.clone()),
                     None,
                     duck_engine_scene::common::Transform::IDENTITY,
                     NodeFlags::NONE
@@ -693,13 +692,13 @@ fn load_node_recursive(
             parent_node_id
         } else {
             // Single primitive: create a single instance node
-            let (mesh_id, material_id) = primitives[0];
-            let instance = Instance::new(mesh_id).with_face_material(material_id);
-            scene.add_instance_node(parent, instance, name, transform, NodeFlags::NONE)?
+            let (mesh, material) = &primitives[0];
+            let instance = Instance::new(mesh.clone()).with_face_material(material.clone());
+            scene.add_instance_node(parent, instance, name, transform, NodeFlags::NONE)?.id()
         }
     } else {
         // No mesh, just a transform node
-        scene.add_node(parent, name, transform, NodeFlags::NONE)?
+        scene.add_node(parent, name, transform, NodeFlags::NONE)?.id()
     };
 
     node_map.insert(gltf_node.index(), node_id);

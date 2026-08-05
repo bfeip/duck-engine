@@ -14,8 +14,8 @@ use duck_engine_common::{Deg, Matrix3, Matrix4, Point3, Quaternion, Rotation3, S
 use openusd::sdf::{self, AbstractData, Value};
 
 use duck_engine_scene::{
-    FaceMaterial, FaceMaterialId, Instance, Light, Mesh, MeshId, MeshPrimitive, PositionedCamera,
-    NodeId, NodePayload, PrimitiveType, SceneData, Vertex, NodeFlags
+    FaceMaterial, FaceMaterialHandle, Instance, Light, Mesh, MeshHandle, MeshPrimitive,
+    PositionedCamera, NodeId, NodePayload, PrimitiveType, SceneData, Vertex, NodeFlags
 };
 use duck_engine_scene::common::{RgbaColor, Transform, decompose_matrix};
 
@@ -202,12 +202,12 @@ fn convert_scene(data: &mut dyn AbstractData) -> Result<UsdLoadResult> {
     let root = sdf::Path::abs_root();
 
     // Phase 1: Collect all materials (pre-pass)
-    let mut material_map: HashMap<String, FaceMaterialId> = HashMap::new();
+    let mut material_map: HashMap<String, FaceMaterialHandle> = HashMap::new();
     collect_materials_recursive(data, &root, &mut material_map, &mut scene);
 
     // Phase 2: Build node hierarchy with meshes, lights, cameras
     let mut camera = None;
-    let mut fallback_material_id: Option<FaceMaterialId> = None;
+    let mut fallback_material_id: Option<FaceMaterialHandle> = None;
     let children = get_prim_children(data, &root);
     for child_name in &children {
         let child_path = make_child_path(&root, child_name);
@@ -233,7 +233,7 @@ fn convert_scene(data: &mut dyn AbstractData) -> Result<UsdLoadResult> {
 fn collect_materials_recursive(
     data: &mut dyn AbstractData,
     path: &sdf::Path,
-    material_map: &mut HashMap<String, FaceMaterialId>,
+    material_map: &mut HashMap<String, FaceMaterialHandle>,
     scene: &mut SceneData,
 ) {
     let children = get_prim_children(data, path);
@@ -341,11 +341,11 @@ fn get_shader_float(
 fn build_node_recursive(
     data: &mut dyn AbstractData,
     prim_path: &sdf::Path,
-    material_map: &HashMap<String, FaceMaterialId>,
+    material_map: &HashMap<String, FaceMaterialHandle>,
     scene: &mut SceneData,
     parent: Option<NodeId>,
     camera_out: &mut Option<PositionedCamera>,
-    fallback_material_id: &mut Option<FaceMaterialId>,
+    fallback_material_id: &mut Option<FaceMaterialHandle>,
 ) -> Result<()> {
     let type_name = get_prim_type(data, prim_path).unwrap_or_default();
     let name = prim_path
@@ -362,19 +362,19 @@ fn build_node_recursive(
             let mesh_entries = extract_mesh(data, prim_path, material_map, scene, fallback_material_id);
 
             if mesh_entries.len() == 1 {
-                let (mesh_id, mat_id) = mesh_entries[0];
-                let instance = Instance::new(mesh_id).with_face_material(mat_id);
+                let (mesh, material) = mesh_entries.into_iter().next().unwrap();
+                let instance = Instance::new(mesh).with_face_material(material);
                 let node_id = scene.add_instance_node(
                     parent, instance, name, transform, NodeFlags::NONE
-                )?;
+                )?.id();
                 recurse_children(data, prim_path, material_map, scene, node_id, camera_out, fallback_material_id)?;
             } else if mesh_entries.len() > 1 {
                 // Split mesh: create group node, then instance children
-                let group_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?;
-                for (i, &(mesh_id, mat_id)) in mesh_entries.iter().enumerate() {
+                let group_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?.id();
+                for (i, (mesh, material)) in mesh_entries.into_iter().enumerate() {
                     scene.add_instance_node(
                         Some(group_id),
-                        Instance::new(mesh_id).with_face_material(mat_id),
+                        Instance::new(mesh).with_face_material(material),
                         Some(format!("chunk_{}", i)),
                         Transform::IDENTITY,
                         NodeFlags::NONE
@@ -396,7 +396,7 @@ fn build_node_recursive(
         }
         _ => {
             // Xform, Scope, or unknown → create a transform node and recurse
-            let node_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?;
+            let node_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?.id();
             recurse_children(data, prim_path, material_map, scene, node_id, camera_out, fallback_material_id)?;
         }
     }
@@ -408,11 +408,11 @@ fn build_node_recursive(
 fn recurse_children(
     data: &mut dyn AbstractData,
     prim_path: &sdf::Path,
-    material_map: &HashMap<String, FaceMaterialId>,
+    material_map: &HashMap<String, FaceMaterialHandle>,
     scene: &mut SceneData,
     parent_node: NodeId,
     camera_out: &mut Option<PositionedCamera>,
-    fallback_material_id: &mut Option<FaceMaterialId>,
+    fallback_material_id: &mut Option<FaceMaterialHandle>,
 ) -> Result<()> {
     let children = get_prim_children(data, prim_path);
     for child_name in &children {
@@ -554,18 +554,19 @@ fn get_float_from_prop(data: &mut dyn AbstractData, prop_path: &sdf::Path) -> Op
 // ============================================================================
 
 /// Extract mesh geometry from a Mesh prim.
-/// Returns a Vec of (MeshId, FaceMaterialId) pairs (one per material binding found).
+/// Returns a Vec of (mesh, material) pairs (one per material binding found).
 fn extract_mesh(
     data: &mut dyn AbstractData,
     mesh_path: &sdf::Path,
-    material_map: &HashMap<String, FaceMaterialId>,
+    material_map: &HashMap<String, FaceMaterialHandle>,
     scene: &mut SceneData,
-    fallback_material_id: &mut Option<FaceMaterialId>,
-) -> Vec<(MeshId, FaceMaterialId)> {
+    fallback_material_id: &mut Option<FaceMaterialHandle>,
+) -> Vec<(MeshHandle, FaceMaterialHandle)> {
     let material_id = get_material_binding(data, mesh_path, material_map)
         .unwrap_or_else(|| {
-            *fallback_material_id
+            fallback_material_id
                 .get_or_insert_with(|| scene.add_face_material(FaceMaterial::default()))
+                .clone()
         });
 
     // Read geometry attributes
@@ -659,14 +660,14 @@ fn try_read_uvs(data: &mut dyn AbstractData, mesh_path: &sdf::Path) -> Option<Ve
 fn get_material_binding(
     data: &mut dyn AbstractData,
     mesh_path: &sdf::Path,
-    material_map: &HashMap<String, FaceMaterialId>,
-) -> Option<FaceMaterialId> {
+    material_map: &HashMap<String, FaceMaterialHandle>,
+) -> Option<FaceMaterialHandle> {
     let rel_path = make_property_path(mesh_path, "material:binding");
 
     ["targetPaths", "default"].iter().find_map(|field| {
         let val = data.get(&rel_path, field).ok()?;
         let path_str = extract_first_path_from_value(val.as_ref())?;
-        material_map.get(&path_str).copied()
+        material_map.get(&path_str).cloned()
     })
 }
 
@@ -935,8 +936,8 @@ fn extract_light(
         _ => return,
     };
 
-    if let Ok(node_id) = scene.add_node(None, None, transform, NodeFlags::NONE) {
-        scene.set_node_payload(node_id, NodePayload::Light(light));
+    if let Ok(node) = scene.add_node(None, None, transform, NodeFlags::NONE) {
+        scene.set_node_payload(node.id(), NodePayload::Light(light));
     }
 }
 

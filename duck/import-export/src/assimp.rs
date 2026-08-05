@@ -15,8 +15,9 @@ use russimp::node::Node as RNode;
 use russimp::scene::{PostProcess, Scene as RScene};
 
 use duck_engine_scene::{
-    FaceMaterial, FaceMaterialId, Instance, Light, Mesh, MeshId, MeshPrimitive, NodeFlags, NodeId,
-    NodePayload, PositionedCamera, PrimitiveType, SceneData, Texture, TextureId, Vertex
+    FaceMaterial, FaceMaterialHandle, Instance, Light, Mesh, MeshHandle, MeshPrimitive,
+    NodeFlags, NodeId, NodePayload, PositionedCamera, PrimitiveType, SceneData, Texture,
+    TextureHandle, Vertex
 };
 use duck_engine_scene::common::{RgbaColor, Transform, decompose_matrix};
 
@@ -94,10 +95,10 @@ fn convert_scene(assimp_scene: &RScene, base_path: Option<&Path>) -> Result<Assi
 // Textures
 // ============================================================================
 
-/// Maps texture path/key → scene TextureId.
-type TextureMap = HashMap<String, TextureId>;
+/// Maps texture path/key → scene texture handle.
+type TextureMap = HashMap<String, TextureHandle>;
 
-/// Load embedded textures from assimp materials and build a path→TextureId map.
+/// Load embedded textures from assimp materials and build a path→texture map.
 ///
 /// In russimp, embedded textures are accessed through material texture references.
 /// We load them lazily when processing materials.
@@ -162,10 +163,10 @@ fn resolve_texture(
     base_path: Option<&Path>,
     texture_map: &mut TextureMap,
     scene: &mut SceneData,
-) -> Option<TextureId> {
+) -> Option<TextureHandle> {
     // Check if already loaded (embedded textures use "*N" keys)
-    if let Some(&id) = texture_map.get(path) {
-        return Some(id);
+    if let Some(handle) = texture_map.get(path) {
+        return Some(handle.clone());
     }
 
     // Try to resolve as external file
@@ -177,7 +178,7 @@ fn resolve_texture(
     }
 
     let tex_id = scene.add_texture(Texture::from_path(full_path));
-    texture_map.insert(path.to_string(), tex_id);
+    texture_map.insert(path.to_string(), tex_id.clone());
     Some(tex_id)
 }
 
@@ -185,13 +186,13 @@ fn resolve_texture(
 // Materials
 // ============================================================================
 
-/// Load all assimp materials, returning a map from assimp material index → scene FaceMaterialId.
+/// Load all assimp materials, returning a map from assimp material index → scene material.
 fn load_materials(
     assimp_materials: &[RMaterial],
     texture_map: &TextureMap,
     base_path: Option<&Path>,
     scene: &mut SceneData,
-) -> Vec<FaceMaterialId> {
+) -> Vec<FaceMaterialHandle> {
     // We need a mutable texture map for lazy-loading external textures.
     // Clone the initial map so we can extend it.
     let mut tex_map = texture_map.clone();
@@ -207,7 +208,7 @@ fn load_single_material(
     texture_map: &mut TextureMap,
     base_path: Option<&Path>,
     scene: &mut SceneData,
-) -> FaceMaterialId {
+) -> FaceMaterialHandle {
     let mut material = FaceMaterial::new();
 
     // Extract base color / diffuse color from properties
@@ -281,7 +282,7 @@ fn extract_texture(
     texture_map: &mut TextureMap,
     base_path: Option<&Path>,
     scene: &mut SceneData,
-) -> Option<TextureId> {
+) -> Option<TextureHandle> {
     let tex = mat.textures.get(&tex_type)?;
     let tex_ref = tex.borrow();
     let path = &tex_ref.filename;
@@ -295,13 +296,13 @@ fn extract_texture(
 // Meshes
 // ============================================================================
 
-/// Load all assimp meshes, returning a map from assimp mesh index → (MeshId, FaceMaterialId).
+/// Load all assimp meshes, returning a map from assimp mesh index → (mesh, material).
 fn load_meshes(
     assimp_meshes: &[russimp::mesh::Mesh],
-    material_map: &[FaceMaterialId],
+    material_map: &[FaceMaterialHandle],
     scene: &mut SceneData,
-) -> Vec<(MeshId, FaceMaterialId)> {
-    let mut fallback_material_id: Option<FaceMaterialId> = None;
+) -> Vec<(MeshHandle, FaceMaterialHandle)> {
+    let mut fallback_material_id: Option<FaceMaterialHandle> = None;
     assimp_meshes
         .iter()
         .map(|m| load_single_mesh(m, material_map, scene, &mut fallback_material_id))
@@ -310,16 +311,17 @@ fn load_meshes(
 
 fn load_single_mesh(
     assimp_mesh: &russimp::mesh::Mesh,
-    material_map: &[FaceMaterialId],
+    material_map: &[FaceMaterialHandle],
     scene: &mut SceneData,
-    fallback_material_id: &mut Option<FaceMaterialId>,
-) -> (MeshId, FaceMaterialId) {
+    fallback_material_id: &mut Option<FaceMaterialHandle>,
+) -> (MeshHandle, FaceMaterialHandle) {
     let material_id = material_map
         .get(assimp_mesh.material_index as usize)
-        .copied()
+        .cloned()
         .unwrap_or_else(|| {
-            *fallback_material_id
+            fallback_material_id
                 .get_or_insert_with(|| scene.add_face_material(FaceMaterial::default()))
+                .clone()
         });
 
     // Build vertex data
@@ -370,8 +372,8 @@ fn load_single_mesh(
 fn build_node_tree(
     node: &Rc<RNode>,
     scene: &mut SceneData,
-    mesh_map: &[(MeshId, FaceMaterialId)],
-    material_map: &[FaceMaterialId],
+    mesh_map: &[(MeshHandle, FaceMaterialHandle)],
+    material_map: &[FaceMaterialHandle],
     parent: Option<NodeId>,
 ) -> Result<()> {
     // Decompose the assimp 4x4 transform matrix
@@ -394,7 +396,7 @@ fn build_node_tree(
 
     if node.meshes.is_empty() {
         // Pure transform node (no geometry)
-        let node_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?;
+        let node_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?.id();
 
         // Recurse into children
         for child in node.children.borrow().iter() {
@@ -405,22 +407,22 @@ fn build_node_tree(
         if node.meshes.len() == 1 {
             // Single mesh: create one instance node
             let mesh_idx = node.meshes[0] as usize;
-            if let Some(&(mesh_id, mat_id)) = mesh_map.get(mesh_idx) {
-                let instance = Instance::new(mesh_id).with_face_material(mat_id);
-                let node_id = scene.add_instance_node(parent, instance, name, transform, NodeFlags::NONE)?;
+            if let Some((mesh, material)) = mesh_map.get(mesh_idx) {
+                let instance = Instance::new(mesh.clone()).with_face_material(material.clone());
+                let node_id = scene.add_instance_node(parent, instance, name, transform, NodeFlags::NONE)?.id();
                 for child in node.children.borrow().iter() {
                     build_node_tree(child, scene, mesh_map, material_map, Some(node_id))?;
                 }
             }
         } else {
             // Multiple meshes on one node: create parent + instance children
-            let group_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?;
+            let group_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?.id();
 
             for &mesh_idx in &node.meshes {
-                if let Some(&(mesh_id, mat_id)) = mesh_map.get(mesh_idx as usize) {
+                if let Some((mesh, material)) = mesh_map.get(mesh_idx as usize) {
                     scene.add_instance_node(
                         Some(group_id),
-                        Instance::new(mesh_id).with_face_material(mat_id),
+                        Instance::new(mesh.clone()).with_face_material(material.clone()),
                         None,
                         Transform::IDENTITY,
                         NodeFlags::NONE
@@ -466,8 +468,8 @@ fn load_lights(assimp_lights: &[russimp::light::Light], scene: &mut SceneData) {
         };
         let transform = Transform::new(pos, rotation, Vector3::new(1.0, 1.0, 1.0));
 
-        if let Ok(node_id) = scene.add_node(None, None, transform, NodeFlags::NONE) {
-            scene.set_node_payload(node_id, NodePayload::Light(engine_light));
+        if let Ok(node) = scene.add_node(None, None, transform, NodeFlags::NONE) {
+            scene.set_node_payload(node.id(), NodePayload::Light(engine_light));
         }
     }
 }

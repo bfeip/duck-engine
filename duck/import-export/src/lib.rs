@@ -711,4 +711,40 @@ mod tests {
         }
         assert!(handle.is_done());
     }
+
+    /// A scene built the way importers build them — bare `SceneData`, all
+    /// intermediate handles dropped — must survive being wrapped in a `Scene`
+    /// and its first reaps without losing resources.
+    #[test]
+    fn imported_scene_survives_wrap_and_reap() {
+        use duck_engine_scene::{
+            common::Transform, FaceMaterial, Instance, Mesh, NodeFlags, Scene,
+        };
+
+        let scene_data = {
+            let mut scene = SceneData::new();
+            // Importer-style maps whose handles are dropped before the wrap.
+            let mesh = scene.add_mesh(Mesh::cube(1.0, duck_engine_scene::PrimitiveType::TriangleList));
+            let material = scene.add_face_material(FaceMaterial::new());
+            scene
+                .add_instance_node(
+                    None,
+                    Instance::new(mesh).with_face_material(material),
+                    Some("part".into()),
+                    Transform::IDENTITY,
+                    NodeFlags::NONE,
+                )
+                .unwrap();
+            scene
+        };
+
+        let scene = Scene::new(scene_data);
+        for _ in 0..2 {
+            let data = scene.lock();
+            assert_eq!(data.node_count(), 1);
+            assert_eq!(data.mesh_count(), 1);
+            assert_eq!(data.face_material_count(), 1);
+            assert!(data.is_complete());
+        }
+    }
 }
