@@ -30,9 +30,9 @@ use crate::{
     },
     rgba_to_wgpu_color,
     scene::{
+        PositionedCamera,
         Scene,
         SceneProperties,
-        camera::PositionedCamera,
         common::RgbaColor,
         resource::{MeshId, TextureId}
     },

@@ -681,7 +681,7 @@ mod tests {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     fn create_mock_context_parts() -> (Option<(f32, f32)>, Scene, SelectionManager) {
-        use crate::scene::camera::PositionedCamera;
+        use crate::scene::PositionedCamera;
         use duck_engine_common::Vector3;
         let camera = PositionedCamera {
             eye: (0.0, 0.0, 1.0).into(),

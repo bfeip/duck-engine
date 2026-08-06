@@ -16,7 +16,7 @@ use duck_engine_common::{
     EuclideanSpace, InnerSpace, Matrix4, Point3, Vector3,
 };
 
-use crate::camera::PositionedCamera;
+use crate::PositionedCamera;
 
 /// Which render layer / pass a node's geometry draws in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

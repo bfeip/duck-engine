@@ -97,7 +97,7 @@ impl CameraProjection {
 /// # Example
 ///
 /// ```
-/// use duck_engine_scene::camera::PositionedCamera;
+/// use duck_engine_scene::PositionedCamera;
 /// use duck_engine_scene::common::{Point3, Vector3};
 ///
 /// let camera = PositionedCamera {
@@ -846,8 +846,7 @@ mod tests {
     #[test]
     fn positioned_camera_for_node_uses_given_aspect() {
         use crate::resource::{NodeFlags, NodePayload};
-        use crate::SceneData;
-        use crate::common;
+        use crate::{common, SceneData};
 
         let mut scene = SceneData::new();
         let camera = scene

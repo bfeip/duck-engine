@@ -6,12 +6,10 @@
 //! Run with `cargo run --example shaded -p duck-engine-renderer`.
 
 use duck_engine_renderer::Renderer;
-use duck_engine_renderer::scene::camera::PositionedCamera;
-use duck_engine_renderer::scene::light::Light;
+use duck_engine_renderer::scene::{Light, PositionedCamera, SceneData};
 use duck_engine_renderer::scene::resource::{
     FaceMaterial, Instance, Mesh, NodePayload, PrimitiveType,
 };
-use duck_engine_renderer::scene::SceneData;
 use duck_engine_renderer::scene::common::RgbaColor;
 use duck_engine_common::{Point3, Vector3};
 use duck_engine_scene::resource::NodeFlags;

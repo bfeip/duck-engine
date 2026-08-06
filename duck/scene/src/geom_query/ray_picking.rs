@@ -310,7 +310,7 @@ mod tests {
 
     use crate::common::Transform;
     use crate::geom_query::PickView;
-    use crate::camera::PositionedCamera;
+    use crate::PositionedCamera;
     use crate::resource::{
         DisplayBehavior, FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType, RenderLayer,
     };

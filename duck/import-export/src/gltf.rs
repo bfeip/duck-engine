@@ -1,11 +1,10 @@
 use std::path::Path;
 use duck_engine_common::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
-use duck_engine_scene::camera::PositionedCamera;
+use duck_engine_scene::{PositionedCamera, SceneData};
 use duck_engine_scene::resource::{
     AlphaMode, FaceMaterial, FaceMaterialHandle, Instance, MaterialFlags, Mesh, MeshHandle,
     MeshPrimitive, NodeFlags, NodeId, PrimitiveType, Texture, TextureHandle, Vertex,
 };
-use duck_engine_scene::SceneData;
 
 /// A loaded primitive from a glTF mesh: the scene mesh and its material.
 type LoadedPrimitive = (MeshHandle, FaceMaterialHandle);

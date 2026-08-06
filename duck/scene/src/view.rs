@@ -1,4 +1,4 @@
-use crate::camera::PositionedCamera;
+use crate::PositionedCamera;
 use duck_engine_common::InnerSpace;
 
 /// Unique identifier for a named view in the scene.

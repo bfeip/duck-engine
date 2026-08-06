@@ -14,13 +14,11 @@ use russimp::material::{Material as RMaterial, TextureType};
 use russimp::node::Node as RNode;
 use russimp::scene::{PostProcess, Scene as RScene};
 
-use duck_engine_scene::camera::PositionedCamera;
-use duck_engine_scene::light::Light;
+use duck_engine_scene::{Light, PositionedCamera, SceneData};
 use duck_engine_scene::resource::{
     FaceMaterial, FaceMaterialHandle, Instance, Mesh, MeshHandle, MeshPrimitive, NodeFlags, NodeId,
     NodePayload, PrimitiveType, Texture, TextureHandle, Vertex,
 };
-use duck_engine_scene::SceneData;
 use duck_engine_scene::common::{RgbaColor, Transform, decompose_matrix};
 
 /// Result of loading a scene via assimp.

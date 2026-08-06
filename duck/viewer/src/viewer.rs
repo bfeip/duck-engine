@@ -7,7 +7,7 @@ use web_time::Instant;
 
 use crate::{
     event::{DeviceEvent, Event, EventContext, EventDispatcher},
-    scene::{camera::PositionedCamera, resource::NodePayload},
+    scene::{PositionedCamera, resource::NodePayload},
     selection::SelectionManager,
     renderer::{Gpu, Renderer, HighlightQuery},
 };

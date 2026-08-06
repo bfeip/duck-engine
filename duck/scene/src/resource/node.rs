@@ -1,7 +1,6 @@
-use crate::camera::CameraProjection;
+use crate::{CameraProjection, Light};
 use super::handle::{InstanceHandle, NodeHandle};
 use super::DisplayBehavior;
-use crate::light::Light;
 use super::RenderLayer;
 use crate::common::{
     Aabb, Transform, apply_scale, compose_rotation, local_axes, local_axis_x, local_axis_y,

@@ -1,12 +1,10 @@
 use duck_engine_renderer::{
     FrameTargets, Gpu, Renderer, RenderWorkflow, SceneFrame, SceneFrames, SceneRenderPass, abi,
 };
-use duck_engine_renderer::scene::camera::PositionedCamera;
-use duck_engine_renderer::scene::light::Light;
+use duck_engine_renderer::scene::{Light, PositionedCamera, SceneData};
 use duck_engine_renderer::scene::resource::{
     FaceMaterial, Instance, Mesh, NodePayload, PrimitiveType,
 };
-use duck_engine_renderer::scene::SceneData;
 use duck_engine_renderer::scene::common::RgbaColor;
 
 use duck_engine_common::{Point3, Vector3};

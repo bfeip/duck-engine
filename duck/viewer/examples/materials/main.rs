@@ -10,7 +10,7 @@ use winit::{
 
 use duck_engine_viewer::common::{RgbaColor, Transform, Point3};
 use duck_engine_viewer::input::{ElementState, Key};
-use duck_engine_viewer::scene::environment::EnvironmentMapId;
+use duck_engine_viewer::scene::EnvironmentMapId;
 use duck_engine_viewer::scene::resource::{
     DisplayBehavior, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh, PointMaterial,
     PrimitiveType,

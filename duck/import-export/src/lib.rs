@@ -46,8 +46,7 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
-use duck_engine_scene::camera::PositionedCamera;
-use duck_engine_scene::SceneData;
+use duck_engine_scene::{PositionedCamera, SceneData};
 
 // ============================================================================
 // Type Aliases

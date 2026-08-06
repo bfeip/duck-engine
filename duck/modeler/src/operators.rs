@@ -26,7 +26,7 @@ use duck_engine_common::{Plane, RgbaColor};
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, MaterialFlags, NodeId};
 use duck_engine_viewer::event::EventContext;
-use duck_engine_viewer::scene::camera::PositionedCamera;
+use duck_engine_viewer::scene::PositionedCamera;
 
 use crate::grid::GridConfig;
 use crate::snap::{Snap, SnapEngine, SnapFlags, SnapInput, SnapProvider};

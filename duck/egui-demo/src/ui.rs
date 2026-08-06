@@ -10,8 +10,7 @@ pub use right_panel::RightPanel;
 
 use std::sync::{Arc, Mutex};
 use duck_engine_viewer::operator::{NavigationMode, NavigationOperator};
-use duck_engine_viewer::scene::camera::PositionedCamera;
-use duck_engine_viewer::scene::light::LightType;
+use duck_engine_viewer::scene::{LightType, PositionedCamera};
 use duck_engine_viewer::scene::resource::{NodeId, Visibility};
 use duck_engine_viewer::Viewer;
 

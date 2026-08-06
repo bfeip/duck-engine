@@ -1,11 +1,10 @@
 use duck_engine_common::{Matrix4, SquareMatrix};
 
 use crate::common::Aabb;
-use crate::camera::PositionedCamera;
+use crate::{PositionedCamera, Scene, SceneData};
 use crate::resource::{
     DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId, NodePayload,
 };
-use crate::{Scene, SceneData};
 
 /// A query that can pick objects by traversing the scene tree.
 ///

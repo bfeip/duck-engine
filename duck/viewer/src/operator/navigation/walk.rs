@@ -2,7 +2,7 @@ use duck_engine_common::{InnerSpace, Vector3};
 
 use crate::bindings::InputMap;
 use crate::input::{ElementState, Key, Modifiers};
-use crate::scene::camera::PositionedCamera;
+use crate::scene::PositionedCamera;
 use crate::scene_scale;
 
 use super::NavigationAction;

@@ -1,13 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::bindings::{InputBinding, InputMap};
-use crate::common;
-use crate::scene::camera::PositionedCamera;
+use crate::{common, scene_scale};
+use crate::scene::PositionedCamera;
 use crate::scene::geom_query::{pick_all_from_ray, RayPickQuery};
 use crate::event::{AppEvent, DeviceEvent, Event, EventContext};
 use crate::input::{Key, Modifiers, MouseButton, MouseScrollDelta};
 use crate::operator::Operator;
-use crate::scene_scale;
 
 mod turntable;
 mod trackball;

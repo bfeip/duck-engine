@@ -12,16 +12,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::ThreadId;
 
 use crate::common::{Matrix4, Point3, Quaternion, Transform, Vector3};
-use crate::camera::PositionedCamera;
-use crate::environment::{EnvironmentMap, EnvironmentMapId};
-use crate::light::Light;
+use crate::{BoundingResult, EnvironmentMap, EnvironmentMapId, Light, PositionedCamera, SceneData};
 use crate::resource::{
     DisplayBehavior, EffectiveVisibility, FaceMaterial, FaceMaterialHandle, FaceMaterialId,
     Instance, InstanceHandle, InstanceId, LineMaterial, LineMaterialHandle, LineMaterialId, Mesh,
     MeshHandle, Node, NodeFlags, NodeHandle, NodeId, NodePayload, PointMaterial,
     PointMaterialHandle, PointMaterialId, Visibility,
 };
-use crate::{BoundingResult, SceneData};
 
 /// A cheap, cloneable handle to a scene.
 ///

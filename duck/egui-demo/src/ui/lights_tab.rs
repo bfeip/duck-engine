@@ -1,5 +1,5 @@
 use duck_engine_viewer::common::RgbaColor;
-use duck_engine_viewer::scene::light::{Light, LightType};
+use duck_engine_viewer::scene::{Light, LightType};
 use duck_engine_viewer::scene::resource::{NodeId, NodePayload};
 use duck_engine_viewer::Viewer;
 

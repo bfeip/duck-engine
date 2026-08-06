@@ -5,11 +5,10 @@
 //! implementing [`SceneResource`], plus the id and handle machinery itself.
 //!
 //! Membership is that rule, not a taxonomy: an [`EnvironmentMap`] carries an id
-//! but is not refcounted, so it lives in [`environment`](crate::environment)
-//! instead.
+//! but is not refcounted, so it stays outside this module.
 //!
 //! [`SceneData`]: crate::SceneData
-//! [`EnvironmentMap`]: crate::environment::EnvironmentMap
+//! [`EnvironmentMap`]: crate::EnvironmentMap
 
 mod display;
 mod handle;

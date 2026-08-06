@@ -12,10 +12,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::common::{self, Aabb};
-use crate::camera::{CameraProjection, PositionedCamera};
-use crate::environment::{EnvironmentMap, EnvironmentMapId};
-use crate::initial_generation;
-use crate::light::Light;
+use crate::{
+    CameraProjection, EnvironmentMap, EnvironmentMapId, initial_generation, Light, PositionedCamera,
+};
 use crate::resource::{
     EffectiveVisibility, FaceMaterial, FaceMaterialHandle, FaceMaterialId,
     GenericId, Handle, HandleCore, Id, Instance, InstanceHandle, InstanceId, LineMaterial,

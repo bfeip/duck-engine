@@ -2,15 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use duck_engine_common::{Matrix3, Matrix4, Point3, SquareMatrix};
 
-use crate::scene::camera::PositionedCamera;
-use crate::scene::light::Light;
+use crate::scene::{common, Light, PositionedCamera, SceneData};
 use crate::scene::resource::{
     AlphaMode, DisplayBehavior, FaceMaterialId, Instance, InstanceId, LineMaterialId,
     MaterialProperties, MeshId, NodeId, NodePayload, PointMaterialId, PrimitiveType, RenderLayer,
     SubGeometryElement, SubGeometryKind, Visibility,
 };
-use crate::scene::SceneData;
-use crate::scene::common;
 use crate::highlight_query::HighlightQuery;
 
 /// A draw call targeting a sub-range of a mesh's index buffer for a single instance.

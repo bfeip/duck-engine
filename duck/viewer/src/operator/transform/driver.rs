@@ -476,9 +476,8 @@ mod tests {
     use crate::input::MouseButton;
     use super::super::interaction::{AxisConstraint, ConstraintSpace};
     use crate::common::Axis;
-    use crate::scene::camera::PositionedCamera;
+    use crate::scene::{PositionedCamera, Scene, SceneData};
     use crate::scene::resource::NodePayload;
-    use crate::scene::{Scene, SceneData};
     use crate::selection::SelectionManager;
     use duck_engine_common::{InnerSpace, Vector3};
     use duck_engine_scene::resource::NodeFlags;

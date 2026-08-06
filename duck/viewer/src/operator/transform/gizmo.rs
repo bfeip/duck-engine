@@ -6,9 +6,8 @@
 //! nodes, positions them at the pivot, hit-tests them, and drives highlights.
 
 use duck_engine_common::{Deg, Matrix4, Point3, Vector3, Vector4};
-use duck_engine_scene::camera::PositionedCamera;
+use duck_engine_scene::{PositionedCamera, Scene, SceneData};
 use duck_engine_scene::resource::NodeFlags;
-use duck_engine_scene::{Scene, SceneData};
 
 use crate::common::{Axis, Ray, RgbaColor, Transform};
 use crate::geom_query::{pick_all_from_ray_with_view, PickView, RayPickQuery};
@@ -787,7 +786,6 @@ use crate::geom_query::RayPickQuery;
     fn translate_handles_pickable_after_position_update() {
         use crate::common::Ray;
         use crate::geom_query::pick_all_from_ray;
-        use crate::scene::SceneData;
         use duck_engine_common::{Point3, Vector3};
 
         let initial_pivot = Point3::new(0.0, 0.0, 0.0);

@@ -9,7 +9,7 @@ use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
     operator::Operator,
-    scene::camera::PositionedCamera,
+    scene::PositionedCamera,
 };
 use glam::{dvec3, DVec3};
 use log::warn;
