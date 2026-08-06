@@ -1,6 +1,7 @@
 use super::*;
 use duck_engine_common::{Point3, Quaternion, Vector3, Matrix4, SquareMatrix};
 use crate::common::{EPSILON, Transform};
+use crate::{MeshPrimitive, PrimitiveType, Vertex};
 
 #[test]
 fn test_scene_new() {
