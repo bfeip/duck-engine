@@ -1,10 +1,11 @@
 use duck_engine_common::{Matrix4, SquareMatrix};
 
 use crate::common::Aabb;
-use crate::{
-    DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId, NodePayload, PositionedCamera, Scene,
-    SceneData,
+use crate::camera::PositionedCamera;
+use crate::resource::{
+    DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId, NodePayload,
 };
+use crate::{Scene, SceneData};
 
 /// A query that can pick objects by traversing the scene tree.
 ///
@@ -193,10 +194,8 @@ fn collect_instance_hits<Q: PickQuery>(
 mod tests {
     use super::*;
     use duck_engine_common::Matrix4;
-    use crate::{
-        Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Vertex,
-        common::Transform,
-    };
+    use crate::resource::{Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Vertex};
+    use crate::common::Transform;
 
     struct AlwaysHitQuery;
 
@@ -235,8 +234,8 @@ mod tests {
             vec![MeshPrimitive { primitive_type: PrimitiveType::TriangleList, indices: vec![0, 1, 2] }],
         );
         let mesh = scene.add_mesh(mesh);
-        let material = scene.add_face_material(crate::FaceMaterial::new());
-        let instance = crate::Instance::new(mesh).with_face_material(material);
+        let material = scene.add_face_material(crate::resource::FaceMaterial::new());
+        let instance = crate::resource::Instance::new(mesh).with_face_material(material);
         scene.add_instance_node(parent, instance, None, Transform::IDENTITY, flags).unwrap().id()
     }
 

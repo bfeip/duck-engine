@@ -1,6 +1,7 @@
 use duck_engine_common::{InnerSpace, Point3, Rotation, point3, vec3};
 
-use crate::scene::{PositionedCamera, common::quaternion_from_axis_angle_safe};
+use crate::scene::camera::PositionedCamera;
+use crate::scene::common::quaternion_from_axis_angle_safe;
 
 use super::ORBIT_SENSITIVITY;
 

@@ -1,11 +1,11 @@
 //! Selection management for scene elements.
 //!
 //! Supports node-level selection as well as sub-geometry selection (faces, edges,
-//! points) for meshes that carry [`Topology`](crate::scene::Topology) metadata.
+//! points) for meshes that carry [`Topology`](crate::scene::resource::Topology) metadata.
 
 use std::collections::HashSet;
 
-use crate::scene::{NodeId, SubGeometryElement, SubGeometryKind};
+use crate::scene::resource::{NodeId, SubGeometryElement, SubGeometryKind};
 use crate::renderer::{HighlightQuery, HighlightConfig};
 
 /// Configuration for selection visual feedback.

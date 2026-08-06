@@ -1,23 +1,23 @@
 use crate::common::RgbaColor;
-use crate::resource_handle::TextureHandle;
-use crate::TextureId;
+use crate::resource::TextureHandle;
+use crate::resource::TextureId;
 
 use super::{AlphaMode, MaterialProperties};
 
-/// Unique identifier for a [`PointMaterial`].
-pub type PointMaterialId = crate::Id<PointMaterial>;
+/// Unique identifier for a [`LineMaterial`].
+pub type LineMaterialId = crate::resource::Id<LineMaterial>;
 
-/// Shading for point primitives.
+/// Shading for line (edge / wireframe) primitives.
 ///
-/// Points are rendered unlit. The color tints an optional base-color texture
-/// (multiplied), or stands alone when no texture is set — e.g. a tinted sprite/dot.
+/// Lines are rendered unlit. The color tints an optional base-color texture
+/// (multiplied), or stands alone when no texture is set.
 #[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PointMaterial {
+pub struct LineMaterial {
     /// Unique identifier for this material
-    pub id: PointMaterialId,
+    pub id: LineMaterialId,
 
-    /// Point color (tints the base-color texture if present)
+    /// Line color (tints the base-color texture if present)
     color: RgbaColor,
 
     /// Optional base-color texture (multiplied by `color`). Owning.
@@ -28,18 +28,18 @@ pub struct PointMaterial {
     generation: u64,
 }
 
-impl PointMaterial {
-    /// Create a new point material with the given color.
+impl LineMaterial {
+    /// Create a new line material with the given color.
     pub fn new(color: RgbaColor) -> Self {
         Self {
-            id: PointMaterialId::new(),
+            id: LineMaterialId::new(),
             color,
             base_color_texture: None,
             generation: crate::initial_generation(),
         }
     }
 
-    /// Get the point color.
+    /// Get the line color.
     pub fn color(&self) -> RgbaColor {
         self.color
     }
@@ -51,7 +51,7 @@ impl PointMaterial {
 
     /// Get the material properties used to select shaders and pipeline state.
     ///
-    /// Points carry no explicit alpha mode: a color alpha below 1.0 blends.
+    /// Lines carry no explicit alpha mode: a color alpha below 1.0 blends.
     pub fn properties(&self) -> MaterialProperties {
         MaterialProperties {
             base_color_texture: self.base_color_texture.is_some(),
@@ -65,13 +65,22 @@ impl PointMaterial {
         self.generation
     }
 
-    /// Set the point color (chainable).
+    /// Return this material with a fresh, globally-unique id.
+    ///
+    /// Useful when a material is held as a template and instantiated once per
+    /// object: scene insertion keys on the id, so each instance needs its own.
+    pub fn with_fresh_id(mut self) -> Self {
+        self.id = LineMaterialId::new();
+        self
+    }
+
+    /// Set the line color (chainable).
     pub fn with_color(mut self, color: RgbaColor) -> Self {
         self.set_color(color);
         self
     }
 
-    /// Set the point color, marking the material as dirty.
+    /// Set the line color, marking the material as dirty.
     pub fn set_color(&mut self, color: RgbaColor) {
         self.color = color;
         self.generation += 1;

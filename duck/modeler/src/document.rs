@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
 use anyhow::{Context, Result};
-use duck_engine_scene::{Id, NodeId, Scene, Visibility};
+use duck_engine_scene::resource::{Id, NodeId, Visibility};
+use duck_engine_scene::Scene;
 use duck_engine_scene::cad::{CadTessellationOptions, retessellate_node, tessellate_into};
 use duck_engine_scene::common::{matrix4_to_row_major_f64, Matrix4, Transform};
 use opencascade::primitives::{Edge, Face, Shape, ShapeType, Wire};
@@ -452,7 +453,7 @@ impl Drop for UndoScope<'_> {
 mod tests {
     use super::*;
     use duck_engine_scene::common::Vector3;
-    use duck_engine_scene::NodePayload;
+    use duck_engine_scene::resource::NodePayload;
 
     fn doc_with_box() -> (Document, PartId, NodeId) {
         let scene = Scene::default();

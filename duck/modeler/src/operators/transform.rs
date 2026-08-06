@@ -3,7 +3,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::{Scene, SubGeometryKind, NodeId};
+use duck_engine_scene::resource::{NodeId, SubGeometryKind};
+use duck_engine_scene::Scene;
 use duck_engine_viewer::common::{decompose_matrix, InnerSpace, Point3, Quaternion, Vector3};
 use duck_engine_viewer::event::{Event, EventContext};
 use duck_engine_viewer::operator::{

@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::abi;
 use crate::render_core::{FrameTargets, Gpu, GpuTexture, MaskChannels};
-use crate::scene::PrimitiveType;
+use crate::scene::resource::PrimitiveType;
 
 use super::super::batching::DrawBatch;
 use super::super::mesh::{instance_buffer_layout, vertex_buffer_layout};

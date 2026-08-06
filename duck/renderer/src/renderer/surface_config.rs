@@ -19,7 +19,7 @@
 //!
 //! [`texture_presence`]: SurfaceConfig::texture_presence
 
-use crate::scene::{AlphaMode, MaterialProperties};
+use crate::scene::resource::{AlphaMode, MaterialProperties};
 
 /// One optional texture channel a surface material can bind.
 ///

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 /// Unique identifier for an environment map in a scene.
-pub type EnvironmentMapId = crate::Id<EnvironmentMap>;
+pub type EnvironmentMapId = crate::resource::Id<EnvironmentMap>;
 
 /// Source data for an environment map.
 #[derive(Debug, Clone)]
@@ -37,7 +37,7 @@ impl EnvironmentMap {
     /// This is internal - use [`SceneData::add_environment_map_from_hdr_path`] to create environment maps.
     pub(crate) fn from_hdr_path(path: impl Into<PathBuf>) -> Self {
         Self {
-            id: crate::Id::new(),
+            id: crate::resource::Id::new(),
             source: EnvironmentSource::EquirectangularPath(path.into()),
             intensity: 1.0,
             rotation: 0.0,
@@ -50,7 +50,7 @@ impl EnvironmentMap {
     /// The HDR data will be processed into IBL maps when the environment is first used.
     pub fn from_hdr_data(data: Vec<u8>) -> Self {
         Self {
-            id: crate::Id::new(),
+            id: crate::resource::Id::new(),
             source: EnvironmentSource::EquirectangularHdr(data),
             intensity: 1.0,
             rotation: 0.0,

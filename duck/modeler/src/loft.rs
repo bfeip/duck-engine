@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use duck_engine_scene::cad::{tessellate_into, CadTessellationOptions};
-use duck_engine_scene::NodeId;
+use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::{Shape, Shell, Solid, Wire};
 
 use crate::document::Document;

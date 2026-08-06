@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use image::{DynamicImage, GenericImageView};
 
 /// Unique identifier for a texture in the scene.
-pub type TextureId = crate::Id<Texture>;
+pub type TextureId = super::Id<Texture>;
 
 /// Texture image format.
 #[repr(u8)]
@@ -69,7 +69,8 @@ impl Clone for TextureSource {
 /// # Examples
 ///
 /// ```
-/// use duck_engine_scene::{Texture, SceneData};
+/// use duck_engine_scene::SceneData;
+/// use duck_engine_scene::resource::Texture;
 ///
 /// // Create from path (loaded lazily when GPU resources are created)
 /// let texture = Texture::from_path("texture.png");
@@ -106,7 +107,7 @@ impl Texture {
     /// * `image` - The image data to use for this texture
     pub fn from_image(image: DynamicImage) -> Self {
         Self {
-            id: crate::Id::new(),
+            id: super::Id::new(),
             source: TextureSource::Embedded { image },
             generation: 1,
         }
@@ -135,7 +136,7 @@ impl Texture {
     /// * `path` - Path to the image file
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
         Self {
-            id: crate::Id::new(),
+            id: super::Id::new(),
             source: TextureSource::File {
                 path: path.into(),
                 cache: OnceLock::new(),

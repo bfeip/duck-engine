@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use duck_engine_scene::SubGeometryKind;
+use duck_engine_scene::resource::SubGeometryKind;
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, NamedKey},
@@ -144,7 +144,7 @@ impl LoftOperator {
                         .unwrap_or_else(|| "Unknown".to_owned());
                     let item = SelectionItem::SubGeometry {
                         node_id: p.node,
-                        element: duck_engine_scene::SubGeometryElement::new(
+                        element: duck_engine_scene::resource::SubGeometryElement::new(
                             SubGeometryKind::Edge,
                             p.edge_index,
                         ),

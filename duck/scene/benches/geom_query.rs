@@ -10,9 +10,8 @@ use duck_engine_scene::geom_query::{
     intersect_ray, intersect_ray_nearest, intersect_ray_with_lines, pick_all_from_ray,
     MeshSpatialIndex, RayPickQuery,
 };
-use duck_engine_scene::{
-    Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Scene, SceneData, Vertex,
-};
+use duck_engine_scene::resource::{Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Vertex};
+use duck_engine_scene::{Scene, SceneData};
 
 /// World-space tolerance for line picks, roughly a few pixels at working distance.
 const LINE_TOLERANCE: f32 = 0.05;

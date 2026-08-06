@@ -23,9 +23,13 @@ use duck_engine_common::Point3;
 use duck_engine_viewer::event::Event;
 use duck_engine_viewer::common::RgbaColor;
 use duck_engine_viewer::input::{ElementState, Key};
-use duck_engine_viewer::operator::{NavigationMode, NavigationOperator, SelectionOperator, TransformMode, TransformOperator};
+use duck_engine_viewer::operator::{
+    NavigationMode, NavigationOperator, SelectionOperator, TransformMode, TransformOperator,
+};
 use duck_engine_viewer::common::Transform;
-use duck_engine_viewer::scene::{Light, LightType, NodePayload, NodeFlags, Scene};
+use duck_engine_viewer::scene::light::{Light, LightType};
+use duck_engine_viewer::scene::resource::{NodeFlags, NodePayload};
+use duck_engine_viewer::scene::Scene;
 use duck_engine_viewer::winit_support;
 use duck_engine_viewer::{OffscreenViewer, WindowSurface};
 

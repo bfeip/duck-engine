@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use duck_engine_scene::NodeFlags;
+use duck_engine_scene::resource::NodeFlags;
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, WindowEvent},
@@ -10,12 +10,15 @@ use winit::{
 
 use duck_engine_viewer::common::{RgbaColor, Transform, Point3};
 use duck_engine_viewer::input::{ElementState, Key};
-use duck_engine_viewer::scene::{
-    DisplayBehavior, EnvironmentMapId, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh,
-    PointMaterial, PrimitiveType,
+use duck_engine_viewer::scene::environment::EnvironmentMapId;
+use duck_engine_viewer::scene::resource::{
+    DisplayBehavior, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh, PointMaterial,
+    PrimitiveType,
 };
 use duck_engine_viewer::{SurfacedViewer, Viewer, winit_support};
-use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode, TransformOperator};
+use duck_engine_viewer::operator::{
+    NavigationOperator, SelectionOperator, TransformMode, TransformOperator,
+};
 
 const SPHERE_RADIUS: f32 = 0.4;
 const SPHERE_SEGMENTS: u32 = 32;

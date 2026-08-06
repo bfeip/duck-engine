@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use duck_engine_scene::cad::{tessellate_into, CadTessellationOptions};
 use duck_engine_scene::common::{InnerSpace, Point3, Vector3};
-use duck_engine_scene::NodeId;
+use duck_engine_scene::resource::NodeId;
 use glam::DVec3;
 use opencascade::primitives::{FaceOrientation, Shape, ShapeType};
 

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::NodeHandle;
+use duck_engine_scene::resource::NodeHandle;
 use opencascade::primitives::Shape;
 
 use crate::document::PartId;
@@ -135,7 +135,7 @@ mod tests {
     fn snapshot(name: &str) -> PartSnapshot {
         PartSnapshot {
             part: PartId::new(),
-            node: NodeHandle::unbound(duck_engine_scene::NodeId::new()),
+            node: NodeHandle::unbound(duck_engine_scene::resource::NodeId::new()),
             name: name.to_string(),
             shape: Shape::cube(1.0),
             options: CadTessellationOptions::default(),

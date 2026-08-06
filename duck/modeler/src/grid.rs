@@ -3,10 +3,11 @@
 use duck_engine_viewer::common::{
     EuclideanSpace, InnerSpace, Matrix3, Plane, Point3, Quaternion, RgbaColor, Transform, Vector3,
 };
-use duck_engine_viewer::scene::{
-    Instance, LineMaterial, Mesh, MeshIndex, MeshPrimitive, NodeFlags, NodeId, PrimitiveType, Scene,
+use duck_engine_viewer::scene::resource::{
+    Instance, LineMaterial, Mesh, MeshIndex, MeshPrimitive, NodeFlags, NodeId, PrimitiveType,
     Vertex,
 };
+use duck_engine_viewer::scene::Scene;
 
 const GRID_NORMAL: [f32; 3] = [0.0, 1.0, 0.0];
 

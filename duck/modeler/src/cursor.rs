@@ -10,11 +10,11 @@
 //! base-color factor.
 
 use duck_engine_viewer::common::{Point3, RgbaColor, Transform};
-use duck_engine_viewer::scene::{
+use duck_engine_viewer::scene::resource::{
     AlphaMode, DisplayBehavior, FaceMaterial, FaceMaterialHandle, Instance, MaterialFlags, Mesh,
-    NodeFlags, NodeHandle, NodeId, PrimitiveType, RenderLayer, Scene, SceneData, Texture,
-    Visibility,
+    NodeFlags, NodeHandle, NodeId, PrimitiveType, RenderLayer, Texture, Visibility,
 };
+use duck_engine_viewer::scene::{Scene, SceneData};
 
 /// On-screen diameter of the dot, in pixels. The quad's half-width (0.5) is
 /// scaled by `screen_size`, so this is also the screen-space size value.

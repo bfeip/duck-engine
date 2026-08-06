@@ -1,4 +1,4 @@
-use duck_engine_viewer::scene::SubGeometryKind;
+use duck_engine_viewer::scene::resource::SubGeometryKind;
 use duck_engine_viewer::selection::SelectionItem;
 use duck_engine_viewer::Viewer;
 

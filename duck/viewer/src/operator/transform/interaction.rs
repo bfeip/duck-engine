@@ -10,7 +10,7 @@ use duck_engine_common::{
     EuclideanSpace, InnerSpace, Matrix4, Point3, Quaternion, Vector3, Zero, EPSILON,
 };
 use duck_engine_scene::common::Ray;
-use duck_engine_scene::PositionedCamera;
+use duck_engine_scene::camera::PositionedCamera;
 use serde::{Deserialize, Serialize};
 
 use crate::bindings::{InputBinding, InputMap};

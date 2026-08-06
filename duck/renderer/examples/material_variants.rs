@@ -15,12 +15,16 @@
 
 use duck_engine_common::{Point3, Vector3};
 use duck_engine_renderer::Renderer;
-use duck_engine_renderer::scene::{
-    AlphaMode, FaceMaterial, Instance, Light, LineMaterial, MaterialFlags, Mesh, NodePayload,
-    PointMaterial, PositionedCamera, PrimitiveType, SceneData, Texture, TextureHandle,
-    common::{RgbaColor, Transform},
+use duck_engine_renderer::scene::camera::PositionedCamera;
+use duck_engine_renderer::scene::light::Light;
+use duck_engine_renderer::scene::resource::{
+    AlphaMode, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh, NodePayload,
+    PointMaterial, PrimitiveType, Texture, TextureHandle,
 };
-use duck_engine_scene::{NodeFlags, Scene};
+use duck_engine_renderer::scene::SceneData;
+use duck_engine_renderer::scene::common::{RgbaColor, Transform};
+use duck_engine_scene::resource::NodeFlags;
+use duck_engine_scene::Scene;
 
 /// Add a 2×2 solid-color texture and return its handle.
 fn solid_texture(scene: &mut SceneData, rgba: [u8; 4]) -> TextureHandle {

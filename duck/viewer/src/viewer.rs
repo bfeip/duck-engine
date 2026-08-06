@@ -1,12 +1,13 @@
 use std::ops::{Deref, DerefMut};
 
 use duck_engine_common::Vector3;
-use duck_engine_scene::{NodeFlags, NodeId, Scene};
+use duck_engine_scene::resource::{NodeFlags, NodeId};
+use duck_engine_scene::Scene;
 use web_time::Instant;
 
 use crate::{
     event::{DeviceEvent, Event, EventContext, EventDispatcher},
-    scene::{NodePayload, PositionedCamera},
+    scene::{camera::PositionedCamera, resource::NodePayload},
     selection::SelectionManager,
     renderer::{Gpu, Renderer, HighlightQuery},
 };

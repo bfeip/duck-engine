@@ -1,4 +1,4 @@
-use duck_engine_viewer::scene::{EffectiveVisibility, NodeId, NodePayload, Visibility};
+use duck_engine_viewer::scene::resource::{EffectiveVisibility, NodeId, NodePayload, Visibility};
 use duck_engine_viewer::Viewer;
 
 use super::{UiActions, VisibilityChange};

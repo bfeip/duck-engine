@@ -1,6 +1,7 @@
 
 use crate::input::Modifiers;
-use crate::scene::{PositionedCamera, Scene};
+use crate::scene::camera::PositionedCamera;
+use crate::scene::Scene;
 use crate::selection::SelectionManager;
 
 use super::Event;

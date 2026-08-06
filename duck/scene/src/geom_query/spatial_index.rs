@@ -1,11 +1,11 @@
 //! Per-mesh spatial acceleration: flat BVHs over a mesh's triangles and line
-//! segments. Obtain one via [`Mesh::spatial_index`](crate::Mesh::spatial_index),
+//! segments. Obtain one via [`Mesh::spatial_index`](crate::resource::Mesh::spatial_index),
 //! which caches it keyed by the mesh generation.
 
 use duck_engine_common::Point3;
 
 use crate::common::{Aabb, Ray, SegmentApproach};
-use crate::Mesh;
+use crate::resource::Mesh;
 
 use super::mesh_intersection::TriangleMeshHit;
 
@@ -279,7 +279,7 @@ mod tests {
 
     use crate::common::Ray;
     use crate::geom_query::mesh_intersection;
-    use crate::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
+    use crate::resource::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
 
     use super::MeshSpatialIndex;
 

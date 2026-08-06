@@ -6,7 +6,8 @@ use crate::event::{AppEvent, DeviceEvent, Event, EventContext};
 use crate::geom_query::{RayPickQuery, RayPickResult, pick_all_from_ray};
 use crate::input::{Modifiers, MouseButton};
 use crate::operator::Operator;
-use crate::scene::{Scene, SubGeometryElement, SubGeometryKind};
+use crate::scene::resource::{SubGeometryElement, SubGeometryKind};
+use crate::scene::Scene;
 use crate::selection::SelectionItem;
 use duck_engine_common::InnerSpace;
 

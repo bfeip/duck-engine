@@ -1,11 +1,11 @@
 use super::material::{FaceMaterialId, LineMaterialId, PointMaterialId};
 use super::mesh::MeshId;
-use crate::resource_handle::{
+use super::handle::{
     FaceMaterialHandle, LineMaterialHandle, MeshHandle, PointMaterialHandle,
 };
 
 /// Unique identifier for a mesh instance
-pub type InstanceId = crate::Id<Instance>;
+pub type InstanceId = super::Id<Instance>;
 
 /// An instance referencing a mesh and up to one material per primitive kind.
 ///
@@ -121,7 +121,7 @@ impl Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource_handle::Handle;
+    use crate::resource::Handle;
 
     fn mesh_handle() -> MeshHandle {
         Handle::unbound(MeshId::new())

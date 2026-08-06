@@ -1,6 +1,7 @@
 use anyhow::Result;
 
-use crate::scene::{ResourceKind, SceneData};
+use crate::scene::resource::ResourceKind;
+use crate::scene::SceneData;
 
 use super::batching::collect_scene_frame_data;
 use super::mesh::MeshGpuResources;

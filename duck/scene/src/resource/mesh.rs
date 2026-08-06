@@ -15,7 +15,7 @@ use crate::common::Aabb;
 use crate::geom_query::MeshSpatialIndex;
 
 /// Unique identifier for a mesh in the scene.
-pub type MeshId = crate::Id<Mesh>;
+pub type MeshId = super::Id<Mesh>;
 
 /// Index type used for mesh index buffers.
 pub type MeshIndex = u32;
@@ -257,7 +257,8 @@ pub enum MeshDescriptor<'a> {
 /// # Examples
 ///
 /// ```
-/// use duck_engine_scene::{Mesh, MeshPrimitive, Vertex, SceneData, PrimitiveType};
+/// use duck_engine_scene::SceneData;
+/// use duck_engine_scene::resource::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
 ///
 /// // Create from raw data (no device needed)
 /// let vertices = vec![
@@ -303,7 +304,7 @@ impl Mesh {
     /// Creates a new empty mesh with no vertices or primitives.
     pub fn new() -> Self {
         Self {
-            id: crate::Id::new(),
+            id: super::Id::new(),
             vertices: Vec::new(),
             primitives: Vec::new(),
             generation: crate::initial_generation(),
@@ -320,7 +321,7 @@ impl Mesh {
     /// * `primitives` - Primitive data (index lists grouped by type)
     pub fn from_raw(vertices: Vec<Vertex>, primitives: Vec<MeshPrimitive>) -> Self {
         Self {
-            id: crate::Id::new(),
+            id: super::Id::new(),
             vertices,
             primitives,
             generation: crate::initial_generation(),

@@ -104,7 +104,8 @@ mod tests {
 
     use duck_engine_scene::cad::CadTessellationOptions;
     use duck_engine_scene::common::Transform;
-    use duck_engine_scene::{NodeFlags, NodeId, Scene, SubGeometryElement, SubGeometryKind};
+    use duck_engine_scene::resource::{NodeFlags, NodeId, SubGeometryElement, SubGeometryKind};
+    use duck_engine_scene::Scene;
     use duck_engine_viewer::input::PhysicalKey;
 
     use super::*;

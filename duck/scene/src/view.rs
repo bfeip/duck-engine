@@ -1,8 +1,8 @@
-use crate::PositionedCamera;
+use crate::camera::PositionedCamera;
 use duck_engine_common::InnerSpace;
 
 /// Unique identifier for a named view in the scene.
-pub type ViewId = crate::Id<View>;
+pub type ViewId = crate::resource::Id<View>;
 
 /// A named camera state that can be saved and restored.
 ///

@@ -15,10 +15,12 @@ use bytemuck::bytes_of;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::render_core::{GenCache, GpuTexture};
-use crate::scene::{
-    common::RgbaColor, FaceMaterial, FaceMaterialId, GenericId, LineMaterial, LineMaterialId,
-    PointMaterial, PointMaterialId, ResourceKind, SceneData, TextureId,
+use crate::scene::resource::{
+    FaceMaterial, FaceMaterialId, GenericId, LineMaterial, LineMaterialId, PointMaterial,
+    PointMaterialId, ResourceKind, TextureId,
 };
+use crate::scene::SceneData;
+use crate::scene::common::RgbaColor;
 use crate::shaders::ShaderGenerator;
 
 use super::batching::BatchMaterial;

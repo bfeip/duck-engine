@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use duck_engine_common::{MetricSpace, Plane, Point3, Ray, Vector3};
-use duck_engine_scene::Visibility;
+use duck_engine_scene::resource::Visibility;
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     common::Transform,

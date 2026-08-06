@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use duck_engine_scene::NodeId;
+use duck_engine_scene::resource::NodeId;
 use duck_engine_scene::cad::{CadTessellationOptions, tessellate_into};
 use opencascade::primitives::{Shape, ShapeType};
 

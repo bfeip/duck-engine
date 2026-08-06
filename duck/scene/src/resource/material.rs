@@ -2,7 +2,7 @@
 //!
 //! Rather than one monolithic material, shading is split into three independent,
 //! top-level types — [`FaceMaterial`], [`LineMaterial`], [`PointMaterial`] — each
-//! with its own id, scene collection, and generation counter. An [`crate::Instance`]
+//! with its own id, scene collection, and generation counter. An [`super::Instance`]
 //! references up to three of them, one per primitive kind it draws.
 
 use bitflags::bitflags;

@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
-use duck_engine_scene::PositionedCamera;
+use duck_engine_scene::camera::PositionedCamera;
 use duck_engine_scene::SceneData;
 
 // ============================================================================
@@ -717,14 +717,14 @@ mod tests {
     /// and its first reaps without losing resources.
     #[test]
     fn imported_scene_survives_wrap_and_reap() {
-        use duck_engine_scene::{
-            common::Transform, FaceMaterial, Instance, Mesh, NodeFlags, Scene,
-        };
+        use duck_engine_scene::resource::{FaceMaterial, Instance, Mesh, NodeFlags};
+        use duck_engine_scene::Scene;
+        use duck_engine_scene::common::Transform;
 
         let scene_data = {
             let mut scene = SceneData::new();
             // Importer-style maps whose handles are dropped before the wrap.
-            let mesh = scene.add_mesh(Mesh::cube(1.0, duck_engine_scene::PrimitiveType::TriangleList));
+            let mesh = scene.add_mesh(Mesh::cube(1.0, duck_engine_scene::resource::PrimitiveType::TriangleList));
             let material = scene.add_face_material(FaceMaterial::new());
             scene
                 .add_instance_node(

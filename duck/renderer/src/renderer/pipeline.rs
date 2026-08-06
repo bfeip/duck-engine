@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::render_core::{GpuTexture, PipelineCache};
-use crate::scene::{AlphaMode, PrimitiveType};
+use crate::scene::resource::{AlphaMode, PrimitiveType};
 use crate::shaders::ShaderGenerator;
 
 use super::bind_group_layouts::BindGroupLayouts;

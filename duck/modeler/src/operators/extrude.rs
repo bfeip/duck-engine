@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_common::{Point3, Ray};
-use duck_engine_scene::SubGeometryKind;
+use duck_engine_scene::resource::SubGeometryKind;
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, MouseButton, NamedKey},

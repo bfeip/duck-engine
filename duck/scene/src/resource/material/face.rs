@@ -1,6 +1,6 @@
 use crate::common::RgbaColor;
-use crate::resource_handle::TextureHandle;
-use crate::TextureId;
+use crate::resource::TextureHandle;
+use crate::resource::TextureId;
 
 use super::{
     AlphaMode, MaterialFlags, MaterialProperties, DEFAULT_ALPHA_CUTOFF, DEFAULT_METALLIC,
@@ -8,7 +8,7 @@ use super::{
 };
 
 /// Unique identifier for a [`FaceMaterial`].
-pub type FaceMaterialId = crate::Id<FaceMaterial>;
+pub type FaceMaterialId = crate::resource::Id<FaceMaterial>;
 
 /// Physically-based shading for triangle (face) primitives.
 ///
@@ -18,7 +18,8 @@ pub type FaceMaterialId = crate::Id<FaceMaterial>;
 /// # Examples
 ///
 /// ```
-/// use duck_engine_scene::{FaceMaterial, SceneData};
+/// use duck_engine_scene::SceneData;
+/// use duck_engine_scene::resource::FaceMaterial;
 /// use duck_engine_scene::common::RgbaColor;
 ///
 /// let face = FaceMaterial::new().with_base_color_factor(RgbaColor::RED);

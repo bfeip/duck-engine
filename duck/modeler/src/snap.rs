@@ -30,7 +30,9 @@ pub(crate) use providers::WireStartSnap;
 use bitflags::bitflags;
 
 use duck_engine_viewer::common::{InnerSpace, Plane, Point3, Ray, Vector3};
-use duck_engine_viewer::scene::{NodeId, PositionedCamera, Scene};
+use duck_engine_viewer::scene::camera::PositionedCamera;
+use duck_engine_viewer::scene::resource::NodeId;
+use duck_engine_viewer::scene::Scene;
 
 use crate::grid::GridConfig;
 

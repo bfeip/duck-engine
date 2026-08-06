@@ -6,9 +6,11 @@ use duck_engine_viewer::common::{
     Vector3,
 };
 use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
-use duck_engine_viewer::scene::{
-    InstanceId, Mesh, Node, NodeId, PositionedCamera, PrimitiveType, Scene, Topology, Visibility,
+use duck_engine_viewer::scene::camera::PositionedCamera;
+use duck_engine_viewer::scene::resource::{
+    InstanceId, Mesh, Node, NodeId, PrimitiveType, Topology, Visibility,
 };
+use duck_engine_viewer::scene::Scene;
 
 use super::{Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
 
@@ -423,9 +425,9 @@ fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4, out: 
 mod tests {
     use super::*;
     use duck_engine_viewer::common::{Plane, Ray, Transform, Vector3};
-    use duck_engine_viewer::scene::{
-        Instance, Mesh, MeshPrimitive, NodeFlags, PositionedCamera, PrimitiveType, SubMeshRange,
-        Topology, Vertex,
+    use duck_engine_viewer::scene::camera::PositionedCamera;
+    use duck_engine_viewer::scene::resource::{
+        Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SubMeshRange, Topology, Vertex,
     };
 
     use crate::grid::GridConfig;

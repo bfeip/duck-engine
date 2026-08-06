@@ -1,4 +1,7 @@
-use duck_engine_common::{Deg, InnerSpace, Matrix3, Matrix4, MetricSpace, Point3, Quaternion, SquareMatrix, Vector3, ortho, perspective};
+use duck_engine_common::{
+    Deg, InnerSpace, Matrix3, Matrix4, MetricSpace, Point3, Quaternion, SquareMatrix, Vector3,
+    ortho, perspective,
+};
 
 /// Matrix to convert from OpenGL clip-space depth [-1, 1] to WGPU depth [0, 1].
 ///
@@ -94,11 +97,8 @@ impl CameraProjection {
 /// # Example
 ///
 /// ```
-/// use duck_engine_scene::{
-///     PositionedCamera,
-///     common::Point3,
-///     common::Vector3
-/// };
+/// use duck_engine_scene::camera::PositionedCamera;
+/// use duck_engine_scene::common::{Point3, Vector3};
 ///
 /// let camera = PositionedCamera {
 ///     eye: Point3::new(0.0, 0.0, 5.0),
@@ -845,7 +845,9 @@ mod tests {
 
     #[test]
     fn positioned_camera_for_node_uses_given_aspect() {
-        use crate::{NodeFlags, NodePayload, SceneData, common};
+        use crate::resource::{NodeFlags, NodePayload};
+        use crate::SceneData;
+        use crate::common;
 
         let mut scene = SceneData::new();
         let camera = scene

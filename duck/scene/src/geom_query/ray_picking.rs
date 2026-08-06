@@ -1,7 +1,8 @@
 use duck_engine_common::{transform_point, InnerSpace, Matrix4, Point3};
 
 use crate::common::{Aabb, Ray};
-use crate::{InstanceId, Mesh, Node, NodeId, Scene, SubGeometryKind};
+use crate::Scene;
+use crate::resource::{InstanceId, Mesh, Node, NodeId, SubGeometryKind};
 
 use super::mesh_intersection;
 use super::pick_query::{pick_all, pick_all_with_view, PickQuery, PickView};
@@ -309,9 +310,9 @@ mod tests {
 
     use crate::common::Transform;
     use crate::geom_query::PickView;
-    use crate::{
-        DisplayBehavior, FaceMaterial, Instance, Mesh, NodeFlags, PositionedCamera, PrimitiveType,
-        RenderLayer,
+    use crate::camera::PositionedCamera;
+    use crate::resource::{
+        DisplayBehavior, FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType, RenderLayer,
     };
 
     fn camera() -> PositionedCamera {

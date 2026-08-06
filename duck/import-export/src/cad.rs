@@ -9,10 +9,11 @@ use anyhow::{bail, Context, Result};
 use duck_engine_common::{decompose_matrix, Matrix4, RgbaColor};
 use duck_engine_scene::cad::{tessellate_occ_shape, CadTessellationOptions};
 use duck_engine_scene::common::Transform;
-use duck_engine_scene::{
-    Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, NodePayload,
-    PrimitiveType, SceneData, Vertex,
+use duck_engine_scene::resource::{
+    Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, NodePayload, PrimitiveType,
+    Vertex,
 };
+use duck_engine_scene::SceneData;
 use opencascade::primitives::{Compound, EdgeType, Shape};
 use opencascade::xcaf::{XcafColorTool, XcafDimTolTool, XcafDocument, XcafLabel, XcafShapeTool};
 

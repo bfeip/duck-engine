@@ -1,6 +1,6 @@
 use crate::abi;
 use crate::render_core::{FrameTargets, Gpu, GpuTexture};
-use crate::scene::PrimitiveType;
+use crate::scene::resource::PrimitiveType;
 use crate::scene::common::RgbaColor;
 
 use super::super::mesh::{instance_buffer_layout, vertex_buffer_layout};

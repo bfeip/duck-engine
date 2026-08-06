@@ -11,7 +11,8 @@ use crate::common::{
     Transform,
 };
 use crate::event::EventContext;
-use crate::scene::{NodeId, Scene};
+use crate::scene::resource::NodeId;
+use crate::scene::Scene;
 
 /// Original transform state for a node (used for cancel/restore).
 #[derive(Debug, Clone)]

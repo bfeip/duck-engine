@@ -1,7 +1,9 @@
 use bytemuck::bytes_of;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-use crate::scene::{Light, LightType, PositionedCamera, SceneData, MAX_LIGHTS};
+use crate::scene::camera::PositionedCamera;
+use crate::scene::light::{Light, LightType, MAX_LIGHTS};
+use crate::scene::SceneData;
 
 use super::batching::ResolvedLight;
 use super::bind_group_layouts::BindGroupLayouts;

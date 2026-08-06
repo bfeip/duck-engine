@@ -3,13 +3,13 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_common::Point3;
-use duck_engine_scene::NodeId;
+use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
     operator::Operator,
-    scene::PositionedCamera,
+    scene::camera::PositionedCamera,
 };
 use glam::{dvec3, DVec3};
 use log::warn;

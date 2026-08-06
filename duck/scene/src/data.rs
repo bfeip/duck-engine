@@ -12,14 +12,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::common::{self, Aabb};
-use crate::resource_handle::{HandleCore, SceneBind};
-use crate::{
-    CameraProjection, EffectiveVisibility, EnvironmentMap, EnvironmentMapId, FaceMaterial,
-    FaceMaterialHandle, FaceMaterialId, GenericId, Handle, Id, Instance, InstanceHandle, InstanceId,
-    Light, LineMaterial, LineMaterialHandle, LineMaterialId, Mesh, MeshDescriptor, MeshHandle,
-    MeshId, Node, NodeFlags, NodeHandle, NodeId, NodePayload, PointMaterial, PointMaterialHandle,
-    PointMaterialId, PositionedCamera, ResourceKind, Texture, TextureHandle, TextureId, Visibility,
-    initial_generation,
+use crate::camera::{CameraProjection, PositionedCamera};
+use crate::environment::{EnvironmentMap, EnvironmentMapId};
+use crate::initial_generation;
+use crate::light::Light;
+use crate::resource::{
+    EffectiveVisibility, FaceMaterial, FaceMaterialHandle, FaceMaterialId,
+    GenericId, Handle, HandleCore, Id, Instance, InstanceHandle, InstanceId, LineMaterial,
+    LineMaterialHandle, LineMaterialId, Mesh, MeshDescriptor, MeshHandle, MeshId, Node, NodeFlags,
+    NodeHandle, NodeId, NodePayload, PointMaterial, PointMaterialHandle, PointMaterialId,
+    ResourceKind, SceneBind, Texture, TextureHandle, TextureId, Visibility,
 };
 
 /// Scene-level properties that affect shader generation.
@@ -53,10 +55,11 @@ pub struct BoundingResult {
 /// # Examples
 ///
 /// ```
-/// use duck_engine_scene::{
-///     common, FaceMaterial, Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SceneData, Vertex,
-/// };
+/// use duck_engine_scene::{common, SceneData};
 /// use duck_engine_scene::common::RgbaColor;
+/// use duck_engine_scene::resource::{
+///     FaceMaterial, Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Vertex,
+/// };
 ///
 /// let mut scene = SceneData::new();
 ///
@@ -114,7 +117,7 @@ pub struct SceneData {
     node_generation: u64,
 
     /// Shared with every handle minted from this scene; carries the pending
-    /// drop queue. See [`resource_handle`].
+    /// drop queue. See [`crate::resource`].
     bind: Arc<SceneBind>,
     /// Canonical live handle core per resource, so re-minting a handle for an
     /// id shares the refcount of every existing handle for it.
@@ -1055,7 +1058,7 @@ impl SceneData {
     ///
     /// The behavior inherits down the subtree and is resolved by the renderer,
     /// so no cache invalidation beyond bumping the node generation is needed.
-    pub fn set_node_display(&mut self, node_id: NodeId, display: crate::DisplayBehavior) {
+    pub fn set_node_display(&mut self, node_id: NodeId, display: crate::resource::DisplayBehavior) {
         let node = self.nodes.get_mut(&node_id).expect("Node not found");
         node.set_display(display);
         self.node_generation += 1;

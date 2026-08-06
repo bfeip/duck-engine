@@ -10,7 +10,9 @@ pub use right_panel::RightPanel;
 
 use std::sync::{Arc, Mutex};
 use duck_engine_viewer::operator::{NavigationMode, NavigationOperator};
-use duck_engine_viewer::scene::{LightType, NodeId, PositionedCamera, Visibility};
+use duck_engine_viewer::scene::camera::PositionedCamera;
+use duck_engine_viewer::scene::light::LightType;
+use duck_engine_viewer::scene::resource::{NodeId, Visibility};
 use duck_engine_viewer::Viewer;
 
 /// Minimum window width (in logical points) for the GUI to be shown.

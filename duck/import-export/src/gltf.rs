@@ -1,9 +1,11 @@
 use std::path::Path;
 use duck_engine_common::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
-use duck_engine_scene::{
-    AlphaMode, FaceMaterial, FaceMaterialHandle, Instance, MaterialFlags, Mesh, MeshHandle, MeshPrimitive,
-    NodeFlags, NodeId, PositionedCamera, PrimitiveType, SceneData, Texture, TextureHandle, Vertex,
+use duck_engine_scene::camera::PositionedCamera;
+use duck_engine_scene::resource::{
+    AlphaMode, FaceMaterial, FaceMaterialHandle, Instance, MaterialFlags, Mesh, MeshHandle,
+    MeshPrimitive, NodeFlags, NodeId, PrimitiveType, Texture, TextureHandle, Vertex,
 };
+use duck_engine_scene::SceneData;
 
 /// A loaded primitive from a glTF mesh: the scene mesh and its material.
 type LoadedPrimitive = (MeshHandle, FaceMaterialHandle);
@@ -612,7 +614,7 @@ pub fn build_gltf_scene(
         .default_scene()
         .or_else(|| parsed.document.scenes().next())
     {
-        let mut node_map: HashMap<usize, duck_engine_scene::NodeId> = HashMap::new();
+        let mut node_map: HashMap<usize, duck_engine_scene::resource::NodeId> = HashMap::new();
 
         for gltf_node in gltf_scene.nodes() {
             load_node_recursive(&gltf_node, None, scene, mesh_map, &mut node_map)?;
@@ -655,7 +657,7 @@ fn load_gltf_from_data(
 /// Recursively loads a glTF node and its children.
 fn load_node_recursive(
     gltf_node: &gltf::Node,
-    parent: Option<duck_engine_scene::NodeId>,
+    parent: Option<duck_engine_scene::resource::NodeId>,
     scene: &mut SceneData,
     mesh_map: &[Vec<LoadedPrimitive>],
     node_map: &mut std::collections::HashMap<usize, NodeId>,

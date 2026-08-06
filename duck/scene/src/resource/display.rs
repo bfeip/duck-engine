@@ -1,8 +1,8 @@
 //! Per-node render-presentation behavior.
 //!
 //! [`DisplayBehavior`] groups the placement/presentation modifiers that affect
-//! *how* a node's geometry is drawn — distinct from [`crate::NodePayload`] (what
-//! a node is) and [`crate::NodeFlags`] (non-visual scene-system semantics like
+//! *how* a node's geometry is drawn — distinct from [`super::NodePayload`] (what
+//! a node is) and [`super::NodeFlags`] (non-visual scene-system semantics like
 //! selection, export, bounding).
 //!
 //! These modifiers inherit down the subtree: setting a layer or screen-space
@@ -16,7 +16,7 @@ use duck_engine_common::{
     EuclideanSpace, InnerSpace, Matrix4, Point3, Vector3,
 };
 
-use crate::PositionedCamera;
+use crate::camera::PositionedCamera;
 
 /// Which render layer / pass a node's geometry draws in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -10,7 +10,7 @@
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::renderer::batching::InstanceTransform;
-use crate::scene::{Mesh, MeshIndex, PrimitiveType, Vertex};
+use crate::scene::resource::{Mesh, MeshIndex, PrimitiveType, Vertex};
 
 /// GPU-ready instance data for instanced rendering.
 ///

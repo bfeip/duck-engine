@@ -3,7 +3,7 @@
 //! This trait decouples the renderer from any specific highlight implementation,
 //! allowing it to query which nodes are highlighted for outline rendering.
 
-use crate::scene::{NodeId, SubGeometryElement, SubGeometryKind};
+use crate::scene::resource::{NodeId, SubGeometryElement, SubGeometryKind};
 
 /// Configuration for highlight rendering: whole-node outlines and sub-geometry
 /// (face overlay / edge & point recolor) highlights share these settings.

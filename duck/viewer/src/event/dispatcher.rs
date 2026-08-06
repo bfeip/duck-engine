@@ -670,9 +670,10 @@ mod tests {
     use super::*;
     use crate::event::AppEvent;
     use crate::input::{ElementState, MouseButton};
-    use crate::scene::{NodePayload, Scene, SceneData};
+    use crate::scene::resource::NodePayload;
+    use crate::scene::{Scene, SceneData};
     use crate::selection::SelectionManager;
-    use duck_engine_scene::NodeFlags;
+    use duck_engine_scene::resource::NodeFlags;
     use std::cell::Cell;
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
@@ -680,7 +681,7 @@ mod tests {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     fn create_mock_context_parts() -> (Option<(f32, f32)>, Scene, SelectionManager) {
-        use crate::scene::PositionedCamera;
+        use crate::scene::camera::PositionedCamera;
         use duck_engine_common::Vector3;
         let camera = PositionedCamera {
             eye: (0.0, 0.0, 1.0).into(),

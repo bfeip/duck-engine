@@ -9,14 +9,19 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
-use duck_engine_common::{Deg, Matrix3, Matrix4, Point3, Quaternion, Rotation3, SquareMatrix, Vector3};
+use duck_engine_common::{
+    Deg, Matrix3, Matrix4, Point3, Quaternion, Rotation3, SquareMatrix, Vector3,
+};
 
 use openusd::sdf::{self, AbstractData, Value};
 
-use duck_engine_scene::{
-    FaceMaterial, FaceMaterialHandle, Instance, Light, Mesh, MeshHandle, MeshPrimitive,
-    PositionedCamera, NodeId, NodePayload, PrimitiveType, SceneData, Vertex, NodeFlags
+use duck_engine_scene::camera::PositionedCamera;
+use duck_engine_scene::light::Light;
+use duck_engine_scene::resource::{
+    FaceMaterial, FaceMaterialHandle, Instance, Mesh, MeshHandle, MeshPrimitive, NodeFlags, NodeId,
+    NodePayload, PrimitiveType, Vertex,
 };
+use duck_engine_scene::SceneData;
 use duck_engine_scene::common::{RgbaColor, Transform, decompose_matrix};
 
 /// Result of loading a scene from USD.

@@ -2,11 +2,12 @@ use anyhow::{Context, Result};
 use opencascade::primitives::{EdgeType, Shape, ShapeType};
 
 use crate::common::{RgbaColor, Transform};
-use crate::{
+use crate::resource::{
     FaceMaterial, FaceMaterialHandle, Instance, LineMaterial, LineMaterialHandle, Mesh,
-    MeshPrimitive, NodeFlags, NodeHandle, NodeId, NodePayload, PrimitiveType, Scene, SceneData,
-    SubMeshRange, Topology, Vertex,
+    MeshPrimitive, NodeFlags, NodeHandle, NodeId, NodePayload, PrimitiveType, SubMeshRange,
+    Topology, Vertex,
 };
+use crate::{Scene, SceneData};
 
 /// Whether a shape bounds a volume, or is free geometry that does not.
 ///

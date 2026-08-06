@@ -1,7 +1,7 @@
 use duck_engine_common::{InnerSpace, Point3};
 
 use crate::common::{ConvexPolyhedron, Ray};
-use crate::Mesh;
+use crate::resource::Mesh;
 
 /// Result of a ray-triangle intersection test in local mesh space.
 #[derive(Debug, Clone)]
@@ -240,7 +240,7 @@ mod tests {
     use duck_engine_common::{Point3, Vector3};
 
     use crate::common::{Aabb, ConvexPolyhedron, Ray};
-    use crate::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
+    use crate::resource::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
 
     use super::{intersect_ray_with_lines, intersect_ray_with_points, intersect_volume};
 

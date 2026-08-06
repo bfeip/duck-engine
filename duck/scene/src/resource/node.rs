@@ -1,8 +1,8 @@
-use crate::CameraProjection;
-use crate::resource_handle::{InstanceHandle, NodeHandle};
-use crate::DisplayBehavior;
-use crate::Light;
-use crate::RenderLayer;
+use crate::camera::CameraProjection;
+use super::handle::{InstanceHandle, NodeHandle};
+use super::DisplayBehavior;
+use crate::light::Light;
+use super::RenderLayer;
 use crate::common::{
     Aabb, Transform, apply_scale, compose_rotation, local_axes, local_axis_x, local_axis_y,
     local_axis_z, rotate_position_about_pivot, scale_position_about_pivot_local,
@@ -13,7 +13,7 @@ use duck_engine_common::{Matrix4, Point3, Quaternion, Vector3};
 use std::cell::Cell;
 
 /// Unique identifier for a Node in the scene tree.
-pub type NodeId = crate::Id<Node>;
+pub type NodeId = super::Id<Node>;
 
 /// Trait for custom, user-defined node payloads.
 ///
@@ -152,7 +152,7 @@ impl Node {
     /// Creates a new node with the given transform.
     pub fn new(name: Option<String>, transform: Transform, flags: NodeFlags) -> Self {
         Self {
-            id: crate::Id::new(),
+            id: super::Id::new(),
             name,
             transform,
             parent: None,
@@ -316,7 +316,7 @@ impl Node {
     }
 
     /// The owning child handles.
-    pub(super) fn child_handles(&self) -> &[NodeHandle] {
+    pub(crate) fn child_handles(&self) -> &[NodeHandle] {
         &self.children
     }
 
@@ -343,7 +343,7 @@ impl Node {
 
     /// Removes and returns a child's owning handle without maintaining tree
     /// consistency.
-    pub(super) fn take_child_unchecked(&mut self, child: NodeId) -> Option<NodeHandle> {
+    pub(crate) fn take_child_unchecked(&mut self, child: NodeId) -> Option<NodeHandle> {
         let pos = self.children.iter().position(|h| h.id() == child)?;
         self.mark_bounds_dirty();
         Some(self.children.remove(pos))
@@ -418,13 +418,13 @@ impl Node {
     /// Marks this node's world transform as dirty (needs recomputation).
     /// Note: This only marks this node, not descendants. The SceneData is responsible
     /// for propagating dirty flags to children.
-    pub(super) fn mark_transform_dirty(&self) {
+    pub(crate) fn mark_transform_dirty(&self) {
         self.cached_world_transform.set(None);
     }
 
     /// Marks this node's bounds as dirty (needs recomputation).
     /// Note: This only marks this node, not descendants.
-    pub(super) fn mark_bounds_dirty(&self) {
+    pub(crate) fn mark_bounds_dirty(&self) {
         self.cached_bounds.set(None);
     }
 
@@ -449,12 +449,12 @@ impl Node {
 
     /// Gets the cached bounding box if valid
     /// You probably want [crate::SceneData::nodes_bounding]
-    pub(super) fn cached_bounds(&self) -> Option<Aabb> {
+    pub(crate) fn cached_bounds(&self) -> Option<Aabb> {
         self.cached_bounds.get()
     }
 
     /// Sets the cached bounding box
-    pub(super) fn set_cached_bounds(&self, bounds: Option<Aabb>) {
+    pub(crate) fn set_cached_bounds(&self, bounds: Option<Aabb>) {
         self.cached_bounds.set(bounds);
     }
 
@@ -472,12 +472,12 @@ impl Node {
     }
 
     /// Gets the cached effective visibility if valid.
-    pub(super) fn cached_effective_visibility(&self) -> Option<EffectiveVisibility> {
+    pub(crate) fn cached_effective_visibility(&self) -> Option<EffectiveVisibility> {
         self.cached_effective_visibility.get()
     }
 
     /// Sets the cached effective visibility.
-    pub(super) fn set_cached_effective_visibility(&self, visibility: EffectiveVisibility) {
+    pub(crate) fn set_cached_effective_visibility(&self, visibility: EffectiveVisibility) {
         self.cached_effective_visibility.set(Some(visibility));
     }
 
@@ -639,7 +639,7 @@ mod tests {
         let mut node = Node::new_default();
         assert_eq!(node.parent(), None);
 
-        let parent_id = crate::Id::new();
+        let parent_id = crate::resource::Id::new();
         node.set_parent_unchecked(Some(parent_id));
         assert_eq!(node.parent(), Some(parent_id));
 
@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn test_add_child_duplicate_ignored() {
         let mut node = Node::new_default();
-        let child_id = crate::Id::new();
+        let child_id = crate::resource::Id::new();
 
         node.add_child_unchecked(NodeHandle::unbound(child_id));
         node.add_child_unchecked(NodeHandle::unbound(child_id)); // Duplicate
@@ -697,9 +697,9 @@ mod tests {
     #[test]
     fn test_remove_child() {
         let mut node = Node::new_default();
-        let id_a = crate::Id::new();
-        let id_b = crate::Id::new();
-        let id_c = crate::Id::new();
+        let id_a = crate::resource::Id::new();
+        let id_b = crate::resource::Id::new();
+        let id_c = crate::resource::Id::new();
 
         node.add_child_unchecked(NodeHandle::unbound(id_a));
         node.add_child_unchecked(NodeHandle::unbound(id_b));
@@ -717,11 +717,11 @@ mod tests {
     #[test]
     fn test_remove_child_nonexistent() {
         let mut node = Node::new_default();
-        let child_id = crate::Id::new();
+        let child_id = crate::resource::Id::new();
         node.add_child_unchecked(NodeHandle::unbound(child_id));
 
         // Removing non-existent child should not panic
-        node.remove_child_unchecked(crate::Id::new());
+        node.remove_child_unchecked(crate::resource::Id::new());
         assert_eq!(node.child_count(), 1);
         assert_eq!(node.children().next(), Some(child_id));
     }
@@ -934,7 +934,7 @@ mod tests {
         assert!(!node.transform_dirty());
 
         // Change parent should mark dirty
-        node.set_parent_unchecked(Some(crate::Id::new()));
+        node.set_parent_unchecked(Some(crate::resource::Id::new()));
         assert!(node.transform_dirty());
     }
 
@@ -952,7 +952,7 @@ mod tests {
         assert!(!node.bounds_dirty());
 
         // Add child should only mark bounds dirty, not transform
-        node.add_child_unchecked(NodeHandle::unbound(crate::Id::new()));
+        node.add_child_unchecked(NodeHandle::unbound(crate::resource::Id::new()));
         assert!(!node.transform_dirty());
         assert!(node.bounds_dirty());
     }
@@ -970,8 +970,8 @@ mod tests {
     #[test]
     fn test_set_payload_instance() {
         let mut node = Node::new_default();
-        let instance_id_a = crate::Id::new();
-        let instance_id_b = crate::Id::new();
+        let instance_id_a = crate::resource::Id::new();
+        let instance_id_b = crate::resource::Id::new();
 
         node.set_payload(NodePayload::Instance(InstanceHandle::unbound(instance_id_a)));
         assert!(matches!(node.payload(), NodePayload::Instance(h) if h.id() == instance_id_a));
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn test_set_payload_none() {
         let mut node = Node::new_default();
-        let instance_id = crate::Id::new();
+        let instance_id = crate::resource::Id::new();
 
         node.set_payload(NodePayload::Instance(InstanceHandle::unbound(instance_id)));
         assert!(matches!(node.payload(), NodePayload::Instance(h) if h.id() == instance_id));
@@ -1003,7 +1003,7 @@ mod tests {
         )));
         assert!(!node.transform_dirty());
 
-        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(crate::Id::new())));
+        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(crate::resource::Id::new())));
         assert!(!node.transform_dirty()); // payload doesn't affect transform
         assert!(node.bounds_dirty()); // payload affects bounds
     }
@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     fn test_large_hierarchy() {
         let mut parent = Node::new_default();
-        let child_ids: Vec<NodeId> = (0..1000).map(|_| crate::Id::new()).collect();
+        let child_ids: Vec<NodeId> = (0..1000).map(|_| crate::resource::Id::new()).collect();
 
         for &id in &child_ids {
             parent.add_child_unchecked(NodeHandle::unbound(id));

@@ -8,7 +8,7 @@ use anyhow::Result;
 use image::{imageops::FilterType, GenericImageView};
 
 use crate::render_core::GpuTexture;
-use crate::scene::Texture;
+use crate::scene::resource::Texture;
 
 /// Create GPU resources for a texture.
 pub(crate) fn create_texture_gpu_resources(

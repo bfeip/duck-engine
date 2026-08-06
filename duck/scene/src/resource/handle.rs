@@ -8,8 +8,8 @@
 //! and drop never touch the scene lock, so handles may be dropped freely while
 //! a [`SceneGuard`](crate::SceneGuard) is held.
 
-use crate::handle::{Scene, SceneLock};
-use crate::id::{GenericId, Id};
+use crate::scene_handle::{Scene, SceneLock};
+use super::id::{GenericId, Id};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -54,13 +54,13 @@ macro_rules! impl_scene_resource {
 }
 
 impl_scene_resource! {
-    crate::Mesh => Mesh,
-    crate::Instance => Instance,
-    crate::Node => Node,
-    crate::FaceMaterial => FaceMaterial,
-    crate::LineMaterial => LineMaterial,
-    crate::PointMaterial => PointMaterial,
-    crate::Texture => Texture,
+    super::Mesh => Mesh,
+    super::Instance => Instance,
+    super::Node => Node,
+    super::FaceMaterial => FaceMaterial,
+    super::LineMaterial => LineMaterial,
+    super::PointMaterial => PointMaterial,
+    super::Texture => Texture,
 }
 
 /// State shared between a `SceneData` and every handle minted from it.
@@ -117,9 +117,9 @@ impl Drop for HandleCore {
 ///
 /// The scene's own references are handles too, so ownership chains:
 ///
-/// - an [`Instance`](crate::Instance) owns its mesh and material slots,
+/// - an [`Instance`](super::Instance) owns its mesh and material slots,
 /// - a material owns its texture slots,
-/// - a [`Node`](crate::Node) owns its payload instance and its children,
+/// - a [`Node`](super::Node) owns its payload instance and its children,
 /// - the scene's root list owns the root nodes.
 ///
 /// Releasing a link releases everything reachable only through it: detaching a
@@ -133,13 +133,13 @@ pub struct Handle<Kind> {
     _kind: PhantomData<fn() -> Kind>,
 }
 
-pub type MeshHandle = Handle<crate::Mesh>;
-pub type InstanceHandle = Handle<crate::Instance>;
-pub type NodeHandle = Handle<crate::Node>;
-pub type FaceMaterialHandle = Handle<crate::FaceMaterial>;
-pub type LineMaterialHandle = Handle<crate::LineMaterial>;
-pub type PointMaterialHandle = Handle<crate::PointMaterial>;
-pub type TextureHandle = Handle<crate::Texture>;
+pub type MeshHandle = Handle<super::Mesh>;
+pub type InstanceHandle = Handle<super::Instance>;
+pub type NodeHandle = Handle<super::Node>;
+pub type FaceMaterialHandle = Handle<super::FaceMaterial>;
+pub type LineMaterialHandle = Handle<super::LineMaterial>;
+pub type PointMaterialHandle = Handle<super::PointMaterial>;
+pub type TextureHandle = Handle<super::Texture>;
 
 impl<K> Handle<K> {
     pub(crate) fn from_core(core: Arc<HandleCore>) -> Self {
@@ -278,25 +278,25 @@ macro_rules! impl_handle_access {
     };
 }
 
-impl_handle_access!(crate::Instance, get_instance, get_instance_mut);
-impl_handle_access!(crate::FaceMaterial, get_face_material, get_face_material_mut);
-impl_handle_access!(crate::LineMaterial, get_line_material, get_line_material_mut);
-impl_handle_access!(crate::PointMaterial, get_point_material, get_point_material_mut);
-impl_handle_access!(crate::Texture, get_texture, get_texture_mut);
+impl_handle_access!(super::Instance, get_instance, get_instance_mut);
+impl_handle_access!(super::FaceMaterial, get_face_material, get_face_material_mut);
+impl_handle_access!(super::LineMaterial, get_line_material, get_line_material_mut);
+impl_handle_access!(super::PointMaterial, get_point_material, get_point_material_mut);
+impl_handle_access!(super::Texture, get_texture, get_texture_mut);
 
 // `Mesh` deliberately has no `get` — it owns its vertex and index buffers, so
 // cloning one out is heavyweight. Mesh access goes through the scene lock.
-impl Handle<crate::Mesh> {
+impl Handle<super::Mesh> {
     /// Mutates the mesh under the scene lock, returning the closure's result,
     /// or `None` if the handle is unbound.
-    pub fn modify<R>(&self, f: impl FnOnce(&mut crate::Mesh) -> R) -> Option<R> {
+    pub fn modify<R>(&self, f: impl FnOnce(&mut super::Mesh) -> R) -> Option<R> {
         self.scene()?.lock().get_mesh_mut(self.id()).map(f)
     }
 }
 
-impl Handle<crate::Node> {
+impl Handle<super::Node> {
     /// A clone of the node, or `None` if the handle is unbound.
-    pub fn get(&self) -> Option<crate::Node> {
+    pub fn get(&self) -> Option<super::Node> {
         self.scene()?.lock().get_node(self.id()).cloned()
     }
 
@@ -329,21 +329,21 @@ impl Handle<crate::Node> {
     }
 
     /// Sets the node's visibility, propagating to descendants as needed.
-    pub fn set_visibility(&self, visibility: crate::Visibility) {
+    pub fn set_visibility(&self, visibility: super::Visibility) {
         if let Some(scene) = self.scene() {
             scene.lock().set_node_visibility(self.id(), visibility);
         }
     }
 
     /// Sets the node's render-presentation behavior.
-    pub fn set_display(&self, display: crate::DisplayBehavior) {
+    pub fn set_display(&self, display: super::DisplayBehavior) {
         if let Some(scene) = self.scene() {
             scene.lock().set_node_display(self.id(), display);
         }
     }
 
     /// Sets the node's payload, invalidating dependent caches.
-    pub fn set_payload(&self, payload: crate::NodePayload) {
+    pub fn set_payload(&self, payload: super::NodePayload) {
         if let Some(scene) = self.scene() {
             scene.lock().set_node_payload(self.id(), payload);
         }
@@ -357,7 +357,7 @@ impl Handle<crate::Node> {
     }
 
     /// Sets the node's behavior flags.
-    pub fn set_flags(&self, flags: crate::NodeFlags) {
+    pub fn set_flags(&self, flags: super::NodeFlags) {
         if let Some(scene) = self.scene() {
             scene.lock().set_node_flags(self.id(), flags);
         }
@@ -368,7 +368,7 @@ impl Handle<crate::Node> {
     /// # Errors
     ///
     /// Fails if the parent is missing or the move would create a cycle.
-    pub fn reparent(&self, new_parent: Option<crate::NodeId>) -> anyhow::Result<()> {
+    pub fn reparent(&self, new_parent: Option<super::NodeId>) -> anyhow::Result<()> {
         match self.scene() {
             Some(scene) => scene.lock().reparent_node(self.id(), new_parent),
             None => anyhow::bail!("handle is not bound to a scene"),
@@ -390,7 +390,8 @@ impl Handle<crate::Node> {
 mod tests {
     use super::*;
     use crate::common::Transform;
-    use crate::{Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SceneData, Vertex};
+    use crate::resource::{Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, Vertex};
+    use crate::SceneData;
 
     fn test_mesh() -> Mesh {
         let vertices = vec![
@@ -473,7 +474,7 @@ mod tests {
     fn instance_cascades_to_mesh_and_material() {
         let mut scene = SceneData::new();
         let mesh = scene.add_mesh(test_mesh());
-        let mat = scene.add_face_material(crate::FaceMaterial::new());
+        let mat = scene.add_face_material(crate::resource::FaceMaterial::new());
         let instance = scene.add_instance(Instance::new(mesh).with_face_material(mat));
         // Only the instance handle is held; mesh/material are owned through it.
         assert_eq!(scene.mesh_count(), 1);
@@ -521,7 +522,7 @@ mod tests {
                     NodeFlags::NONE,
                 )
                 .unwrap();
-            data.set_node_payload(root.id(), crate::NodePayload::Instance(instance));
+            data.set_node_payload(root.id(), crate::resource::NodePayload::Instance(instance));
             (root.id(), child.id())
         };
         assert_eq!(scene.lock().node_count(), 2);
@@ -588,7 +589,7 @@ mod tests {
 
     #[test]
     fn unbound_handle_is_inert() {
-        let handle = FaceMaterialHandle::unbound(crate::FaceMaterialId::new());
+        let handle = FaceMaterialHandle::unbound(crate::resource::FaceMaterialId::new());
         assert!(handle.get().is_none());
         assert!(handle.modify(|_| ()).is_none());
         drop(handle); // no scene to enqueue on; must not panic

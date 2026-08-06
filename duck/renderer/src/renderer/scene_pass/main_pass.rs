@@ -1,4 +1,4 @@
-use duck_engine_scene::{AlphaMode, PrimitiveType};
+use duck_engine_scene::resource::{AlphaMode, PrimitiveType};
 
 use crate::DrawBatch;
 use crate::abi;

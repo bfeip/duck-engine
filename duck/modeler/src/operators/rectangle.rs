@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use duck_engine_common::{InnerSpace, Plane, Point3, Vector3};
 use glam::dvec3;
-use duck_engine_scene::Visibility;
+use duck_engine_scene::resource::Visibility;
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     common::Transform,

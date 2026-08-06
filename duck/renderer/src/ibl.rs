@@ -23,7 +23,7 @@ pub(crate) use prefilter::PrefilterPipeline;
 use wgpu::util::DeviceExt;
 
 // Re-export EnvironmentMap types from scene crate
-pub use duck_engine_scene::{EnvironmentMap, EnvironmentMapId, EnvironmentSource};
+pub use duck_engine_scene::environment::{EnvironmentMap, EnvironmentMapId, EnvironmentSource};
 
 /// GPU uniform for environment map parameters (intensity, etc.).
 ///

@@ -1,7 +1,8 @@
 use duck_engine_common::Matrix4;
 
 use crate::common::{Aabb, ConvexPolyhedron};
-use crate::{InstanceId, Mesh, Node, NodeId, Scene};
+use crate::Scene;
+use crate::resource::{InstanceId, Mesh, Node, NodeId};
 
 use super::mesh_intersection;
 use super::pick_query::{pick_all, PickQuery};

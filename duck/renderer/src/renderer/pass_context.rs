@@ -1,5 +1,6 @@
 use crate::render_core::{FrameFamily, FrameTargets, GenCache, Gpu};
-use crate::scene::{MeshId, SceneData, SceneProperties};
+use crate::scene::resource::MeshId;
+use crate::scene::{SceneData, SceneProperties};
 
 use super::batching::{DrawBatch, DrawData};
 use super::mesh::MeshGpuResources;

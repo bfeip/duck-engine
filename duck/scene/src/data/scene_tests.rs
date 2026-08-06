@@ -1,7 +1,7 @@
 use super::*;
 use duck_engine_common::{Point3, Quaternion, Vector3, Matrix4, SquareMatrix};
 use crate::common::{EPSILON, Transform};
-use crate::{MeshPrimitive, PrimitiveType, Vertex};
+use crate::resource::{MeshPrimitive, PrimitiveType, Vertex};
 
 #[test]
 fn test_scene_new() {
@@ -440,7 +440,7 @@ fn test_large_tree_consistency() {
 #[test]
 fn test_add_node_with_invalid_parent_fails() {
     let mut scene = SceneData::new();
-    let nonexistent = crate::Id::new();
+    let nonexistent = crate::resource::Id::new();
 
     let result = scene.add_node(
         Some(nonexistent),
@@ -456,7 +456,7 @@ fn test_add_node_with_invalid_parent_fails() {
 #[test]
 fn test_add_default_node_with_invalid_parent_fails() {
     let mut scene = SceneData::new();
-    let nonexistent = crate::Id::new();
+    let nonexistent = crate::resource::Id::new();
 
     let result = scene.add_default_node(Some(nonexistent), None);
 

@@ -12,13 +12,16 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::ThreadId;
 
 use crate::common::{Matrix4, Point3, Quaternion, Transform, Vector3};
-use crate::{
-    BoundingResult, DisplayBehavior, EffectiveVisibility, EnvironmentMap, EnvironmentMapId,
-    FaceMaterial, FaceMaterialHandle, FaceMaterialId, Instance, InstanceHandle, InstanceId, Light,
-    LineMaterial, LineMaterialHandle, LineMaterialId, Mesh, MeshHandle, Node, NodeFlags, NodeHandle,
-    NodeId, NodePayload, PointMaterial, PointMaterialHandle, PointMaterialId, PositionedCamera,
-    SceneData, Visibility,
+use crate::camera::PositionedCamera;
+use crate::environment::{EnvironmentMap, EnvironmentMapId};
+use crate::light::Light;
+use crate::resource::{
+    DisplayBehavior, EffectiveVisibility, FaceMaterial, FaceMaterialHandle, FaceMaterialId,
+    Instance, InstanceHandle, InstanceId, LineMaterial, LineMaterialHandle, LineMaterialId, Mesh,
+    MeshHandle, Node, NodeFlags, NodeHandle, NodeId, NodePayload, PointMaterial,
+    PointMaterialHandle, PointMaterialId, Visibility,
 };
+use crate::{BoundingResult, SceneData};
 
 /// A cheap, cloneable handle to a scene.
 ///
@@ -478,7 +481,7 @@ impl Drop for SceneGuard<'_> {
 mod tests {
     use super::*;
     use crate::common::Transform;
-    use crate::NodeFlags;
+    use crate::resource::NodeFlags;
 
     #[test]
     fn clone_shares_the_same_scene() {

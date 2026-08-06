@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::bindings::{InputBinding, InputMap};
 use crate::common;
-use crate::scene::{PositionedCamera, geom_query::{pick_all_from_ray, RayPickQuery}};
+use crate::scene::camera::PositionedCamera;
+use crate::scene::geom_query::{pick_all_from_ray, RayPickQuery};
 use crate::event::{AppEvent, DeviceEvent, Event, EventContext};
 use crate::input::{Key, Modifiers, MouseButton, MouseScrollDelta};
 use crate::operator::Operator;

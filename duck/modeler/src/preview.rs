@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions};
-use duck_engine_scene::{FaceMaterialHandle, LineMaterialHandle, NodeId, Scene, SceneData, Visibility};
+use duck_engine_scene::resource::{FaceMaterialHandle, LineMaterialHandle, NodeId, Visibility};
+use duck_engine_scene::{Scene, SceneData};
 use opencascade::primitives::Shape;
 
 use crate::document::Document;

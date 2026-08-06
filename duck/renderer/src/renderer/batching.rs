@@ -2,11 +2,14 @@ use std::collections::{HashMap, HashSet};
 
 use duck_engine_common::{Matrix3, Matrix4, Point3, SquareMatrix};
 
-use crate::scene::{
-    AlphaMode, DisplayBehavior, FaceMaterialId, Instance, InstanceId, Light, LineMaterialId,
-    MaterialProperties, MeshId, NodeId, NodePayload, PointMaterialId, PositionedCamera,
-    PrimitiveType, RenderLayer, SceneData, SubGeometryElement, SubGeometryKind, Visibility,
+use crate::scene::camera::PositionedCamera;
+use crate::scene::light::Light;
+use crate::scene::resource::{
+    AlphaMode, DisplayBehavior, FaceMaterialId, Instance, InstanceId, LineMaterialId,
+    MaterialProperties, MeshId, NodeId, NodePayload, PointMaterialId, PrimitiveType, RenderLayer,
+    SubGeometryElement, SubGeometryKind, Visibility,
 };
+use crate::scene::SceneData;
 use crate::scene::common;
 use crate::highlight_query::HighlightQuery;
 
@@ -701,13 +704,13 @@ mod tests {
     use duck_engine_common::{
         Deg, EuclideanSpace, InnerSpace, Matrix4, Quaternion, Rotation3, SquareMatrix, Vector3,
     };
-    use duck_engine_scene::NodeFlags;
+    use duck_engine_scene::resource::NodeFlags;
     use crate::scene::common::EPSILON;
 
     fn nid() -> NodeId { NodeId::new() }
     fn iid() -> InstanceId { InstanceId::new() }
     fn mid() -> MeshId { MeshId::new() }
-    fn matid() -> BatchMaterial { BatchMaterial::Face(crate::scene::FaceMaterialId::new()) }
+    fn matid() -> BatchMaterial { BatchMaterial::Face(crate::scene::resource::FaceMaterialId::new()) }
 
     // ========================================================================
     // InstanceTransform Tests
@@ -1103,8 +1106,8 @@ mod tests {
     /// Creates a scene with one instance node (empty mesh + default material).
     fn build_simple_scene() -> (SceneData, NodeId) {
         let mut scene = SceneData::new();
-        let mesh_id = scene.add_mesh(crate::scene::Mesh::new());
-        let material_id = scene.add_face_material(crate::scene::FaceMaterial::new());
+        let mesh_id = scene.add_mesh(crate::scene::resource::Mesh::new());
+        let material_id = scene.add_face_material(crate::scene::resource::FaceMaterial::new());
         let node_id = scene.add_instance_node(
             None, Instance::new(mesh_id).with_face_material(material_id), None, common::Transform::IDENTITY, NodeFlags::NONE
         ).unwrap().id();
@@ -1160,7 +1163,9 @@ mod tests {
     /// layer; the overlay partition must split them per instance.
     #[test]
     fn test_overlay_partition_is_per_instance() {
-        use crate::scene::{DisplayBehavior, Mesh, MeshPrimitive, PrimitiveType, RenderLayer, Vertex};
+        use crate::scene::resource::{
+            DisplayBehavior, Mesh, MeshPrimitive, PrimitiveType, RenderLayer, Vertex,
+        };
 
         let vertex = Vertex {
             position: [0.0, 0.0, 0.0],
@@ -1177,7 +1182,7 @@ mod tests {
 
         let mut scene = SceneData::new();
         let mesh_id = scene.add_mesh(mesh);
-        let material_id = scene.add_face_material(crate::scene::FaceMaterial::new());
+        let material_id = scene.add_face_material(crate::scene::resource::FaceMaterial::new());
 
         let scene_node = scene
             .add_instance_node(None, Instance::new(mesh_id.clone()).with_face_material(material_id.clone()), None, common::Transform::IDENTITY, NodeFlags::NONE)
@@ -1216,7 +1221,7 @@ mod tests {
     /// orthonormal and right-handed) while its world position is preserved.
     #[test]
     fn test_billboard_effective_transform() {
-        use crate::scene::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
+        use crate::scene::resource::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
 
         let vertex = Vertex {
             position: [0.0, 0.0, 0.0],
@@ -1233,7 +1238,7 @@ mod tests {
 
         let mut scene = SceneData::new();
         let mesh_id = scene.add_mesh(mesh);
-        let material_id = scene.add_face_material(crate::scene::FaceMaterial::new());
+        let material_id = scene.add_face_material(crate::scene::resource::FaceMaterial::new());
 
         // Place the node off the view axis so the billboard basis is non-trivial.
         let p = Point3::new(5.0, 0.0, 0.0);

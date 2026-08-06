@@ -36,9 +36,9 @@ use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, Transf
 use duck_engine_viewer::common::{
     Vector3, InnerSpace
 };
-use duck_engine_viewer::scene::{
-    Scene, NodeFlags, NodePayload, PositionedCamera,
-};
+use duck_engine_viewer::scene::camera::PositionedCamera;
+use duck_engine_viewer::scene::resource::{NodeFlags, NodePayload};
+use duck_engine_viewer::scene::Scene;
 
 use crate::operators::{
     BooleanOperator, BoxOperator, CircleOperator, ConstructionOptions, CurveOperator,

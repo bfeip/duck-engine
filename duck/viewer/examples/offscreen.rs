@@ -6,9 +6,8 @@
 //! embedding the 3D view inside a UI panel.
 
 use duck_engine_viewer::common::{RgbaColor, Transform, Vector3};
-use duck_engine_viewer::scene::{
-    FaceMaterial, Instance, Mesh, NodeFlags, PositionedCamera, PrimitiveType,
-};
+use duck_engine_viewer::scene::camera::PositionedCamera;
+use duck_engine_viewer::scene::resource::{FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType};
 use duck_engine_viewer::OffscreenViewer;
 
 const WIDTH: u32 = 800;

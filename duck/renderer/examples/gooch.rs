@@ -1,13 +1,17 @@
 use duck_engine_renderer::{
     FrameTargets, Gpu, Renderer, RenderWorkflow, SceneFrame, SceneFrames, SceneRenderPass, abi,
 };
-use duck_engine_renderer::scene::{
-    FaceMaterial, Instance, Light, Mesh, NodePayload, PositionedCamera, PrimitiveType, SceneData,
-    common::RgbaColor,
+use duck_engine_renderer::scene::camera::PositionedCamera;
+use duck_engine_renderer::scene::light::Light;
+use duck_engine_renderer::scene::resource::{
+    FaceMaterial, Instance, Mesh, NodePayload, PrimitiveType,
 };
+use duck_engine_renderer::scene::SceneData;
+use duck_engine_renderer::scene::common::RgbaColor;
 
 use duck_engine_common::{Point3, Vector3};
-use duck_engine_scene::{NodeFlags, Scene};
+use duck_engine_scene::resource::NodeFlags;
+use duck_engine_scene::Scene;
 
 const GOOCH_WESL: &str = include_str!("gooch.wesl");
 

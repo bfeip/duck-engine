@@ -2,7 +2,7 @@
 //! camera projection, construction plane, grid, and snapping.
 
 use duck_engine_viewer::common::{EuclideanSpace, InnerSpace, Plane, Point3, Vector3};
-use duck_engine_viewer::scene::NodePayload;
+use duck_engine_viewer::scene::resource::NodePayload;
 
 use crate::document::Document;
 use crate::operators::ConstructionOptions;

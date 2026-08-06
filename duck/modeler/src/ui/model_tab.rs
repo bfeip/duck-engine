@@ -1,6 +1,6 @@
 //! The model tab: a filter box over the list of parts in the CAD document.
 
-use duck_engine_viewer::scene::{NodeId, Visibility};
+use duck_engine_viewer::scene::resource::{NodeId, Visibility};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 
 use crate::document::{Document, PartId, PartKind};
