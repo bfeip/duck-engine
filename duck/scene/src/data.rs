@@ -1011,15 +1011,18 @@ impl SceneData {
     // ========== Node Transform Mutation API ==========
 
     /// Sets the payload of a node and invalidates ancestor bounds.
+    /// Does nothing if the node does not exist.
     pub fn set_node_payload(&mut self, node_id: NodeId, payload: NodePayload) {
-        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.set_payload(payload);
         self.node_generation += 1;
         self.invalidate_ancestor_bounds(node_id);
     }
 
+    /// Sets the transform of a node and invalidates dependent caches.
+    /// Does nothing if the node does not exist.
     pub fn set_node_transform(&mut self, node_id: NodeId, transform: common::Transform) {
-        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.set_transform(transform);
         self.invalidate_subtree_transforms(node_id);
         self.invalidate_ancestor_bounds(node_id);
@@ -1027,8 +1030,9 @@ impl SceneData {
     }
 
     /// Sets the position of a node and invalidates ancestor bounds.
+    /// Does nothing if the node does not exist.
     pub fn set_node_position(&mut self, node_id: NodeId, position: Point3) {
-        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.set_position(position);
         self.invalidate_subtree_transforms(node_id);
         self.invalidate_ancestor_bounds(node_id);
@@ -1036,8 +1040,9 @@ impl SceneData {
     }
 
     /// Sets the rotation of a node and invalidates ancestor bounds.
+    /// Does nothing if the node does not exist.
     pub fn set_node_rotation(&mut self, node_id: NodeId, rotation: Quaternion) {
-        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.set_rotation(rotation);
         self.invalidate_subtree_transforms(node_id);
         self.invalidate_ancestor_bounds(node_id);
@@ -1045,8 +1050,9 @@ impl SceneData {
     }
 
     /// Sets the scale of a node and invalidates ancestor bounds.
+    /// Does nothing if the node does not exist.
     pub fn set_node_scale(&mut self, node_id: NodeId, scale: Vector3) {
-        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.set_scale(scale);
         self.invalidate_subtree_transforms(node_id);
         self.invalidate_ancestor_bounds(node_id);
@@ -1057,22 +1063,24 @@ impl SceneData {
     ///
     /// The behavior inherits down the subtree and is resolved by the renderer,
     /// so no cache invalidation beyond bumping the node generation is needed.
+    /// Does nothing if the node does not exist.
     pub fn set_node_display(&mut self, node_id: NodeId, display: crate::resource::DisplayBehavior) {
-        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.set_display(display);
         self.node_generation += 1;
     }
 
-    /// Sets a node's name.
+    /// Sets a node's name. Does nothing if the node does not exist.
     pub fn set_node_name(&mut self, node_id: NodeId, name: Option<String>) {
-        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.name = name;
         self.node_generation += 1;
     }
 
     /// Sets a node's behavior flags and invalidates dependent bounds.
+    /// Does nothing if the node does not exist.
     pub fn set_node_flags(&mut self, node_id: NodeId, flags: NodeFlags) {
-        let node = self.nodes.get_mut(&node_id).expect("Node not found");
+        let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.set_flags(flags);
         self.invalidate_ancestor_bounds(node_id);
         self.node_generation += 1;
@@ -1087,7 +1095,7 @@ impl SceneData {
     pub fn set_node_visibility(&mut self, node_id: NodeId, visibility: Visibility) {
         match visibility {
             Visibility::Visible => {
-                let node = self.nodes.get_mut(&node_id).expect("Node not found");
+                let Some(node) = self.nodes.get_mut(&node_id) else { return };
                 node.set_visibility(Visibility::Visible);
                 self.invalidate_ancestor_effective_visibility(node_id);
             }
@@ -1127,11 +1135,14 @@ impl SceneData {
     }
 
     /// Gets the effective visibility of a node with caching.
+    /// A node that does not exist is `Invisible`.
     pub fn node_effective_visibility(
         &self,
         node_id: NodeId,
     ) -> EffectiveVisibility {
-        let node = self.get_node(node_id).expect("Node not found");
+        let Some(node) = self.get_node(node_id) else {
+            return EffectiveVisibility::Invisible;
+        };
 
         if let Some(cached) = node.cached_effective_visibility() {
             return cached;
@@ -1147,7 +1158,9 @@ impl SceneData {
         &self,
         node_id: NodeId,
     ) -> EffectiveVisibility {
-        let node = self.get_node(node_id).expect("Node not found");
+        let Some(node) = self.get_node(node_id) else {
+            return EffectiveVisibility::Invisible;
+        };
 
         if node.visibility() == Visibility::Invisible {
             return EffectiveVisibility::Invisible;
