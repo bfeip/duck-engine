@@ -72,13 +72,14 @@ impl BooleanOperator {
 
         let options = self.construction_options.borrow().geometry_options.clone();
 
-        // Remove the preview; the hidden originals are handed to execute_boolean,
-        // which deletes them (target + tools), so they stay hidden meanwhile.
-        let _ = self.preview.commit();
-
         let mut doc = self.document.lock().unwrap();
         execute_boolean(self.kind, target, &tools, &mut *doc, &options)?;
         drop(doc);
+
+        // Remove the preview. The hidden sources it hands back were the boolean's
+        // inputs, already deleted by execute_boolean; on failure above the session
+        // stays live so the preview and hidden sources survive for retry/cancel.
+        let _ = self.preview.commit();
 
         self.preview_target = None;
         self.preview_tools.clear();
