@@ -22,7 +22,7 @@ mod texture;
 pub use display::{DisplayBehavior, RenderLayer};
 pub use handle::{
     FaceMaterialHandle, Handle, InstanceHandle, LineMaterialHandle, MeshHandle, NodeHandle,
-    PointMaterialHandle, ResourceKind, SceneResource, TextureHandle, WeakHandle,
+    PointMaterialHandle, ResourceKind, SceneResource, TextureHandle,
 };
 pub use id::{GenericId, Id};
 pub use instance::{Instance, InstanceId};

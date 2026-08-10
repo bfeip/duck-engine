@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 ///
 /// Backed by UUID v7 (time-ordered) for stable, globally-unique IDs that merge
 /// cleanly across scenes and processes. The underlying representation is an
-/// implementation detail — callers use `Id::new()` and `Id::nil()` only.
+/// implementation detail — callers use `Id::new()` only.
 ///
 /// The `Kind` type parameter makes ids of different resource kinds
 /// non-interchangeable at compile time (e.g. `Id<Mesh>` vs `Id<Node>`). The
@@ -36,16 +36,6 @@ impl<Kind> Id<Kind> {
     /// Creates a new globally-unique ID.
     pub fn new() -> Self {
         Self(uuid::Uuid::now_v7(), PhantomData)
-    }
-
-    /// Returns the nil (all-zeros) ID. Useful as a sentinel or default value.
-    pub fn nil() -> Self {
-        Self(uuid::Uuid::nil(), PhantomData)
-    }
-
-    /// Returns true if this is the nil ID.
-    pub fn is_nil(&self) -> bool {
-        self.0.is_nil()
     }
 
     /// Drops the `Kind` parameter, yielding a [`GenericId`].

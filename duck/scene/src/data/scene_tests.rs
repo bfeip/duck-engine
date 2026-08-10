@@ -1055,3 +1055,17 @@ fn test_is_complete_dangling_child() {
 
     assert!(!scene.is_complete());
 }
+
+#[test]
+fn test_node_setters_ignore_missing_node() {
+    let mut scene = SceneData::new();
+    let missing = NodeId::new();
+    let generation = scene.node_generation();
+
+    scene.set_node_name(missing, Some("ghost".into()));
+    scene.set_node_transform(missing, Transform::IDENTITY);
+    scene.set_node_visibility(missing, Visibility::Visible);
+
+    assert_eq!(scene.node_generation(), generation);
+    assert_eq!(scene.node_effective_visibility(missing), EffectiveVisibility::Invisible);
+}

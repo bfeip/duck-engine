@@ -152,11 +152,6 @@ impl<K> Handle<K> {
         self.core.id.cast()
     }
 
-    /// A non-owning reference to the same resource.
-    pub fn downgrade(&self) -> WeakHandle<K> {
-        WeakHandle { core: Arc::downgrade(&self.core), id: self.id() }
-    }
-
     /// The scene this handle is bound to, if it has one and the scene is still
     /// alive. Handles minted from a standalone `SceneData` become bound when
     /// the data is wrapped in a [`Scene`].
@@ -219,39 +214,6 @@ impl<K> serde::Serialize for Handle<K> {
 impl<'de, K: SceneResource> serde::Deserialize<'de> for Handle<K> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::unbound(Id::deserialize(deserializer)?))
-    }
-}
-
-/// A non-owning reference to a scene resource.
-///
-/// Does not keep the resource alive; [`upgrade`](Self::upgrade) yields a strong
-/// [`Handle`] while other strong handles still exist.
-pub struct WeakHandle<K> {
-    core: Weak<HandleCore>,
-    id: Id<K>,
-}
-
-impl<K> WeakHandle<K> {
-    /// The resource's id (available whether or not the resource is alive).
-    pub fn id(&self) -> Id<K> {
-        self.id
-    }
-
-    /// A strong handle, if the resource still has other strong handles.
-    pub fn upgrade(&self) -> Option<Handle<K>> {
-        Some(Handle::from_core(self.core.upgrade()?))
-    }
-}
-
-impl<K> Clone for WeakHandle<K> {
-    fn clone(&self) -> Self {
-        Self { core: self.core.clone(), id: self.id }
-    }
-}
-
-impl<K> std::fmt::Debug for WeakHandle<K> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("WeakHandle").field(&self.id).finish()
     }
 }
 
@@ -593,17 +555,6 @@ mod tests {
         assert!(handle.get().is_none());
         assert!(handle.modify(|_| ()).is_none());
         drop(handle); // no scene to enqueue on; must not panic
-    }
-
-    #[test]
-    fn weak_handle_upgrade_follows_liveness() {
-        let mut scene = SceneData::new();
-        let mesh = scene.add_mesh(test_mesh());
-        let weak = mesh.downgrade();
-        assert!(weak.upgrade().is_some());
-        drop(mesh);
-        assert!(weak.upgrade().is_none());
-        assert!(!weak.id().is_nil());
     }
 
     #[test]
