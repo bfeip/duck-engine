@@ -2,9 +2,8 @@ use std::marker::PhantomData;
 
 /// Opaque unique identifier used for all scene resources.
 ///
-/// Backed by UUID v7 (time-ordered) for stable, globally-unique IDs that merge
-/// cleanly across scenes and processes. The underlying representation is an
-/// implementation detail — callers use `Id::new()` only.
+/// Ids are globally unique — they merge cleanly across scenes and processes —
+/// and are obtained with [`Id::new`] only.
 ///
 /// The `Kind` type parameter makes ids of different resource kinds
 /// non-interchangeable at compile time (e.g. `Id<Mesh>` vs `Id<Node>`). The

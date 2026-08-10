@@ -66,20 +66,15 @@ impl Clone for TextureSource {
 
 /// An image texture.
 ///
+/// Path-based textures load their image data lazily, when it is first
+/// requested.
+///
 /// # Examples
 ///
 /// ```
-/// use duck_engine_scene::SceneData;
 /// use duck_engine_scene::resource::Texture;
 ///
-/// // Create from path (loaded lazily when GPU resources are created)
 /// let texture = Texture::from_path("texture.png");
-///
-/// // Add to scene
-/// let mut scene = SceneData::new();
-/// let texture_id = scene.add_texture(texture);
-///
-/// // GPU resources are created automatically during rendering
 /// ```
 pub struct Texture {
     /// Unique identifier

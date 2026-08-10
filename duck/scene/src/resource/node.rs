@@ -16,8 +16,9 @@ pub type NodeId = super::Id<Node>;
 
 /// Trait for custom, user-defined node payloads.
 ///
-/// External crates can implement this to attach arbitrary typed data to scene nodes.
-/// Custom payloads serialize as `NodePayload::None` for now.
+/// External crates can implement this to attach arbitrary typed data to scene
+/// nodes. Custom payloads are runtime-only: they serialize as
+/// `NodePayload::None`.
 pub trait CustomNodePayload: Send + Sync {}
 
 /// The typed content of a scene node.
@@ -34,7 +35,7 @@ pub enum NodePayload {
     /// translation column → position (Point, Spot); negative Z-axis → direction (Directional, Spot).
     Light(Light),
     /// A runtime-only custom payload defined by an external crate.
-    /// Serializes as `None` for now.
+    /// Serializes as `None`.
     #[cfg_attr(feature = "serde", serde(skip))]
     Custom(Box<dyn CustomNodePayload>),
 }
@@ -180,10 +181,12 @@ impl Node {
         self.transform.to_matrix()
     }
 
+    /// The node's local transform.
     pub fn transform(&self) -> Transform {
         self.transform
     }
 
+    /// Sets the node's local transform.
     pub fn set_transform(&mut self, transform: Transform) {
         self.transform = transform;
         self.mark_transform_dirty();
@@ -193,30 +196,36 @@ impl Node {
     // Methods to get and set individual parts of the transform. This is
     // for convince and to make sure that individual mutations of the transform
     // properly update the dirty state.
+    /// The translation part of the local transform.
     pub fn position(&self) -> Point3 {
         self.transform.position
     }
 
+    /// Sets the translation part of the local transform.
     pub fn set_position(&mut self, position: Point3) {
         self.transform.position = position;
         self.mark_transform_dirty();
         self.mark_bounds_dirty();
     }
 
+    /// The rotation part of the local transform.
     pub fn rotation(&self) -> Quaternion {
         self.transform.rotation
     }
 
+    /// Sets the rotation part of the local transform.
     pub fn set_rotation(&mut self, rotation: Quaternion) {
         self.transform.rotation = rotation;
         self.mark_transform_dirty();
         self.mark_bounds_dirty();
     }
 
+    /// The scale part of the local transform.
     pub fn scale(&self) -> Vector3 {
         self.transform.scale
     }
 
+    /// Sets the scale part of the local transform.
     pub fn set_scale(&mut self, scale: Vector3) {
         self.transform.scale = scale;
         self.mark_transform_dirty();
@@ -357,10 +366,12 @@ impl Node {
         self.mark_bounds_dirty();
     }
 
+    /// The node's behavior flags.
     pub fn flags(&self) -> NodeFlags {
         self.flags
     }
 
+    /// Sets the node's behavior flags.
     pub fn set_flags(&mut self, flags: NodeFlags) {
         self.flags = flags;
         self.mark_bounds_dirty();
@@ -387,11 +398,6 @@ impl Node {
     }
 
     /// Sets this node's render-presentation behavior.
-    ///
-    /// Does not touch the world-transform or bounds caches: the layer affects
-    /// neither, and the screen-space effects are applied by the renderer
-    /// downstream of the camera-independent cached transform (which is reused
-    /// for picking and bounding).
     pub fn set_display(&mut self, display: DisplayBehavior) {
         self.display = display;
     }
@@ -427,21 +433,24 @@ impl Node {
         self.cached_bounds.set(None);
     }
 
+    /// True if the world transform needs recomputation.
     pub fn transform_dirty(&self) -> bool {
         self.cached_world_transform.get().is_none()
     }
 
+    /// True if the subtree bounds need recomputation.
     pub fn bounds_dirty(&self) -> bool {
         self.cached_bounds.get().is_none()
     }
 
-    /// Gets the cached world transform if valid
-    /// You probably want [crate::SceneData::nodes_transform]
+    /// The world transform, if currently known. Prefer
+    /// [`SceneData::nodes_transform`](crate::SceneData::nodes_transform),
+    /// which computes it when it isn't.
     pub fn cached_world_transform(&self) -> Option<Matrix4> {
         self.cached_world_transform.get()
     }
 
-    /// Sets the cached world transform
+    /// Stores a computed world transform.
     pub fn set_cached_world_transform(&self, transform: Matrix4) {
         self.cached_world_transform.set(Some(transform));
     }

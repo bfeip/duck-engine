@@ -139,8 +139,8 @@ impl FaceMaterial {
 
     /// Returns the generation counter.
     ///
-    /// Increments on any mutation. Used by renderers to track when GPU resources
-    /// need updating.
+    /// Increments on any mutation; consumers compare it against the last value
+    /// they saw to detect changes.
     pub fn generation(&self) -> u64 {
         self.generation
     }

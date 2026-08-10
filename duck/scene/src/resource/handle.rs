@@ -133,12 +133,19 @@ pub struct Handle<Kind> {
     _kind: PhantomData<fn() -> Kind>,
 }
 
+/// An owning reference to a [`Mesh`](super::Mesh).
 pub type MeshHandle = Handle<super::Mesh>;
+/// An owning reference to an [`Instance`](super::Instance).
 pub type InstanceHandle = Handle<super::Instance>;
+/// An owning reference to a [`Node`](super::Node).
 pub type NodeHandle = Handle<super::Node>;
+/// An owning reference to a [`FaceMaterial`](super::FaceMaterial).
 pub type FaceMaterialHandle = Handle<super::FaceMaterial>;
+/// An owning reference to a [`LineMaterial`](super::LineMaterial).
 pub type LineMaterialHandle = Handle<super::LineMaterial>;
+/// An owning reference to a [`PointMaterial`](super::PointMaterial).
 pub type PointMaterialHandle = Handle<super::PointMaterial>;
+/// An owning reference to a [`Texture`](super::Texture).
 pub type TextureHandle = Handle<super::Texture>;
 
 impl<K> Handle<K> {

@@ -34,7 +34,6 @@ impl EnvironmentMap {
     /// Create an environment map from an equirectangular HDR file path.
     ///
     /// The HDR file will be loaded and processed when the environment is first used.
-    /// This is internal - use [`SceneData::add_environment_map_from_hdr_path`] to create environment maps.
     pub(crate) fn from_hdr_path(path: impl Into<PathBuf>) -> Self {
         Self {
             id: crate::resource::Id::new(),
@@ -45,9 +44,12 @@ impl EnvironmentMap {
         }
     }
 
-    /// Create an environment map from in-memory HDR data.
+    /// Create an environment map from in-memory equirectangular HDR data.
     ///
-    /// The HDR data will be processed into IBL maps when the environment is first used.
+    /// The HDR data will be processed into IBL maps when the environment is
+    /// first used. See
+    /// [`SceneData::add_environment_map_from_hdr_data`](crate::SceneData::add_environment_map_from_hdr_data)
+    /// to create and add one in a single step.
     pub fn from_hdr_data(data: Vec<u8>) -> Self {
         Self {
             id: crate::resource::Id::new(),
@@ -105,8 +107,8 @@ impl EnvironmentMap {
 
     /// Returns the current generation counter.
     ///
-    /// Starts at 1 and increments on each change. GPU sync code compares
-    /// this against a last-synced generation to detect changes.
+    /// Starts at 1 and increments on each change; consumers compare it
+    /// against the last value they saw to detect changes.
     pub fn generation(&self) -> u64 {
         self.generation
     }

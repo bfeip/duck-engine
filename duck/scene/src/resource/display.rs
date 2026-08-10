@@ -7,8 +7,8 @@
 //!
 //! These modifiers inherit down the subtree: setting a layer or screen-space
 //! flag on a group root applies to all descendants unless a descendant
-//! overrides it. Inheritance is resolved by the renderer during its per-frame
-//! traversal, so the scene crate stores only the per-node value and needs no
+//! overrides it. Inheritance is resolved at render time during traversal, so
+//! the scene crate stores only the per-node value and needs no
 //! cache. Camera-dependent effects (`screen_sized`, `screen_facing`) are applied
 //! at render time and never pollute the node's cached world transform.
 
@@ -41,7 +41,7 @@ pub enum RenderLayer {
 pub struct DisplayBehavior {
     /// Keep a constant pixel size regardless of camera distance: `Some(px)`
     /// requests a constant on-screen size of `px` pixels for the geometry's
-    /// unit extent (the renderer scales the geometry up as the camera recedes);
+    /// unit extent (the geometry is scaled up as the camera recedes);
     /// `None` leaves the geometry at its authored world size. Applied at render
     /// time.
     pub screen_size: Option<f32>,

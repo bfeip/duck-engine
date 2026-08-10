@@ -23,22 +23,18 @@ use crate::resource::{
     ResourceKind, SceneBind, Texture, TextureHandle, TextureId, Visibility,
 };
 
-/// Scene-level properties that affect shader generation.
-///
-/// Unlike MaterialProperties which describe individual materials,
-/// SceneProperties describes scene-wide rendering features.
+/// Scene-wide rendering features that affect shader generation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct SceneProperties {
     /// Whether image-based lighting is active (environment map present)
     pub has_ibl: bool,
 }
 
-/// The result of a bounding box computation on an incomplete scene tree.
+/// The result of a bounding box computation.
 ///
-/// `incomplete` being true means at least one node, instance, or mesh referenced
-/// in the subtree was not present, as happens while a scene is still being built
-/// up. In that case the result is not cached, so the next call will retry and may
-/// return a more complete value.
+/// `incomplete` being true means at least one node, instance, or mesh
+/// referenced in the subtree was not present, as happens while a scene is
+/// still being built up; a later call may return a more complete value.
 #[derive(Debug, Clone)]
 pub struct BoundingResult {
     /// The computed bounds, or `None` if no geometry was reachable.
@@ -270,7 +266,8 @@ impl SceneData {
 
     /// Drains the log of resources removed since the last call.
     ///
-    /// Renderers use this to evict cached GPU resources. The log has a single
+    /// Consumers that mirror scene resources into derived state (GPU copies,
+    /// say) drain this to evict what disappeared. The log has a single
     /// consumer: draining it hands the removals to the caller.
     pub fn take_removals(&mut self) -> Vec<(ResourceKind, GenericId)> {
         std::mem::take(&mut self.removals)
@@ -670,8 +667,9 @@ impl SceneData {
 
     /// Returns the current node generation counter.
     ///
-    /// Increments on every node add, remove, or payload mutation. The renderer
-    /// uses this to detect when lights (and other node data) need re-collection.
+    /// Increments on every node add, remove, or mutation. Consumers compare it
+    /// against the last value they saw to detect that per-node data (lights,
+    /// say) needs re-collection.
     pub fn node_generation(&self) -> u64 {
         self.node_generation
     }
@@ -1061,9 +1059,8 @@ impl SceneData {
 
     /// Sets a node's render-presentation behavior (layer, screen-space flags).
     ///
-    /// The behavior inherits down the subtree and is resolved by the renderer,
-    /// so no cache invalidation beyond bumping the node generation is needed.
-    /// Does nothing if the node does not exist.
+    /// The behavior inherits down the subtree. Does nothing if the node does
+    /// not exist.
     pub fn set_node_display(&mut self, node_id: NodeId, display: crate::resource::DisplayBehavior) {
         let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.set_display(display);
@@ -1186,10 +1183,6 @@ impl SceneData {
 
     /// Gets the world transform of a node.
     ///
-    /// This returns the cached transform if valid, otherwise computes it by
-    /// walking from the root to the node, computing and caching transforms
-    /// along the way.
-    ///
     /// Returns `None` if the node itself or any ancestor is missing from the
     /// scene, as happens while a scene is still being built up.
     pub fn nodes_transform(&self, node_id: NodeId) -> Option<Matrix4> {
@@ -1262,12 +1255,9 @@ impl SceneData {
 
     /// Gets the world-space bounding box of a node and its subtree.
     ///
-    /// This returns the cached bounds if valid, otherwise recursively computes
-    /// them bottom-up for the entire subtree rooted at this node.
-    ///
     /// The bounds include both the node's instance (if any) and all descendants.
-    /// Check `BoundingResult::incomplete` to know if missing resources prevented
-    /// a full computation.
+    /// Check [`BoundingResult::incomplete`] to know if missing resources
+    /// prevented a full computation.
     pub fn nodes_bounding(&self, node_id: NodeId) -> BoundingResult {
         let Some(node) = self.get_node(node_id) else {
             return BoundingResult { bounds: None, incomplete: true };
@@ -1381,11 +1371,10 @@ impl SceneData {
 
     /// Rebuilds handle ownership from the tree structure.
     ///
-    /// For scene data whose handles do not reflect ownership — a clone (its
-    /// handles share refcounts with the original) or deserialized data (its
-    /// handles are unbound): every stored handle is replaced with a canonical
-    /// one on a fresh bind, and resources nothing owns are dropped. Existing
-    /// external handles into this data are disconnected.
+    /// Call this on scene data whose handles are not yet live — deserialized
+    /// data, in particular. Every handle stored in the scene becomes a live
+    /// owning handle, and resources nothing owns are dropped. Handles minted
+    /// from this data *before* the rebind no longer own anything.
     pub fn rebind(&mut self) {
         use std::collections::HashSet;
 

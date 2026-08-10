@@ -23,7 +23,16 @@ use crate::resource::{
 /// A cheap, cloneable handle to a scene.
 ///
 /// Cloning shares the underlying [`SceneData`], it does not copy it. (Deep
-/// copies are still available through `SceneData: Clone`.)
+/// copies are still available through `SceneData: Clone`;
+/// [`ptr_eq`](Self::ptr_eq) tells shared clones apart from distinct scenes.)
+///
+/// There are two ways to use one:
+///
+/// - The handle's own methods ([`add_mesh`](Self::add_mesh),
+///   [`set_node_transform`](Self::set_node_transform), ...), each of which locks
+///   internally and forms a complete critical section.
+/// - [`lock`](Self::lock), which borrows the [`SceneData`] itself for compound
+///   work.
 ///
 /// # Deadlocks
 ///
@@ -54,7 +63,7 @@ impl Scene {
     ///
     /// The returned guard derefs both shared and mutably. It must not be held
     /// across a call back into this handle, or across anything that might call
-    /// back into it (a render pass, an event callback, an egui closure).
+    /// back into it (a render pass, an event callback, a UI closure).
     #[track_caller]
     pub fn lock(&self) -> SceneGuard<'_> {
         self.0.lock()
@@ -128,16 +137,19 @@ impl Scene {
         self.lock().get_node(id).cloned()
     }
 
+    /// True if the scene contains a node with this id.
     #[track_caller]
     pub fn has_node(&self, id: NodeId) -> bool {
         self.lock().has_node(id)
     }
 
+    /// Number of nodes in the scene.
     #[track_caller]
     pub fn node_count(&self) -> usize {
         self.lock().node_count()
     }
 
+    /// The scene-tree generation; see [`SceneData::node_generation`].
     #[track_caller]
     pub fn node_generation(&self) -> u64 {
         self.lock().node_generation()
@@ -175,6 +187,8 @@ impl Scene {
 
     // ========== Node mutation ==========
 
+    /// Adds a node under `parent` (`None` for a root) and returns its owning
+    /// handle.
     #[track_caller]
     pub fn add_node(
         &self,
@@ -186,6 +200,7 @@ impl Scene {
         self.lock().add_node(parent, name, transform, flags)
     }
 
+    /// Adds a node carrying `instance` and returns its owning handle.
     #[track_caller]
     pub fn add_instance_node(
         &self,
@@ -204,36 +219,43 @@ impl Scene {
         self.lock().node_handle(id)
     }
 
+    /// Sets what a node is (instance, camera, light, …).
     #[track_caller]
     pub fn set_node_payload(&self, node_id: NodeId, payload: NodePayload) {
         self.lock().set_node_payload(node_id, payload);
     }
 
+    /// Sets a node's local transform.
     #[track_caller]
     pub fn set_node_transform(&self, node_id: NodeId, transform: Transform) {
         self.lock().set_node_transform(node_id, transform);
     }
 
+    /// Sets the translation part of a node's local transform.
     #[track_caller]
     pub fn set_node_position(&self, node_id: NodeId, position: Point3) {
         self.lock().set_node_position(node_id, position);
     }
 
+    /// Sets the rotation part of a node's local transform.
     #[track_caller]
     pub fn set_node_rotation(&self, node_id: NodeId, rotation: Quaternion) {
         self.lock().set_node_rotation(node_id, rotation);
     }
 
+    /// Sets the scale part of a node's local transform.
     #[track_caller]
     pub fn set_node_scale(&self, node_id: NodeId, scale: Vector3) {
         self.lock().set_node_scale(node_id, scale);
     }
 
+    /// Sets a node's display behavior (screen-space rendering, layer).
     #[track_caller]
     pub fn set_node_display(&self, node_id: NodeId, display: DisplayBehavior) {
         self.lock().set_node_display(node_id, display);
     }
 
+    /// Sets a node's authored visibility.
     #[track_caller]
     pub fn set_node_visibility(&self, node_id: NodeId, visibility: Visibility) {
         self.lock().set_node_visibility(node_id, visibility);
@@ -259,46 +281,55 @@ impl Scene {
 
     // ========== Instances and materials ==========
 
+    /// Adds an instance and returns its owning handle.
     #[track_caller]
     pub fn add_instance(&self, instance: Instance) -> InstanceHandle {
         self.lock().add_instance(instance)
     }
 
+    /// Clones the instance with the given id.
     #[track_caller]
     pub fn get_instance(&self, id: InstanceId) -> Option<Instance> {
         self.lock().get_instance(id).cloned()
     }
 
+    /// Adds a mesh and returns its owning handle.
     #[track_caller]
     pub fn add_mesh(&self, mesh: Mesh) -> MeshHandle {
         self.lock().add_mesh(mesh)
     }
 
+    /// Adds a face material and returns its owning handle.
     #[track_caller]
     pub fn add_face_material(&self, material: FaceMaterial) -> FaceMaterialHandle {
         self.lock().add_face_material(material)
     }
 
+    /// Clones the face material with the given id.
     #[track_caller]
     pub fn get_face_material(&self, id: FaceMaterialId) -> Option<FaceMaterial> {
         self.lock().get_face_material(id).cloned()
     }
 
+    /// Adds a line material and returns its owning handle.
     #[track_caller]
     pub fn add_line_material(&self, material: LineMaterial) -> LineMaterialHandle {
         self.lock().add_line_material(material)
     }
 
+    /// Clones the line material with the given id.
     #[track_caller]
     pub fn get_line_material(&self, id: LineMaterialId) -> Option<LineMaterial> {
         self.lock().get_line_material(id).cloned()
     }
 
+    /// Adds a point material and returns its owning handle.
     #[track_caller]
     pub fn add_point_material(&self, material: PointMaterial) -> PointMaterialHandle {
         self.lock().add_point_material(material)
     }
 
+    /// Clones the point material with the given id.
     #[track_caller]
     pub fn get_point_material(&self, id: PointMaterialId) -> Option<PointMaterial> {
         self.lock().get_point_material(id).cloned()
@@ -306,16 +337,19 @@ impl Scene {
 
     // ========== Counts ==========
 
+    /// Number of meshes in the scene.
     #[track_caller]
     pub fn mesh_count(&self) -> usize {
         self.lock().mesh_count()
     }
 
+    /// Number of instances in the scene.
     #[track_caller]
     pub fn instance_count(&self) -> usize {
         self.lock().instance_count()
     }
 
+    /// Number of light nodes in the scene.
     #[track_caller]
     pub fn light_count(&self) -> usize {
         self.lock().light_count()
@@ -338,6 +372,7 @@ impl Scene {
 
     // ========== Environment maps ==========
 
+    /// The environment map currently used for IBL, if any.
     #[track_caller]
     pub fn active_environment_map(&self) -> Option<EnvironmentMapId> {
         self.lock().active_environment_map()
@@ -442,6 +477,10 @@ impl SceneLock {
 }
 
 /// Borrowed scene data. See [`Scene::lock`].
+///
+/// Derefs to [`SceneData`], both shared and mutably. Resources whose last
+/// handle has dropped are removed when the guard is acquired and again when it
+/// drops, so a guard never observes them.
 pub struct SceneGuard<'a> {
     inner: MutexGuard<'a, SceneData>,
     #[cfg(debug_assertions)]

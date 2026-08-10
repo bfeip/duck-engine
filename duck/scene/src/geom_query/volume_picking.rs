@@ -14,13 +14,13 @@ pub struct VolumePickResult {
     pub node_id: NodeId,
     /// The instance that was hit
     pub instance_id: InstanceId,
-    /// Indices of triangles that intersect the volume (index into the mesh's index buffer / 3)
+    /// Indices of triangles that intersect the volume (0-based, into the mesh's triangle list)
     pub triangle_indices: Vec<usize>,
     /// True if the entire instance is fully contained within the volume
     pub fully_contained: bool,
 }
 
-/// Volume picking query that implements the generic PickQuery trait.
+/// Volume picking query; a [`PickQuery`] over a convex volume.
 pub struct VolumePickQuery {
     /// The volume in current coordinate space (may be transformed to local space)
     volume: ConvexPolyhedron,
@@ -29,11 +29,8 @@ pub struct VolumePickQuery {
 }
 
 impl VolumePickQuery {
-    /// Creates a new volume pick query.
-    ///
-    /// # Arguments
-    /// * `volume` - The convex polyhedron to test against (in world space)
-    /// * `thorough` - If true, uses more accurate but slower edge-triangle tests
+    /// Creates a query for a world-space convex volume. `thorough` enables
+    /// more accurate but slower edge-triangle tests.
     pub fn new(volume: ConvexPolyhedron, thorough: bool) -> Self {
         Self { volume, thorough }
     }
@@ -74,18 +71,13 @@ impl PickQuery for VolumePickQuery {
     }
 }
 
-/// Picks all instances intersected by a convex volume.
+/// Picks all instances intersected by a world-space convex volume.
 ///
-/// # Arguments
-/// * `volume` - The convex polyhedron to test against (in world space)
-/// * `scene` - The scene to pick from
-/// * `thorough` - If true, uses more accurate but slower edge-triangle intersection tests.
-///   This catches edge cases where the volume passes through a triangle without any triangle
-///   vertices being inside and without triangle edges crossing the volume boundary.
-///
-/// # Returns
-/// A vector of VolumePickResult for each instance that intersects the volume.
-/// Each result includes whether the instance is fully contained within the volume.
+/// Each [`VolumePickResult`] records whether the instance is fully contained
+/// within the volume. `thorough` enables more accurate but slower
+/// edge-triangle intersection tests, catching volumes that pass through a
+/// triangle without any of its vertices being inside and without its edges
+/// crossing the volume boundary.
 pub fn pick_all_from_volume(
     volume: &ConvexPolyhedron,
     scene: &Scene,

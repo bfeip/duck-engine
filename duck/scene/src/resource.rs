@@ -4,8 +4,8 @@
 //! collection, and owned by a refcounted [`Handle`] — the seven types
 //! implementing [`SceneResource`], plus the id and handle machinery itself.
 //!
-//! Membership is that rule, not a taxonomy: an [`EnvironmentMap`] carries an id
-//! but is not refcounted, so it stays outside this module.
+//! ([`EnvironmentMap`] carries an id but is not refcounted, so it lives at the
+//! crate root instead.)
 //!
 //! [`SceneData`]: crate::SceneData
 //! [`EnvironmentMap`]: crate::EnvironmentMap

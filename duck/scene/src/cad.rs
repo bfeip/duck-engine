@@ -1,3 +1,17 @@
+//! Tessellation of CAD (OpenCASCADE) shapes into scene geometry.
+//!
+//! A B-Rep [`Shape`] becomes a [`Mesh`] with triangle
+//! faces and, optionally, wireframe edges and B-Rep vertices, carrying the
+//! sub-geometry topology used for face/edge/point picking.
+//! [`tessellate_into`] and [`tessellate_into_with_materials`] add the result to
+//! a scene as an instance node; [`retessellate_node`] replaces the geometry of
+//! an existing node in place (say, after a modeling operation);
+//! [`tessellate_occ_shape`] produces the bare mesh.
+//!
+//! Shapes are classified as solid bodies or free geometry — sketches,
+//! construction curves ([`GeometryClass`]) — and [`CadTessellationOptions`] can
+//! style the two classes differently.
+
 use anyhow::{Context, Result};
 use opencascade::primitives::{EdgeType, Shape, ShapeType};
 
@@ -318,8 +332,9 @@ fn tessellate_finish(
 /// removed unless shared.
 ///
 /// Because the material slots are reused verbatim, the node keeps whichever
-/// materials it was first tessellated with. re-classify by
-/// creating a new node instead.
+/// materials it was first tessellated with, even if the shape's
+/// [`GeometryClass`] has changed since. To re-classify, create a new node
+/// instead.
 pub fn retessellate_node(
     shape: &Shape,
     scene: &Scene,

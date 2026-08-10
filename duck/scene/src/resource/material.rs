@@ -77,10 +77,8 @@ bitflags! {
     }
 }
 
-/// Material properties helpful to know during shader generation.
-///
-/// Used by `ShaderGenerator` and `PipelineManager` to determine which shader
-/// variant and pipeline state to use.
+/// The shading-relevant subset of a material, used to select shader variants
+/// and pipeline state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MaterialProperties {
     /// Whether lighting calculations should be applied

@@ -72,14 +72,14 @@ pub struct RayPickResult {
     pub hit: RayHit,
 }
 
-/// Ray picking query that implements the generic PickQuery trait.
+/// Ray picking query; a [`PickQuery`] over a world-space [`Ray`].
 ///
-/// - Construct with:
+/// Construct with:
 /// - [`RayPickQuery::faces`] for face-only picking.
 /// - [`RayPickQuery::lines`] for line-only picking.
 /// - [`RayPickQuery::points`] for point-only picking.
 /// - [`RayPickQuery::all`] to pick all primitive types.
-/// [`RayPickQuery::for_kinds`] allows an arbitrary combination.
+/// - [`RayPickQuery::for_kinds`] for an arbitrary combination.
 pub struct RayPickQuery {
     /// The ray in current coordinate space (may be transformed to local space)
     ray: Ray,

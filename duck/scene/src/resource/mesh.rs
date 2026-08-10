@@ -31,8 +31,7 @@ pub enum PrimitiveType {
 
 impl PrimitiveType {
     /// Number of vertex indices consumed by one primitive of this type:
-    /// 3 for triangles, 2 for line segments, 1 for points. Used to convert
-    /// element-counted [`SubMeshRange`]s into raw index offsets.
+    /// 3 for triangles, 2 for line segments, 1 for points.
     pub fn indices_per_primitive(self) -> u32 {
         match self {
             PrimitiveType::TriangleList => 3,
@@ -45,8 +44,7 @@ impl PrimitiveType {
 /// A kind of mesh sub-geometry that can be selected or highlighted independently.
 ///
 /// Each kind maps 1:1 to a [`PrimitiveType`] and to one of [`Topology`]'s range
-/// lists, letting selection/highlight code be written once and parametrized by kind
-/// rather than triplicated across faces, edges, and points.
+/// lists.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum SubGeometryKind {
     Face,
@@ -201,14 +199,10 @@ impl Topology {
     }
 }
 
-/// GPU-compatible vertex structure containing position, texture coordinates, and normal.
+/// A mesh vertex: position, texture coordinates, and normal.
 ///
-/// This struct is laid out in memory to match the vertex shader's expectations.
-/// Each vertex is 36 bytes: 12 bytes position + 12 bytes tex_coords + 12 bytes normal.
-///
-/// # Memory Layout
-/// - Uses `#[repr(C)]` for predictable layout
-/// - Implements `Pod` and `Zeroable` for zero-copy GPU buffer uploads
+/// `#[repr(C)]` and `Pod`, so vertex slices can be uploaded to the GPU
+/// directly.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -257,10 +251,8 @@ pub enum MeshDescriptor<'a> {
 /// # Examples
 ///
 /// ```
-/// use duck_engine_scene::SceneData;
 /// use duck_engine_scene::resource::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
 ///
-/// // Create from raw data (no device needed)
 /// let vertices = vec![
 ///     Vertex { position: [0.0, 0.0, 0.0], tex_coords: [0.0, 0.0, 0.0], normal: [0.0, 1.0, 0.0] },
 ///     Vertex { position: [1.0, 0.0, 0.0], tex_coords: [1.0, 0.0, 0.0], normal: [0.0, 1.0, 0.0] },
@@ -271,12 +263,6 @@ pub enum MeshDescriptor<'a> {
 ///     indices: vec![0, 1, 2],
 /// }];
 /// let mesh = Mesh::from_raw(vertices, primitives);
-///
-/// // Add to scene
-/// let mut scene = SceneData::new();
-/// let mesh_id = scene.add_mesh(mesh);
-///
-/// // GPU resources are created automatically during rendering
 /// ```
 #[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -315,10 +301,6 @@ impl Mesh {
     }
 
     /// Creates a mesh from raw vertex and primitive data.
-    ///
-    /// # Arguments
-    /// * `vertices` - Vertex data (positions, normals, texture coordinates)
-    /// * `primitives` - Primitive data (index lists grouped by type)
     pub fn from_raw(vertices: Vec<Vertex>, primitives: Vec<MeshPrimitive>) -> Self {
         Self {
             id: super::Id::new(),
@@ -331,13 +313,7 @@ impl Mesh {
         }
     }
 
-    /// Creates a mesh from a descriptor.
-    ///
-    /// # Arguments
-    /// * `descriptor` - Source data for the mesh (empty, OBJ file, or raw data)
-    ///
-    /// # Errors
-    /// Returns an error if loading from OBJ fails.
+    /// Creates a mesh from a descriptor. Fails if loading from OBJ fails.
     pub fn from_descriptor(descriptor: MeshDescriptor) -> Result<Self> {
         match descriptor {
             MeshDescriptor::Empty => Ok(Self::new()),
@@ -349,26 +325,16 @@ impl Mesh {
         }
     }
 
-    /// Loads a mesh from OBJ data in a byte slice.
-    ///
-    /// # Arguments
-    /// * `obj_bytes` - OBJ file data as bytes
-    ///
-    /// # Errors
-    /// Returns an error if the OBJ data is malformed or cannot be parsed
+    /// Loads a mesh from Wavefront OBJ data in a byte slice. Fails if the OBJ
+    /// data is malformed.
     pub fn from_obj_bytes(obj_bytes: &[u8]) -> Result<Self> {
         let obj: obj::Obj<obj::TexturedVertex> =
             obj::load_obj(obj_bytes).context("Failed to parse OBJ data")?;
         Self::from_obj(obj)
     }
 
-    /// Loads a mesh from an OBJ file on disk.
-    ///
-    /// # Arguments
-    /// * `obj_path` - File path to the OBJ file
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be read or the OBJ data is malformed
+    /// Loads a mesh from a Wavefront OBJ file on disk. Fails if the file
+    /// cannot be read or the OBJ data is malformed.
     pub fn from_obj_path<P: AsRef<Path>>(obj_path: P) -> Result<Self> {
         let path = obj_path.as_ref();
         let obj_file =
@@ -517,8 +483,8 @@ impl Mesh {
 
     /// Returns the current generation counter.
     ///
-    /// This value increments on any mutation to the mesh data.
-    /// Used by renderers to track when GPU resources need updating.
+    /// Increments on any mutation of the mesh data; consumers compare it
+    /// against the last value they saw to detect changes.
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -540,13 +506,8 @@ impl Mesh {
             .any(|p| p.primitive_type == primitive_type)
     }
 
-    /// Extracts all triangle indices from the mesh.
-    ///
-    /// Collects indices from all triangle list primitives in the mesh into a single vector.
-    /// Each group of 3 indices defines one triangle.
-    ///
-    /// # Returns
-    /// A vector of indices for all triangles. Empty if the mesh contains no triangle primitives.
+    /// Collects the indices of every triangle-list primitive into one vector;
+    /// each group of 3 indices is one triangle.
     pub fn triangle_indices(&self) -> Vec<MeshIndex> {
         self.primitives
             .iter()
@@ -555,13 +516,8 @@ impl Mesh {
             .collect()
     }
 
-    /// Extracts all line segment indices from the mesh.
-    ///
-    /// Collects indices from all line list primitives in the mesh into a single vector.
-    /// Each group of 2 indices defines one segment.
-    ///
-    /// # Returns
-    /// A vector of indices for all segments. Empty if the mesh contains no line primitives.
+    /// Collects the indices of every line-list primitive into one vector; each
+    /// group of 2 indices is one segment.
     pub fn line_indices(&self) -> Vec<MeshIndex> {
         self.primitives
             .iter()
@@ -570,12 +526,7 @@ impl Mesh {
             .collect()
     }
 
-    /// Extracts all point indices from the mesh.
-    ///
-    /// Collects indices from all point list primitives in the mesh into a single vector.
-    ///
-    /// # Returns
-    /// A vector of indices for all points. Empty if the mesh contains no point primitives.
+    /// Collects the indices of every point-list primitive into one vector.
     pub fn point_indices(&self) -> Vec<MeshIndex> {
         self.primitives
             .iter()
@@ -742,11 +693,8 @@ impl Mesh {
 
     /// Sets the sub-geometry topology for this mesh.
     ///
-    /// Does not increment the generation counter because topology does not affect
-    /// GPU buffer contents — it is CPU-side metadata used for picking and selection.
-    ///
-    /// Note: if mesh editing is ever supported, topology changes may need to trigger
-    /// a generation increment (and GPU re-upload) if the vertex/index layout changes.
+    /// Topology is picking/selection metadata and does not affect the rendered
+    /// geometry, so this does not bump the generation counter.
     pub fn set_topology(&mut self, topology: Topology) {
         self.topology = Some(topology);
     }

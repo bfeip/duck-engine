@@ -2,10 +2,8 @@
 //!
 //! Convenience for consumers that touch many scene types in one file:
 //! `use duck_engine_scene::prelude::*`. Code importing only a name or two
-//! should prefer the explicit path.
-//!
-//! [`geom_query`](crate::geom_query) and `cad` are deliberately absent — they
-//! are already namespaced and used sparingly.
+//! should prefer the explicit path. [`geom_query`](crate::geom_query) and
+//! `cad` are not included.
 
 pub use crate::resource::*;
 pub use crate::{

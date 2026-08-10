@@ -21,12 +21,9 @@ pub(crate) const OPENGL_TO_WGPU_MATRIX: Matrix4 = Matrix4::new(
 /// Projection-only camera parameters, stored in a scene node's payload.
 ///
 /// Describes how the camera sees (its optics) without encoding where it is.
-/// Pose (position, orientation) lives in the owning node's `Transform`.
-///
-/// `focus_distance` is the eye-to-target distance used when constructing a
-/// [`PositionedCamera`]. It is not a rendering parameter — it preserves the
-/// orbit pivot distance across node-transform round-trips so that interactive
-/// navigation (zoom, pan) remains stable after scene reload.
+/// Pose (position, orientation) lives in the owning node's `Transform`;
+/// [`into_positioned`](Self::into_positioned) combines the two into the
+/// render-ready [`PositionedCamera`].
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CameraProjection {
@@ -89,10 +86,11 @@ impl CameraProjection {
 
 /// A fully-positioned camera combining projection intrinsics with world-space pose.
 ///
-/// Used by the viewer and navigation operators wherever the camera's position and
-/// orientation must be manipulated directly.  The canonical pose for a camera node
-/// in the scene graph lives in that node's `Transform`; this type is the convenient
-/// working representation during a frame or an interaction gesture.
+/// The canonical pose for a camera node in the scene graph lives in that node's
+/// `Transform`; this type is the convenient working representation during a
+/// frame or an interaction gesture. Convert back with
+/// [`projection`](Self::projection) and
+/// [`to_node_transform`](Self::to_node_transform).
 ///
 /// # Example
 ///
@@ -189,9 +187,6 @@ impl PositionedCamera {
     /// Positions the camera so the entire bounding box is visible while maintaining
     /// the current view direction (from eye towards target). The camera is moved
     /// along this direction to ensure the bounds fit within the field of view.
-    ///
-    /// # Arguments
-    /// * `bounds` - The axis-aligned bounding box to fit in view
     pub fn fit_to_bounds(&mut self, bounds: &crate::common::Aabb) {
         let center = bounds.center();
         let (size_x, size_y, size_z) = bounds.size();
@@ -231,15 +226,8 @@ impl PositionedCamera {
         self.zfar = (distance + bounding_radius) * 10.0;
     }
 
-    /// Projects a 3D world-space point to normalized device coordinates (NDC).
-    ///
-    /// # Arguments
-    /// * `world_point` - Point in world space
-    ///
-    /// # Returns
-    /// A 3D point in NDC space where:
-    /// - X and Y are in range [-1, 1] (left/right, bottom/top)
-    /// - Z is in range [0, 1] (near/far in WGPU depth convention)
+    /// Projects a world-space point to normalized device coordinates: X and Y
+    /// in [-1, 1] (Y-up), Z in [0, 1] (WGPU depth convention).
     pub fn project_point_ndc(&self, world_point: Point3) -> Point3 {
         let vp = self.build_view_projection_matrix();
         let homogeneous = vp * world_point.to_homogeneous();
@@ -248,15 +236,8 @@ impl PositionedCamera {
         Point3::from_homogeneous(homogeneous)
     }
 
-    /// Unprojects a point from normalized device coordinates (NDC) to world space.
-    ///
-    /// # Arguments
-    /// * `ndc_point` - Point in NDC space where:
-    ///   - X and Y are in range [-1, 1] (left/right, bottom/top)
-    ///   - Z is in range [0, 1] (near/far in WGPU depth convention)
-    ///
-    /// # Returns
-    /// A 3D point in world space, or None if the view-projection matrix is not invertible.
+    /// Unprojects an NDC point (X/Y in [-1, 1] Y-up, Z in [0, 1]) back to
+    /// world space, or `None` if the view-projection matrix is not invertible.
     pub fn unproject_point_ndc(&self, ndc_point: Point3) -> Option<Point3> {
         let viewproj = self.build_view_projection_matrix();
 
@@ -269,18 +250,9 @@ impl PositionedCamera {
         Some(Point3::from_homogeneous(homogeneous))
     }
 
-    /// Projects a 3D world-space point to screen-space pixel coordinates.
-    ///
-    /// # Arguments
-    /// * `world_point` - Point in world space
-    /// * `screen_width` - Width of the screen/viewport in pixels
-    /// * `screen_height` - Height of the screen/viewport in pixels
-    ///
-    /// # Returns
-    /// A 3D point in screen space where:
-    /// - X is in range [0, screen_width] (left to right)
-    /// - Y is in range [0, screen_height] (top to bottom)
-    /// - Z is the depth value in range [0, 1]
+    /// Projects a world-space point to screen-space pixels: X in
+    /// [0, screen_width] left-to-right, Y in [0, screen_height] top-to-bottom,
+    /// Z the [0, 1] depth.
     pub fn project_point_screen(
         &self,
         world_point: Point3,
@@ -300,17 +272,9 @@ impl PositionedCamera {
     }
 
 
-    /// Unprojects a screen-space pixel coordinate to a point in world space.
-    ///
-    /// # Arguments
-    /// * `screen_x` - X coordinate in screen space (0 = left edge)
-    /// * `screen_y` - Y coordinate in screen space (0 = top edge)
-    /// * `depth` - Depth value in range [0, 1] (0 = near plane, 1 = far plane)
-    /// * `screen_width` - Width of the screen/viewport in pixels
-    /// * `screen_height` - Height of the screen/viewport in pixels
-    ///
-    /// # Returns
-    /// A 3D point in world space, or None if the view-projection matrix is not invertible.
+    /// Unprojects a screen-space pixel (Y-down) at `depth` (0 = near plane,
+    /// 1 = far plane) back to world space, or `None` if the view-projection
+    /// matrix is not invertible.
     pub fn unproject_point_screen(
         &self,
         screen_x: f32,
@@ -330,18 +294,8 @@ impl PositionedCamera {
         self.unproject_point_ndc(ndc_point)
     }
 
-    /// Creates a ray from a normalized device coordinate point.
-    ///
-    /// The ray originates at the near plane and points through the specified
-    /// NDC position into the 3D world.
-    ///
-    /// # Arguments
-    /// * `ndc_x` - X coordinate in NDC space [-1, 1] (left to right)
-    /// * `ndc_y` - Y coordinate in NDC space [-1, 1] (bottom to top)
-    ///
-    /// # Returns
-    /// A ray originating at the near plane, pointing through the NDC point
-    /// into the 3D world.
+    /// The world-space ray originating at the near plane and pointing through
+    /// the given NDC position (X/Y in [-1, 1], Y-up).
     pub fn ray_from_ndc_point(&self, ndc_x: f32, ndc_y: f32) -> crate::common::Ray {
         let world_near = self
             .unproject_point_ndc(Point3::new(ndc_x, ndc_y, 0.0))
@@ -356,20 +310,9 @@ impl PositionedCamera {
         crate::common::Ray::new(world_near, direction)
     }
 
-    /// Creates a ray from a screen-space point, unprojecting it to world space.
-    ///
-    /// The ray originates at the near plane and points through the specified
-    /// screen pixel into the 3D world. This is useful for mouse picking and selection.
-    ///
-    /// # Arguments
-    /// * `screen_x` - X coordinate in screen space (0 = left edge)
-    /// * `screen_y` - Y coordinate in screen space (0 = top edge)
-    /// * `screen_width` - Width of the screen/viewport in pixels
-    /// * `screen_height` - Height of the screen/viewport in pixels
-    ///
-    /// # Returns
-    /// A ray originating at the near plane, pointing through the screen point
-    /// into the 3D world.
+    /// The world-space ray originating at the near plane and pointing through
+    /// the given screen pixel (Y-down). The usual starting point for mouse
+    /// picking; see [`geom_query`](crate::geom_query).
     pub fn ray_from_screen_point(
         &self,
         screen_x: f32,

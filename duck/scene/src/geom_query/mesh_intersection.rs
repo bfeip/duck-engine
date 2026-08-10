@@ -10,7 +10,7 @@ pub struct TriangleMeshHit {
     pub distance: f32,
     /// Hit location in local mesh space
     pub hit_point: Point3,
-    /// Index of the triangle that was hit (index into the mesh's index buffer / 3)
+    /// Index of the triangle that was hit (0-based, into the mesh's triangle list)
     pub triangle_index: usize,
     /// Barycentric coordinates of the hit point on the triangle (u, v, w) where w = 1 - u - v
     pub barycentric: (f32, f32, f32),
@@ -169,16 +169,10 @@ pub fn intersect_ray_with_points(mesh: &Mesh, ray: &Ray, tolerance: f32) -> Vec<
 
 /// Tests a convex volume against all triangles and line segments in a mesh.
 ///
-/// The volume should be in local mesh space. Returns information about which
-/// triangles and segments intersect the volume and whether the entire mesh is contained.
-///
-/// # Arguments
-/// * `mesh` - The mesh to test against
-/// * `volume` - The convex polyhedron to test against (in local mesh space)
-/// * `thorough` - If true, uses more accurate but slower edge-triangle intersection tests
-///
-/// # Returns
-/// `Some(MeshVolumeHit)` if any geometry intersects the volume, `None` otherwise.
+/// The volume should be in local mesh space. Returns which triangles and
+/// segments intersect the volume and whether the entire mesh is contained, or
+/// `None` if nothing intersects. `thorough` enables more accurate but slower
+/// edge-triangle intersection tests.
 pub fn intersect_volume(
     mesh: &Mesh,
     volume: &ConvexPolyhedron,
