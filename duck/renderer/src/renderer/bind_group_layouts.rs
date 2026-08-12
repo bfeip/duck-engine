@@ -10,9 +10,9 @@ use crate::ibl::ibl_bind_group_layout;
 /// A bind group layout is a *schema*: exactly one per kind, created once and
 /// shared by every pipeline layout and every conforming bind group. Keeping them
 /// all here (rather than bundled into the resource structs that happen to create
-/// the first bind group of each kind) lets multiple instances — e.g. the main
-/// camera plus per-sub-view camera slots — share a single layout, and gives
-/// pipeline-layout construction one place to borrow from.
+/// the first bind group of each kind) lets multiple instances — e.g. one camera
+/// binding per view — share a single layout, and gives pipeline-layout
+/// construction one place to borrow from.
 pub(crate) struct BindGroupLayouts {
     pub camera: wgpu::BindGroupLayout,
     pub light: wgpu::BindGroupLayout,

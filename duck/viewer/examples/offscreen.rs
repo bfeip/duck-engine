@@ -6,9 +6,9 @@
 //! embedding the 3D view inside a UI panel.
 
 use duck_engine_viewer::common::{RgbaColor, Transform, Vector3};
-use duck_engine_viewer::scene::PositionedCamera;
+use duck_engine_viewer::scene::{PositionedCamera, Scene};
 use duck_engine_viewer::scene::resource::{FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType};
-use duck_engine_viewer::OffscreenViewer;
+use duck_engine_viewer::{OffscreenViewer, ViewLayout};
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
@@ -18,16 +18,10 @@ fn main() -> anyhow::Result<()> {
 
     let mut viewer = pollster::block_on(OffscreenViewer::headless(WIDTH, HEIGHT))?;
 
-    // Build a simple scene: one sphere with a PBR material plus default lights.
+    // Build a simple scene: one sphere with a PBR material.
+    let scene = Scene::default();
     {
-        let scene_arc = viewer.scene();
-        let mut scene = scene_arc.lock();
-
-        let camera_node = scene
-            .add_node(None, Some("Camera".to_string()), Default::default(), NodeFlags::NONE)
-            .unwrap()
-            .id();
-        scene.set_default_light_nodes(camera_node);
+        let mut scene = scene.lock();
 
         let mesh_id = scene.add_mesh(Mesh::sphere(0.5, 32, 16, PrimitiveType::TriangleList));
         let mat_id = scene.add_face_material(
@@ -47,6 +41,10 @@ fn main() -> anyhow::Result<()> {
             .unwrap();
     }
 
+    // A full-target view over the scene; this also adds a camera and default
+    // lights.
+    let view = viewer.add_view("main", scene, ViewLayout::FULL);
+
     // Point the camera at the sphere.
     let camera = PositionedCamera {
         eye: (1.5, 1.0, 2.0).into(),
@@ -58,16 +56,19 @@ fn main() -> anyhow::Result<()> {
         zfar: 100.0,
         ortho: false,
     };
-    viewer.set_camera(camera.clone());
+    let mut view = viewer.view_mut(view).unwrap();
+    view.set_camera(camera.clone());
 
-    // Render into the owned offscreen texture (proves the GPU render path), then
-    // read back a still image and save it.
-    viewer.render()?;
-    let image = viewer.render_to_image(&camera)?;
+    // Read back a still image and save it.
+    let image = view.render_to_image(&camera)?;
 
     let out = "offscreen.png";
     image.save(out)?;
     println!("Wrote {} ({}x{})", out, image.width(), image.height());
+
+    // Render into the owned offscreen texture as well (proves the composited
+    // GPU render path).
+    viewer.render()?;
 
     Ok(())
 }

@@ -20,6 +20,11 @@ name = "materials"
 path = "examples/materials/main.rs"
 required-features = ["winit-support"]
 
+[[example]]
+name = "sub_views"
+path = "examples/sub_views/main.rs"
+required-features = ["winit-support"]
+
 
 [features]
 winit-support = ["winit"]

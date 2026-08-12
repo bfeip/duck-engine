@@ -6,7 +6,8 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use duck_engine_viewer::{SurfacedViewer, winit_support};
+use duck_engine_viewer::scene::Scene;
+use duck_engine_viewer::{SurfacedViewer, ViewLayout, winit_support};
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode, TransformOperator};
 
 /// Application state for the winit event loop
@@ -31,11 +32,14 @@ impl<'a> App<'a> {
             size.height,
         ));
 
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Translate))));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Rotate))));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Scale))));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(SelectionOperator::new())));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(NavigationOperator::new())));
+        let view = viewer.add_view("main", Scene::default(), ViewLayout::FULL);
+        let mut view = viewer.view_mut(view).unwrap();
+        let dispatcher = view.dispatcher_mut();
+        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Translate))));
+        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Rotate))));
+        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Scale))));
+        dispatcher.push_back(Arc::new(Mutex::new(SelectionOperator::new())));
+        dispatcher.push_back(Arc::new(Mutex::new(NavigationOperator::new())));
 
         window.request_redraw();
 

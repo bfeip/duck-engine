@@ -17,10 +17,13 @@ pub mod event;
 pub mod input;
 pub mod operator;
 pub mod selection;
+mod compositor;
 mod scene_scale;
+mod view;
 mod viewer;
 
-pub use viewer::{OffscreenViewer, SurfacedViewer, Viewer, WindowSurface};
+pub use view::{Corner, PixelRect, View, ViewId, ViewLayout};
+pub use viewer::{OffscreenViewer, SurfacedViewer, ViewMut, Viewer, WindowSurface};
 
 // Optional integrations
 #[cfg(feature = "winit-support")]

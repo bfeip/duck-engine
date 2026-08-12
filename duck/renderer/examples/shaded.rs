@@ -5,7 +5,7 @@
 //! end-to-end use of the standard pipeline (PBR lit geometry, depth, MSAA off).
 //! Run with `cargo run --example shaded -p duck-engine-renderer`.
 
-use duck_engine_renderer::Renderer;
+use duck_engine_renderer::{Gpu, Renderer, SceneResources};
 use duck_engine_renderer::scene::{Light, PositionedCamera, SceneData};
 use duck_engine_renderer::scene::resource::{
     FaceMaterial, Instance, Mesh, NodePayload, PrimitiveType,
@@ -17,7 +17,10 @@ use duck_engine_scene::Scene;
 
 fn main() -> anyhow::Result<()> {
     let (width, height) = (800u32, 600u32);
-    let mut renderer = pollster::block_on(Renderer::new_headless(width, height));
+    let (gpu, caps) = pollster::block_on(Gpu::headless())?;
+    let mut shared =
+        SceneResources::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
+    let mut renderer = Renderer::new(&mut shared, width, height);
 
     // A single lit sphere with a warm red material.
     let mut scene = SceneData::new();
@@ -56,7 +59,7 @@ fn main() -> anyhow::Result<()> {
 
     // No `set_workflow` call: the renderer starts with the built-in ShadedWorkflow.
     let mut scene = Scene::new(scene);
-    let image = renderer.render_scene_to_image(&camera, &mut scene, None)?;
+    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, None)?;
     image.save("shaded.png")?;
     println!("Saved shaded.png ({width}×{height})");
     Ok(())

@@ -512,10 +512,12 @@ mod tests {
     }
 
     fn make_context(parts: &mut ContextParts) -> EventContext<'_> {
+        let camera_node = parts.1.active_camera().expect("mock scene has a camera");
         EventContext {
             size: (800, 600),
             cursor_position: &mut parts.0,
             scene: parts.1.clone(),
+            camera_node,
             selection: &mut parts.2,
             modifiers: Default::default(),
             emit_queue: Vec::new(),

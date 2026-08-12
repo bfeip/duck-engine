@@ -4,7 +4,6 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use crate::scene::{Light, LightType, MAX_LIGHTS, PositionedCamera, SceneData};
 
 use super::batching::ResolvedLight;
-use super::bind_group_layouts::BindGroupLayouts;
 
 /// GPU uniform buffer layout for camera data.
 ///
@@ -158,6 +157,12 @@ pub(crate) struct CameraBinding {
 }
 
 impl CameraBinding {
+    /// Write `camera` into the uniform buffer.
+    pub fn write(&self, queue: &wgpu::Queue, camera: &PositionedCamera) {
+        let uniform = [CameraUniform::from_positioned_camera(camera)];
+        queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&uniform));
+    }
+
     /// Create a camera buffer and bind group against the shared camera layout.
     pub fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> CameraBinding {
         let buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -211,67 +216,28 @@ impl LightsBinding {
             synced_generation: 0,
         }
     }
-}
-
-/// The persistent scene-level bind groups owned by the renderer: the camera
-/// and the lights array.
-///
-/// These are uniform buffers the renderer fills every frame, so it owns them
-/// outright. IBL (group 3) is deliberately *not* here: that bind group lives in
-/// [`IblResources`](crate::ibl), keyed per environment map and rebuilt by GPU
-/// preprocessing, so it can only be borrowed per frame — it joins camera/lights
-/// in [`SceneBindingRefs`], the per-frame view assembled in
-/// [`refs`](Self::refs).
-pub(crate) struct SceneBindings {
-    camera: CameraBinding,
-    lights: LightsBinding,
-}
-
-impl SceneBindings {
-    pub fn new(device: &wgpu::Device, layouts: &BindGroupLayouts) -> Self {
-        Self {
-            camera: CameraBinding::new(device, &layouts.camera),
-            lights: LightsBinding::new(device, &layouts.light),
-        }
-    }
-
-    /// Write `camera` into the shared camera uniform buffer.
-    pub fn write_camera(&self, queue: &wgpu::Queue, camera: &PositionedCamera) {
-        let uniform = [CameraUniform::from_positioned_camera(camera)];
-        queue.write_buffer(&self.camera.buffer, 0, bytemuck::cast_slice(&uniform));
-    }
 
     /// Re-upload the lights uniform if the scene's node generation has changed
     /// since the last sync. `resolve` supplies the resolved lights for the
     /// current frame (the renderer gathers them from the scene graph), and is
     /// only called when an upload is actually needed.
-    pub fn sync_lights(
+    pub fn sync(
         &mut self,
         queue: &wgpu::Queue,
         scene: &SceneData,
         resolve: impl FnOnce() -> LightsArrayUniform,
     ) {
         let node_gen = scene.node_generation();
-        if self.lights.synced_generation != node_gen {
-            queue.write_buffer(&self.lights.buffer, 0, bytes_of(&resolve()));
-            self.lights.synced_generation = node_gen;
+        if self.synced_generation != node_gen {
+            queue.write_buffer(&self.buffer, 0, bytes_of(&resolve()));
+            self.synced_generation = node_gen;
         }
     }
 
-    /// Force the next [`sync_lights`](Self::sync_lights) to re-upload, e.g. after
-    /// the scene's GPU resources are cleared.
-    pub fn invalidate_lights(&mut self) {
-        self.lights.synced_generation = 0;
-    }
-
-    /// Assemble the per-frame view of all scene-level bind groups: the owned
-    /// camera/lights plus the borrowed, optional IBL group for this frame.
-    pub fn refs<'a>(&'a self, ibl: Option<&'a wgpu::BindGroup>) -> SceneBindingRefs<'a> {
-        SceneBindingRefs {
-            camera: &self.camera.bind_group,
-            lights: &self.lights.bind_group,
-            ibl,
-        }
+    /// Force the next [`sync`](Self::sync) to re-upload, e.g. after the
+    /// scene's GPU resources are cleared.
+    pub fn invalidate(&mut self) {
+        self.synced_generation = 0;
     }
 }
 

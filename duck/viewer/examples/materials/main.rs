@@ -10,12 +10,12 @@ use winit::{
 
 use duck_engine_viewer::common::{RgbaColor, Transform, Point3};
 use duck_engine_viewer::input::{ElementState, Key};
-use duck_engine_viewer::scene::EnvironmentMapId;
+use duck_engine_viewer::scene::{EnvironmentMapId, Scene};
 use duck_engine_viewer::scene::resource::{
     DisplayBehavior, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh, PointMaterial,
     PrimitiveType,
 };
-use duck_engine_viewer::{SurfacedViewer, Viewer, winit_support};
+use duck_engine_viewer::{SurfacedViewer, ViewLayout, winit_support};
 use duck_engine_viewer::operator::{
     NavigationOperator, SelectionOperator, TransformMode, TransformOperator,
 };
@@ -35,9 +35,8 @@ fn grid_position(row: usize, col: usize) -> Point3 {
 }
 
 /// Build the material showcase scene: a 5x5 grid of spheres demonstrating PBR properties.
-fn build_material_scene(viewer: &mut Viewer) {
-    let scene_arc = viewer.scene();
-    let mut scene = scene_arc.lock();
+fn build_material_scene(scene: &Scene) {
+    let mut scene = scene.lock();
 
     // Attach default camera-space key + fill lights to a placeholder camera node.
     let camera_node = scene.add_node(
@@ -250,23 +249,13 @@ fn build_material_scene(viewer: &mut Viewer) {
             ..Default::default()
         },
     );
-
-
-    // Camera: elevated view looking down at the grid
-    viewer.with_camera_mut(|camera| {
-        camera.eye = Point3::new(0.0, 6.0, 8.0);
-        camera.target = Point3::new(0.0, 0.0, 0.0);
-    });
-    let bounds = scene.bounding().bounds;
-    if let Some(bounds) = bounds {
-        viewer.with_camera_mut(|camera| camera.fit_to_bounds(&bounds));
-    }
 }
 
 /// Application state for the winit event loop.
 struct App<'a> {
     window: Option<Arc<Window>>,
     viewer: Option<SurfacedViewer<'a>>,
+    scene: Option<Scene>,
     env_map_id: Option<EnvironmentMapId>,
 }
 
@@ -283,25 +272,37 @@ impl<'a> App<'a> {
             size.height,
         ));
 
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Translate))));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Rotate))));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Scale))));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(SelectionOperator::new())));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(NavigationOperator::new())));
+        let scene = Scene::default();
+        build_material_scene(&scene);
 
-        build_material_scene(&mut viewer);
+        let view_id = viewer.add_view("main", scene.clone(), ViewLayout::FULL);
+        let mut view = viewer.view_mut(view_id).unwrap();
+
+        let dispatcher = view.dispatcher_mut();
+        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Translate))));
+        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Rotate))));
+        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Scale))));
+        dispatcher.push_back(Arc::new(Mutex::new(SelectionOperator::new())));
+        dispatcher.push_back(Arc::new(Mutex::new(NavigationOperator::new())));
+
+        // Camera: elevated view looking down at the grid, fit to the content.
+        view.with_camera_mut(|camera| {
+            camera.eye = Point3::new(0.0, 6.0, 8.0);
+            camera.target = Point3::new(0.0, 0.0, 0.0);
+        });
+        if let Some(bounds) = scene.lock().bounding().bounds {
+            view.with_camera_mut(|camera| camera.fit_to_bounds(&bounds));
+        }
 
         // Load environment map for IBL (toggled with 'e' key)
         let env_map_path: std::path::PathBuf =
             [env!("CARGO_MANIFEST_DIR"), "..", "..", "assets", "studio_small_09_4k.hdr"].iter().collect();
-        let env_map_id = viewer
-            .scene()
-            .lock()
-            .add_environment_map_from_hdr_path(env_map_path);
+        let env_map_id = scene.lock().add_environment_map_from_hdr_path(env_map_path);
         self.env_map_id = Some(env_map_id);
 
         window.request_redraw();
         self.window = Some(window);
+        self.scene = Some(scene);
         self.viewer = Some(viewer);
     }
 }
@@ -353,7 +354,7 @@ impl<'a> ApplicationHandler for App<'a> {
             Key::Named(duck_engine_viewer::input::NamedKey::Escape) => event_loop.exit(),
             Key::Character('e') => {
                 if let Some(env_id) = self.env_map_id {
-                    let scene = viewer.scene();
+                    let scene = self.scene.as_ref().unwrap();
                     let mut scene = scene.lock();
                     let ibl_active = scene.active_environment_map().is_some();
                     if ibl_active {
@@ -388,6 +389,7 @@ fn main() {
     let mut app = App {
         window: None,
         viewer: None,
+        scene: None,
         env_map_id: None,
     };
 

@@ -1,5 +1,6 @@
 use duck_engine_renderer::{
-    FrameTargets, Gpu, Renderer, RenderWorkflow, SceneFrame, SceneFrames, SceneRenderPass, abi,
+    FrameTargets, Gpu, Renderer, RenderWorkflow, SceneFrame, SceneFrames, SceneRenderPass,
+    SceneResources, abi,
 };
 use duck_engine_renderer::scene::{Light, PositionedCamera, SceneData};
 use duck_engine_renderer::scene::resource::{
@@ -18,10 +19,10 @@ struct GoochPass {
 }
 
 impl GoochPass {
-    fn new(renderer: &Renderer) -> Self {
-        let shader = renderer.compile_user_wesl(GOOCH_WESL)
+    fn new(shared: &SceneResources) -> Self {
+        let shader = shared.compile_user_wesl(GOOCH_WESL)
             .expect("failed to compile gooch shader");
-        let pipeline = renderer.custom_pipeline_builder()
+        let pipeline = shared.custom_pipeline_builder()
             .shader(&shader, "vs_main", "fs_main")
             .label("Gooch")
             .build();
@@ -78,8 +79,8 @@ struct GoochWorkflow {
 }
 
 impl GoochWorkflow {
-    fn new(renderer: &Renderer) -> Self {
-        Self { pass: GoochPass::new(renderer) }
+    fn new(shared: &SceneResources) -> Self {
+        Self { pass: GoochPass::new(shared) }
     }
 }
 
@@ -102,7 +103,10 @@ fn main() -> anyhow::Result<()> {
     let width = 800u32;
     let height = 600u32;
 
-    let mut renderer = pollster::block_on(Renderer::new_headless(width, height));
+    let (gpu, caps) = pollster::block_on(Gpu::headless())?;
+    let mut shared =
+        SceneResources::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
+    let mut renderer = Renderer::new(&mut shared, width, height);
 
     // Build scene: UV sphere with a plain unlit material.
     // The Gooch pass ignores material bind groups and drives color purely from
@@ -138,10 +142,10 @@ fn main() -> anyhow::Result<()> {
         ortho: false,
     };
 
-    renderer.set_workflow(Box::new(GoochWorkflow::new(&renderer)));
+    renderer.set_workflow(Box::new(GoochWorkflow::new(&shared)));
 
     let mut scene = Scene::new(scene);
-    let image = renderer.render_scene_to_image(&camera, &mut scene, None)?;
+    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, None)?;
     image.save("gooch.png")?;
     println!("Saved gooch.png ({width}×{height})");
 

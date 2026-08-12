@@ -1,19 +1,25 @@
 
 use crate::input::Modifiers;
-use crate::scene::{PositionedCamera, Scene};
+use crate::scene::{PositionedCamera, Scene, resource::NodeId};
 use crate::selection::SelectionManager;
 
 use super::Event;
 
 /// Context passed to event callbacks, providing mutable access to application state.
+///
+/// All coordinates and sizes are local to the dispatching view.
 pub struct EventContext<'c> {
-    /// Current viewport size (width, height)
+    /// Current view size (width, height)
     pub size: (u32, u32),
-    /// Current cursor position in screen coordinates (x, y), or None if cursor is not over the window
+    /// Current cursor position in view-local coordinates (x, y), or None if the
+    /// cursor is not over the view
     pub cursor_position: &'c mut Option<(f32, f32)>,
     /// Shared scene handle. Its methods lock internally; take a guard with
     /// `scene.lock()` only for compound work.
     pub scene: Scene,
+    /// The scene node the dispatching view renders from. [`camera`](Self::camera)
+    /// and its writers operate on this node.
+    pub camera_node: NodeId,
     /// Mutable reference to the selection manager
     pub selection: &'c mut SelectionManager,
     /// Currently held keyboard modifier keys, updated by the dispatcher before each dispatch.
@@ -46,27 +52,29 @@ impl<'c> EventContext<'c> {
         self.size.0 as f32 / self.size.1 as f32
     }
 
-    /// Returns a [`PositionedCamera`] for the active camera node.
+    /// Returns a [`PositionedCamera`] for the view's camera node.
     ///
     /// Combines the node's world transform with its [`CameraProjection`] payload and
-    /// the current viewport aspect ratio. Panics if no active camera is set.
+    /// the view's aspect ratio. Panics if the camera node has been removed.
     pub fn camera(&self) -> PositionedCamera {
-        self.scene.camera(self.aspect()).expect("no active camera in scene")
+        self.scene
+            .camera_for_node(self.camera_node, self.aspect())
+            .expect("view camera node missing from scene")
     }
 
-    /// Writes a [`PositionedCamera`] back to the active camera node.
+    /// Writes a [`PositionedCamera`] back to the view's camera node.
     ///
     /// Updates both the node transform (pose) and the Camera payload (projection
     /// intrinsics + focus distance).
     pub fn set_camera(&mut self, cam: PositionedCamera) {
-        self.scene.set_camera(cam);
+        self.scene.set_camera_for_node(self.camera_node, cam);
     }
 
-    /// Reads the active camera, passes it to `f`, and writes it back.
+    /// Reads the view's camera, passes it to `f`, and writes it back.
     ///
     /// The read and the write share one critical section. `f` must not touch the
     /// scene.
     pub fn with_camera_mut(&mut self, f: impl FnOnce(&mut PositionedCamera)) {
-        self.scene.with_camera_mut(self.aspect(), f);
+        self.scene.with_camera_for_node_mut(self.camera_node, self.aspect(), f);
     }
 }
