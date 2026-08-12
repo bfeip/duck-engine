@@ -1,29 +1,29 @@
 use crate::PositionedCamera;
 use duck_engine_common::InnerSpace;
 
-/// Unique identifier for a named view in the scene.
-pub type ViewId = crate::resource::Id<View>;
+/// Unique identifier for a saved view in the scene.
+pub type SavedViewId = crate::resource::Id<SavedView>;
 
 /// A named camera state that can be saved and restored.
 ///
-/// A view is a complete [`PositionedCamera`] snapshot under a human-readable
-/// name — a vantage point like "Front" or "Isometric". Restore one by using
-/// its [`camera`](Self::camera) directly, or via
+/// A saved view is a complete [`PositionedCamera`] snapshot under a
+/// human-readable name — a vantage point like "Front" or "Isometric". Restore
+/// one by using its [`camera`](Self::camera) directly, or via
 /// [`apply_to`](Self::apply_to) to keep an existing camera's calibration.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct View {
+pub struct SavedView {
     /// Unique identifier for this view.
-    pub id: ViewId,
+    pub id: SavedViewId,
     /// Human-readable name (e.g. "Front", "Isometric").
     pub name: String,
     /// The saved camera configuration.
     pub camera: PositionedCamera,
 }
 
-impl View {
+impl SavedView {
     /// Creates a view from an id, a name, and a camera snapshot.
-    pub fn new(id: ViewId, name: impl Into<String>, camera: PositionedCamera) -> Self {
+    pub fn new(id: SavedViewId, name: impl Into<String>, camera: PositionedCamera) -> Self {
         Self { id, name: name.into(), camera }
     }
 

@@ -117,6 +117,45 @@ impl Scene {
         scene.set_node_payload(id, NodePayload::Camera(camera.projection()));
     }
 
+    /// Builds a [`PositionedCamera`] for the given camera node at `aspect`.
+    ///
+    /// Returns `None` if the node does not exist or is not a camera.
+    #[track_caller]
+    pub fn camera_for_node(&self, node: NodeId, aspect: f32) -> Option<PositionedCamera> {
+        self.lock().positioned_camera_for_node(node, aspect)
+    }
+
+    /// Writes a camera to the given node (pose and projection).
+    ///
+    /// Does nothing if the node does not exist.
+    #[track_caller]
+    pub fn set_camera_for_node(&self, node: NodeId, camera: PositionedCamera) {
+        let mut scene = self.lock();
+        if !scene.has_node(node) {
+            return;
+        }
+        scene.set_node_transform(node, camera.to_node_transform());
+        scene.set_node_payload(node, NodePayload::Camera(camera.projection()));
+    }
+
+    /// Reads the camera at the given node, passes it to `f`, and writes it back.
+    ///
+    /// The read and the write share one critical section, so the camera `f`
+    /// mutates is the one that gets stored. `f` must not touch this handle.
+    #[track_caller]
+    pub fn with_camera_for_node_mut(
+        &self,
+        node: NodeId,
+        aspect: f32,
+        f: impl FnOnce(&mut PositionedCamera),
+    ) {
+        let mut scene = self.lock();
+        let Some(mut camera) = scene.positioned_camera_for_node(node, aspect) else { return };
+        f(&mut camera);
+        scene.set_node_transform(node, camera.to_node_transform());
+        scene.set_node_payload(node, NodePayload::Camera(camera.projection()));
+    }
+
     /// The node driving rendering when no explicit camera is passed.
     #[track_caller]
     pub fn active_camera(&self) -> Option<NodeId> {
@@ -545,6 +584,67 @@ mod tests {
 
         assert_eq!(b.lock().node_count(), 0);
         assert!(!a.ptr_eq(&b));
+    }
+
+    #[test]
+    fn camera_for_node_round_trips_independent_cameras() {
+        const EPSILON: f32 = 1e-6;
+        let scene = Scene::default();
+
+        let make_camera = |x: f32| PositionedCamera {
+            eye: (x, 0.0, 5.0).into(),
+            target: (x, 0.0, 0.0).into(),
+            up: duck_engine_common::Vector3::unit_y(),
+            aspect: 1.0,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+            ortho: false,
+        };
+
+        let add_camera_node = |cam: &PositionedCamera| {
+            let mut guard = scene.lock();
+            let id = guard
+                .add_node(None, Some("cam".into()), cam.to_node_transform(), NodeFlags::NONE)
+                .unwrap()
+                .id();
+            guard.set_node_payload(id, NodePayload::Camera(cam.projection()));
+            id
+        };
+
+        let a = add_camera_node(&make_camera(1.0));
+        let b = add_camera_node(&make_camera(-3.0));
+
+        let cam_a = scene.camera_for_node(a, 1.0).unwrap();
+        let cam_b = scene.camera_for_node(b, 1.0).unwrap();
+        assert!((cam_a.eye.x - 1.0).abs() < EPSILON);
+        assert!((cam_b.eye.x - (-3.0)).abs() < EPSILON);
+
+        // Mutating one camera node leaves the other untouched.
+        scene.with_camera_for_node_mut(a, 1.0, |cam| cam.eye.x = 7.0);
+        assert!((scene.camera_for_node(a, 1.0).unwrap().eye.x - 7.0).abs() < EPSILON);
+        assert!((scene.camera_for_node(b, 1.0).unwrap().eye.x - (-3.0)).abs() < EPSILON);
+
+        // set_camera_for_node writes pose and projection.
+        let mut replacement = make_camera(0.0);
+        replacement.fovy = 60.0;
+        scene.set_camera_for_node(b, replacement);
+        assert!((scene.camera_for_node(b, 1.0).unwrap().fovy - 60.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn camera_for_node_rejects_non_camera_and_missing_nodes() {
+        let scene = Scene::default();
+        let plain = scene
+            .lock()
+            .add_node(None, Some("n".into()), Transform::IDENTITY, NodeFlags::NONE)
+            .unwrap()
+            .id();
+
+        assert!(scene.camera_for_node(plain, 1.0).is_none());
+
+        scene.lock().remove_node(plain);
+        assert!(scene.camera_for_node(plain, 1.0).is_none());
     }
 
     #[test]
