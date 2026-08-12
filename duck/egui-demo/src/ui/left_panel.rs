@@ -1,4 +1,4 @@
-use duck_engine_viewer::Viewer;
+use duck_engine_viewer::ViewMut;
 
 use super::{environment_tab, lights_tab, scene_tab, UiActions};
 
@@ -16,7 +16,7 @@ pub struct LeftPanel {
 }
 
 impl LeftPanel {
-    pub fn show(&mut self, ctx: &egui::Context, viewer: &mut Viewer, actions: &mut UiActions) {
+    pub fn show(&mut self, ctx: &egui::Context, view: &mut ViewMut<'_>, actions: &mut UiActions) {
         egui::SidePanel::new(egui::panel::Side::Left, "Left Panel")
             .default_width(220.0)
             .show(ctx, |ui| {
@@ -29,9 +29,9 @@ impl LeftPanel {
                 ui.separator();
 
                 match self.active_tab {
-                    LeftPanelTab::Scene => scene_tab::show(ui, viewer, actions),
-                    LeftPanelTab::Lights => lights_tab::show(ui, viewer, actions),
-                    LeftPanelTab::Environment => environment_tab::show(ui, viewer, actions),
+                    LeftPanelTab::Scene => scene_tab::show(ui, view, actions),
+                    LeftPanelTab::Lights => lights_tab::show(ui, view, actions),
+                    LeftPanelTab::Environment => environment_tab::show(ui, view, actions),
                 }
             });
     }

@@ -1,4 +1,4 @@
-use duck_engine_viewer::Viewer;
+use duck_engine_viewer::ViewMut;
 
 use super::info_sections;
 
@@ -15,11 +15,11 @@ pub struct RightPanel {
 }
 
 impl RightPanel {
-    pub fn show(&self, ctx: &egui::Context, viewer: &Viewer) {
+    pub fn show(&self, ctx: &egui::Context, view: &ViewMut<'_>) {
         egui::SidePanel::new(egui::panel::Side::Right, "Viewer Info")
             .default_width(200.0)
             .show(ctx, |ui| match self.active_tab {
-                RightPanelTab::Info => info_sections::show(ui, viewer),
+                RightPanelTab::Info => info_sections::show(ui, view),
             });
     }
 }

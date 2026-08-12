@@ -1,8 +1,8 @@
-use duck_engine_viewer::Viewer;
+use duck_engine_viewer::ViewMut;
 
 use super::UiActions;
 
-pub fn show(ui: &mut egui::Ui, viewer: &mut Viewer, actions: &mut UiActions) {
+pub fn show(ui: &mut egui::Ui, view: &mut ViewMut<'_>, actions: &mut UiActions) {
     ui.horizontal(|ui| {
         if ui.button("Load HDR...").clicked() {
             actions.load_environment = true;
@@ -14,7 +14,7 @@ pub fn show(ui: &mut egui::Ui, viewer: &mut Viewer, actions: &mut UiActions) {
 
     ui.separator();
 
-    let scene_arc = viewer.scene();
+    let scene_arc = view.scene();
     let env_id = scene_arc.active_environment_map();
     if let Some(env_id) = env_id {
         let env = scene_arc.get_environment_map(env_id);

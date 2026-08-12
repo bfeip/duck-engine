@@ -30,7 +30,7 @@ impl App<'_> {
         let Some(path) = self.pending_hdr_path.take() else { return };
         let Some(state) = self.state.as_mut() else { return };
         let path_str = path.display().to_string();
-        let scene_arc = state.viewer.scene();
+        let scene_arc = state.scene();
         let mut scene = scene_arc.lock();
         let env_id = scene.add_environment_map_from_hdr_path(&path);
         scene.set_active_environment_map(Some(env_id));
@@ -66,11 +66,12 @@ impl App<'_> {
         match load_sync(SceneSource::Path(path), LoadOptions::default()) {
             Ok(result) => {
                 let bounds = result.scene.bounding().bounds;
-                state.viewer.set_scene(Scene::new(result.scene));
+                state.viewer.set_view_scene(state.view_id, Scene::new(result.scene));
+                let mut view = state.view_mut();
                 if let Some(camera) = result.camera {
-                    state.viewer.set_camera(camera);
+                    view.set_camera(camera);
                 } else if let Some(bounds) = bounds {
-                    state.viewer.with_camera_mut(|c| c.fit_to_bounds(&bounds));
+                    view.with_camera_mut(|c| c.fit_to_bounds(&bounds));
                 }
                 log::info!("Loaded scene: {}", path_str);
             }

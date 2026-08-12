@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use duck_engine_viewer::import_export;
+use duck_engine_viewer::scene::Scene;
 
 use crate::App;
 
@@ -42,7 +43,7 @@ impl App<'_> {
 
     fn load_hdr_bytes(&mut self, bytes: Vec<u8>) {
         let Some(state) = self.state.as_mut() else { return };
-        let scene_arc = state.viewer.scene();
+        let scene_arc = state.scene();
         let mut scene = scene_arc.lock();
         let env_id = scene.add_environment_map_from_hdr_data(bytes);
         scene.set_active_environment_map(Some(env_id));
@@ -68,11 +69,12 @@ impl App<'_> {
         match load_sync(SceneSource::Bytes(bytes), LoadOptions::default()) {
             Ok(result) => {
                 let bounds = result.scene.bounding().bounds;
-                state.viewer.set_scene(Scene::new(result.scene));
+                state.viewer.set_view_scene(state.view_id, Scene::new(result.scene));
+                let mut view = state.view_mut();
                 if let Some(camera) = result.camera {
-                    state.viewer.set_camera(camera);
+                    view.set_camera(camera);
                 } else if let Some(bounds) = bounds {
-                    state.viewer.with_camera_mut(|c| c.fit_to_bounds(&bounds));
+                    view.with_camera_mut(|c| c.fit_to_bounds(&bounds));
                 }
                 log::info!("Loaded scene");
             }

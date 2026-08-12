@@ -29,7 +29,7 @@ use winit::{
 };
 
 use duck_engine_viewer::winit_support;
-use duck_engine_viewer::{OffscreenViewer, WindowSurface};
+use duck_engine_viewer::{OffscreenViewer, ViewId, ViewLayout, WindowSurface};
 use duck_engine_viewer::event::Event;
 use duck_engine_viewer::input::ElementState;
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode};
@@ -76,6 +76,8 @@ struct ViewerState<'a> {
     /// Latest cursor position in physical pixels (window space).
     last_cursor: Option<(f32, f32)>,
     viewer: OffscreenViewer,
+    /// The single view filling the central panel.
+    view_id: ViewId,
     surface: WindowSurface<'a>,
     window: Arc<Window>,
 
@@ -138,22 +140,28 @@ impl ViewerState<'static> {
             wgpu::FilterMode::Linear,
         );
 
+        let scene = Scene::default();
+        let view_id = viewer.add_view("main", scene.clone(), ViewLayout::FULL);
+
         let construction_options = Rc::new(RefCell::new(ConstructionOptions::new()));
-        let document = Arc::new(Mutex::new(Document::new(viewer.scene())));
+        let document = Arc::new(Mutex::new(Document::new(scene)));
         let notifications = Notifications::default();
 
+        let mut view = viewer.view_mut(view_id).expect("main view");
+        let dispatcher = view.dispatcher_mut();
         let sel_op = Arc::new(Mutex::new(SelectionOperator::new()));
-        viewer.dispatcher_mut().push_back(sel_op.clone());
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(NavigationOperator::new())));
+        dispatcher.push_back(sel_op.clone());
+        dispatcher.push_back(Arc::new(Mutex::new(NavigationOperator::new())));
 
         let mut tools = ToolManager::new(sel_op);
-        tools.install(viewer.dispatcher_mut());
+        tools.install(dispatcher);
 
         // Behind the tool host so an active tool keeps any key it consumes.
         let delete_op = Arc::new(Mutex::new(DeleteOperator::new()));
-        viewer.dispatcher_mut().push_back(Arc::clone(&delete_op));
+        dispatcher.push_back(Arc::clone(&delete_op));
         let undo_op = Arc::new(Mutex::new(UndoRedoOperator::new()));
-        viewer.dispatcher_mut().push_back(Arc::clone(&undo_op));
+        dispatcher.push_back(Arc::clone(&undo_op));
+        drop(view);
 
         tools.register(TransformTool::new(TransformMode::Translate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(TransformTool::new(TransformMode::Rotate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
@@ -179,6 +187,7 @@ impl ViewerState<'static> {
             viewport_drag_active: false,
             last_cursor: None,
             viewer,
+            view_id,
             surface,
             window,
             construction_options,
@@ -233,16 +242,21 @@ impl ViewerState<'static> {
             Some(grid::Grid::add_to_scene(&mut scene, &coptions.grid, &coptions.construction_plane));
         drop(coptions);
 
-        self.viewer.set_scene(scene.clone());
+        self.viewer.set_view_scene(self.view_id, scene.clone());
         self.document.lock().unwrap().set_scene(scene);
     }
 }
 
 impl<'a> ViewerState<'a> {
+    /// A clone of the main view's scene handle.
+    fn scene(&self) -> Scene {
+        self.viewer.view(self.view_id).expect("main view").scene()
+    }
+
     /// Replaces the scene's grid visuals to match the current construction
     /// plane and grid settings.
     fn rebuild_grid(&mut self) {
-        let scene = self.viewer.scene();
+        let scene = self.scene();
         if let Some(grid) = self.grid.take() {
             grid.remove_from_scene(&scene);
         }
@@ -349,7 +363,11 @@ impl<'a> ViewerState<'a> {
     /// undo may remove selected nodes outright — then replays the step.
     fn apply_undo(&mut self, action: UndoAction) {
         self.tools.activate(None);
-        self.viewer.selection_mut().clear();
+        self.viewer
+            .view_mut(self.view_id)
+            .expect("main view")
+            .selection_mut()
+            .clear();
         let (result, verb) = match action {
             UndoAction::Undo => (self.document.lock().unwrap().undo(), "Undid"),
             UndoAction::Redo => (self.document.lock().unwrap().redo(), "Redid"),
@@ -379,12 +397,13 @@ impl<'a> ViewerState<'a> {
         let scene_texture_id = self.scene_texture_id;
         let mut viewport_rect = None;
         let mut ui_actions = Vec::new();
+        let mut view = self.viewer.view_mut(self.view_id).expect("main view");
         let full_output = egui_ctx.run(raw_input, |ctx| {
             ui_actions = self.ui.show(
                 ctx,
                 &self.document,
                 &self.construction_options,
-                self.viewer.selection_mut(),
+                view.selection_mut(),
                 &mut self.tools,
                 &self.notifications,
             );
@@ -397,13 +416,15 @@ impl<'a> ViewerState<'a> {
                     viewport_rect = Some(ui.add(image).rect);
                 });
         });
+        drop(view);
         self.egui_winit.handle_platform_output(&self.window, full_output.platform_output.clone());
 
         // A delete request aborts any in-progress tool (deactivate tears down
         // its preview and restores hidden sources) before the parts go away.
         if self.delete_op.lock().unwrap().take_pending() {
             self.tools.activate(None);
-            let n = delete::delete_selected_parts(&self.document, self.viewer.selection_mut());
+            let mut view = self.viewer.view_mut(self.view_id).expect("main view");
+            let n = delete::delete_selected_parts(&self.document, view.selection_mut());
             if n > 0 {
                 let plural = if n == 1 { "" } else { "s" };
                 self.notifications.info(format!("Deleted {n} part{plural}"));
@@ -417,7 +438,8 @@ impl<'a> ViewerState<'a> {
 
         // After egui so a panel-driven finish (e.g. boolean Apply) cedes back
         // to selection in the same frame.
-        self.tools.update(&self.viewer.scene());
+        let scene = self.scene();
+        self.tools.update(&scene);
 
         // UI actions run outside the frame closure: the file dialogs block.
         for action in ui_actions {

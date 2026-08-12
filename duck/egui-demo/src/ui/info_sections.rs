@@ -1,21 +1,21 @@
 use duck_engine_viewer::scene::resource::SubGeometryKind;
 use duck_engine_viewer::selection::SelectionItem;
-use duck_engine_viewer::Viewer;
+use duck_engine_viewer::ViewMut;
 
-pub fn show(ui: &mut egui::Ui, viewer: &Viewer) {
-    build_camera_section(ui, viewer);
+pub fn show(ui: &mut egui::Ui, view: &ViewMut<'_>) {
+    build_camera_section(ui, view);
     ui.separator();
-    build_operators_section(ui, viewer);
+    build_operators_section(ui, view);
     ui.separator();
-    build_selection_section(ui, viewer);
+    build_selection_section(ui, view);
     ui.separator();
-    build_scene_info_section(ui, viewer);
+    build_scene_info_section(ui, view);
 }
 
-fn build_camera_section(ui: &mut egui::Ui, viewer: &Viewer) {
+fn build_camera_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
     ui.heading("Camera");
 
-    let camera = viewer.camera();
+    let camera = view.camera();
     ui.label(format!(
         "Projection: {}",
         if camera.ortho { "Orthographic" } else { "Perspective" }
@@ -32,17 +32,17 @@ fn build_camera_section(ui: &mut egui::Ui, viewer: &Viewer) {
     ui.label(format!("Far: {:.4}", camera.zfar));
 }
 
-fn build_operators_section(ui: &mut egui::Ui, viewer: &Viewer) {
+fn build_operators_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
     ui.heading("Operators");
 
-    for name in viewer.dispatcher().iter_names() {
+    for name in view.dispatcher().iter_names() {
         ui.label(format!("  {}", name));
     }
 }
 
-fn selection_item_label(item: SelectionItem, viewer: &Viewer) -> String {
+fn selection_item_label(item: SelectionItem, view: &ViewMut<'_>) -> String {
     let node_id = item.node_id();
-    let node_label = viewer
+    let node_label = view
         .scene()
         .get_node(node_id)
         .and_then(|n| n.name.clone())
@@ -61,10 +61,10 @@ fn selection_item_label(item: SelectionItem, viewer: &Viewer) -> String {
     }
 }
 
-fn build_selection_section(ui: &mut egui::Ui, viewer: &Viewer) {
+fn build_selection_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
     ui.heading("Selection");
 
-    let selection = viewer.selection();
+    let selection = view.selection();
 
     if selection.is_empty() {
         ui.label("(none)");
@@ -72,19 +72,19 @@ fn build_selection_section(ui: &mut egui::Ui, viewer: &Viewer) {
         ui.label(format!("Count: {}", selection.len()));
 
         if let Some(primary) = selection.primary() {
-            ui.label(format!("Primary: {}", selection_item_label(primary, viewer)));
+            ui.label(format!("Primary: {}", selection_item_label(primary, view)));
         }
 
         ui.label("Selected:");
         for item in selection.iter() {
-            ui.label(format!("  • {}", selection_item_label(*item, viewer)));
+            ui.label(format!("  • {}", selection_item_label(*item, view)));
         }
     }
 }
 
-fn build_scene_info_section(ui: &mut egui::Ui, viewer: &Viewer) {
+fn build_scene_info_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
     ui.heading("Scene Info");
-    let scene = viewer.scene();
+    let scene = view.scene();
     ui.label(format!("Meshes: {}", scene.mesh_count()));
     ui.label(format!("Instances: {}", scene.instance_count()));
     ui.label(format!("Nodes: {}", scene.node_count()));

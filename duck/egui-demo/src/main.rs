@@ -30,7 +30,7 @@ use duck_engine_viewer::common::Transform;
 use duck_engine_viewer::scene::{Light, LightType, Scene};
 use duck_engine_viewer::scene::resource::{NodeFlags, NodePayload};
 use duck_engine_viewer::winit_support;
-use duck_engine_viewer::{OffscreenViewer, WindowSurface};
+use duck_engine_viewer::{OffscreenViewer, ViewId, ViewLayout, ViewMut, WindowSurface};
 
 /// Debug actions triggered by key presses
 enum DebugAction {
@@ -76,6 +76,8 @@ struct ViewerState<'a> {
     /// Latest cursor position in physical pixels (window space).
     last_cursor: Option<(f32, f32)>,
     viewer: OffscreenViewer,
+    /// The single view filling the central panel.
+    view_id: ViewId,
     surface: WindowSurface<'a>,
     window: Arc<Window>,
     nav_op: Arc<Mutex<NavigationOperator>>,
@@ -97,12 +99,17 @@ impl ViewerState<'static> {
             surface.has_compute(),
         );
 
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Translate))));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Rotate))));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Scale))));
-        viewer.dispatcher_mut().push_back(Arc::new(Mutex::new(SelectionOperator::new())));
+        let view_id = viewer.add_view("main", Scene::default(), ViewLayout::FULL);
         let nav_op = Arc::new(Mutex::new(NavigationOperator::new()));
-        viewer.dispatcher_mut().push_back(nav_op.clone());
+        {
+            let mut view = viewer.view_mut(view_id).expect("main view");
+            let dispatcher = view.dispatcher_mut();
+            dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Translate))));
+            dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Rotate))));
+            dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Scale))));
+            dispatcher.push_back(Arc::new(Mutex::new(SelectionOperator::new())));
+            dispatcher.push_back(nav_op.clone());
+        }
 
         let egui_ctx = egui::Context::default();
         let egui_winit = egui_winit::State::new(
@@ -136,6 +143,7 @@ impl ViewerState<'static> {
             viewport_drag_active: false,
             last_cursor: None,
             viewer,
+            view_id,
             surface,
             window,
             nav_op,
@@ -144,6 +152,16 @@ impl ViewerState<'static> {
 }
 
 impl<'a> ViewerState<'a> {
+    /// Mutable access to the main view and its scene's shared state.
+    pub(crate) fn view_mut(&mut self) -> ViewMut<'_> {
+        self.viewer.view_mut(self.view_id).expect("main view")
+    }
+
+    /// A clone of the main view's scene handle.
+    pub(crate) fn scene(&self) -> Scene {
+        self.viewer.view(self.view_id).expect("main view").scene()
+    }
+
     /// Handle a window event. egui always sees it first (for its own hover /
     /// focus state); events that belong to the 3D viewport are additionally
     /// routed to the viewer with pointer-capture semantics and viewport-local
@@ -279,8 +297,9 @@ impl<'a> App<'a> {
             let ui = &mut self.ui;
             let scene_texture_id = state.scene_texture_id;
             let mut viewport_rect = None;
+            let mut view = state.viewer.view_mut(state.view_id).expect("main view");
             let full_output = state.egui_ctx.run(raw_input, |ctx| {
-                ui_actions = ui.build(ctx, &mut state.viewer, &state.nav_op);
+                ui_actions = ui.build(ctx, &mut view, &state.nav_op);
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ctx, |ui| {
@@ -293,6 +312,7 @@ impl<'a> App<'a> {
                     });
             });
 
+            drop(view);
             state.egui_winit.handle_platform_output(
                 &state.window,
                 full_output.platform_output.clone(),
@@ -376,27 +396,26 @@ impl<'a> App<'a> {
         }
 
         {
-            let scene = self.state.as_mut().unwrap().viewer.scene();
+            let scene = self.state.as_ref().unwrap().scene();
             for change in ui_actions.visibility_changes {
                 scene.set_node_visibility(change.node_id, change.new_visibility);
             }
         }
 
         if let Some(camera) = ui_actions.set_camera {
-            self.state.as_mut().unwrap().viewer.set_camera(camera);
+            self.state.as_mut().unwrap().view_mut().set_camera(camera);
         }
     }
 
     fn clear_scene(&mut self) {
         if let Some(state) = self.state.as_mut() {
-            state.viewer.set_scene(Scene::default());
+            state.viewer.set_view_scene(state.view_id, Scene::default());
             log::info!("Scene cleared");
         }
     }
 
     fn add_light(&mut self, light_type: LightType) {
         let Some(state) = self.state.as_mut() else { return };
-        let viewer = &mut state.viewer;
         let white = RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
 
         let (light, transform) = match light_type {
@@ -411,7 +430,7 @@ impl<'a> App<'a> {
             ),
         };
 
-        let scene_arc = viewer.scene();
+        let scene_arc = state.scene();
         let mut scene = scene_arc.lock();
         let node_id = scene.add_node(None, None, transform, NodeFlags::NONE).expect("add light node").id();
         scene.set_node_payload(node_id, NodePayload::Light(light));
@@ -420,7 +439,7 @@ impl<'a> App<'a> {
 
     fn clear_environment(&mut self) {
         if let Some(state) = self.state.as_mut() {
-            state.viewer.scene().set_active_environment_map(None);
+            state.scene().set_active_environment_map(None);
             log::info!("Environment cleared");
         }
     }
@@ -463,7 +482,7 @@ impl<'a> App<'a> {
 
     fn toggle_ortho(&mut self) {
         if let Some(state) = self.state.as_mut() {
-            state.viewer.with_camera_mut(|c| c.ortho = !c.ortho);
+            state.view_mut().with_camera_mut(|c| c.ortho = !c.ortho);
         }
     }
 
@@ -471,12 +490,13 @@ impl<'a> App<'a> {
         use duck_engine_viewer::renderer::SceneWorkflow;
         let Some(state) = self.state.as_mut() else { return };
         self.workflow_index = (self.workflow_index + 1) % 2;
+        let mut view = state.view_mut();
         let workflow: Box<SceneWorkflow> = match self.workflow_index {
-            0 => Box::new(state.viewer.shaded_workflow()),
-            _ => Box::new(state.viewer.hidden_line_workflow(Default::default())),
+            0 => Box::new(view.shaded_workflow()),
+            _ => Box::new(view.hidden_line_workflow(Default::default())),
         };
         log::info!("Switched to '{}' workflow", workflow.name());
-        state.viewer.set_workflow(workflow);
+        view.set_workflow(workflow);
     }
 }
 

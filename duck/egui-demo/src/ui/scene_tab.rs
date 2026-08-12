@@ -1,9 +1,9 @@
 use duck_engine_viewer::scene::resource::{EffectiveVisibility, NodeId, NodePayload, Visibility};
-use duck_engine_viewer::Viewer;
+use duck_engine_viewer::ViewMut;
 
 use super::{UiActions, VisibilityChange};
 
-pub fn show(ui: &mut egui::Ui, viewer: &Viewer, actions: &mut UiActions) {
+pub fn show(ui: &mut egui::Ui, view: &ViewMut<'_>, actions: &mut UiActions) {
     ui.horizontal(|ui| {
         if ui.button("Open...").clicked() {
             actions.load_scene = true;
@@ -22,7 +22,7 @@ pub fn show(ui: &mut egui::Ui, viewer: &Viewer, actions: &mut UiActions) {
         .show(ui, |ui| {
             // The scene must not be locked here: this closure builds widgets,
             // and `render_node_tree` recurses through them.
-            let scene = viewer.scene();
+            let scene = view.scene();
             let roots = scene.root_nodes();
             if roots.is_empty() {
                 ui.label("(empty)");

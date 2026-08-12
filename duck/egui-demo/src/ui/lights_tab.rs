@@ -1,11 +1,11 @@
 use duck_engine_viewer::common::RgbaColor;
 use duck_engine_viewer::scene::{Light, LightType};
 use duck_engine_viewer::scene::resource::{NodeId, NodePayload};
-use duck_engine_viewer::Viewer;
+use duck_engine_viewer::ViewMut;
 
 use super::UiActions;
 
-pub fn show(ui: &mut egui::Ui, viewer: &mut Viewer, actions: &mut UiActions) {
+pub fn show(ui: &mut egui::Ui, view: &mut ViewMut<'_>, actions: &mut UiActions) {
     ui.horizontal(|ui| {
         ui.label("Add:");
         if ui.button("Point").clicked() {
@@ -19,7 +19,7 @@ pub fn show(ui: &mut egui::Ui, viewer: &mut Viewer, actions: &mut UiActions) {
         }
     });
 
-    let scene_arc = viewer.scene();
+    let scene_arc = view.scene();
     let light_nodes: Vec<(NodeId, Light)> = scene_arc.light_nodes();
 
     ui.label(format!("({} lights)", light_nodes.len()));

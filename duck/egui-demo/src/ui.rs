@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use duck_engine_viewer::operator::{NavigationMode, NavigationOperator};
 use duck_engine_viewer::scene::{LightType, PositionedCamera};
 use duck_engine_viewer::scene::resource::{NodeId, Visibility};
-use duck_engine_viewer::Viewer;
+use duck_engine_viewer::ViewMut;
 
 /// Minimum window width (in logical points) for the GUI to be shown.
 /// Below this the demo renders only the 3D scene.
@@ -53,7 +53,7 @@ impl UiState {
     pub fn build(
         &mut self,
         ctx: &egui::Context,
-        viewer: &mut Viewer,
+        view: &mut ViewMut<'_>,
         nav_op: &Arc<Mutex<NavigationOperator>>,
     ) -> UiActions {
         let mut actions = UiActions::default();
@@ -66,8 +66,8 @@ impl UiState {
         let mode_info = ModeInfo { mode: nav_op.lock().unwrap().mode() };
 
         build_performance_panel(ctx, &mode_info);
-        self.left.show(ctx, viewer, &mut actions);
-        self.right.show(ctx, viewer);
+        self.left.show(ctx, view, &mut actions);
+        self.right.show(ctx, view);
 
         actions
     }
