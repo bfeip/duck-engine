@@ -38,12 +38,6 @@ fn grid_position(row: usize, col: usize) -> Point3 {
 fn build_material_scene(scene: &Scene) {
     let mut scene = scene.lock();
 
-    // Attach default camera-space key + fill lights to a placeholder camera node.
-    let camera_node = scene.add_node(
-        None, Some("Camera".to_string()), Default::default(), NodeFlags::NONE
-    ).unwrap().id();
-    scene.set_default_light_nodes(camera_node);
-
     // Shared sphere mesh for all instances
     let mesh_id = scene.add_mesh(Mesh::sphere(
         SPHERE_RADIUS,
@@ -286,12 +280,11 @@ impl<'a> App<'a> {
         dispatcher.push_back(Arc::new(Mutex::new(NavigationOperator::new())));
 
         // Camera: elevated view looking down at the grid, fit to the content.
-        view.with_camera_mut(|camera| {
-            camera.eye = Point3::new(0.0, 6.0, 8.0);
-            camera.target = Point3::new(0.0, 0.0, 0.0);
-        });
+        let camera = view.camera_mut();
+        camera.eye = Point3::new(0.0, 6.0, 8.0);
+        camera.target = Point3::new(0.0, 0.0, 0.0);
         if let Some(bounds) = scene.lock().bounding().bounds {
-            view.with_camera_mut(|camera| camera.fit_to_bounds(&bounds));
+            view.camera_mut().fit_to_bounds(&bounds);
         }
 
         // Load environment map for IBL (toggled with 'e' key)

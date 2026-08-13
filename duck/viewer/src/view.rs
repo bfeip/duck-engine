@@ -1,8 +1,8 @@
 //! Views: independently rendered, independently interactive regions of a
 //! viewer's target.
 //!
-//! A [`Viewer`](crate::Viewer) hosts any number of views. Each view pairs a
-//! scene handle with its own camera node, renderer (workflow, background,
+//! A [`Viewer`](crate::Viewer) hosts any number of views. Each view owns its
+//! camera and pairs a scene handle with a renderer (workflow, background,
 //! depth/MSAA targets), operator stack, and cursor state — a view is as capable
 //! as a whole single-view viewer. Views are placed by a [`ViewLayout`] and may
 //! tile the target or overlap it; the viewer composites them in stack order
@@ -13,13 +13,16 @@
 //! A view over its own small scene with a transparent background acts as an
 //! overlay — e.g. an axis triad in a corner.
 
-use duck_engine_scene::resource::NodeId;
+use duck_engine_common::{Deg, Quaternion, Rotation3};
 use duck_engine_scene::Scene;
 
 use crate::{
     event::EventDispatcher,
-    renderer::Renderer,
-    scene::PositionedCamera,
+    renderer::{Renderer, ResolvedLight},
+    scene::{
+        Light, PositionedCamera, SceneData,
+        common::{RgbaColor, Transform},
+    },
 };
 
 /// Identifies a view within its [`Viewer`](crate::Viewer). Viewer-local and
@@ -128,6 +131,69 @@ pub(crate) struct ViewTarget {
     pub bind_group: wgpu::BindGroup,
 }
 
+/// When a view's camera-space lights ([`View::camera_lights`]) contribute to
+/// its rendering.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum HeadlightMode {
+    /// Active only while the view's scene has no attached light nodes and no
+    /// active environment map (evaluated each frame).
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+/// A light rigged in camera space, composed with the view camera's pose each
+/// frame. The transform's -Z axis is the light direction and its translation
+/// is the offset from the eye, matching the node-transform conventions of
+/// scene lights.
+#[derive(Clone, Debug)]
+pub struct CameraLight {
+    pub light: Light,
+    pub transform: Transform,
+}
+
+/// The default headlight rig: a white key + fill directional pair. The key
+/// light comes from the camera's upper-left corner; the fill from the
+/// lower-right corner.
+pub(crate) fn default_camera_lights() -> Vec<CameraLight> {
+    let white = RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+    // Upper-left: yaw +45° (toward right), then pitch -45° (downward).
+    let key_rotation = Quaternion::from_angle_x(Deg(-45.0)) * Quaternion::from_angle_y(Deg(45.0));
+    // Lower-right: yaw -45° (toward left), then pitch +45° (upward) — opposite corner.
+    let fill_rotation = Quaternion::from_angle_x(Deg(45.0)) * Quaternion::from_angle_y(Deg(-45.0));
+    vec![
+        CameraLight {
+            light: Light::directional(white, 1.0),
+            transform: Transform { rotation: key_rotation, ..Transform::IDENTITY },
+        },
+        CameraLight {
+            light: Light::directional(white, 0.3),
+            transform: Transform { rotation: fill_rotation, ..Transform::IDENTITY },
+        },
+    ]
+}
+
+/// Resolves camera-space lights to world space against `camera`'s pose.
+pub(crate) fn resolve_camera_lights(
+    camera: &PositionedCamera,
+    lights: &[CameraLight],
+) -> Vec<ResolvedLight> {
+    let pose = camera.pose_transform().to_matrix();
+    lights
+        .iter()
+        .map(|cl| {
+            let world = pose * cl.transform.to_matrix();
+            let (position, direction) = Light::world_position_and_direction(&world);
+            ResolvedLight {
+                light: cl.light.clone(),
+                position: position.into(),
+                direction: direction.into(),
+            }
+        })
+        .collect()
+}
+
 /// One independently rendered, independently interactive region of a viewer.
 /// See the [module docs](self) for the concept; create views with
 /// [`Viewer::add_view`](crate::Viewer::add_view) and mutate them through
@@ -136,11 +202,14 @@ pub struct View {
     pub(crate) id: ViewId,
     pub(crate) name: String,
     pub(crate) scene: Scene,
-    /// The scene node this view renders from.
-    pub(crate) camera_node: NodeId,
-    /// True when the view created its camera node (and removes it on drop);
-    /// false when it adopted the scene's own active camera.
-    pub(crate) owns_camera_node: bool,
+    /// The camera this view renders from. Its aspect is kept in sync with the
+    /// view's pixel size by the viewer.
+    pub(crate) camera: PositionedCamera,
+    /// When [`camera_lights`](Self::camera_lights) contribute to rendering.
+    pub(crate) headlight: HeadlightMode,
+    /// Camera-space lights composed with the scene's lights while headlights
+    /// are active.
+    pub(crate) camera_lights: Vec<CameraLight>,
     pub(crate) layout: ViewLayout,
     /// Cached `layout.resolve()` against the current target size.
     pub(crate) rect: PixelRect,
@@ -167,11 +236,6 @@ impl View {
         self.scene.clone()
     }
 
-    /// The scene node this view renders from.
-    pub fn camera_node(&self) -> NodeId {
-        self.camera_node
-    }
-
     pub fn layout(&self) -> ViewLayout {
         self.layout
     }
@@ -195,10 +259,40 @@ impl View {
         self.rect.width as f32 / self.rect.height.max(1) as f32
     }
 
-    /// Builds a [`PositionedCamera`] for this view's camera node at the view's
-    /// aspect ratio. `None` if the node has been removed from the scene.
-    pub fn camera(&self) -> Option<PositionedCamera> {
-        self.scene.camera_for_node(self.camera_node, self.aspect())
+    /// The camera this view renders from.
+    pub fn camera(&self) -> &PositionedCamera {
+        &self.camera
+    }
+
+    /// When this view's camera-space lights contribute to rendering.
+    pub fn headlight(&self) -> HeadlightMode {
+        self.headlight
+    }
+
+    /// This view's camera-space lights.
+    pub fn camera_lights(&self) -> &[CameraLight] {
+        &self.camera_lights
+    }
+
+    /// Resolves this view's camera-space lights against `camera` when the
+    /// headlight mode is active for the scene's current state.
+    pub(crate) fn active_camera_lights(
+        &self,
+        camera: &PositionedCamera,
+        scene: &SceneData,
+    ) -> Vec<ResolvedLight> {
+        let on = match self.headlight {
+            HeadlightMode::On => true,
+            HeadlightMode::Off => false,
+            HeadlightMode::Auto => {
+                !scene.has_light_nodes() && scene.active_environment_map().is_none()
+            }
+        };
+        if on {
+            resolve_camera_lights(camera, &self.camera_lights)
+        } else {
+            Vec::new()
+        }
     }
 
     /// The view's operator stack.

@@ -165,7 +165,7 @@ impl DrawBatch {
 
 /// A light resolved to world space, combining photometric data from `NodePayload::Light`
 /// with position and direction derived from the node's world transform.
-pub(crate) struct ResolvedLight {
+pub struct ResolvedLight {
     pub light: Light,
     /// World-space position (relevant for Point and Spot lights).
     pub position: [f32; 3],
@@ -251,8 +251,10 @@ pub(crate) fn collect_scene_frame_data(scene: &SceneData) -> SceneFrameData {
 /// 1. By material ID (to minimize bind group changes)
 /// 2. By primitive type (to minimize pipeline changes)
 /// 3. By mesh ID (for GPU cache locality)
-pub(crate) fn collect_draw_batches(scene: &SceneData) -> Vec<DrawBatch> {
-    let instance_transforms = collect_scene_frame_data(scene).instance_transforms;
+pub(crate) fn collect_draw_batches(
+    scene: &SceneData,
+    instance_transforms: Vec<InstanceTransform>,
+) -> Vec<DrawBatch> {
     let mut batch_map: HashMap<BatchKey, DrawBatch> = HashMap::new();
 
     for inst_transform in instance_transforms {
@@ -553,6 +555,9 @@ pub struct DrawData {
     /// Resolved outline configuration for secondary selections. `Some` when secondary
     /// highlights exist; `None` otherwise.
     secondary_highlight_config: Option<crate::highlight_query::HighlightConfig>,
+    /// Scene lights resolved to world space during the same tree traversal that
+    /// collected the batches.
+    lights: Vec<ResolvedLight>,
 }
 
 impl DrawData {
@@ -572,7 +577,9 @@ impl DrawData {
         viewport: (u32, u32),
         highlight: Option<&dyn HighlightQuery>,
     ) -> Self {
-        let mut batches = collect_draw_batches(scene);
+        let frame_data = collect_scene_frame_data(scene);
+        let lights = frame_data.lights;
+        let mut batches = collect_draw_batches(scene, frame_data.instance_transforms);
         sort_batches_for_transparency(&mut batches, camera.eye);
 
         // Replace the effective transform of screen-space instances before any
@@ -628,7 +635,13 @@ impl DrawData {
             secondary_highlight_sub_geom_batches,
             highlight_config,
             secondary_highlight_config,
+            lights,
         }
+    }
+
+    /// Scene lights resolved to world space for this frame.
+    pub fn lights(&self) -> &[ResolvedLight] {
+        &self.lights
     }
 
     /// All batches (opaque, transparent, selected, etc.), sorted for rendering.

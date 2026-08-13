@@ -33,7 +33,7 @@ pub struct UiActions {
     pub load_environment: bool,
     pub clear_environment: bool,
     pub visibility_changes: Vec<VisibilityChange>,
-    /// When set, replace the active camera with this value.
+    /// When set, replace the view's camera with this value.
     pub set_camera: Option<PositionedCamera>,
 }
 

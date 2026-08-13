@@ -145,7 +145,7 @@ fn main() -> anyhow::Result<()> {
     renderer.set_workflow(Box::new(GoochWorkflow::new(&shared)));
 
     let mut scene = Scene::new(scene);
-    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, None)?;
+    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, &[], None)?;
     image.save("gooch.png")?;
     println!("Saved gooch.png ({width}×{height})");
 

@@ -116,13 +116,13 @@ impl CylinderOperator {
 
     /// Signed height from projecting the cursor pick ray onto the plane normal through `center`.
     fn height_from_cursor(center: Point3, plane: &Plane, position: (f32, f32), ctx: &mut EventContext) -> f32 {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let ray: Ray = camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
         ray.closest_param_on_axis(center, plane.normal).unwrap_or(0.0)
     }
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let cplane = self.construction_options.borrow().construction_plane;
         let Some(snap) = self
             .construction_options
@@ -155,7 +155,7 @@ impl CylinderOperator {
         position: (f32, f32),
         ctx: &mut EventContext
     ) -> bool {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         // Exclude the preview so the radius can snap through a corner, not to the
         // preview's own geometry.
         let radius = self
@@ -222,7 +222,7 @@ impl CylinderOperator {
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
 
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         // While defining, exclude our own preview so snapping doesn't lock onto it.
         let snap = self.construction_options.borrow().resolve_snap(
             cursor,

@@ -71,7 +71,7 @@ impl App<'_> {
                 if let Some(camera) = result.camera {
                     view.set_camera(camera);
                 } else if let Some(bounds) = bounds {
-                    view.with_camera_mut(|c| c.fit_to_bounds(&bounds));
+                    view.camera_mut().fit_to_bounds(&bounds);
                 }
                 log::info!("Loaded scene: {}", path_str);
             }

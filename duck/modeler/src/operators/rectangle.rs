@@ -131,7 +131,7 @@ impl RectangleOperator {
     }
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let cplane = self.construction_options.borrow().construction_plane;
         let Some(snap) = self
             .construction_options
@@ -167,7 +167,7 @@ impl RectangleOperator {
         position: (f32, f32),
         ctx: &mut EventContext
     ) -> bool {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         // Exclude the preview so the footprint can snap through it.
         let Some(corner) = self
             .construction_options
@@ -210,7 +210,7 @@ impl RectangleOperator {
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
 
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         // While defining, exclude our own preview so snapping doesn't lock onto it.
         let snap = self.construction_options.borrow().resolve_snap(
             cursor,

@@ -335,7 +335,7 @@ impl FaceTweakTarget {
     /// Move the ghost to the interaction's current delta.
     fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
         let Some(ghost) = self.preview.preview_node() else { return };
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let delta = interaction.delta_matrix(&camera, ctx.size);
         let transform = decompose_matrix(&delta);
         ctx.scene.set_node_transform(ghost, transform);
@@ -352,7 +352,7 @@ impl FaceTweakTarget {
         options: &CadTessellationOptions,
         notifications: &Notifications,
     ) {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let delta = interaction.delta_matrix(&camera, ctx.size);
 
         self.preview.cancel();

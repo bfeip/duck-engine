@@ -22,7 +22,7 @@ mod scene_scale;
 mod view;
 mod viewer;
 
-pub use view::{Corner, PixelRect, View, ViewId, ViewLayout};
+pub use view::{CameraLight, Corner, HeadlightMode, PixelRect, View, ViewId, ViewLayout};
 pub use viewer::{OffscreenViewer, SurfacedViewer, ViewMut, Viewer, WindowSurface};
 
 // Optional integrations

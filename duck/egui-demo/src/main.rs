@@ -482,7 +482,9 @@ impl<'a> App<'a> {
 
     fn toggle_ortho(&mut self) {
         if let Some(state) = self.state.as_mut() {
-            state.view_mut().with_camera_mut(|c| c.ortho = !c.ortho);
+            let mut view = state.view_mut();
+            let camera = view.camera_mut();
+            camera.ortho = !camera.ortho;
         }
     }
 

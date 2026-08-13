@@ -15,8 +15,8 @@ mod shaders;
 
 pub use renderer::{
     CustomPipelineBuilder, DrawBatch, DrawData, HiddenLineConfig, HiddenLineWorkflow,
-    MaterialPipelineCache, Renderer, SceneFrame, SceneFrames, SceneRenderPass, SceneResources,
-    SceneWorkflow, ShadedWorkflow, instance_buffer_layout, vertex_buffer_layout,
+    MaterialPipelineCache, Renderer, ResolvedLight, SceneFrame, SceneFrames, SceneRenderPass,
+    SceneResources, SceneWorkflow, ShadedWorkflow, instance_buffer_layout, vertex_buffer_layout,
 };
 pub use highlight_query::{HighlightConfig, HighlightQuery};
 

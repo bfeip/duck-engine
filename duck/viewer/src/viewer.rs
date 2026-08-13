@@ -1,7 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
 use duck_engine_common::Vector3;
-use duck_engine_scene::resource::{NodeFlags, NodeId};
 use duck_engine_scene::Scene;
 use web_time::Instant;
 
@@ -9,13 +8,16 @@ use crate::{
     compositor::Compositor,
     event::{DeviceEvent, Event, EventContext, EventDispatcher},
     input::{ElementState, TouchPhase},
-    scene::{PositionedCamera, common::RgbaColor, resource::NodePayload},
+    scene::{PositionedCamera, common::RgbaColor},
     selection::SelectionManager,
     renderer::{
         Gpu, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery, Renderer, SceneResources,
         SceneWorkflow, ShadedWorkflow,
     },
-    view::{PixelRect, View, ViewId, ViewLayout, ViewTarget},
+    view::{
+        CameraLight, HeadlightMode, PixelRect, View, ViewId, ViewLayout, ViewTarget,
+        default_camera_lights,
+    },
 };
 
 /// Per-scene state shared by every view of that scene: the GPU resource caches
@@ -106,18 +108,14 @@ impl Viewer {
     /// Add a view of `scene` at `layout`, on top of existing views.
     ///
     /// The first view of a scene registers the scene with the viewer (GPU
-    /// resources + selection, shared by later views of the same handle) and
-    /// adds default lights if the scene is unlit. The view's camera adopts the
-    /// scene's active camera node when no other view has claimed it; otherwise
-    /// it gets its own camera node (cloned from the active camera, or a
-    /// default one).
+    /// resources + selection, shared by later views of the same handle). The
+    /// view starts with a default camera and [`HeadlightMode::Auto`]
+    /// headlights; replace the camera with
+    /// [`ViewMut::set_camera`](ViewMut::set_camera).
     pub fn add_view(&mut self, name: impl Into<String>, scene: Scene, layout: ViewLayout) -> ViewId {
-        let (camera_node, owns_camera_node) = self.resolve_view_camera(&scene);
-
         let slot = match self.scenes.iter().position(|s| s.scene.ptr_eq(&scene)) {
             Some(i) => &mut self.scenes[i],
             None => {
-                ensure_default_lights(&scene, camera_node);
                 self.scenes.push(SceneSlot {
                     scene: scene.clone(),
                     resources: SceneResources::new(
@@ -136,14 +134,18 @@ impl Viewer {
         let renderer = Renderer::new(&mut slot.resources, rect.width, rect.height);
         let target = create_view_target(&self.gpu.device, &self.compositor, self.format, rect);
 
+        let mut camera = default_camera();
+        camera.aspect = rect.width as f32 / rect.height.max(1) as f32;
+
         let id = ViewId(self.next_view_id);
         self.next_view_id += 1;
         self.views.push(View {
             id,
             name: name.into(),
             scene,
-            camera_node,
-            owns_camera_node,
+            camera,
+            headlight: HeadlightMode::default(),
+            camera_lights: default_camera_lights(),
             layout,
             rect,
             visible: true,
@@ -158,15 +160,11 @@ impl Viewer {
         id
     }
 
-    /// Remove a view. Drops the camera node the view created (never one it
-    /// adopted) and, when this was the scene's last view, the scene's shared
-    /// GPU resources and selection.
+    /// Remove a view. When this was the scene's last view, the scene's shared
+    /// GPU resources and selection are dropped too.
     pub fn remove_view(&mut self, id: ViewId) {
         let Some(index) = self.views.iter().position(|v| v.id == id) else { return };
         let view = self.views.remove(index);
-        if view.owns_camera_node {
-            view.scene.lock().remove_node(view.camera_node);
-        }
         if !self.views.iter().any(|v| v.scene.ptr_eq(&view.scene)) {
             self.scenes.retain(|s| !s.scene.ptr_eq(&view.scene));
         }
@@ -179,8 +177,7 @@ impl Viewer {
     }
 
     /// Rebind a view to a different scene, keeping its layout, stack position,
-    /// and operator stack. The view gets a camera node in the new scene (per
-    /// the [`add_view`](Self::add_view) rules) and a fresh renderer; the old
+    /// operator stack, and camera. The view gets a fresh renderer; the old
     /// scene's shared state is dropped if this was its last view.
     pub fn set_view_scene(&mut self, id: ViewId, scene: Scene) {
         let Some(index) = self.views.iter().position(|v| v.id == id) else { return };
@@ -190,9 +187,6 @@ impl Viewer {
 
         // Detach from the old scene.
         let old_scene = self.views[index].scene.clone();
-        if self.views[index].owns_camera_node {
-            old_scene.lock().remove_node(self.views[index].camera_node);
-        }
         if !self
             .views
             .iter()
@@ -203,11 +197,9 @@ impl Viewer {
         }
 
         // Attach to the new one.
-        let (camera_node, owns_camera_node) = self.resolve_view_camera(&scene);
         let slot = match self.scenes.iter().position(|s| s.scene.ptr_eq(&scene)) {
             Some(i) => &mut self.scenes[i],
             None => {
-                ensure_default_lights(&scene, camera_node);
                 self.scenes.push(SceneSlot {
                     scene: scene.clone(),
                     resources: SceneResources::new(
@@ -228,8 +220,6 @@ impl Viewer {
         // layouts; rebuild it against the new slot's.
         view.renderer = Renderer::new(&mut slot.resources, rect.width, rect.height);
         view.scene = scene;
-        view.camera_node = camera_node;
-        view.owns_camera_node = owns_camera_node;
     }
 
     pub fn view(&self, id: ViewId) -> Option<&View> {
@@ -265,6 +255,7 @@ impl Viewer {
         let size_changed = (rect.width, rect.height) != (view.rect.width, view.rect.height);
         view.rect = rect;
         if size_changed {
+            view.camera.aspect = rect.width as f32 / rect.height.max(1) as f32;
             view.renderer.resize((rect.width, rect.height));
             view.target = create_view_target(&self.gpu.device, &self.compositor, self.format, rect);
             self.dispatch_to(id, &Event::Device(DeviceEvent::Resized((rect.width, rect.height))));
@@ -295,37 +286,6 @@ impl Viewer {
         if self.views.iter().any(|v| v.id == id) {
             self.focused_view = Some(id);
         }
-    }
-
-    /// Camera node resolution for a view being bound to `scene`: adopt the
-    /// scene's active camera if unclaimed, else clone it, else create a
-    /// default camera (which becomes the scene's active camera if it had none).
-    /// Returns (node, view_owns_node).
-    fn resolve_view_camera(&self, scene: &Scene) -> (NodeId, bool) {
-        let claimed = |node: NodeId| {
-            self.views
-                .iter()
-                .any(|v| v.scene.ptr_eq(scene) && v.camera_node == node)
-        };
-
-        let mut guard = scene.lock();
-        if let Some(active) = guard.active_camera() {
-            if !claimed(active) {
-                return (active, false);
-            }
-            if let Some(camera) = guard.positioned_camera_for_node(active, 1.0) {
-                let id = add_camera_node(&mut guard, &camera);
-                return (id, true);
-            }
-        }
-
-        let camera = default_camera();
-        let id = add_camera_node(&mut guard, &camera);
-        if guard.active_camera().is_none() {
-            guard.set_active_camera(Some(id));
-            return (id, false);
-        }
-        (id, true)
     }
 
     // ========== Events ==========
@@ -528,7 +488,7 @@ impl Viewer {
             size: (view.rect.width, view.rect.height),
             cursor_position: &mut view.cursor_position,
             scene: view.scene.clone(), // pointer clone
-            camera_node: view.camera_node,
+            camera: &mut view.camera,
             selection: &mut slot.selection,
             modifiers: Default::default(), // dispatcher overwrites this in dispatch()
             emit_queue: Vec::new(),
@@ -555,6 +515,7 @@ impl Viewer {
             let size_changed = (rect.width, rect.height) != (view.rect.width, view.rect.height);
             view.rect = rect;
             if size_changed {
+                view.camera.aspect = rect.width as f32 / rect.height.max(1) as f32;
                 view.renderer.resize((rect.width, rect.height));
                 view.target =
                     create_view_target(&self.gpu.device, &self.compositor, self.format, rect);
@@ -586,24 +547,11 @@ impl Viewer {
             let Some(slot) = self.scenes.iter_mut().find(|s| s.scene.ptr_eq(&view.scene)) else {
                 continue;
             };
-            let mut guard = view.scene.lock();
-            let aspect = view.rect.width as f32 / view.rect.height.max(1) as f32;
-            let camera = match guard.positioned_camera_for_node(view.camera_node, aspect) {
-                Some(camera) => camera,
-                None => {
-                    // The camera node was removed externally (e.g. the scene
-                    // was cleared); fall back to a fresh default camera.
-                    let camera = default_camera();
-                    view.camera_node = add_camera_node(&mut guard, &camera);
-                    view.owns_camera_node = guard.active_camera().is_some();
-                    if guard.active_camera().is_none() {
-                        guard.set_active_camera(Some(view.camera_node));
-                    }
-                    guard
-                        .positioned_camera_for_node(view.camera_node, aspect)
-                        .expect("freshly created camera node")
-                }
-            };
+            let guard = view.scene.lock();
+            // Defensive: the aspect is stamped on every rect change, but raw
+            // camera mutation may have overwritten it.
+            view.camera.aspect = view.rect.width as f32 / view.rect.height.max(1) as f32;
+            let headlights = view.active_camera_lights(&view.camera, &guard);
             let highlight: Option<&dyn HighlightQuery> = if slot.selection.config().outline_enabled
             {
                 Some(&slot.selection)
@@ -613,7 +561,8 @@ impl Viewer {
             view.renderer.render_scene_to_view(
                 &mut slot.resources,
                 &guard,
-                &camera,
+                &view.camera,
+                &headlights,
                 &view.target.render_view,
                 encoder,
                 highlight,
@@ -720,27 +669,28 @@ impl ViewMut<'_> {
         &self.slot.resources
     }
 
-    /// Get a reference to the view's camera.
-    ///
-    /// Panics if the view's camera node has been removed from the scene.
-    pub fn camera(&self) -> PositionedCamera {
-        self.view.camera().expect("view camera node missing from scene")
+    /// Mutable access to the view's camera. The aspect is re-stamped from the
+    /// view's pixel size before rendering, so callers need not maintain it.
+    pub fn camera_mut(&mut self) -> &mut PositionedCamera {
+        &mut self.view.camera
     }
 
-    /// Replace the view's camera.
+    /// Replace the view's camera, stamping its aspect from the view's pixel size.
     pub fn set_camera(&mut self, camera: PositionedCamera) {
-        self.view.scene.set_camera_for_node(self.view.camera_node, camera);
+        let aspect = self.view.aspect();
+        self.view.camera = camera;
+        self.view.camera.aspect = aspect;
     }
 
-    /// Reads the view's camera, passes it to `f`, and writes it back.
-    ///
-    /// The read and the write share one critical section. `f` must not touch the
-    /// scene.
-    pub fn with_camera_mut<F: FnOnce(&mut PositionedCamera)>(&mut self, f: F) {
-        let aspect = self.view.aspect();
-        self.view
-            .scene
-            .with_camera_for_node_mut(self.view.camera_node, aspect, f);
+    /// Set when the view's camera-space lights contribute to rendering.
+    pub fn set_headlight(&mut self, mode: HeadlightMode) {
+        self.view.headlight = mode;
+    }
+
+    /// Replace the view's camera-space lights (the default is a key + fill
+    /// directional pair).
+    pub fn set_camera_lights(&mut self, lights: Vec<CameraLight>) {
+        self.view.camera_lights = lights;
     }
 
     /// This view's background color. Alpha below 1 shows through to views
@@ -769,28 +719,27 @@ impl ViewMut<'_> {
     /// Clear the view's scene, removing all geometry, materials, textures, and
     /// associated GPU resources, then restore a default camera and selection.
     ///
-    /// This affects every view of the scene: their camera nodes are removed
-    /// with everything else and are recreated (as default cameras) on their
-    /// next frame.
+    /// The scene clear affects every view of the scene; only this view's
+    /// camera is reset.
     pub fn clear_scene(&mut self) {
         self.view.scene.clear();
         self.slot.selection.clear();
         self.slot.resources.clear();
-
-        let camera = default_camera();
-        let mut guard = self.view.scene.lock();
-        self.view.camera_node = add_camera_node(&mut guard, &camera);
-        self.view.owns_camera_node = false;
-        guard.set_active_camera(Some(self.view.camera_node));
+        self.set_camera(default_camera());
     }
 
     /// Render this view's scene from the given camera and read the result back
     /// into an RGBA image (blocking). For headless still-image / thumbnail
-    /// rendering. The output size is the view's current pixel size.
+    /// rendering. The output size is the view's current pixel size. The view's
+    /// headlights apply, resolved against the given camera.
     pub fn render_to_image(
         &mut self,
         camera: &PositionedCamera,
     ) -> Result<image::RgbaImage, anyhow::Error> {
+        let headlights = {
+            let guard = self.view.scene.lock();
+            self.view.active_camera_lights(camera, &guard)
+        };
         let highlight: Option<&dyn HighlightQuery> = if self.slot.selection.config().outline_enabled
         {
             Some(&self.slot.selection)
@@ -801,6 +750,7 @@ impl ViewMut<'_> {
             &mut self.slot.resources,
             &mut self.view.scene,
             camera,
+            &headlights,
             highlight,
         )
     }
@@ -817,33 +767,6 @@ fn default_camera() -> PositionedCamera {
         zfar: 100.0,
         ortho: false,
     }
-}
-
-/// Add a camera node (root-level) for `camera` and return its id.
-fn add_camera_node(
-    scene: &mut duck_engine_scene::SceneData,
-    camera: &PositionedCamera,
-) -> NodeId {
-    let id = scene
-        .add_node(
-            None,
-            Some("Camera".to_string()),
-            camera.to_node_transform(),
-            NodeFlags::NONE,
-        )
-        .expect("Failed to add camera node")
-        .id();
-    scene.set_node_payload(id, NodePayload::Camera(camera.projection()));
-    id
-}
-
-/// Adds default lights as children of `camera_node` if the scene is otherwise unlit.
-fn ensure_default_lights(scene: &Scene, camera_node: NodeId) {
-    let mut scene = scene.lock();
-    if scene.has_light_nodes() || scene.active_environment_map().is_some() {
-        return;
-    }
-    scene.set_default_light_nodes(camera_node);
 }
 
 fn create_view_target(

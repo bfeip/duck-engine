@@ -186,7 +186,7 @@ impl LineOperator {
     /// Adds a point to the wire or starts building a wire if there were no previous points.
     /// Returns true if a point was successfully added.
     fn on_add_point(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let Some(snap) = self.snapped_point(position, self.preview.preview_nodes(), &camera, ctx) else {
             return false;
         };
@@ -277,7 +277,7 @@ impl LineOperator {
 
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let snapped = self.snapped_point(cursor, self.preview.preview_nodes(), &camera, ctx);
 
         // Record where the 3D cursor should sit

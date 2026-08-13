@@ -129,7 +129,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut scene = Scene::new(scene);
-    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, None)?;
+    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, &[], None)?;
     image.save("material_variants.png")?;
     println!("Saved material_variants.png ({width}×{height}) — all surface variants compiled");
     Ok(())

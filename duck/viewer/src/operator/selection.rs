@@ -128,7 +128,7 @@ impl SelectionOperator {
     }
 
     fn pick_closest(&self, cursor_x: f32, cursor_y: f32, ctx: &mut EventContext) -> Option<SelectionItem> {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let ray = camera.ray_from_screen_point(cursor_x, cursor_y, ctx.size.0, ctx.size.1);
         let camera_distance = (camera.eye - camera.target).magnitude();
         // Line/point tolerance: 6 pixels in world space, calibrated to the camera target depth.

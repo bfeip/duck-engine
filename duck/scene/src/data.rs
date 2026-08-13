@@ -5,16 +5,14 @@
 //! shared handle to one; most code goes through that rather than holding a
 //! `SceneData` directly.
 
-use duck_engine_common::{Deg, Matrix4, Point3, Quaternion, Rotation3, SquareMatrix, Vector3};
+use duck_engine_common::{Matrix4, Point3, Quaternion, SquareMatrix, Vector3};
 use image::DynamicImage;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::common::{self, Aabb};
-use crate::{
-    CameraProjection, EnvironmentMap, EnvironmentMapId, initial_generation, Light, PositionedCamera,
-};
+use crate::{EnvironmentMap, EnvironmentMapId, initial_generation};
 use crate::resource::{
     EffectiveVisibility, FaceMaterial, FaceMaterialHandle, FaceMaterialId,
     GenericId, Handle, HandleCore, Id, Instance, InstanceHandle, InstanceId, LineMaterial,
@@ -104,9 +102,6 @@ pub struct SceneData {
     /// The currently active environment map for IBL lighting.
     active_environment_map: Option<EnvironmentMapId>,
 
-    /// The node (with a Camera payload) that drives rendering when no explicit camera is passed.
-    active_camera: Option<NodeId>,
-
     /// Generation counter that increments on any node add, remove, or mutation.
     /// Used by the renderer to detect when scene data need re-collection.
     node_generation: u64,
@@ -140,7 +135,6 @@ impl SceneData {
             environment_maps: HashMap::new(),
             active_environment_map: None,
 
-            active_camera: None,
 
             node_generation: initial_generation(),
 
@@ -244,9 +238,6 @@ impl SceneData {
                                 if let Some(c) = self.nodes.get_mut(&child.id()) {
                                     c.set_parent_unchecked(None);
                                 }
-                            }
-                            if self.active_camera == Some(id.cast()) {
-                                self.active_camera = None;
                             }
                             self.node_generation += 1;
                             true
@@ -618,51 +609,6 @@ impl SceneData {
     }
 
 
-    // ========== Active Camera API ==========
-
-    /// Returns the node ID of the active camera, if any.
-    pub fn active_camera(&self) -> Option<NodeId> {
-        self.active_camera
-    }
-
-    /// Returns the [`CameraProjection`] from the active camera node, or `None` if there is no
-    /// active camera or the node does not carry a `NodePayload::Camera` payload.
-    pub fn active_camera_data(&self) -> Option<&CameraProjection> {
-        let node = self.get_node(self.active_camera?)?;
-        match node.payload() {
-            NodePayload::Camera(cam) => Some(cam),
-            _ => None,
-        }
-    }
-
-    /// Constructs a [`PositionedCamera`] from the active camera node's world transform,
-    /// projection payload, and the given viewport aspect ratio.
-    ///
-    /// Returns `None` if there is no active camera or the node lacks a Camera payload.
-    pub fn active_camera_positioned(&self, aspect: f32) -> Option<PositionedCamera> {
-        self.positioned_camera_for_node(self.active_camera?, aspect)
-    }
-
-    /// Constructs a [`PositionedCamera`] from any node carrying a `NodePayload::Camera`
-    /// payload, using its world transform and the given viewport aspect ratio.
-    ///
-    /// Returns `None` if the node does not exist, lacks a Camera payload, or its
-    /// world transform cannot be resolved (incomplete tree).
-    pub fn positioned_camera_for_node(&self, node_id: NodeId, aspect: f32) -> Option<PositionedCamera> {
-        let node = self.get_node(node_id)?;
-        let proj = match node.payload() {
-            NodePayload::Camera(cam) => cam.clone(),
-            _ => return None,
-        };
-        let world_transform = self.nodes_transform(node_id)?;
-        Some(proj.into_positioned(world_transform, aspect))
-    }
-
-    /// Sets the active camera node. Pass `None` to clear.
-    pub fn set_active_camera(&mut self, node_id: Option<NodeId>) {
-        self.active_camera = node_id;
-    }
-
     // ========== Node Generation ==========
 
     /// Returns the current node generation counter.
@@ -693,37 +639,6 @@ impl SceneData {
             .values()
             .filter(|n| matches!(n.payload(), NodePayload::Light(_)) && self.is_node_attached(n.id))
             .count()
-    }
-
-    /// Adds a default key + fill directional light pair as children of `camera_node_id`.
-    /// The key light comes from the upper-left corner; the fill from the lower-right corner.
-    /// Both are expressed in camera space (node direction = its -Z axis).
-    pub fn set_default_light_nodes(&mut self, camera_node_id: NodeId) {
-        let white = crate::common::RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-        // Upper-left: yaw +45° (toward right), then pitch -45° (downward).
-        let key_rotation = Quaternion::from_angle_x(Deg(-45.0)) * Quaternion::from_angle_y(Deg(45.0));
-        let key_transform = common::Transform::new(
-            Point3::new(0.0, 0.0, 0.0),
-            key_rotation,
-            Vector3::new(1.0, 1.0, 1.0),
-        );
-        let key = self
-            .add_node(Some(camera_node_id), Some("DefaultKeyLight".to_string()), key_transform, NodeFlags::NONE)
-            .expect("Failed to create key light node");
-        self.nodes.get_mut(&key.id()).unwrap().set_payload(NodePayload::Light(Light::directional(white, 1.0)));
-        self.node_generation += 1;
-        // Lower-right: yaw -45° (toward left), then pitch +45° (upward) — opposite corner.
-        let fill_rotation = Quaternion::from_angle_x(Deg(45.0)) * Quaternion::from_angle_y(Deg(-45.0));
-        let fill_transform = common::Transform::new(
-            Point3::new(0.0, 0.0, 0.0),
-            fill_rotation,
-            Vector3::new(1.0, 1.0, 1.0),
-        );
-        let fill = self
-            .add_node(Some(camera_node_id), Some("DefaultFillLight".to_string()), fill_transform, NodeFlags::NONE)
-            .expect("Failed to create fill light node");
-        self.nodes.get_mut(&fill.id()).unwrap().set_payload(NodePayload::Light(Light::directional(white, 0.3)));
-        self.node_generation += 1;
     }
 
     // ========== Node API ==========
@@ -967,7 +882,6 @@ impl SceneData {
         self.textures.clear();
         self.environment_maps.clear();
         self.active_environment_map = None;
-        self.active_camera = None;
         self.node_generation += 1;
         self.slots.clear();
         self.removals.clear();
@@ -1435,11 +1349,6 @@ impl SceneData {
         self.line_materials.retain(|id, _| live_line.contains(id));
         self.point_materials.retain(|id, _| live_point.contains(id));
         self.textures.retain(|id, _| live_textures.contains(id));
-        if let Some(id) = self.active_camera
-            && !self.nodes.contains_key(&id)
-        {
-            self.active_camera = None;
-        }
 
         // Re-point every stored handle at a canonical core on the fresh bind.
         let bind = self.bind.clone();
@@ -1540,7 +1449,6 @@ impl Clone for SceneData {
             textures: self.textures.clone(),
             environment_maps: self.environment_maps.clone(),
             active_environment_map: self.active_environment_map,
-            active_camera: self.active_camera,
             node_generation: self.node_generation,
             bind: Arc::new(SceneBind::new()),
             slots: HashMap::new(),

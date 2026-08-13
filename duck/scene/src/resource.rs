@@ -35,7 +35,7 @@ pub use mesh::{
     SubGeometryElement, SubGeometryKind, SubMeshRange, Topology, Vertex,
 };
 pub use node::{
-    CustomNodePayload, EffectiveVisibility, Node, NodeFlags, NodeId, NodePayload, Visibility,
+    EffectiveVisibility, Node, NodeFlags, NodeId, NodePayload, Visibility,
 };
 pub use texture::{Texture, TextureFormat, TextureId};
 

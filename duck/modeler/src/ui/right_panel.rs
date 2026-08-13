@@ -1,6 +1,7 @@
 //! The right-hand tabbed panel: the Model tab (part list) and the Scene tab
 //! (camera, construction plane, grid, and snap settings).
 
+use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::document::Document;
@@ -42,6 +43,7 @@ impl RightPanel {
         &mut self,
         ctx: &egui::Context,
         document: &mut Document,
+        camera: &mut PositionedCamera,
         construction: &mut ConstructionOptions,
         selection: &mut SelectionManager,
         actions: &mut Vec<UiAction>,
@@ -60,7 +62,7 @@ impl RightPanel {
 
                 match self.active_tab {
                     RightTab::Model => self.model.show(ui, document, selection),
-                    RightTab::Scene => self.scene.show(ui, document, construction, actions),
+                    RightTab::Scene => self.scene.show(ui, camera, construction, actions),
                 }
             });
     }

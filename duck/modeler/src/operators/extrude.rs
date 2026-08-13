@@ -108,7 +108,7 @@ impl ExtrudeOperator {
     /// rebuild the preview.
     fn update_length(&mut self, cursor: (f32, f32), ctx: &mut EventContext) {
         let Some(frame) = self.frame else { return };
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let ray: Ray = camera.ray_from_screen_point(cursor.0, cursor.1, ctx.size.0, ctx.size.1);
         if let Some(t) = ray.closest_param_on_axis(frame.origin, frame.axis) {
             self.length = t as f64;

@@ -8,8 +8,8 @@
 //! - An `Anchored` triad view overlays the iso pane's corner, rendering its own
 //!   little axis scene over a transparent background. Each frame its camera is
 //!   oriented from the iso pane's; clicking an axis arrow snaps the iso camera
-//!   to look down that axis (a custom operator reaching across views through a
-//!   scene handle + camera node).
+//!   to look down that axis (the operator records the request; the app applies
+//!   it to the iso view's camera through the viewer).
 //!
 //! Run with `cargo run --example sub_views -p duck-engine-viewer`.
 
@@ -173,13 +173,14 @@ fn build_triad_scene(scene: &Scene) -> Vec<TriadAxis> {
     result
 }
 
-/// Operator on the triad view: clicking an axis arrow orients the iso view's
-/// camera to look down that axis, refit to the model. Cross-view control needs
-/// only the target view's scene handle and camera node.
+/// Operator on the triad view: clicking an axis arrow requests that the iso
+/// view's camera snap to look down that axis. Operators only see their own
+/// view, so the request is recorded here and applied by the app, which can
+/// reach the iso view's camera through the viewer.
 struct TriadOperator {
     axes: Vec<TriadAxis>,
-    iso_scene: Scene,
-    iso_camera: NodeId,
+    /// (direction, up) of the last clicked axis, drained by the app each frame.
+    pending_snap: Arc<Mutex<Option<(Vector3, Vector3)>>>,
 }
 
 impl Operator for TriadOperator {
@@ -189,8 +190,8 @@ impl Operator for TriadOperator {
             return false;
         };
 
-        let camera = ctx.camera();
-        let ray = camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
+        let ray =
+            ctx.camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
         let query = RayPickQuery::for_kinds(ray, 0.0, true, false, false);
         let results = pick_all_from_ray(&query, &ctx.scene);
         let Some(hit) = results.first() else { return false };
@@ -198,17 +199,7 @@ impl Operator for TriadOperator {
             return false;
         };
 
-        let bounds = self.iso_scene.lock().bounding().bounds;
-        let direction = axis.direction;
-        let up = axis.up;
-        self.iso_scene.with_camera_for_node_mut(self.iso_camera, 1.0, |camera| {
-            let distance = (camera.eye - camera.target).magnitude();
-            camera.eye = camera.target + direction * distance;
-            camera.up = up;
-            if let Some(bounds) = &bounds {
-                camera.fit_to_bounds(bounds);
-            }
-        });
+        *self.pending_snap.lock().unwrap() = Some((axis.direction, axis.up));
         true
     }
 
@@ -222,6 +213,8 @@ struct App<'a> {
     viewer: Option<SurfacedViewer<'a>>,
     iso_view: Option<ViewId>,
     triad_view: Option<ViewId>,
+    /// Axis snap requested by the triad operator, applied to the iso camera.
+    snap_request: Arc<Mutex<Option<(Vector3, Vector3)>>>,
 }
 
 impl<'a> App<'a> {
@@ -260,15 +253,14 @@ impl<'a> App<'a> {
                 .push_back(Arc::new(Mutex::new(SelectionOperator::new())));
             view.dispatcher_mut()
                 .push_back(Arc::new(Mutex::new(NavigationOperator::new())));
-            view.with_camera_mut(|camera| {
-                camera.target = Point3::new(0.0, 0.0, 0.0);
-                camera.eye = Point3::new(0.0, 0.0, 0.0) + direction * 10.0;
-                camera.up = up;
-                camera.ortho = ortho;
-                if let Some(bounds) = &bounds {
-                    camera.fit_to_bounds(bounds);
-                }
-            });
+            let camera = view.camera_mut();
+            camera.target = Point3::new(0.0, 0.0, 0.0);
+            camera.eye = Point3::new(0.0, 0.0, 0.0) + direction * 10.0;
+            camera.up = up;
+            camera.ortho = ortho;
+            if let Some(bounds) = &bounds {
+                camera.fit_to_bounds(bounds);
+            }
             if name == "Iso" {
                 iso_view = Some(id);
             }
@@ -285,13 +277,11 @@ impl<'a> App<'a> {
             ViewLayout::Anchored { corner: Corner::TopRight, size: (140, 140), margin: (16, 16) },
         );
         {
-            let iso_camera = viewer.view(iso_view).unwrap().camera_node();
             let mut view = viewer.view_mut(triad_view).unwrap();
             view.set_background_color(RgbaColor { r: 0.0, g: 0.0, b: 0.0, a: 0.0 });
             view.dispatcher_mut().push_back(Arc::new(Mutex::new(TriadOperator {
                 axes,
-                iso_scene: model,
-                iso_camera,
+                pending_snap: Arc::clone(&self.snap_request),
             })));
         }
 
@@ -302,18 +292,33 @@ impl<'a> App<'a> {
         self.triad_view = Some(triad_view);
     }
 
+    /// Apply a pending axis-snap request to the iso view's camera, refit to
+    /// the model.
+    fn apply_snap_request(&mut self) {
+        let Some((direction, up)) = self.snap_request.lock().unwrap().take() else { return };
+        let viewer = self.viewer.as_mut().unwrap();
+        let Some(mut view) = viewer.view_mut(self.iso_view.unwrap()) else { return };
+        let bounds = view.scene().lock().bounding().bounds;
+        let camera = view.camera_mut();
+        let distance = (camera.eye - camera.target).magnitude();
+        camera.eye = camera.target + direction * distance;
+        camera.up = up;
+        if let Some(bounds) = &bounds {
+            camera.fit_to_bounds(bounds);
+        }
+    }
+
     /// Point the triad camera the way the iso pane looks, so the arrows always
     /// mirror the iso orientation.
     fn sync_triad_camera(viewer: &mut Viewer, iso_view: ViewId, triad_view: ViewId) {
-        let Some(iso_camera) = viewer.view(iso_view).and_then(|v| v.camera()) else { return };
+        let Some(iso_camera) = viewer.view(iso_view).map(|v| v.camera().clone()) else { return };
         let direction = (iso_camera.eye - iso_camera.target).normalize();
         let up = iso_camera.up;
         if let Some(mut triad) = viewer.view_mut(triad_view) {
-            triad.with_camera_mut(|camera| {
-                camera.target = Point3::new(0.0, 0.0, 0.0);
-                camera.eye = Point3::new(0.0, 0.0, 0.0) + direction * TRIAD_CAMERA_DISTANCE;
-                camera.up = up;
-            });
+            let camera = triad.camera_mut();
+            camera.target = Point3::new(0.0, 0.0, 0.0);
+            camera.eye = Point3::new(0.0, 0.0, 0.0) + direction * TRIAD_CAMERA_DISTANCE;
+            camera.up = up;
         }
     }
 }
@@ -336,8 +341,9 @@ impl<'a> ApplicationHandler for App<'a> {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                self.viewer.as_mut().unwrap().update();
+                self.apply_snap_request();
                 let viewer = self.viewer.as_mut().unwrap();
-                viewer.update();
                 Self::sync_triad_camera(
                     viewer,
                     self.iso_view.unwrap(),
@@ -389,6 +395,7 @@ fn main() {
         viewer: None,
         iso_view: None,
         triad_view: None,
+        snap_request: Arc::new(Mutex::new(None)),
     };
 
     event_loop.run_app(&mut app).unwrap();

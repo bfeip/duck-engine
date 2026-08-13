@@ -201,7 +201,7 @@ impl NavigationOperator {
         start_pos: (f32, f32),
         ctx: &mut EventContext,
     ) -> bool {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let scene_center = {
             ctx.scene.bounding().bounds.map(|b| b.center()).unwrap_or(camera.target)
         };
@@ -350,11 +350,9 @@ impl Operator for NavigationOperator {
                 let actions = self.bindings.actions_for_drag(*button, ctx.modifiers).to_vec();
                 let size = ctx.size;
                 let mut handled = false;
-                ctx.with_camera_mut(|cam| {
-                    for action in &actions {
-                        handled |= self.handle_drag(*action, delta, cam, size);
-                    }
-                });
+                for action in &actions {
+                    handled |= self.handle_drag(*action, delta, ctx.camera, size);
+                }
                 handled
             }
             DeviceEvent::MouseDragEnd { button, .. } => {
@@ -381,31 +379,23 @@ impl Operator for NavigationOperator {
                 let model_radius = {
                     scene_scale::model_radius_from_bounds(ctx.scene.bounding().bounds.as_ref())
                 };
-                ctx.with_camera_mut(|cam| {
-                    self.handle_wheel(scroll_amount, cam, model_radius);
-                });
+                self.handle_wheel(scroll_amount, ctx.camera, model_radius);
                 true
             }
             DeviceEvent::KeyboardInput { event: key_event, .. } => {
                 if self.mode != NavigationMode::Walk {
                     return false;
                 }
-                let mut handled = false;
-                ctx.with_camera_mut(|cam| {
-                    if key_event.state == crate::input::ElementState::Pressed && !key_event.repeat {
-                        self.walk.init_from_camera(cam);
-                    }
-                    handled = self.walk.handle_key(&key_event.logical_key, key_event.state, &self.bindings);
-                });
-                handled
+                if key_event.state == crate::input::ElementState::Pressed && !key_event.repeat {
+                    self.walk.init_from_camera(ctx.camera);
+                }
+                self.walk.handle_key(&key_event.logical_key, key_event.state, &self.bindings)
             }
             DeviceEvent::Update { delta_time } => {
                 let model_radius = {
                     scene_scale::model_radius_from_bounds(ctx.scene.bounding().bounds.as_ref())
                 };
-                ctx.with_camera_mut(|cam| {
-                    self.handle_update(*delta_time, cam, model_radius);
-                });
+                self.handle_update(*delta_time, ctx.camera, model_radius);
                 false
             }
             _ => false,

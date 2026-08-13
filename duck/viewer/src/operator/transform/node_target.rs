@@ -117,7 +117,7 @@ impl TransformTarget for NodeTransformTarget {
     fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
         let mode = interaction.mode();
 
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let translation_delta = if mode == TransformMode::Translate {
             Some(interaction.translation(&camera, ctx.size))
         } else {

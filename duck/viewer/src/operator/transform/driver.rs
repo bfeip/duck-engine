@@ -42,9 +42,7 @@ pub struct TransformCaps {
 /// the drag is previewed, and what confirm/cancel do.
 ///
 /// Locking discipline for all methods: the driver never holds the scene lock
-/// across a call, and implementations must precompute camera-dependent values
-/// via [`EventContext::camera`] *before* locking the scene themselves —
-/// `camera()` acquires the scene lock internally.
+/// across a call.
 pub trait TransformTarget: 'static {
     /// Pivot/frame for what would be transformed right now. Drives idle gizmo
     /// placement and seeds the interaction on start; `None` hides the gizmo
@@ -226,7 +224,7 @@ impl<T: TransformTarget> TransformDriver<T> {
         }
 
         let anchor = anchor.unwrap_or_else(|| {
-            let projected = ctx.camera().project_point_screen(frame.pivot, ctx.size.0, ctx.size.1);
+            let projected = ctx.camera.project_point_screen(frame.pivot, ctx.size.0, ctx.size.1);
             (projected.x, projected.y)
         });
         self.interaction.start(frame.pivot, frame.frame_rotation, anchor);
@@ -319,7 +317,7 @@ impl<T: TransformTarget> Operator for TransformDriver<T> {
 
             DeviceEvent::MouseMotion { delta } => {
                 if self.is_active() {
-                    let camera = ctx.camera();
+                    let camera = ctx.camera.clone();
                     self.interaction.accumulate(
                         delta.0 as f32, delta.1 as f32, &camera, ctx.size,
                     );
@@ -363,7 +361,7 @@ impl<T: TransformTarget> Operator for TransformDriver<T> {
                     return false;
                 }
                 let picked = {
-                    let camera = ctx.camera();
+                    let camera = ctx.camera.clone();
                     let ray = camera.ray_from_screen_point(
                         start_pos.0, start_pos.1, ctx.size.0, ctx.size.1,
                     );
@@ -428,7 +426,7 @@ impl<T: TransformTarget> Operator for TransformDriver<T> {
                 // movement, which pointer acceleration makes a different
                 // quantity from on-screen pixels.
                 if self.is_active() {
-                    let camera = ctx.camera();
+                    let camera = ctx.camera.clone();
                     self.interaction.set_cursor(
                         (position.0 as f32, position.1 as f32), &camera, ctx.size,
                     );
@@ -439,7 +437,7 @@ impl<T: TransformTarget> Operator for TransformDriver<T> {
                 // Hover highlight on gizmo handles when the gizmo is visible
                 // but no transform is active.
                 if self.gizmo.has_gizmo() {
-                    let camera = ctx.camera();
+                    let camera = ctx.camera.clone();
                     let ray = camera.ray_from_screen_point(
                         position.0 as f32, position.1 as f32, ctx.size.0, ctx.size.1,
                     );
@@ -477,14 +475,12 @@ mod tests {
     use super::super::interaction::{AxisConstraint, ConstraintSpace};
     use crate::common::Axis;
     use crate::scene::{PositionedCamera, Scene, SceneData};
-    use crate::scene::resource::NodePayload;
     use crate::selection::SelectionManager;
     use duck_engine_common::{InnerSpace, Vector3};
-    use duck_engine_scene::resource::NodeFlags;
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    type ContextParts = (Option<(f32, f32)>, Scene, SelectionManager);
+    type ContextParts = (Option<(f32, f32)>, Scene, SelectionManager, PositionedCamera);
 
     fn context_parts() -> ContextParts {
         context_parts_viewed_from((0.0, 0.0, 4.0))
@@ -501,23 +497,20 @@ mod tests {
             zfar: 100.0,
             ortho: false,
         };
-        let mut scene = SceneData::new();
-        let cam_id = scene
-            .add_node(None, None, camera.to_node_transform(), NodeFlags::NONE)
-            .unwrap()
-            .id();
-        scene.set_node_payload(cam_id, NodePayload::Camera(camera.projection()));
-        scene.set_active_camera(Some(cam_id));
-        (Some((400.0, 300.0)), Scene::new(scene), SelectionManager::new())
+        (
+            Some((400.0, 300.0)),
+            Scene::new(SceneData::new()),
+            SelectionManager::new(),
+            camera,
+        )
     }
 
     fn make_context(parts: &mut ContextParts) -> EventContext<'_> {
-        let camera_node = parts.1.active_camera().expect("mock scene has a camera");
         EventContext {
             size: (800, 600),
             cursor_position: &mut parts.0,
             scene: parts.1.clone(),
-            camera_node,
+            camera: &mut parts.3,
             selection: &mut parts.2,
             modifiers: Default::default(),
             emit_queue: Vec::new(),
@@ -538,7 +531,7 @@ mod tests {
             true
         }
         fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
-            let camera = ctx.camera();
+            let camera = ctx.camera.clone();
             self.previews.borrow_mut().push(interaction.translation(&camera, ctx.size));
         }
         fn commit(&mut self, _interaction: &TransformInteraction, _ctx: &mut EventContext) {}
@@ -641,7 +634,7 @@ mod tests {
         // grabbed point is twice as far from the pivot: a 2x scale.
         let mut ctx = make_context(&mut parts);
         assert!(driver.dispatch(&motion((120.0, 0.0)), &mut ctx));
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let scale = driver.interaction.scale(&camera, ctx.size);
         assert!((scale.x - 2.0).abs() < 1e-3, "{scale:?}");
     }
@@ -664,7 +657,7 @@ mod tests {
         let pivot = Point3::new(0.0, 0.0, 0.0);
         let anchor = {
             let mut ctx = make_context(&mut parts);
-            let projected = ctx.camera().project_point_screen(pivot, ctx.size.0, ctx.size.1);
+            let projected = ctx.camera.project_point_screen(pivot, ctx.size.0, ctx.size.1);
             let anchor = (projected.x, projected.y);
             driver.start_transform(Some(anchor), &mut ctx);
             driver.interaction.set_axis_constraint(AxisConstraint::Plane(
@@ -685,7 +678,7 @@ mod tests {
             driver.dispatch(&motion((-10.5, -16.5)), &mut ctx);
         }
 
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let translation = *previews.borrow().last().unwrap();
         let landed = camera.project_point_screen(pivot + translation, ctx.size.0, ctx.size.1);
         assert!(

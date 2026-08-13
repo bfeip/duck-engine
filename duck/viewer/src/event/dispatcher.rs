@@ -670,18 +670,17 @@ mod tests {
     use super::*;
     use crate::event::AppEvent;
     use crate::input::{ElementState, MouseButton};
-    use crate::scene::resource::NodePayload;
-    use crate::scene::{Scene, SceneData};
+    use crate::scene::{PositionedCamera, Scene, SceneData};
     use crate::selection::SelectionManager;
-    use duck_engine_scene::resource::NodeFlags;
     use std::cell::Cell;
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    fn create_mock_context_parts() -> (Option<(f32, f32)>, Scene, SelectionManager) {
-        use crate::scene::PositionedCamera;
+    type ContextParts = (Option<(f32, f32)>, Scene, SelectionManager, PositionedCamera);
+
+    fn create_mock_context_parts() -> ContextParts {
         use duck_engine_common::Vector3;
         let camera = PositionedCamera {
             eye: (0.0, 0.0, 1.0).into(),
@@ -693,22 +692,15 @@ mod tests {
             zfar: 100.0,
             ortho: false,
         };
-        let mut scene = SceneData::new();
-        let cam_id = scene.add_node(
-            None, None, camera.to_node_transform(), NodeFlags::NONE
-        ).unwrap().id();
-        scene.set_node_payload(cam_id, NodePayload::Camera(camera.projection()));
-        scene.set_active_camera(Some(cam_id));
-        (None, Scene::new(scene), SelectionManager::new())
+        (None, Scene::new(SceneData::new()), SelectionManager::new(), camera)
     }
 
-    fn make_context(parts: &mut (Option<(f32, f32)>, Scene, SelectionManager)) -> EventContext<'_> {
-        let camera_node = parts.1.active_camera().expect("mock scene has a camera");
+    fn make_context(parts: &mut ContextParts) -> EventContext<'_> {
         EventContext {
             size: (800, 600),
             cursor_position: &mut parts.0,
             scene: parts.1.clone(),
-            camera_node,
+            camera: &mut parts.3,
             selection: &mut parts.2,
             modifiers: Default::default(),
             emit_queue: Vec::new(),

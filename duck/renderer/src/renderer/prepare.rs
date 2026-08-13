@@ -3,18 +3,16 @@ use anyhow::Result;
 use crate::scene::resource::ResourceKind;
 use crate::scene::SceneData;
 
-use super::batching::collect_scene_frame_data;
 use super::mesh::MeshGpuResources;
-use super::scene_bindings::LightsArrayUniform;
 use super::texture::create_texture_gpu_resources;
 use super::SceneResources;
 
 impl SceneResources {
     /// Prepare all GPU resources for a scene before rendering.
     ///
-    /// Ensures all textures, materials, and meshes have up-to-date GPU resources,
-    /// syncs lights, and processes the active environment map. Each subsystem owns
-    /// its own generation-synced cache; this just drives them.
+    /// Ensures all textures, materials, and meshes have up-to-date GPU resources
+    /// and processes the active environment map. Each subsystem owns its own
+    /// generation-synced cache; this just drives them.
     ///
     /// Draining: consumes the scene's removal queue, so it must run exactly
     /// once per scene per frame, before any renderer over that scene draws.
@@ -35,8 +33,7 @@ impl SceneResources {
                 ResourceKind::FaceMaterial
                 | ResourceKind::LineMaterial
                 | ResourceKind::PointMaterial => self.materials.remove(kind, id),
-                // No per-id GPU cache; the lights uniform re-syncs off
-                // node_generation, which node removal bumps.
+                // No per-id GPU cache; lights are re-uploaded per view per frame.
                 ResourceKind::Instance | ResourceKind::Node => {}
             }
         }
@@ -60,13 +57,7 @@ impl SceneResources {
             });
         }
 
-        // 4. Lights.
-        self.lights.sync(&self.gpu.queue, scene, || {
-            let frame_data = collect_scene_frame_data(scene);
-            LightsArrayUniform::from_resolved_lights(&frame_data.lights)
-        });
-
-        // 5. Environment maps for IBL.
+        // 4. Environment maps for IBL.
         if let Some(env_id) = scene.active_environment_map()
             && let Some(env_map) = scene.get_environment_map(env_id)
         {

@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::document::Document;
@@ -34,6 +35,9 @@ pub enum UiAction {
     /// The construction plane or grid settings changed; the grid visuals must
     /// be rebuilt to match.
     ConstructionChanged,
+    /// The camera settings changed; the edited camera must be written back to
+    /// the view.
+    CameraChanged,
     Quit,
 }
 
@@ -53,6 +57,7 @@ impl ModelerUi {
         &mut self,
         ctx: &egui::Context,
         document: &Arc<Mutex<Document>>,
+        camera: &mut PositionedCamera,
         construction: &Rc<RefCell<ConstructionOptions>>,
         selection: &mut SelectionManager,
         tools: &mut ToolManager,
@@ -74,7 +79,7 @@ impl ModelerUi {
             // TODO: would be better to just pass the Arc instead of locking here.
             let mut document = document.lock().unwrap();
             let mut construction = construction.borrow_mut();
-            self.right.show(ctx, &mut document, &mut construction, selection, &mut actions);
+            self.right.show(ctx, &mut document, camera, &mut construction, selection, &mut actions);
         }
         self.tool_panel.show(ctx, tools, selection);
         show_notifications(ctx, notifications);

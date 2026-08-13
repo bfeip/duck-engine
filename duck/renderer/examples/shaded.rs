@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
 
     // No `set_workflow` call: the renderer starts with the built-in ShadedWorkflow.
     let mut scene = Scene::new(scene);
-    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, None)?;
+    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, &[], None)?;
     image.save("shaded.png")?;
     println!("Saved shaded.png ({width}×{height})");
     Ok(())

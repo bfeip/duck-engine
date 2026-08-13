@@ -12,7 +12,7 @@ mod surface_config;
 mod texture;
 mod workflow;
 
-pub use batching::{DrawBatch, DrawData};
+pub use batching::{DrawBatch, DrawData, ResolvedLight};
 pub use custom_pipeline::CustomPipelineBuilder;
 pub use mesh::{instance_buffer_layout, vertex_buffer_layout};
 pub use pass_context::{SceneFrame, SceneFrames, SceneRenderPass, SceneWorkflow};
@@ -68,9 +68,6 @@ pub struct SceneResources {
     // Per-object geometry GPU resources, generation-synced to the scene.
     gpu_meshes: GenCache<MeshId, MeshGpuResources>,
     gpu_textures: GenCache<TextureId, GpuTexture>,
-
-    /// Lights array uniform, re-synced off the scene's node generation.
-    lights: LightsBinding,
 }
 
 impl SceneResources {
@@ -81,7 +78,6 @@ impl SceneResources {
         has_compute: bool,
     ) -> Self {
         let layouts = BindGroupLayouts::new(&gpu.device);
-        let lights = LightsBinding::new(&gpu.device, &layouts.light);
         let ibl_resources = IblResources::new(&gpu.device, &gpu.queue, &layouts.ibl, has_compute);
         let materials = MaterialSystem::new(&layouts, ShaderGenerator::new(), sample_count, format);
 
@@ -94,7 +90,6 @@ impl SceneResources {
             ibl_resources,
             gpu_meshes: GenCache::new(),
             gpu_textures: GenCache::new(),
-            lights,
         }
     }
 
@@ -126,7 +121,6 @@ impl SceneResources {
         self.gpu_meshes.clear();
         self.gpu_textures.clear();
         self.materials.clear();
-        self.lights.invalidate();
     }
 
     /// Compile a user-supplied WESL shader with access to all engine shader modules.
@@ -181,6 +175,9 @@ pub struct Renderer {
     host: RenderHost<SceneFrames>,
     /// This view's camera uniform and bind group.
     camera: CameraBinding,
+    /// This view's lights uniform: scene lights plus the view's extra
+    /// (camera-space) lights, re-uploaded every frame.
+    lights: LightsBinding,
     background_color: wgpu::Color,
 }
 
@@ -214,6 +211,7 @@ impl Renderer {
         };
 
         let camera = CameraBinding::new(&shared.gpu.device, &shared.layouts.camera);
+        let lights = LightsBinding::new(&shared.gpu.device, &shared.layouts.light);
 
         let shaded_workflow = ShadedWorkflow::new(
             &shared.gpu.device,
@@ -234,6 +232,7 @@ impl Renderer {
         Self {
             host,
             camera,
+            lights,
             background_color: wgpu::Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 },
         }
     }
@@ -318,6 +317,9 @@ impl Renderer {
     /// renders the scene from the given camera viewpoint, and returns the
     /// result as an RGBA image.
     ///
+    /// `extra_lights` are composed after the scene's lights (e.g. a view's
+    /// camera-space headlights); pass `&[]` for scene lighting only.
+    ///
     /// The renderer must have been created with dimensions matching the desired
     /// output size, or resized beforehand.
     pub fn render_scene_to_image(
@@ -325,6 +327,7 @@ impl Renderer {
         shared: &mut SceneResources,
         scene: &mut Scene,
         camera: &PositionedCamera,
+        extra_lights: &[ResolvedLight],
         highlight: Option<&dyn HighlightQuery>,
     ) -> Result<image::RgbaImage> {
         // Lock scene for duration of rendering
@@ -335,6 +338,7 @@ impl Renderer {
         let size = self.host.targets().size();
         self.camera.write(&self.host.gpu().queue, camera);
         let draw_data = DrawData::new(&scene, camera, size, highlight);
+        self.lights.write(&self.host.gpu().queue, draw_data.lights(), extra_lights);
 
         // Build the frame from disjoint field borrows of `self` and `shared`,
         // then hand it to the host's readback path, which owns the offscreen
@@ -351,7 +355,7 @@ impl Renderer {
             gpu_meshes: &shared.gpu_meshes,
             bindings: SceneBindingRefs {
                 camera: &self.camera.bind_group,
-                lights: &shared.lights.bind_group,
+                lights: &self.lights.bind_group,
                 ibl: ibl_bind_group,
             },
             scene_props: SceneProperties { has_ibl: ibl_bind_group.is_some() },
@@ -368,6 +372,9 @@ impl Renderer {
     /// If a highlight is provided and not empty, highlight outlines will be rendered.
     /// The encoder is not submitted - the caller is responsible for that.
     ///
+    /// `extra_lights` are composed after the scene's lights (e.g. a view's
+    /// camera-space headlights); pass `&[]` for scene lighting only.
+    ///
     /// `shared` must have been [`prepare`](SceneResources::prepare)d for this
     /// frame; the caller holds the scene lock for the duration of the render.
     pub fn render_scene_to_view(
@@ -375,6 +382,7 @@ impl Renderer {
         shared: &mut SceneResources,
         scene: &SceneData,
         camera: &PositionedCamera,
+        extra_lights: &[ResolvedLight],
         view: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
         highlight: Option<&dyn HighlightQuery>,
@@ -385,6 +393,7 @@ impl Renderer {
 
         // Collect, sort, and partition draw batches for this frame
         let draw_data = DrawData::new(scene, camera, size, highlight);
+        self.lights.write(&self.host.gpu().queue, draw_data.lights(), extra_lights);
 
         // Build the frame from disjoint field borrows of `self` and `shared`.
         // Because the frame borrows only the scene subsystems (not `host`),
@@ -402,7 +411,7 @@ impl Renderer {
             gpu_meshes: &shared.gpu_meshes,
             bindings: SceneBindingRefs {
                 camera: &self.camera.bind_group,
-                lights: &shared.lights.bind_group,
+                lights: &self.lights.bind_group,
                 ibl: ibl_bind_group,
             },
             scene_props: SceneProperties { has_ibl: ibl_bind_group.is_some() },

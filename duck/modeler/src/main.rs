@@ -37,7 +37,6 @@ use duck_engine_viewer::common::{
     Vector3, InnerSpace
 };
 use duck_engine_viewer::scene::{PositionedCamera, Scene};
-use duck_engine_viewer::scene::resource::{NodeFlags, NodePayload};
 
 use crate::operators::{
     BooleanOperator, BoxOperator, CircleOperator, ConstructionOptions, CurveOperator,
@@ -203,7 +202,7 @@ impl ViewerState<'static> {
     fn set_default_scene(&mut self) {
         let mut scene = Scene::default();
 
-        // Setup default camera and lighting
+        // Default camera; lighting comes from the view's headlights.
         let eye = [75.0, 50.0, 75.0].into();
         let target = [0.0, 0.0, 0.0].into();
         let forward: Vector3 = target - eye;
@@ -222,20 +221,6 @@ impl ViewerState<'static> {
             zfar: 5_000f32,
             ortho: false
         };
-        let camera_transform = camera.to_node_transform();
-        let camera_projection = camera.projection();
-        {
-            let mut scene = scene.lock();
-            let camera_node_id = scene.add_node(
-                None,
-                Some("Main camera".to_owned()),
-                camera_transform,
-                NodeFlags::NONE
-            ).expect("Failed to add camera on default scene").id();
-            scene.set_node_payload(camera_node_id, NodePayload::Camera(camera_projection));
-            scene.set_active_camera(Some(camera_node_id));
-            scene.set_default_light_nodes(camera_node_id);
-        }
 
         let coptions = self.construction_options.borrow();
         self.grid =
@@ -243,6 +228,7 @@ impl ViewerState<'static> {
         drop(coptions);
 
         self.viewer.set_view_scene(self.view_id, scene.clone());
+        self.viewer.view_mut(self.view_id).expect("main view").set_camera(camera);
         self.document.lock().unwrap().set_scene(scene);
     }
 }
@@ -398,10 +384,14 @@ impl<'a> ViewerState<'a> {
         let mut viewport_rect = None;
         let mut ui_actions = Vec::new();
         let mut view = self.viewer.view_mut(self.view_id).expect("main view");
+        // The UI edits a copy of the camera; it is written back on
+        // `UiAction::CameraChanged` below.
+        let mut ui_camera = view.camera().clone();
         let full_output = egui_ctx.run(raw_input, |ctx| {
             ui_actions = self.ui.show(
                 ctx,
                 &self.document,
+                &mut ui_camera,
                 &self.construction_options,
                 view.selection_mut(),
                 &mut self.tools,
@@ -458,6 +448,10 @@ impl<'a> ViewerState<'a> {
                 UiAction::Undo => self.apply_undo(UndoAction::Undo),
                 UiAction::Redo => self.apply_undo(UndoAction::Redo),
                 UiAction::ConstructionChanged => self.rebuild_grid(),
+                UiAction::CameraChanged => {
+                    let mut view = self.viewer.view_mut(self.view_id).expect("main view");
+                    view.set_camera(ui_camera.clone());
+                }
                 UiAction::Quit => return true,
             }
         }

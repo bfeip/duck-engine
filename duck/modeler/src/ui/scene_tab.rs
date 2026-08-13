@@ -2,9 +2,8 @@
 //! camera projection, construction plane, grid, and snapping.
 
 use duck_engine_viewer::common::{EuclideanSpace, InnerSpace, Plane, Point3, Vector3};
-use duck_engine_viewer::scene::resource::NodePayload;
+use duck_engine_viewer::scene::PositionedCamera;
 
-use crate::document::Document;
 use crate::operators::ConstructionOptions;
 use crate::snap::SnapFlags;
 use crate::ui::UiAction;
@@ -17,13 +16,13 @@ impl SceneTab {
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        document: &mut Document,
+        camera: &mut PositionedCamera,
         construction: &mut ConstructionOptions,
         actions: &mut Vec<UiAction>,
     ) {
         egui::CollapsingHeader::new("Camera")
             .default_open(true)
-            .show(ui, |ui| camera_ui(ui, document));
+            .show(ui, |ui| camera_ui(ui, camera, actions));
 
         egui::CollapsingHeader::new("Construction plane")
             .default_open(true)
@@ -47,51 +46,37 @@ impl SceneTab {
     }
 }
 
-/// Projection controls for the active camera node. Pose is left to the
-/// navigation operator.
-fn camera_ui(ui: &mut egui::Ui, document: &mut Document) {
-    let scene = document.scene().clone();
-
-    let projection = scene.active_camera().and_then(|node_id| {
-        let node = scene.get_node(node_id)?;
-        match node.payload() {
-            NodePayload::Camera(projection) => Some((node_id, projection.clone())),
-            _ => None,
-        }
-    });
-    let Some((node_id, mut projection)) = projection else {
-        ui.weak("No active camera");
-        return;
-    };
-
+/// Projection controls for the view's camera. Pose is left to the navigation
+/// operator.
+fn camera_ui(ui: &mut egui::Ui, camera: &mut PositionedCamera, actions: &mut Vec<UiAction>) {
     let mut changed = false;
     egui::Grid::new("camera_settings").num_columns(2).show(ui, |ui| {
         ui.label("Field of view");
         changed |= ui
-            .add(egui::Slider::new(&mut projection.fovy, 10.0..=120.0).suffix("°"))
+            .add(egui::Slider::new(&mut camera.fovy, 10.0..=120.0).suffix("°"))
             .changed();
         ui.end_row();
 
-        let (znear, zfar) = (projection.znear, projection.zfar);
+        let (znear, zfar) = (camera.znear, camera.zfar);
         ui.label("Near clip");
         changed |= ui
-            .add(egui::DragValue::new(&mut projection.znear).speed(0.1).range(0.001..=zfar - 0.001))
+            .add(egui::DragValue::new(&mut camera.znear).speed(0.1).range(0.001..=zfar - 0.001))
             .changed();
         ui.end_row();
 
         ui.label("Far clip");
         changed |= ui
-            .add(egui::DragValue::new(&mut projection.zfar).speed(10.0).range(znear + 0.001..=f32::MAX))
+            .add(egui::DragValue::new(&mut camera.zfar).speed(10.0).range(znear + 0.001..=f32::MAX))
             .changed();
         ui.end_row();
 
         ui.label("Projection");
-        changed |= ui.checkbox(&mut projection.ortho, "Orthographic").changed();
+        changed |= ui.checkbox(&mut camera.ortho, "Orthographic").changed();
         ui.end_row();
     });
 
     if changed {
-        scene.set_node_payload(node_id, NodePayload::Camera(projection));
+        actions.push(UiAction::CameraChanged);
     }
 }
 

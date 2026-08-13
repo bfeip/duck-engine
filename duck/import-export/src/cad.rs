@@ -13,7 +13,7 @@ use duck_engine_scene::resource::{
     Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, NodePayload, PrimitiveType,
     Vertex,
 };
-use duck_engine_scene::SceneData;
+use duck_engine_scene::{PositionedCamera, SceneData};
 use opencascade::primitives::{Compound, EdgeType, Shape};
 use opencascade::xcaf::{XcafColorTool, XcafDimTolTool, XcafDocument, XcafLabel, XcafShapeTool};
 
@@ -46,10 +46,12 @@ pub struct CadImportResult {
     pub root: NodeId,
     /// Root node of the PMI geometry sub-tree, if PMI was found.
     pub pmi_root: Option<NodeId>,
-    /// Camera nodes for named views imported from the CAD file.
+    /// Named views imported from the CAD file, as camera snapshots.
     ///
-    /// TODO(cad-views): implement once camera/view node representation is finalized.
-    pub views: Vec<NodeId>,
+    /// TODO(cad-views): implement. Cameras are not scene resources, so named
+    /// views import out-of-band as `(name, PositionedCamera)` pairs, matching
+    /// how the other importers return their camera.
+    pub views: Vec<(String, PositionedCamera)>,
 }
 
 /// Import a STEP file into `scene`, returning a [`CadImportResult`] that mirrors
@@ -290,13 +292,13 @@ fn import_pmi(
     Ok(Some(pmi_root))
 }
 
-/// TODO(cad-views): Import CAD views as camera nodes. Currently stubbed out pending
-/// finalization of the camera/view node representation.
+/// TODO(cad-views): Import named CAD views as camera snapshots. Currently
+/// stubbed out.
 pub(crate) fn import_views(
     _view_tool: &opencascade::xcaf::XcafViewTool,
     _scene: &mut SceneData,
     _options: &CadImportOptions,
-) -> Vec<NodeId> {
+) -> Vec<(String, PositionedCamera)> {
     vec![]
 }
 

@@ -1,4 +1,4 @@
-use crate::{CameraProjection, Light};
+use crate::Light;
 use super::handle::{InstanceHandle, NodeHandle};
 use super::DisplayBehavior;
 use super::RenderLayer;
@@ -14,36 +14,19 @@ use std::cell::Cell;
 /// Unique identifier for a Node in the scene tree.
 pub type NodeId = super::Id<Node>;
 
-/// Trait for custom, user-defined node payloads.
-///
-/// External crates can implement this to attach arbitrary typed data to scene
-/// nodes. Custom payloads are runtime-only: they serialize as
-/// `NodePayload::None`.
-pub trait CustomNodePayload: Send + Sync {}
-
 /// The typed content of a scene node.
+#[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NodePayload {
     /// Structural container with no content (default).
+    #[default]
     None,
     /// References a mesh+material pair to be rendered. The handle owns the
     /// instance: it is removed when no longer referenced by any node or handle.
     Instance(InstanceHandle),
-    /// A camera. Projection intrinsics are stored here; pose lives in the node's Transform.
-    Camera(CameraProjection),
     /// A light source. Position and direction are derived from the node's world transform:
     /// translation column → position (Point, Spot); negative Z-axis → direction (Directional, Spot).
     Light(Light),
-    /// A runtime-only custom payload defined by an external crate.
-    /// Serializes as `None`.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    Custom(Box<dyn CustomNodePayload>),
-}
-
-impl Default for NodePayload {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl std::fmt::Debug for NodePayload {
@@ -51,21 +34,7 @@ impl std::fmt::Debug for NodePayload {
         match self {
             Self::None => write!(f, "None"),
             Self::Instance(h) => f.debug_tuple("Instance").field(&h.id()).finish(),
-            Self::Camera(c) => f.debug_tuple("Camera").field(c).finish(),
             Self::Light(l) => f.debug_tuple("Light").field(l).finish(),
-            Self::Custom(_) => f.debug_tuple("Custom").field(&"..").finish(),
-        }
-    }
-}
-
-impl Clone for NodePayload {
-    fn clone(&self) -> Self {
-        match self {
-            Self::None => Self::None,
-            Self::Instance(h) => Self::Instance(h.clone()),
-            Self::Camera(c) => Self::Camera(c.clone()),
-            Self::Light(l) => Self::Light(l.clone()),
-            Self::Custom(_) => Self::None,
         }
     }
 }

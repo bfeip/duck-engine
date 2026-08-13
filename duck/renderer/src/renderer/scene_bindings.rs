@@ -1,7 +1,7 @@
 use bytemuck::bytes_of;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-use crate::scene::{Light, LightType, MAX_LIGHTS, PositionedCamera, SceneData};
+use crate::scene::{Light, LightType, MAX_LIGHTS, PositionedCamera};
 
 use super::batching::ResolvedLight;
 
@@ -137,14 +137,16 @@ pub(crate) struct LightsArrayUniform {
 }
 
 impl LightsArrayUniform {
-    pub fn from_resolved_lights(lights: &[ResolvedLight]) -> Self {
+    /// Builds the uniform from resolved lights, truncating at [`MAX_LIGHTS`].
+    pub fn from_resolved_lights<'a>(lights: impl IntoIterator<Item = &'a ResolvedLight>) -> Self {
         let mut uniform = Self {
-            light_count: lights.len().min(MAX_LIGHTS) as u32,
+            light_count: 0,
             _padding: [0; 3],
             lights: [bytemuck::Zeroable::zeroed(); MAX_LIGHTS],
         };
-        for (i, light) in lights.iter().take(MAX_LIGHTS).enumerate() {
-            uniform.lights[i] = LightUniform::from_resolved_light(light);
+        for light in lights.into_iter().take(MAX_LIGHTS) {
+            uniform.lights[uniform.light_count as usize] = LightUniform::from_resolved_light(light);
+            uniform.light_count += 1;
         }
         uniform
     }
@@ -188,7 +190,6 @@ impl CameraBinding {
 pub(crate) struct LightsBinding {
     pub buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
-    pub synced_generation: u64,
 }
 
 impl LightsBinding {
@@ -210,34 +211,20 @@ impl LightsBinding {
             label: Some("Light bind group"),
         });
 
-        LightsBinding {
-            buffer,
-            bind_group,
-            synced_generation: 0,
-        }
+        LightsBinding { buffer, bind_group }
     }
 
-    /// Re-upload the lights uniform if the scene's node generation has changed
-    /// since the last sync. `resolve` supplies the resolved lights for the
-    /// current frame (the renderer gathers them from the scene graph), and is
-    /// only called when an upload is actually needed.
-    pub fn sync(
-        &mut self,
+    /// Upload the frame's lights: the scene's lights followed by the view's
+    /// extra (camera-space) lights, truncated at [`MAX_LIGHTS`].
+    pub fn write(
+        &self,
         queue: &wgpu::Queue,
-        scene: &SceneData,
-        resolve: impl FnOnce() -> LightsArrayUniform,
+        scene_lights: &[ResolvedLight],
+        extra_lights: &[ResolvedLight],
     ) {
-        let node_gen = scene.node_generation();
-        if self.synced_generation != node_gen {
-            queue.write_buffer(&self.buffer, 0, bytes_of(&resolve()));
-            self.synced_generation = node_gen;
-        }
-    }
-
-    /// Force the next [`sync`](Self::sync) to re-upload, e.g. after the
-    /// scene's GPU resources are cleared.
-    pub fn invalidate(&mut self) {
-        self.synced_generation = 0;
+        let uniform =
+            LightsArrayUniform::from_resolved_lights(scene_lights.iter().chain(extra_lights));
+        queue.write_buffer(&self.buffer, 0, bytes_of(&uniform));
     }
 }
 

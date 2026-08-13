@@ -94,7 +94,7 @@ impl CircleOperator {
     }
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         let cplane_normal = self.construction_options.borrow().construction_plane.normal;
         let Some(snap) = self
             .construction_options
@@ -126,7 +126,7 @@ impl CircleOperator {
         position: (f32, f32),
         ctx: &mut EventContext
     ) -> bool {
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         // Exclude the preview so the radius can snap through a corner, not to the
         // preview's own geometry.
         let radius = self
@@ -163,7 +163,7 @@ impl CircleOperator {
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
 
-        let camera = ctx.camera();
+        let camera = ctx.camera.clone();
         // While defining, exclude our own preview so the radius doesn't snap to it.
         let snap = self.construction_options.borrow().resolve_snap(
             cursor,

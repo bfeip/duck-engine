@@ -1,6 +1,6 @@
 
 use crate::input::Modifiers;
-use crate::scene::{PositionedCamera, Scene, resource::NodeId};
+use crate::scene::{PositionedCamera, Scene};
 use crate::selection::SelectionManager;
 
 use super::Event;
@@ -17,9 +17,8 @@ pub struct EventContext<'c> {
     /// Shared scene handle. Its methods lock internally; take a guard with
     /// `scene.lock()` only for compound work.
     pub scene: Scene,
-    /// The scene node the dispatching view renders from. [`camera`](Self::camera)
-    /// and its writers operate on this node.
-    pub camera_node: NodeId,
+    /// The dispatching view's camera. Mutations take effect immediately.
+    pub camera: &'c mut PositionedCamera,
     /// Mutable reference to the selection manager
     pub selection: &'c mut SelectionManager,
     /// Currently held keyboard modifier keys, updated by the dispatcher before each dispatch.
@@ -50,31 +49,5 @@ impl<'c> EventContext<'c> {
     /// Viewport aspect ratio.
     pub fn aspect(&self) -> f32 {
         self.size.0 as f32 / self.size.1 as f32
-    }
-
-    /// Returns a [`PositionedCamera`] for the view's camera node.
-    ///
-    /// Combines the node's world transform with its [`CameraProjection`] payload and
-    /// the view's aspect ratio. Panics if the camera node has been removed.
-    pub fn camera(&self) -> PositionedCamera {
-        self.scene
-            .camera_for_node(self.camera_node, self.aspect())
-            .expect("view camera node missing from scene")
-    }
-
-    /// Writes a [`PositionedCamera`] back to the view's camera node.
-    ///
-    /// Updates both the node transform (pose) and the Camera payload (projection
-    /// intrinsics + focus distance).
-    pub fn set_camera(&mut self, cam: PositionedCamera) {
-        self.scene.set_camera_for_node(self.camera_node, cam);
-    }
-
-    /// Reads the view's camera, passes it to `f`, and writes it back.
-    ///
-    /// The read and the write share one critical section. `f` must not touch the
-    /// scene.
-    pub fn with_camera_mut(&mut self, f: impl FnOnce(&mut PositionedCamera)) {
-        self.scene.with_camera_for_node_mut(self.camera_node, self.aspect(), f);
     }
 }

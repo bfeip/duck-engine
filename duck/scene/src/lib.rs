@@ -1,7 +1,7 @@
 //! GPU-free scene description for duck-engine.
 //!
 //! This crate defines what a scene *is*: a tree of nodes carrying mesh
-//! instances, cameras, and lights, backed by shared resources — meshes,
+//! instances and lights, backed by shared resources — meshes,
 //! materials, textures, and image-based-lighting environment maps. It also
 //! answers geometric questions about a scene ([`geom_query`]: ray and volume
 //! picking). It contains no GPU types; rendering is a separate concern built
@@ -58,9 +58,9 @@
 //! [`Transform`](common::Transform), an optional parent, children, and a
 //! [`NodePayload`](resource::NodePayload) saying what it is: nothing (a
 //! grouping node), an [`Instance`](resource::Instance) pairing a mesh with up
-//! to three materials (face, line, point), a camera, or a light. Cameras and
-//! lights take their pose from the node's world transform;
-//! [`SceneData::set_active_camera`] chooses the node that drives rendering.
+//! to three materials (face, line, point), or a light. Lights take their pose
+//! from the node's world transform. Cameras are not scene resources; consumers
+//! (views) own their [`PositionedCamera`]s.
 //!
 //! Node [`Visibility`](resource::Visibility) is what you author; what actually
 //! shows is the inherited
@@ -135,14 +135,12 @@ mod data;
 mod environment;
 mod light;
 mod scene_handle;
-mod saved_view;
 
-pub use camera::{CameraProjection, PositionedCamera};
+pub use camera::PositionedCamera;
 pub use data::{BoundingResult, SceneData, SceneProperties};
 pub use environment::{EnvironmentMap, EnvironmentMapId, EnvironmentSource};
 pub use light::{Light, LightType, MAX_LIGHTS};
 pub use scene_handle::{Scene, SceneGuard};
-pub use saved_view::{SavedView, SavedViewId};
 
 /// Default generation counter value for newly created resources.
 /// Starts at 1 so initial change detection triggers on first use.
