@@ -1,9 +1,16 @@
-//! Image Based Lighting (IBL) support for PBR rendering.
+//! Image-based lighting: environment maps as light sources for PBR shading.
 //!
-//! This module provides environment map loading, processing, and GPU resource management
-//! for image-based lighting. Environment maps are loaded from equirectangular HDR images
-//! and processed into the required formats (irradiance map, pre-filtered environment map,
-//! and BRDF LUT) using GPU compute shaders.
+//! An [`EnvironmentMap`] is a scene resource naming an equirectangular HDR
+//! source ([`EnvironmentSource`]) plus an intensity. When a scene's active
+//! environment map is prepared for rendering, its HDR image is processed on
+//! the GPU into the textures PBR shading samples — an irradiance cubemap, a
+//! roughness-prefiltered cubemap, and a BRDF lookup table — and lit materials
+//! pick it up automatically. Processing requires compute shaders; without them
+//! environment maps are skipped (with a log warning).
+//!
+//! This module also exposes the Radiance HDR loader ([`HdrImage`],
+//! [`load_hdr_from_path`], [`load_hdr_from_bytes`], [`load_hdr_from_reader`])
+//! and the sizes of the generated textures.
 
 mod brdf_lut;
 mod cubemap;
@@ -12,7 +19,7 @@ mod hdr_loader;
 mod irradiance;
 mod prefilter;
 
-pub use hdr_loader::{load_hdr_from_bytes, load_hdr_from_path, HdrImage};
+pub use hdr_loader::{load_hdr_from_bytes, load_hdr_from_path, load_hdr_from_reader, HdrImage};
 
 pub(crate) use brdf_lut::{BrdfLut, BrdfLutPipeline};
 pub(crate) use cubemap::GpuCubemap;
@@ -223,7 +230,7 @@ impl IblResources {
     ///
     /// If the environment has already been processed (same ID), only updates
     /// the params buffer (intensity). Full texture reprocessing is skipped
-    /// since the source cannot change on an existing environment map. (right now)
+    /// since the source cannot change on an existing environment map.
     ///
     /// Requires compute shader support; without it the environment is skipped.
     pub fn process_environment(
@@ -366,10 +373,5 @@ impl IblResources {
     /// Get the processed environment for an ID, if available.
     pub fn get_processed(&self, id: EnvironmentMapId) -> Option<&ProcessedEnvironment> {
         self.processed_environments.get(&id).map(|(env, _)| env)
-    }
-
-    /// Remove a processed environment.
-    pub fn _remove_processed(&mut self, id: EnvironmentMapId) {
-        self.processed_environments.remove(&id);
     }
 }

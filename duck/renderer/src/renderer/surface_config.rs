@@ -7,7 +7,7 @@
 //!
 //! It is the one source of truth driving everything that must agree for a
 //! variant: the WESL feature flags ([`features`](SurfaceConfig::features)), the
-//! group-2 material bind-group layout (via [`texture_presence`]), whether the
+//! group-2 material bind-group layout (via [`textures`]), whether the
 //! pipeline layout includes the IBL group, and which bind-group entries each
 //! material builds. Deriving them all from one value is what lets us drop the
 //! fallback textures, the `texture_flags` bitmask, and the fixed Color/PBR
@@ -17,7 +17,7 @@
 //! absent for unlit materials, so an unlit variant stays minimal regardless of
 //! stray texture assignments.
 //!
-//! [`texture_presence`]: SurfaceConfig::texture_presence
+//! [`textures`]: SurfaceConfig::textures
 
 use crate::scene::resource::{AlphaMode, MaterialProperties};
 

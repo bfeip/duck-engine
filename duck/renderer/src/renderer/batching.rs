@@ -119,6 +119,7 @@ pub struct DrawBatch {
 }
 
 impl DrawBatch {
+    /// Creates an empty batch for one mesh + material pairing.
     pub fn new(
         mesh_id: MeshId,
         material: BatchMaterial,
@@ -141,6 +142,7 @@ impl DrawBatch {
         self
     }
 
+    /// The grouping key this batch collects instances under.
     pub fn key(&self) -> BatchKey {
         BatchKey {
             mesh_id: self.mesh_id,
@@ -148,6 +150,7 @@ impl DrawBatch {
         }
     }
 
+    /// Adds an instance to draw with this batch.
     pub fn add_instance(&mut self, instance_transform: InstanceTransform) {
         self.instances.push(instance_transform);
     }

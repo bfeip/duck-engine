@@ -12,11 +12,13 @@ mod surface_config;
 mod texture;
 mod workflow;
 
-pub use batching::{DrawBatch, DrawData, ResolvedLight};
+pub use batching::{
+    BatchKey, BatchMaterial, DrawBatch, DrawData, InstanceTransform, ResolvedLight, SubGeomBatch,
+};
 pub use custom_pipeline::CustomPipelineBuilder;
 pub use mesh::{instance_buffer_layout, vertex_buffer_layout};
 pub use pass_context::{SceneFrame, SceneFrames, SceneRenderPass, SceneWorkflow};
-pub use pipeline::MaterialPipelineCache;
+pub use scene_bindings::SceneBindingRefs;
 pub use workflow::{HiddenLineConfig, HiddenLineWorkflow, ShadedWorkflow};
 
 use anyhow::Result;
@@ -43,7 +45,7 @@ use crate::{
 use bind_group_layouts::BindGroupLayouts;
 use material_system::MaterialSystem;
 use mesh::MeshGpuResources;
-use scene_bindings::{CameraBinding, LightsBinding, SceneBindingRefs};
+use scene_bindings::{CameraBinding, LightsBinding};
 
 /// Shared GPU state for one scene: resource caches generation-synced to a
 /// [`SceneData`], plus the bind group layouts and pipeline caches every
@@ -71,6 +73,14 @@ pub struct SceneResources {
 }
 
 impl SceneResources {
+    /// Creates the shared GPU state for one scene.
+    ///
+    /// `format` and `sample_count` fix the target configuration for every
+    /// [`Renderer`] created from this value;
+    /// [`Renderer::preferred_sample_count`] probes a suitable count.
+    /// `has_compute` reports compute shader availability, as returned by
+    /// [`Gpu`](crate::render_core::Gpu) acquisition; without it, environment
+    /// map processing is skipped.
     pub fn new(
         gpu: Gpu,
         format: wgpu::TextureFormat,
@@ -93,12 +103,12 @@ impl SceneResources {
         }
     }
 
-    /// Get a reference to the wgpu device.
+    /// The wgpu device.
     pub fn device(&self) -> &wgpu::Device {
         &self.gpu.device
     }
 
-    /// Get a reference to the wgpu queue.
+    /// The wgpu queue.
     pub fn queue(&self) -> &wgpu::Queue {
         &self.gpu.queue
     }
@@ -127,7 +137,6 @@ impl SceneResources {
     ///
     /// Engine modules available for import: `package::common`, `package::camera`,
     /// `package::lighting`, `package::constants`, `package::vertex`, `package::pbr`.
-    /// See `docs/custom-passes.md` for the full module reference.
     pub fn compile_user_wesl(&self, source: &str) -> anyhow::Result<wgpu::ShaderModule> {
         crate::shaders::compile_user_wesl(&self.gpu.device, source)
     }
@@ -165,7 +174,7 @@ impl SceneResources {
 }
 
 /// Per-view render state: the frame targets (depth/MSAA), the active workflow,
-/// and the camera uniform for one view of a scene.
+/// and the camera and lights uniforms for one view of a scene.
 ///
 /// Scene resource caches live in [`SceneResources`], shared by every renderer
 /// over the same scene; the renderer borrows them per call.
@@ -237,31 +246,32 @@ impl Renderer {
         }
     }
 
-    /// Get a reference to the wgpu device.
+    /// The wgpu device.
     pub fn device(&self) -> &wgpu::Device {
         &self.host.gpu().device
     }
 
-    /// Get a reference to the wgpu queue.
+    /// The wgpu queue.
     pub fn queue(&self) -> &wgpu::Queue {
         &self.host.gpu().queue
     }
 
-    /// Get the current viewport size as (width, height).
+    /// The current render target size as (width, height) in pixels.
     pub fn size(&self) -> (u32, u32) {
         self.host.targets().size()
     }
 
-    /// Get the target texture format.
+    /// The target texture format.
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.host.targets().format()
     }
 
-    /// Get the MSAA sample count (1 = no MSAA, 4 = 4× MSAA).
+    /// The MSAA sample count (1 = no MSAA).
     pub fn sample_count(&self) -> u32 {
         self.host.targets().sample_count()
     }
 
+    /// Set the color the frame is cleared to before geometry draws.
     pub fn set_background_color(&mut self, color: RgbaColor) {
         self.background_color = rgba_to_wgpu_color(color);
     }
@@ -269,8 +279,8 @@ impl Renderer {
     /// Replace the active rendering workflow.
     ///
     /// The new workflow takes effect immediately on the next frame. The previous
-    /// workflow and all its GPU resources are dropped. The [`MaterialPipelineCache`] is
-    /// retained across workflow swaps.
+    /// workflow and all its GPU resources are dropped; the material pipelines
+    /// cached in [`SceneResources`] are retained across workflow swaps.
     pub fn set_workflow(&mut self, workflow: Box<SceneWorkflow>) {
         self.host.set_workflow(workflow);
     }
@@ -307,21 +317,24 @@ impl Renderer {
         )
     }
 
+    /// Resize the render target to `new_size` (width, height) in pixels.
+    ///
+    /// Recreates the depth/MSAA attachments and lets the active workflow's
+    /// passes recreate their size-dependent resources.
     pub fn resize(&mut self, new_size: (u32, u32)) {
         self.host.resize(new_size);
     }
 
-    /// Render the scene to an image buffer.
+    /// Render the scene to an RGBA image, at the renderer's current size.
     ///
-    /// This is the primary API for headless rendering. It prepares `shared`,
-    /// renders the scene from the given camera viewpoint, and returns the
-    /// result as an RGBA image.
+    /// This is the primary API for headless rendering, and unlike
+    /// [`render_scene_to_view`](Self::render_scene_to_view) it is
+    /// self-contained: it locks the scene, [`prepare`](SceneResources::prepare)s
+    /// `shared`, and submits the GPU work itself — so it counts as that
+    /// scene's `prepare` for the frame.
     ///
-    /// `extra_lights` are composed after the scene's lights (e.g. a view's
-    /// camera-space headlights); pass `&[]` for scene lighting only.
-    ///
-    /// The renderer must have been created with dimensions matching the desired
-    /// output size, or resized beforehand.
+    /// `extra_lights` are composed after the scene's lights (e.g. camera-space
+    /// headlights); pass `&[]` for scene lighting only.
     pub fn render_scene_to_image(
         &mut self,
         shared: &mut SceneResources,
@@ -368,15 +381,15 @@ impl Renderer {
             .ok_or_else(|| anyhow::anyhow!("Failed to create image from rendered data"))
     }
 
-    /// Render the scene to a specific view, updating uniforms and drawing all batches.
-    /// If a highlight is provided and not empty, highlight outlines will be rendered.
-    /// The encoder is not submitted - the caller is responsible for that.
+    /// Render the scene into `view`, recording into `encoder`.
     ///
-    /// `extra_lights` are composed after the scene's lights (e.g. a view's
-    /// camera-space headlights); pass `&[]` for scene lighting only.
-    ///
+    /// The encoder is not submitted — the caller is responsible for that.
     /// `shared` must have been [`prepare`](SceneResources::prepare)d for this
     /// frame; the caller holds the scene lock for the duration of the render.
+    ///
+    /// `extra_lights` are composed after the scene's lights (e.g. camera-space
+    /// headlights); pass `&[]` for scene lighting only. A non-empty `highlight`
+    /// renders selection outlines and sub-geometry highlights.
     pub fn render_scene_to_view(
         &mut self,
         shared: &mut SceneResources,

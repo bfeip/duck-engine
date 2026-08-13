@@ -188,13 +188,15 @@ pub(crate) enum VertexShaderLocations {
     InstanceNormalRow2,
 }
 
-/// Returns the vertex buffer layout for [`Vertex`] structs.
+/// The engine's standard per-vertex buffer layout (position, texture
+/// coordinates, normal).
 ///
-/// Prefer [`Renderer::custom_pipeline_builder`] for building custom render pipelines —
-/// it applies both buffer layouts automatically. These functions are a lower-level
-/// escape hatch for cases where the builder's defaults don't fit. Callers that use
-/// the layouts directly must also duplicate the engine's shader struct definitions,
-/// which will silently break if the engine types change.
+/// Prefer [`SceneResources::custom_pipeline_builder`](super::SceneResources::custom_pipeline_builder)
+/// for building custom render pipelines — it applies both buffer layouts
+/// automatically. These functions are a lower-level escape hatch for cases
+/// where the builder's defaults don't fit. Callers that use the layouts
+/// directly must also duplicate the engine's shader struct definitions, which
+/// will silently break if the engine types change.
 pub fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
@@ -219,7 +221,8 @@ pub fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// Returns the instance buffer layout for `GpuInstance` structs.
+/// The engine's standard per-instance buffer layout (transform and normal
+/// matrix rows).
 ///
 /// See [`vertex_buffer_layout`] — the same caveats apply.
 pub fn instance_buffer_layout() -> wgpu::VertexBufferLayout<'static> {

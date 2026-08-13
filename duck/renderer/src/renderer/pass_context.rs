@@ -45,6 +45,7 @@ pub type SceneWorkflow = dyn crate::render_core::RenderWorkflow<SceneFrames>;
 /// is what lets the renderer hold `&mut host` while the frame borrows the
 /// renderer's other fields.
 pub struct SceneFrame<'a> {
+    /// The scene being rendered, locked for the duration of the frame.
     pub scene: &'a SceneData,
     /// Collected, sorted, partitioned draw batches for this frame.
     pub draw: &'a DrawData,
@@ -56,6 +57,7 @@ pub struct SceneFrame<'a> {
     pub scene_props: SceneProperties,
     /// Material subsystem: pipelines, shaders, and per-material bind groups.
     pub(crate) materials: &'a mut MaterialSystem,
+    /// The renderer's clear color for this frame.
     pub background_color: wgpu::Color,
 }
 
@@ -87,6 +89,8 @@ impl SceneFrame<'_> {
 /// [`resize`](Self::resize) to recreate size-dependent resources when the
 /// viewport changes.
 pub trait SceneRenderPass {
+    /// Whether the pass should run this frame; inactive passes are skipped
+    /// entirely. The default is always active.
     fn is_active(&self, _frame: &SceneFrame<'_>) -> bool {
         true
     }
@@ -97,6 +101,7 @@ pub trait SceneRenderPass {
     /// The default is a no-op.
     fn resize(&mut self, _gpu: &Gpu, _targets: &FrameTargets) {}
 
+    /// Record this pass's GPU work into `encoder`, drawing to `view`.
     fn execute(
         &mut self,
         gpu: &Gpu,

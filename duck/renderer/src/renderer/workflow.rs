@@ -52,7 +52,7 @@ impl ShadedWorkflow {
     }
 
     /// Replace the pass list. Passes execute in order; each receives the same
-    /// [`FrameContext`] and can skip itself by returning `false` from
+    /// [`SceneFrame`] and can skip itself by returning `false` from
     /// [`SceneRenderPass::is_active`].
     pub fn set_passes(&mut self, passes: Vec<Box<dyn SceneRenderPass>>) {
         self.passes = passes;
@@ -113,10 +113,10 @@ impl Default for HiddenLineConfig {
 /// via [`HiddenLineConfig`].
 ///
 /// Pass sequence:
-/// 1. `solid_pass`     ([`FlatColorPass`]) — clear to face color, render all triangles, write depth.
-/// 2. `silhouette_pass`([`SilhouetteEdgesPass`]) — fullscreen depth-discontinuity edge detection.
-/// 3. `occluded_pass`  ([`FlatColorPass`]) — hidden line color where depth compare is `Greater`.
-/// 4. `visible_pass`   ([`FlatColorPass`]) — visible line color where depth compare is `LessEqual`.
+/// 1. Solid — clear to face color, render all triangles, write depth.
+/// 2. Silhouette — fullscreen depth-discontinuity edge detection.
+/// 3. Occluded lines — hidden line color where depth compare is `Greater`.
+/// 4. Visible lines — visible line color where depth compare is `LessEqual`.
 pub struct HiddenLineWorkflow {
     solid_pass: FlatColorPass,
     silhouette_pass: SilhouetteEdgesPass,

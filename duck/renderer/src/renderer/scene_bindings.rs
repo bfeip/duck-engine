@@ -41,26 +41,11 @@ impl CameraUniform {
     }
 }
 
-/// GPU-compatible representation of a single light for shader uniforms.
+/// GPU-compatible representation of a single light for shader uniforms
+/// (64 bytes, matching the WGSL `Light` struct).
 ///
-/// This struct is laid out to match WGSL uniform buffer alignment requirements.
-/// vec3<f32> types require 16-byte alignment in WGSL, so scalar fields are
-/// grouped at the start to pack efficiently.
-///
-/// # Memory Layout (64 bytes total)
-///
-/// | Offset | Size | Field          | Notes                              |
-/// |--------|------|----------------|------------------------------------|
-/// | 0      | 4    | light_type     | 0=Point, 1=Directional, 2=Spot     |
-/// | 4      | 4    | range          | 0 = infinite range                 |
-/// | 8      | 4    | inner_cone_cos | Spot: cos(inner angle)             |
-/// | 12     | 4    | outer_cone_cos | Spot: cos(outer angle)             |
-/// | 16     | 12   | position       | Point/Spot: world position         |
-/// | 28     | 4    | intensity      | Light intensity multiplier         |
-/// | 32     | 12   | direction      | Directional/Spot: light direction  |
-/// | 44     | 4    | _padding1      | Alignment padding                  |
-/// | 48     | 12   | color          | RGB color                          |
-/// | 60     | 4    | _padding2      | Alignment padding                  |
+/// Laid out for WGSL uniform buffer alignment: `vec3<f32>` requires 16-byte
+/// alignment, so scalar fields are grouped to pack around the vectors.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct LightUniform {
@@ -119,15 +104,8 @@ impl LightUniform {
     }
 }
 
-/// GPU-compatible array of lights with count.
-///
-/// # Memory Layout (528 bytes total)
-///
-/// | Offset | Size     | Field       |
-/// |--------|----------|-------------|
-/// | 0      | 4        | light_count |
-/// | 4      | 12       | _padding    |
-/// | 16     | 64 * 8   | lights      |
+/// GPU-compatible array of lights with count (matching the WGSL `Lights`
+/// uniform).
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct LightsArrayUniform {

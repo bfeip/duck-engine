@@ -18,15 +18,7 @@ pub struct GpuCubemap {
 }
 
 impl GpuCubemap {
-    /// Create a new cubemap texture.
-    ///
-    /// # Arguments
-    /// * `device` - The wgpu device
-    /// * `size` - Width and height of each face in pixels
-    /// * `format` - Texture format (typically Rgba16Float for HDR)
-    /// * `mip_levels` - Number of mip levels (1 for no mipmaps)
-    /// * `usage` - Texture usage flags
-    /// * `label` - Debug label for the texture
+    /// Create a cubemap texture with faces of `size`×`size` pixels.
     pub fn new(
         device: &wgpu::Device,
         size: u32,
