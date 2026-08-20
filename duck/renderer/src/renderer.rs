@@ -1,7 +1,7 @@
 mod batching;
 mod bind_group_layouts;
 mod custom_pipeline;
-mod material_system;
+mod material_cache;
 mod mesh;
 mod pass_context;
 mod pipeline;
@@ -43,40 +43,37 @@ use crate::{
 };
 
 use bind_group_layouts::BindGroupLayouts;
-use material_system::MaterialSystem;
+use material_cache::MaterialCache;
 use mesh::MeshGpuResources;
+use pipeline::MaterialPipelineCache;
 use scene_bindings::{CameraBinding, LightsBinding};
 
-/// Shared GPU state for one scene: resource caches generation-synced to a
-/// [`SceneData`], plus the bind group layouts and pipeline caches every
-/// renderer over that scene draws from.
+/// Device-scoped render state: the GPU handles, the target configuration, and
+/// the caches that depend only on those — bind group layouts, material
+/// pipelines, and the WESL shader generator.
 ///
-/// One `SceneResources` serves any number of [`Renderer`]s (views) of the same
-/// scene; create one per distinct scene. It owns the destructive
-/// [`prepare`](Self::prepare), which must run exactly once per scene per frame.
+/// One `RenderContext` serves every scene and every view rendering at its
+/// format and sample count; nothing here is per-scene, so scenes drawn at the
+/// same target configuration share one set of compiled pipelines.
 ///
-/// All renderers sharing a `SceneResources` render at its target format and
-/// MSAA sample count — both are baked into the shared pipeline caches.
-pub struct SceneResources {
+/// Create the per-scene caches from it with [`SceneResources::new`], and the
+/// per-view state with [`Renderer::new`].
+pub struct RenderContext {
     gpu: Gpu,
     format: wgpu::TextureFormat,
     sample_count: u32,
+    has_compute: bool,
 
     layouts: BindGroupLayouts,
-    /// Materials: pipelines, shader generator, per-material bind groups, fallbacks.
-    materials: MaterialSystem,
-    ibl_resources: IblResources,
-
-    // Per-object geometry GPU resources, generation-synced to the scene.
-    gpu_meshes: GenCache<MeshId, MeshGpuResources>,
-    gpu_textures: GenCache<TextureId, GpuTexture>,
+    /// Material pipelines, their layouts, and the shader generator.
+    pipelines: MaterialPipelineCache,
 }
 
-impl SceneResources {
-    /// Creates the shared GPU state for one scene.
+impl RenderContext {
+    /// Creates the render context for one device and target configuration.
     ///
-    /// `format` and `sample_count` fix the target configuration for every
-    /// [`Renderer`] created from this value;
+    /// `format` and `sample_count` are baked into every pipeline built here, so
+    /// all renderers over this context render at that configuration;
     /// [`Renderer::preferred_sample_count`] probes a suitable count.
     /// `has_compute` reports compute shader availability, as returned by
     /// [`Gpu`](crate::render_core::Gpu) acquisition; without it, environment
@@ -88,19 +85,15 @@ impl SceneResources {
         has_compute: bool,
     ) -> Self {
         let layouts = BindGroupLayouts::new(&gpu.device);
-        let ibl_resources = IblResources::new(&gpu.device, &gpu.queue, &layouts.ibl, has_compute);
-        let materials = MaterialSystem::new(&layouts, ShaderGenerator::new(), sample_count, format);
+        let pipelines =
+            MaterialPipelineCache::new(&layouts, ShaderGenerator::new(), sample_count, format);
 
-        Self {
-            gpu,
-            format,
-            sample_count,
-            layouts,
-            materials,
-            ibl_resources,
-            gpu_meshes: GenCache::new(),
-            gpu_textures: GenCache::new(),
-        }
+        Self { gpu, format, sample_count, has_compute, layouts, pipelines }
+    }
+
+    /// The GPU handle pair, cloneable for sharing the device/queue.
+    pub fn gpu(&self) -> &Gpu {
+        &self.gpu
     }
 
     /// The wgpu device.
@@ -113,24 +106,20 @@ impl SceneResources {
         &self.gpu.queue
     }
 
-    /// The target texture format shared by all renderers over this scene.
+    /// The target texture format every renderer over this context draws at.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.format
     }
 
-    /// The MSAA sample count shared by all renderers over this scene.
+    /// The MSAA sample count every renderer over this context draws at.
     pub fn sample_count(&self) -> u32 {
         self.sample_count
     }
 
-    /// Clear all scene-specific GPU resources.
-    ///
-    /// Call this when the scene is cleared or replaced to ensure stale GPU
-    /// buffers (vertex data, textures, material bind groups) are not reused.
-    pub fn clear(&mut self) {
-        self.gpu_meshes.clear();
-        self.gpu_textures.clear();
-        self.materials.clear();
+    /// Whether the device supports compute shaders; without it environment maps
+    /// are not processed.
+    pub fn has_compute(&self) -> bool {
+        self.has_compute
     }
 
     /// Compile a user-supplied WESL shader with access to all engine shader modules.
@@ -173,11 +162,63 @@ impl SceneResources {
     }
 }
 
+/// GPU state for one scene: the resource caches generation-synced to a
+/// [`SceneData`] — meshes, textures, material bind groups, and processed
+/// environment maps.
+///
+/// One `SceneResources` serves any number of [`Renderer`]s (views) of the same
+/// scene; create one per distinct scene. It owns the destructive
+/// [`prepare`](Self::prepare), which must run exactly once per scene per frame.
+///
+/// Nothing here depends on the target configuration — pipelines and layouts
+/// live in the [`RenderContext`] this was created from, and every call that
+/// touches them takes it back.
+pub struct SceneResources {
+    /// Per-material bind groups, generation-synced to the scene.
+    materials: MaterialCache,
+    ibl_resources: IblResources,
+
+    // Per-object geometry GPU resources, generation-synced to the scene.
+    gpu_meshes: GenCache<MeshId, MeshGpuResources>,
+    gpu_textures: GenCache<TextureId, GpuTexture>,
+}
+
+impl SceneResources {
+    /// Creates the GPU caches for one scene, drawn through `ctx`.
+    pub fn new(ctx: &RenderContext) -> Self {
+        let ibl_resources = IblResources::new(
+            &ctx.gpu.device,
+            &ctx.gpu.queue,
+            &ctx.layouts.ibl,
+            ctx.has_compute,
+        );
+
+        Self {
+            materials: MaterialCache::new(),
+            ibl_resources,
+            gpu_meshes: GenCache::new(),
+            gpu_textures: GenCache::new(),
+        }
+    }
+
+    /// Clear all scene-specific GPU resources.
+    ///
+    /// Call this when the scene is cleared or replaced to ensure stale GPU
+    /// buffers (vertex data, textures, material bind groups) are not reused.
+    /// Pipelines are not scene state and are retained.
+    pub fn clear(&mut self) {
+        self.gpu_meshes.clear();
+        self.gpu_textures.clear();
+        self.materials.clear();
+    }
+}
+
 /// Per-view render state: the frame targets (depth/MSAA), the active workflow,
 /// and the camera and lights uniforms for one view of a scene.
 ///
-/// Scene resource caches live in [`SceneResources`], shared by every renderer
-/// over the same scene; the renderer borrows them per call.
+/// The device, target configuration, and pipelines live in [`RenderContext`];
+/// the scene's resource caches live in [`SceneResources`], shared by every
+/// renderer over the same scene. The renderer borrows both per call.
 pub struct Renderer {
     /// Core dispatch: owns the GPU handles, frame targets, the active
     /// workflow, and headless readback.
@@ -208,31 +249,33 @@ impl Renderer {
         highest_supported_sample_count(adapter, formats)
     }
 
-    /// Create a renderer drawing from `shared` at the given target size.
+    /// Create a renderer at the given target size, drawing through `ctx`.
     ///
-    /// Format and sample count come from `shared` — every renderer over a
-    /// `SceneResources` renders with the same pipeline configuration.
-    pub fn new(shared: &mut SceneResources, width: u32, height: u32) -> Self {
+    /// Format and sample count come from `ctx` — every renderer over a
+    /// `RenderContext` renders with the same pipeline configuration. A renderer
+    /// is not bound to a scene: pass the scene's [`SceneResources`] per render
+    /// call.
+    pub fn new(ctx: &mut RenderContext, width: u32, height: u32) -> Self {
         let config = TargetConfig {
             size: (width, height),
-            format: shared.format,
-            sample_count: shared.sample_count,
+            format: ctx.format,
+            sample_count: ctx.sample_count,
         };
 
-        let camera = CameraBinding::new(&shared.gpu.device, &shared.layouts.camera);
-        let lights = LightsBinding::new(&shared.gpu.device, &shared.layouts.light);
+        let camera = CameraBinding::new(&ctx.gpu.device, &ctx.layouts.camera);
+        let lights = LightsBinding::new(&ctx.gpu.device, &ctx.layouts.light);
 
         let shaded_workflow = ShadedWorkflow::new(
-            &shared.gpu.device,
+            &ctx.gpu.device,
             config,
-            &shared.layouts.camera,
-            &shared.layouts.light,
-            &shared.layouts.color,
-            shared.materials.shader_generator_mut(),
+            &ctx.layouts.camera,
+            &ctx.layouts.light,
+            &ctx.layouts.color,
+            ctx.pipelines.shader_generator_mut(),
         );
 
         let host = RenderHost::new(
-            shared.gpu.clone(),
+            ctx.gpu.clone(),
             config,
             TargetFeatures { depth: true },
             Box::new(shaded_workflow),
@@ -280,21 +323,21 @@ impl Renderer {
     ///
     /// The new workflow takes effect immediately on the next frame. The previous
     /// workflow and all its GPU resources are dropped; the material pipelines
-    /// cached in [`SceneResources`] are retained across workflow swaps.
+    /// cached in [`RenderContext`] are retained across workflow swaps.
     pub fn set_workflow(&mut self, workflow: Box<SceneWorkflow>) {
         self.host.set_workflow(workflow);
     }
 
     /// Create a new [`ShadedWorkflow`] configured for this renderer's target and
     /// MSAA settings. Pass to [`set_workflow`](Self::set_workflow) to activate it.
-    pub fn shaded_workflow(&self, shared: &mut SceneResources) -> ShadedWorkflow {
+    pub fn shaded_workflow(&self, ctx: &mut RenderContext) -> ShadedWorkflow {
         ShadedWorkflow::new(
-            &shared.gpu.device,
+            &ctx.gpu.device,
             self.host.targets().config(),
-            &shared.layouts.camera,
-            &shared.layouts.light,
-            &shared.layouts.color,
-            shared.materials.shader_generator_mut(),
+            &ctx.layouts.camera,
+            &ctx.layouts.light,
+            &ctx.layouts.color,
+            ctx.pipelines.shader_generator_mut(),
         )
     }
 
@@ -302,17 +345,17 @@ impl Renderer {
     /// MSAA settings. Pass to [`set_workflow`](Self::set_workflow) to activate it.
     pub fn hidden_line_workflow(
         &self,
-        shared: &mut SceneResources,
+        ctx: &mut RenderContext,
         config: HiddenLineConfig,
     ) -> HiddenLineWorkflow {
         HiddenLineWorkflow::new(
-            &shared.gpu.device,
+            &ctx.gpu.device,
             self.host.targets().format(),
             self.host.targets().sample_count(),
-            &shared.layouts.camera,
-            &shared.layouts.light,
-            &shared.layouts.color,
-            shared.materials.shader_generator_mut(),
+            &ctx.layouts.camera,
+            &ctx.layouts.light,
+            &ctx.layouts.color,
+            ctx.pipelines.shader_generator_mut(),
             config,
         )
     }
@@ -337,6 +380,7 @@ impl Renderer {
     /// headlights); pass `&[]` for scene lighting only.
     pub fn render_scene_to_image(
         &mut self,
+        ctx: &mut RenderContext,
         shared: &mut SceneResources,
         scene: &mut Scene,
         camera: &PositionedCamera,
@@ -346,18 +390,18 @@ impl Renderer {
         // Lock scene for duration of rendering
         let mut scene = scene.lock();
 
-        shared.prepare(&mut scene)?;
+        shared.prepare(ctx, &mut scene)?;
 
         let size = self.host.targets().size();
         self.camera.write(&self.host.gpu().queue, camera);
         let draw_data = DrawData::new(&scene, camera, size, highlight);
         self.lights.write(&self.host.gpu().queue, draw_data.lights(), extra_lights);
 
-        // Build the frame from disjoint field borrows of `self` and `shared`,
-        // then hand it to the host's readback path, which owns the offscreen
-        // target and the encoder/submit. IBL resolution is inlined (not a
-        // helper) so the borrow is of the `ibl_resources` field alone, leaving
-        // `materials`/`host` borrowable.
+        // Build the frame from disjoint field borrows of `self`, `shared`, and
+        // `ctx`, then hand it to the host's readback path, which owns the
+        // offscreen target and the encoder/submit. IBL resolution is inlined
+        // (not a helper) so the borrow is of the `ibl_resources` field alone,
+        // leaving `host` borrowable.
         let ibl_bind_group = scene
             .active_environment_map()
             .and_then(|env_id| shared.ibl_resources.get_processed(env_id))
@@ -372,7 +416,8 @@ impl Renderer {
                 ibl: ibl_bind_group,
             },
             scene_props: SceneProperties { has_ibl: ibl_bind_group.is_some() },
-            materials: &mut shared.materials,
+            materials: &shared.materials,
+            pipelines: &mut ctx.pipelines,
             background_color: self.background_color,
         };
         let pixels = self.host.render_to_rgba(&mut frame)?;
@@ -392,6 +437,7 @@ impl Renderer {
     /// renders selection outlines and sub-geometry highlights.
     pub fn render_scene_to_view(
         &mut self,
+        ctx: &mut RenderContext,
         shared: &mut SceneResources,
         scene: &SceneData,
         camera: &PositionedCamera,
@@ -408,12 +454,11 @@ impl Renderer {
         let draw_data = DrawData::new(scene, camera, size, highlight);
         self.lights.write(&self.host.gpu().queue, draw_data.lights(), extra_lights);
 
-        // Build the frame from disjoint field borrows of `self` and `shared`.
-        // Because the frame borrows only the scene subsystems (not `host`),
-        // `&mut self.host` in `render` coexists with the frame's
-        // `&mut shared.materials` and shared borrows. IBL resolution is inlined
-        // so the borrow is of the `ibl_resources` field alone, leaving
-        // `materials`/`host` borrowable.
+        // Build the frame from disjoint field borrows of `self`, `shared`, and
+        // `ctx`. Because the frame borrows only the scene subsystems and the
+        // pipeline cache (not `host`), `&mut self.host` in `render` coexists
+        // with the frame's borrows. IBL resolution is inlined so the borrow is
+        // of the `ibl_resources` field alone.
         let ibl_bind_group = scene
             .active_environment_map()
             .and_then(|env_id| shared.ibl_resources.get_processed(env_id))
@@ -428,7 +473,8 @@ impl Renderer {
                 ibl: ibl_bind_group,
             },
             scene_props: SceneProperties { has_ibl: ibl_bind_group.is_some() },
-            materials: &mut shared.materials,
+            materials: &shared.materials,
+            pipelines: &mut ctx.pipelines,
             background_color: self.background_color,
         };
         self.host.render(encoder, view, &mut frame);

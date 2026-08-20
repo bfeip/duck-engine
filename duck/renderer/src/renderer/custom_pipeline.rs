@@ -5,7 +5,7 @@ use super::mesh::{instance_buffer_layout, vertex_buffer_layout};
 /// Builder for creating a `wgpu::RenderPipeline` that uses the engine's standard
 /// vertex and instance buffer layouts.
 ///
-/// Obtain one via [`SceneResources::custom_pipeline_builder`](super::SceneResources::custom_pipeline_builder).
+/// Obtain one via [`RenderContext::custom_pipeline_builder`](super::RenderContext::custom_pipeline_builder).
 ///
 /// # Bind group defaults
 ///

@@ -13,24 +13,27 @@
 //! whose [`Gpu`], [`FrameTargets`], and [`RenderWorkflow`] appear throughout
 //! this crate's API.
 //!
-//! # Shared and per-view state
+//! # Context, scene, and view state
 //!
 //! Render state is split by what it belongs to:
 //!
+//! - [`RenderContext`] — one per device and target configuration. The GPU
+//!   handles, the bind group layouts, and the material pipeline cache with its
+//!   shader generator. The target format, MSAA sample count, and compute
+//!   availability are baked in at construction; nothing here is per-scene, so
+//!   every scene drawn at that configuration shares one set of pipelines.
 //! - [`SceneResources`] — one per scene. The GPU caches for meshes, textures,
-//!   materials, and processed environment maps, generation-synced to the
-//!   scene, plus the bind group layouts and pipeline caches built over them.
-//!   The target format, MSAA sample count, and compute availability are baked
-//!   in at construction.
-//! - [`Renderer`] — one per view of that scene. The frame targets (depth and
-//!   MSAA attachments), the active workflow, and this view's camera and
-//!   lights uniforms and background color.
+//!   material bind groups, and processed environment maps, generation-synced
+//!   to the scene.
+//! - [`Renderer`] — one per view. The frame targets (depth and MSAA
+//!   attachments), the active workflow, and this view's camera and lights
+//!   uniforms and background color.
 //!
-//! Any number of renderers draw from one `SceneResources`, and all of them
-//! render at its format and sample count. Cameras are not scene resources:
-//! each render call takes the [`PositionedCamera`](scene::PositionedCamera)
-//! to render from, along with extra per-view (camera-space) lights to compose
-//! after the scene's own.
+//! Any number of renderers draw through one `RenderContext`, and all of them
+//! render at its format and sample count. A renderer is not bound to a scene —
+//! each render call takes the scene's `SceneResources`, the
+//! [`PositionedCamera`](scene::PositionedCamera) to render from, and extra
+//! per-view (camera-space) lights to compose after the scene's own.
 //!
 //! # The frame
 //!
@@ -62,8 +65,8 @@
 //! calls. A whole workflow implements
 //! [`RenderWorkflow<SceneFrames>`](RenderWorkflow). Custom WESL shaders
 //! compile against the engine's shader modules with
-//! [`SceneResources::compile_user_wesl`], pipelines come from
-//! [`SceneResources::custom_pipeline_builder`], and the bind group
+//! [`RenderContext::compile_user_wesl`], pipelines come from
+//! [`RenderContext::custom_pipeline_builder`], and the bind group
 //! conventions those shaders rely on are the constants in [`abi`]. The
 //! `gooch` example walks a custom workflow end to end.
 //!
@@ -81,12 +84,12 @@
 //! source into the textures PBR shading samples, and lit materials pick it up
 //! automatically; see [`ibl`]. Processing requires compute shader support
 //! (absent on WebGL), reported by [`Gpu`] at acquisition and passed to
-//! [`SceneResources::new`].
+//! [`RenderContext::new`].
 //!
 //! # Example
 //!
 //! ```no_run
-//! use duck_engine_renderer::{Gpu, Renderer, SceneResources};
+//! use duck_engine_renderer::{Gpu, RenderContext, Renderer, SceneResources};
 //! use duck_engine_renderer::scene::{PositionedCamera, Scene, SceneData};
 //! use duck_engine_renderer::scene::common::{Point3, RgbaColor, Vector3};
 //! use duck_engine_renderer::scene::resource::{
@@ -94,11 +97,12 @@
 //! };
 //!
 //! # fn main() -> anyhow::Result<()> {
-//! // One Gpu, one SceneResources per scene, one Renderer per view.
+//! // One RenderContext, one SceneResources per scene, one Renderer per view.
 //! let (gpu, caps) = pollster::block_on(Gpu::headless())?;
-//! let mut shared =
-//!     SceneResources::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
-//! let mut renderer = Renderer::new(&mut shared, 800, 600);
+//! let mut ctx =
+//!     RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
+//! let mut shared = SceneResources::new(&ctx);
+//! let mut renderer = Renderer::new(&mut ctx, 800, 600);
 //!
 //! // A red sphere.
 //! let mut data = SceneData::new();
@@ -126,7 +130,8 @@
 //! };
 //!
 //! // Headless one-shot: locks the scene, prepares, renders, reads back.
-//! let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, &[], None)?;
+//! let image =
+//!     renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &[], None)?;
 //! # Ok(()) }
 //! ```
 
@@ -147,9 +152,9 @@ mod shaders;
 
 pub use renderer::{
     BatchKey, BatchMaterial, CustomPipelineBuilder, DrawBatch, DrawData, HiddenLineConfig,
-    HiddenLineWorkflow, InstanceTransform, Renderer, ResolvedLight, SceneBindingRefs, SceneFrame,
-    SceneFrames, SceneRenderPass, SceneResources, SceneWorkflow, ShadedWorkflow, SubGeomBatch,
-    instance_buffer_layout, vertex_buffer_layout,
+    HiddenLineWorkflow, InstanceTransform, RenderContext, Renderer, ResolvedLight,
+    SceneBindingRefs, SceneFrame, SceneFrames, SceneRenderPass, SceneResources, SceneWorkflow,
+    ShadedWorkflow, SubGeomBatch, instance_buffer_layout, vertex_buffer_layout,
 };
 pub use highlight_query::{HighlightConfig, HighlightQuery};
 

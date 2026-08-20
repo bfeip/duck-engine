@@ -15,6 +15,10 @@ use super::surface_config::{SurfaceConfig, TexturePresence};
 /// and the WESL [`ShaderGenerator`]. Technique-specific pipelines with a fixed
 /// configuration (outline, silhouette, hidden-line solid) are owned directly by
 /// their respective passes.
+///
+/// Every pipeline here is built for one target format and sample count, fixed
+/// at construction: nothing about a pipeline depends on which scene is drawn,
+/// so one cache serves every scene rendered at that target configuration.
 pub struct MaterialPipelineCache {
     cache: PipelineCache<PipelineCacheKey>,
     layouts: MaterialLayoutCache,
@@ -25,14 +29,14 @@ pub struct MaterialPipelineCache {
 
 impl MaterialPipelineCache {
     pub(super) fn new(
-        layouts: MaterialLayoutCache,
+        layouts: &BindGroupLayouts,
         shader_generator: ShaderGenerator,
         sample_count: u32,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
         Self {
             cache: PipelineCache::new(),
-            layouts,
+            layouts: MaterialLayoutCache::new(layouts),
             shader_generator,
             sample_count,
             surface_format,

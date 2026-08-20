@@ -4,7 +4,8 @@ use crate::scene::{SceneData, SceneProperties};
 
 use super::batching::{DrawBatch, DrawData};
 use super::mesh::MeshGpuResources;
-use super::material_system::MaterialSystem;
+use super::material_cache::MaterialCache;
+use super::pipeline::MaterialPipelineCache;
 use super::scene_bindings::SceneBindingRefs;
 
 /// Frame family for the standard scene renderer.
@@ -33,8 +34,8 @@ pub type SceneWorkflow = dyn crate::render_core::RenderWorkflow<SceneFrames>;
 ///
 /// Built once per frame by the renderer from disjoint field borrows of itself,
 /// then handed to the active workflow. Holds everything a scene pass reads —
-/// the scene, the collected draw batches, the scene-level bind groups, and the
-/// material pipeline cache.
+/// the scene, the collected draw batches, the scene-level bind groups, the
+/// scene's material bind groups, and the shared material pipeline cache.
 ///
 /// Bind groups follow the standard shader ABI (see [`crate::abi`]): the renderer
 /// fills them but passes choose whether and at which slot to bind them, so a
@@ -55,8 +56,10 @@ pub struct SceneFrame<'a> {
     pub bindings: SceneBindingRefs<'a>,
     /// Derived from `bindings.ibl` — `has_ibl` is true iff `bindings.ibl` is `Some`.
     pub scene_props: SceneProperties,
-    /// Material subsystem: pipelines, shaders, and per-material bind groups.
-    pub(crate) materials: &'a mut MaterialSystem,
+    /// This scene's uploaded per-material bind groups.
+    pub(crate) materials: &'a MaterialCache,
+    /// The shared material pipeline cache, for pipelines built on demand.
+    pub(crate) pipelines: &'a mut MaterialPipelineCache,
     /// The renderer's clear color for this frame.
     pub background_color: wgpu::Color,
 }

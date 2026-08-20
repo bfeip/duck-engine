@@ -1,9 +1,9 @@
-//! Material subsystem: everything needed to turn scene materials into GPU
-//! pipelines and bind groups.
+//! Per-material GPU bind groups, generation-synced to one scene's materials.
 //!
-//! This is the single owner of the material/shader machinery: the [`MaterialPipelineCache`]
-//! (which owns the WESL [`ShaderGenerator`] and the per-variant material layouts)
-//! and the per-material bind-group caches. Passes reach it through
+//! The pipelines and layouts these bind groups conform to live in the
+//! [`MaterialPipelineCache`], which belongs to the render context and is shared
+//! across scenes; this cache holds only the per-material uniforms and bind
+//! groups, which are scene state. Passes reach it through
 //! [`SceneFrame::materials`](super::pass_context::SceneFrame).
 //!
 //! A material binds exactly the textures it has: the bind-group layout is derived
@@ -21,11 +21,9 @@ use crate::scene::resource::{
 };
 use crate::scene::SceneData;
 use crate::scene::common::RgbaColor;
-use crate::shaders::ShaderGenerator;
 
 use super::batching::BatchMaterial;
-use super::bind_group_layouts::BindGroupLayouts;
-use super::pipeline::{MaterialLayoutCache, MaterialPipelineCache, PipelineCacheKey};
+use super::pipeline::MaterialPipelineCache;
 use super::surface_config::{MaterialTextureSlot, SurfaceConfig, TexturePresence};
 
 /// Material parameters for the surface shader's group-2 uniform.
@@ -87,51 +85,23 @@ pub(crate) struct MaterialGpuResources {
     pub _buffer: Option<wgpu::Buffer>,
 }
 
-/// Owns material → GPU translation: the pipeline cache (which holds the shader
-/// generator and per-variant layouts) and the per-material bind-group caches.
+/// The uploaded bind group of every material in one scene.
 ///
 /// Each material kind (face/line/point) has its own cache keyed by its typed id.
 /// Callers reach the right cache through the typed accessors.
-pub(crate) struct MaterialSystem {
-    pipelines: MaterialPipelineCache,
+pub(crate) struct MaterialCache {
     face: GenCache<FaceMaterialId, MaterialGpuResources>,
     line: GenCache<LineMaterialId, MaterialGpuResources>,
     point: GenCache<PointMaterialId, MaterialGpuResources>,
 }
 
-impl MaterialSystem {
-    pub fn new(
-        layouts: &BindGroupLayouts,
-        shader_generator: ShaderGenerator,
-        sample_count: u32,
-        surface_format: wgpu::TextureFormat,
-    ) -> Self {
-        let layout_cache = MaterialLayoutCache::new(layouts);
-        let pipelines =
-            MaterialPipelineCache::new(layout_cache, shader_generator, sample_count, surface_format);
+impl MaterialCache {
+    pub fn new() -> Self {
         Self {
-            pipelines,
             face: GenCache::new(),
             line: GenCache::new(),
             point: GenCache::new(),
         }
-    }
-
-    /// Mutable access to the shader generator, for passes/workflows that compile
-    /// technique-specific shaders (outline, silhouette, flat-color).
-    // TODO: This feels like ownership confusion. Why does the material system own the
-    // [`ShaderGenerator`] if other passes also need it.
-    pub fn shader_generator_mut(&mut self) -> &mut ShaderGenerator {
-        self.pipelines.shader_generator_mut()
-    }
-
-    /// Get (or create and cache) the material-variant render pipeline for `key`.
-    pub fn pipeline(
-        &mut self,
-        device: &wgpu::Device,
-        key: PipelineCacheKey,
-    ) -> &wgpu::RenderPipeline {
-        self.pipelines.get_or_create(device, key)
     }
 
     /// The cached bind group for a face material, if uploaded.
@@ -187,11 +157,13 @@ impl MaterialSystem {
 
     /// Upload any face/line/point materials whose generation has changed.
     ///
-    /// `textures` supplies already-uploaded texture GPU resources for PBR
-    /// materials; the renderer prepares textures before calling this.
+    /// `pipelines` supplies the group-2 bind-group layout each variant binds
+    /// against. `textures` supplies already-uploaded texture GPU resources for
+    /// PBR materials; the renderer prepares textures before calling this.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
+        pipelines: &mut MaterialPipelineCache,
         scene: &SceneData,
         textures: &GenCache<TextureId, GpuTexture>,
     ) -> Result<()> {
@@ -207,8 +179,9 @@ impl MaterialSystem {
             // to lit materials, matching the shader. IBL/depth-prepass don't
             // affect the group-2 layout, so any value works here.
             let cfg = SurfaceConfig::new(material.properties(), false, false);
-            let resources = self.create_material(
+            let resources = create_material(
                 device,
+                pipelines,
                 cfg.textures(),
                 MaterialUniform::from_face_material(material),
                 |slot| match slot {
@@ -230,8 +203,9 @@ impl MaterialSystem {
         for id in line_ids {
             let material = scene.get_line_material(id).unwrap();
             let cfg = SurfaceConfig::new(material.properties(), false, false);
-            let resources = self.create_material(
+            let resources = create_material(
                 device,
+                pipelines,
                 cfg.textures(),
                 MaterialUniform::from_line_material(material),
                 |slot| match slot {
@@ -252,8 +226,9 @@ impl MaterialSystem {
         for id in point_ids {
             let material = scene.get_point_material(id).unwrap();
             let cfg = SurfaceConfig::new(material.properties(), false, false);
-            let resources = self.create_material(
+            let resources = create_material(
                 device,
+                pipelines,
                 cfg.textures(),
                 MaterialUniform::from_point_material(material),
                 |slot| match slot {
@@ -268,54 +243,54 @@ impl MaterialSystem {
 
         Ok(())
     }
+}
 
-    /// Build a material bind group against the layout for `present`.
-    ///
-    /// `resolve` maps each present channel to the texture id to bind; it is only
-    /// called for channels `present` marks (so it must return `Some` there). Each
-    /// channel's binding slots come from [`MaterialTextureSlot`], the same source
-    /// the layout uses.
-    fn create_material(
-        &mut self,
-        device: &wgpu::Device,
-        present: TexturePresence,
-        uniform: MaterialUniform,
-        resolve: impl Fn(MaterialTextureSlot) -> Option<TextureId>,
-        textures: &GenCache<TextureId, GpuTexture>,
-        label: &str,
-    ) -> Result<MaterialGpuResources> {
-        let layout = self.pipelines.material_bind_group_layout(device, present).clone();
+/// Build a material bind group against the layout for `present`.
+///
+/// `resolve` maps each present channel to the texture id to bind; it is only
+/// called for channels `present` marks (so it must return `Some` there). Each
+/// channel's binding slots come from [`MaterialTextureSlot`], the same source
+/// the layout uses.
+fn create_material(
+    device: &wgpu::Device,
+    pipelines: &mut MaterialPipelineCache,
+    present: TexturePresence,
+    uniform: MaterialUniform,
+    resolve: impl Fn(MaterialTextureSlot) -> Option<TextureId>,
+    textures: &GenCache<TextureId, GpuTexture>,
+    label: &str,
+) -> Result<MaterialGpuResources> {
+    let layout = pipelines.material_bind_group_layout(device, present).clone();
 
-        let buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some(label),
-            contents: bytes_of(&uniform),
-            usage: wgpu::BufferUsages::UNIFORM,
+    let buffer = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some(label),
+        contents: bytes_of(&uniform),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+
+    let mut entries =
+        vec![wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }];
+    for slot in present.slots() {
+        let id = resolve(slot)
+            .ok_or_else(|| anyhow!("{slot:?} texture marked present but unset"))?;
+        let gpu = textures
+            .get(id)
+            .ok_or_else(|| anyhow!("{slot:?} texture {id} not found in GPU resources"))?;
+        entries.push(wgpu::BindGroupEntry {
+            binding: slot.texture_binding(),
+            resource: wgpu::BindingResource::TextureView(&gpu.view),
         });
-
-        let mut entries =
-            vec![wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }];
-        for slot in present.slots() {
-            let id = resolve(slot)
-                .ok_or_else(|| anyhow!("{slot:?} texture marked present but unset"))?;
-            let gpu = textures
-                .get(id)
-                .ok_or_else(|| anyhow!("{slot:?} texture {id} not found in GPU resources"))?;
-            entries.push(wgpu::BindGroupEntry {
-                binding: slot.texture_binding(),
-                resource: wgpu::BindingResource::TextureView(&gpu.view),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: slot.sampler_binding(),
-                resource: wgpu::BindingResource::Sampler(&gpu.sampler),
-            });
-        }
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(label),
-            layout: &layout,
-            entries: &entries,
+        entries.push(wgpu::BindGroupEntry {
+            binding: slot.sampler_binding(),
+            resource: wgpu::BindingResource::Sampler(&gpu.sampler),
         });
-
-        Ok(MaterialGpuResources { bind_group, _buffer: Some(buffer) })
     }
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout: &layout,
+        entries: &entries,
+    });
+
+    Ok(MaterialGpuResources { bind_group, _buffer: Some(buffer) })
 }

@@ -1,6 +1,6 @@
 use duck_engine_renderer::{
-    FrameTargets, Gpu, Renderer, RenderWorkflow, SceneFrame, SceneFrames, SceneRenderPass,
-    SceneResources, abi,
+    FrameTargets, Gpu, RenderContext, RenderWorkflow, Renderer, SceneFrame, SceneFrames,
+    SceneRenderPass, SceneResources, abi,
 };
 use duck_engine_renderer::scene::{Light, PositionedCamera, SceneData};
 use duck_engine_renderer::scene::resource::{
@@ -19,10 +19,10 @@ struct GoochPass {
 }
 
 impl GoochPass {
-    fn new(shared: &SceneResources) -> Self {
-        let shader = shared.compile_user_wesl(GOOCH_WESL)
+    fn new(ctx: &RenderContext) -> Self {
+        let shader = ctx.compile_user_wesl(GOOCH_WESL)
             .expect("failed to compile gooch shader");
-        let pipeline = shared.custom_pipeline_builder()
+        let pipeline = ctx.custom_pipeline_builder()
             .shader(&shader, "vs_main", "fs_main")
             .label("Gooch")
             .build();
@@ -79,8 +79,8 @@ struct GoochWorkflow {
 }
 
 impl GoochWorkflow {
-    fn new(shared: &SceneResources) -> Self {
-        Self { pass: GoochPass::new(shared) }
+    fn new(ctx: &RenderContext) -> Self {
+        Self { pass: GoochPass::new(ctx) }
     }
 }
 
@@ -104,9 +104,10 @@ fn main() -> anyhow::Result<()> {
     let height = 600u32;
 
     let (gpu, caps) = pollster::block_on(Gpu::headless())?;
-    let mut shared =
-        SceneResources::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
-    let mut renderer = Renderer::new(&mut shared, width, height);
+    let mut ctx =
+        RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
+    let mut shared = SceneResources::new(&ctx);
+    let mut renderer = Renderer::new(&mut ctx, width, height);
 
     // Build scene: UV sphere with a plain unlit material.
     // The Gooch pass ignores material bind groups and drives color purely from
@@ -142,10 +143,11 @@ fn main() -> anyhow::Result<()> {
         ortho: false,
     };
 
-    renderer.set_workflow(Box::new(GoochWorkflow::new(&shared)));
+    renderer.set_workflow(Box::new(GoochWorkflow::new(&ctx)));
 
     let mut scene = Scene::new(scene);
-    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, &[], None)?;
+    let image =
+        renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &[], None)?;
     image.save("gooch.png")?;
     println!("Saved gooch.png ({width}×{height})");
 

@@ -191,7 +191,7 @@ pub(crate) enum VertexShaderLocations {
 /// The engine's standard per-vertex buffer layout (position, texture
 /// coordinates, normal).
 ///
-/// Prefer [`SceneResources::custom_pipeline_builder`](super::SceneResources::custom_pipeline_builder)
+/// Prefer [`RenderContext::custom_pipeline_builder`](super::RenderContext::custom_pipeline_builder)
 /// for building custom render pipelines — it applies both buffer layouts
 /// automatically. These functions are a lower-level escape hatch for cases
 /// where the builder's defaults don't fit. Callers that use the layouts

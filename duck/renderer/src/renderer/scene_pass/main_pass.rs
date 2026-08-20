@@ -60,7 +60,8 @@ pub(crate) fn draw_batches(
 ) {
     let gpu_meshes = frame.gpu_meshes;
     let scene_props = frame.scene_props.clone();
-    let materials = &mut *frame.materials;
+    let materials = frame.materials;
+    let pipelines = &mut *frame.pipelines;
 
     if with_depth_prepass {
         // Depth pre-pass for transparent objects: render depth-only with alpha test
@@ -81,10 +82,6 @@ pub(crate) fn draw_batches(
                 continue;
             };
 
-            // Pipeline (mutable phase) before the material bind group (shared
-            // phase): both borrow `materials`, and wgpu does not retain either
-            // borrow past the set call, so they must not overlap.
-            //
             // depth_prepass=true compiles in the alpha-test discard and masks
             // color writes; IBL is irrelevant for depth-only output (scene IBL
             // passed as false). Texture presence still matches the material so
@@ -94,7 +91,7 @@ pub(crate) fn draw_batches(
                 primitive_type: batch.primitive_type,
             };
             if prepass_pipeline_key.as_ref() != Some(&pipeline_key) {
-                let pipeline = materials.pipeline(&gpu.device, pipeline_key.clone());
+                let pipeline = pipelines.get_or_create(&gpu.device, pipeline_key.clone());
                 render_pass.set_pipeline(pipeline);
                 prepass_pipeline_key = Some(pipeline_key);
             }
@@ -125,14 +122,12 @@ pub(crate) fn draw_batches(
             continue;
         };
 
-        // Pipeline (mutable phase) before material bind group (shared phase); see
-        // the prepass note above on the borrow ordering.
         let pipeline_key = PipelineCacheKey {
             surface: SurfaceConfig::new(batch.material_props.clone(), scene_props.has_ibl, false),
             primitive_type: batch.primitive_type,
         };
         if current_pipeline_key.as_ref() != Some(&pipeline_key) {
-            let pipeline = materials.pipeline(&gpu.device, pipeline_key.clone());
+            let pipeline = pipelines.get_or_create(&gpu.device, pipeline_key.clone());
             render_pass.set_pipeline(pipeline);
             current_pipeline_key = Some(pipeline_key);
         }

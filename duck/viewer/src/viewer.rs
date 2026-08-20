@@ -11,8 +11,8 @@ use crate::{
     scene::{PositionedCamera, common::RgbaColor},
     selection::SelectionManager,
     renderer::{
-        Gpu, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery, Renderer, SceneResources,
-        SceneWorkflow, ShadedWorkflow,
+        Gpu, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery, RenderContext, Renderer,
+        SceneResources, SceneWorkflow, ShadedWorkflow,
     },
     view::{
         CameraLight, HeadlightMode, PixelRect, View, ViewId, ViewLayout, ViewTarget,
@@ -47,10 +47,8 @@ struct Capture {
 /// Event coordinates given to [`handle_event`](Self::handle_event) are local to
 /// the viewer target; the viewer rebases them to the receiving view.
 pub struct Viewer {
-    gpu: Gpu,
-    format: wgpu::TextureFormat,
-    sample_count: u32,
-    has_compute: bool,
+    /// Device, target configuration, and the pipelines shared by every view.
+    ctx: RenderContext,
     /// Full target size in physical pixels.
     size: (u32, u32),
     /// One slot per distinct scene (by handle identity).
@@ -86,10 +84,7 @@ impl Viewer {
     ) -> Self {
         let compositor = Compositor::new(&gpu.device, color_format);
         Self {
-            gpu,
-            format: color_format,
-            sample_count,
-            has_compute,
+            ctx: RenderContext::new(gpu, color_format, sample_count, has_compute),
             size: (width.max(1), height.max(1)),
             scenes: Vec::new(),
             views: Vec::new(),
@@ -113,26 +108,16 @@ impl Viewer {
     /// headlights; replace the camera with
     /// [`ViewMut::set_camera`](ViewMut::set_camera).
     pub fn add_view(&mut self, name: impl Into<String>, scene: Scene, layout: ViewLayout) -> ViewId {
-        let slot = match self.scenes.iter().position(|s| s.scene.ptr_eq(&scene)) {
-            Some(i) => &mut self.scenes[i],
-            None => {
-                self.scenes.push(SceneSlot {
-                    scene: scene.clone(),
-                    resources: SceneResources::new(
-                        self.gpu.clone(),
-                        self.format,
-                        self.sample_count,
-                        self.has_compute,
-                    ),
-                    selection: SelectionManager::new(),
-                });
-                self.scenes.last_mut().unwrap()
-            }
-        };
+        self.attach_scene(&scene);
 
         let rect = layout.resolve(self.size);
-        let renderer = Renderer::new(&mut slot.resources, rect.width, rect.height);
-        let target = create_view_target(&self.gpu.device, &self.compositor, self.format, rect);
+        let renderer = Renderer::new(&mut self.ctx, rect.width, rect.height);
+        let target = create_view_target(
+            self.ctx.device(),
+            &self.compositor,
+            self.ctx.format(),
+            rect,
+        );
 
         let mut camera = default_camera();
         camera.aspect = rect.width as f32 / rect.height.max(1) as f32;
@@ -176,9 +161,10 @@ impl Viewer {
         }
     }
 
-    /// Rebind a view to a different scene, keeping its layout, stack position,
-    /// operator stack, and camera. The view gets a fresh renderer; the old
-    /// scene's shared state is dropped if this was its last view.
+    /// Rebind a view to a different scene, keeping everything view-local — its
+    /// layout, stack position, operator stack, camera, and renderer (workflow,
+    /// targets, background color). The old scene's shared state is dropped if
+    /// this was its last view.
     pub fn set_view_scene(&mut self, id: ViewId, scene: Scene) {
         let Some(index) = self.views.iter().position(|v| v.id == id) else { return };
         if self.views[index].scene.ptr_eq(&scene) {
@@ -196,30 +182,10 @@ impl Viewer {
             self.scenes.retain(|s| !s.scene.ptr_eq(&old_scene));
         }
 
-        // Attach to the new one.
-        let slot = match self.scenes.iter().position(|s| s.scene.ptr_eq(&scene)) {
-            Some(i) => &mut self.scenes[i],
-            None => {
-                self.scenes.push(SceneSlot {
-                    scene: scene.clone(),
-                    resources: SceneResources::new(
-                        self.gpu.clone(),
-                        self.format,
-                        self.sample_count,
-                        self.has_compute,
-                    ),
-                    selection: SelectionManager::new(),
-                });
-                self.scenes.last_mut().unwrap()
-            }
-        };
-
-        let view = &mut self.views[index];
-        let rect = view.rect;
-        // The renderer's camera binding was created against the old scene's
-        // layouts; rebuild it against the new slot's.
-        view.renderer = Renderer::new(&mut slot.resources, rect.width, rect.height);
-        view.scene = scene;
+        // Attach to the new one. The renderer holds no scene state — targets,
+        // workflow, and uniforms are all view-local — so it carries over.
+        self.attach_scene(&scene);
+        self.views[index].scene = scene;
     }
 
     pub fn view(&self, id: ViewId) -> Option<&View> {
@@ -236,6 +202,7 @@ impl Viewer {
         Some(ViewMut {
             view: &mut self.views[index],
             slot: &mut self.scenes[slot],
+            ctx: &mut self.ctx,
         })
     }
 
@@ -257,7 +224,12 @@ impl Viewer {
         if size_changed {
             view.camera.aspect = rect.width as f32 / rect.height.max(1) as f32;
             view.renderer.resize((rect.width, rect.height));
-            view.target = create_view_target(&self.gpu.device, &self.compositor, self.format, rect);
+            view.target = create_view_target(
+                self.ctx.device(),
+                &self.compositor,
+                self.ctx.format(),
+                rect,
+            );
             self.dispatch_to(id, &Event::Device(DeviceEvent::Resized((rect.width, rect.height))));
         }
     }
@@ -517,8 +489,12 @@ impl Viewer {
             if size_changed {
                 view.camera.aspect = rect.width as f32 / rect.height.max(1) as f32;
                 view.renderer.resize((rect.width, rect.height));
-                view.target =
-                    create_view_target(&self.gpu.device, &self.compositor, self.format, rect);
+                view.target = create_view_target(
+                    self.ctx.device(),
+                    &self.compositor,
+                    self.ctx.format(),
+                    rect,
+                );
                 resized.push((view.id, rect.width, rect.height));
             }
         }
@@ -540,7 +516,7 @@ impl Viewer {
     ) -> Result<(), anyhow::Error> {
         for slot in &mut self.scenes {
             let mut guard = slot.scene.lock();
-            slot.resources.prepare(&mut guard)?;
+            slot.resources.prepare(&mut self.ctx, &mut guard)?;
         }
 
         for view in self.views.iter_mut().filter(|v| v.visible) {
@@ -559,6 +535,7 @@ impl Viewer {
                 None
             };
             view.renderer.render_scene_to_view(
+                &mut self.ctx,
                 &mut slot.resources,
                 &guard,
                 &view.camera,
@@ -604,40 +581,60 @@ impl Viewer {
         if h > 0 { w as f32 / h as f32 } else { 16.0 / 9.0 }
     }
 
+    /// The render context every view draws through. Custom pipelines and user
+    /// shaders are built from here.
+    pub fn context(&self) -> &RenderContext {
+        &self.ctx
+    }
+
     /// Get the render target texture format.
     /// Useful for creating render pipelines that need to match the target format.
     pub fn surface_format(&self) -> wgpu::TextureFormat {
-        self.format
+        self.ctx.format()
     }
 
     /// The MSAA sample count every view renders with.
     pub fn sample_count(&self) -> u32 {
-        self.sample_count
+        self.ctx.sample_count()
     }
 
     /// Get a reference to the wgpu device
     pub fn device(&self) -> &wgpu::Device {
-        &self.gpu.device
+        self.ctx.device()
     }
 
     /// Get a reference to the wgpu queue
     pub fn queue(&self) -> &wgpu::Queue {
-        &self.gpu.queue
+        self.ctx.queue()
     }
 
     /// Returns a clone of the GPU handle pair, for sharing the device/queue with
     /// other owners (e.g. an offscreen viewer or an egui renderer).
     pub fn gpu(&self) -> Gpu {
-        self.gpu.clone()
+        self.ctx.gpu().clone()
+    }
+
+    /// Register `scene` if no view of it exists yet, creating its shared GPU
+    /// resources and selection.
+    fn attach_scene(&mut self, scene: &Scene) {
+        if self.scenes.iter().any(|s| s.scene.ptr_eq(scene)) {
+            return;
+        }
+        self.scenes.push(SceneSlot {
+            scene: scene.clone(),
+            resources: SceneResources::new(&self.ctx),
+            selection: SelectionManager::new(),
+        });
     }
 }
 
 /// Mutable access to a [`View`] bundled with its scene's shared state
-/// (selection, GPU resources), obtained from [`Viewer::view_mut`]. Derefs to
-/// [`View`] for reads.
+/// (selection, GPU resources) and the viewer's render context, obtained from
+/// [`Viewer::view_mut`]. Derefs to [`View`] for reads.
 pub struct ViewMut<'a> {
     view: &'a mut View,
     slot: &'a mut SceneSlot,
+    ctx: &'a mut RenderContext,
 }
 
 impl Deref for ViewMut<'_> {
@@ -661,12 +658,6 @@ impl ViewMut<'_> {
     /// Mutable access to the shared selection.
     pub fn selection_mut(&mut self) -> &mut SelectionManager {
         &mut self.slot.selection
-    }
-
-    /// The GPU resources shared by all views of this view's scene. Custom
-    /// pipelines and user shaders are built from here.
-    pub fn resources(&self) -> &SceneResources {
-        &self.slot.resources
     }
 
     /// Mutable access to the view's camera. The aspect is re-stamped from the
@@ -706,14 +697,12 @@ impl ViewMut<'_> {
 
     /// Create a [`ShadedWorkflow`] configured for this view.
     pub fn shaded_workflow(&mut self) -> ShadedWorkflow {
-        self.view.renderer.shaded_workflow(&mut self.slot.resources)
+        self.view.renderer.shaded_workflow(self.ctx)
     }
 
     /// Create a [`HiddenLineWorkflow`] configured for this view.
     pub fn hidden_line_workflow(&mut self, config: HiddenLineConfig) -> HiddenLineWorkflow {
-        self.view
-            .renderer
-            .hidden_line_workflow(&mut self.slot.resources, config)
+        self.view.renderer.hidden_line_workflow(self.ctx, config)
     }
 
     /// Clear the view's scene, removing all geometry, materials, textures, and
@@ -747,6 +736,7 @@ impl ViewMut<'_> {
             None
         };
         self.view.renderer.render_scene_to_image(
+            self.ctx,
             &mut self.slot.resources,
             &mut self.view.scene,
             camera,

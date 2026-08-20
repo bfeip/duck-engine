@@ -14,7 +14,7 @@
 //! render fails. Run with `cargo run --example material_variants -p duck-engine-renderer`.
 
 use duck_engine_common::{Point3, Vector3};
-use duck_engine_renderer::{Gpu, Renderer, SceneResources};
+use duck_engine_renderer::{Gpu, RenderContext, Renderer, SceneResources};
 use duck_engine_renderer::scene::{Light, PositionedCamera, SceneData};
 use duck_engine_renderer::scene::resource::{
     AlphaMode, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh, NodePayload,
@@ -33,9 +33,10 @@ fn solid_texture(scene: &mut SceneData, rgba: [u8; 4]) -> TextureHandle {
 fn main() -> anyhow::Result<()> {
     let (width, height) = (640u32, 320u32);
     let (gpu, caps) = pollster::block_on(Gpu::headless())?;
-    let mut shared =
-        SceneResources::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
-    let mut renderer = Renderer::new(&mut shared, width, height);
+    let mut ctx =
+        RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
+    let mut shared = SceneResources::new(&ctx);
+    let mut renderer = Renderer::new(&mut ctx, width, height);
 
     let mut scene = SceneData::new();
     let tris = scene.add_mesh(Mesh::sphere(0.35, 24, 16, PrimitiveType::TriangleList));
@@ -129,7 +130,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut scene = Scene::new(scene);
-    let image = renderer.render_scene_to_image(&mut shared, &mut scene, &camera, &[], None)?;
+    let image = renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &[], None)?;
     image.save("material_variants.png")?;
     println!("Saved material_variants.png ({width}×{height}) — all surface variants compiled");
     Ok(())
