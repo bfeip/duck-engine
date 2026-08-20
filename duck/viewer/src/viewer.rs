@@ -5,6 +5,7 @@ use duck_engine_scene::Scene;
 use web_time::Instant;
 
 use crate::{
+    camera_transition::CameraTransition,
     compositor::Compositor,
     event::{DeviceEvent, Event, EventContext, EventDispatcher},
     input::{ElementState, TouchPhase},
@@ -138,6 +139,7 @@ impl Viewer {
             dispatcher: EventDispatcher::new(),
             cursor_position: None,
             target,
+            transition: None,
         });
         if self.focused_view.is_none() {
             self.focused_view = Some(id);
@@ -394,6 +396,26 @@ impl Viewer {
 
         let event = Event::Device(DeviceEvent::Update { delta_time });
         self.handle_event(&event);
+
+        self.advance_camera_transitions(delta_time);
+    }
+
+    /// Advance in-flight camera transitions, dropping any whose camera was
+    /// written by someone else since the last update.
+    fn advance_camera_transitions(&mut self, delta_time: f32) {
+        for view in &mut self.views {
+            let Some(transition) = view.transition.as_mut() else { continue };
+            if transition.externally_modified(&view.camera) {
+                view.transition = None;
+                continue;
+            }
+            let aspect = view.camera.aspect;
+            view.camera = transition.advance(delta_time);
+            view.camera.aspect = aspect;
+            if transition.finished() {
+                view.transition = None;
+            }
+        }
     }
 
     /// The view pointer events currently route to: the capturing view, else
@@ -671,6 +693,30 @@ impl ViewMut<'_> {
         let aspect = self.view.aspect();
         self.view.camera = camera;
         self.view.camera.aspect = aspect;
+    }
+
+    /// Animate the view's camera to `camera` over `duration` seconds
+    /// (smoothstep-eased orbit arc). Replaces any in-flight transition,
+    /// continuing from the current pose; a non-positive duration applies the
+    /// camera immediately. Any other write to the camera — by an operator,
+    /// [`camera_mut`](Self::camera_mut), or [`set_camera`](Self::set_camera) —
+    /// cancels the transition at the viewer's next update. The aspect is
+    /// stamped from the view's pixel size; resizing does not cancel.
+    pub fn transition_camera_to(&mut self, camera: PositionedCamera, duration: f32) {
+        if duration <= 0.0 {
+            self.view.transition = None;
+            self.set_camera(camera);
+            return;
+        }
+        let mut camera = camera;
+        camera.aspect = self.view.aspect();
+        self.view.transition =
+            Some(CameraTransition::new(self.view.camera.clone(), camera, duration));
+    }
+
+    /// Cancel any in-flight camera transition, leaving the camera where it is.
+    pub fn cancel_camera_transition(&mut self) {
+        self.view.transition = None;
     }
 
     /// Set when the view's camera-space lights contribute to rendering.

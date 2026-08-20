@@ -17,6 +17,7 @@ use duck_engine_common::{Deg, Quaternion, Rotation3};
 use duck_engine_scene::Scene;
 
 use crate::{
+    camera_transition::CameraTransition,
     event::EventDispatcher,
     renderer::{Renderer, ResolvedLight},
     scene::{
@@ -220,6 +221,8 @@ pub struct View {
     /// go negative) while a drag that started here is captured.
     pub(crate) cursor_position: Option<(f32, f32)>,
     pub(crate) target: ViewTarget,
+    /// In-flight animated camera move, advanced by the viewer each update.
+    pub(crate) transition: Option<CameraTransition>,
 }
 
 impl View {

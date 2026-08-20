@@ -271,6 +271,44 @@ impl PositionedCamera {
         crate::common::Ray::new(world_near, direction)
     }
 
+    /// Pose interpolated toward `other` at `t` in [0, 1]: the orientation
+    /// follows the shortest arc while the target, distance, and projection
+    /// parameters blend linearly, keeping the eye on an orbit arc rather than
+    /// a straight chord. `aspect` and `ortho` are not interpolable and switch
+    /// from `self`'s values to `other`'s at `t >= 1`.
+    pub fn interpolated(&self, other: &PositionedCamera, t: f32) -> PositionedCamera {
+        fn orientation(camera: &PositionedCamera) -> Quaternion {
+            let forward = (camera.target - camera.eye).normalize();
+            let right = forward.cross(camera.up).normalize();
+            let up = right.cross(forward);
+            Quaternion::from(Matrix3::from_cols(right, up, -forward))
+        }
+
+        let from = orientation(self);
+        let mut to = orientation(other);
+        // Shortest arc: q and -q encode the same orientation.
+        if from.dot(to) < 0.0 {
+            to = -to;
+        }
+        let rotation = from.slerp(to, t).normalize();
+
+        let target = self.target + (other.target - self.target) * t;
+        let distance = self.length() + (other.length() - self.length()) * t;
+        let forward = rotation * -Vector3::unit_z();
+
+        let done = t >= 1.0;
+        PositionedCamera {
+            eye: target - forward * distance,
+            target,
+            up: rotation * Vector3::unit_y(),
+            aspect: if done { other.aspect } else { self.aspect },
+            fovy: self.fovy + (other.fovy - self.fovy) * t,
+            znear: self.znear + (other.znear - self.znear) * t,
+            zfar: self.zfar + (other.zfar - self.zfar) * t,
+            ortho: if done { other.ortho } else { self.ortho },
+        }
+    }
+
     /// Builds a `Transform` that encodes this camera's pose (eye + orientation).
     ///
     /// Column convention: right = +X, corrected-up = +Y, forward = -Z
@@ -676,6 +714,87 @@ mod tests {
             }
         }
         assert!(found_difference, "Perspective and orthographic matrices should differ");
+    }
+
+    // ===== Interpolation tests =====
+
+    fn axis_view_camera(eye: Point3, up: Vector3) -> PositionedCamera {
+        PositionedCamera {
+            eye,
+            target: Point3::new(0.0, 0.0, 0.0),
+            up,
+            aspect: 1.0,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+            ortho: false,
+        }
+    }
+
+    fn assert_cameras_close(a: &PositionedCamera, b: &PositionedCamera) {
+        assert!(a.eye.distance(b.eye) < 1e-4, "eye {:?} vs {:?}", a.eye, b.eye);
+        assert!(a.target.distance(b.target) < 1e-4, "target {:?} vs {:?}", a.target, b.target);
+        assert!((a.up - b.up).magnitude() < 1e-4, "up {:?} vs {:?}", a.up, b.up);
+    }
+
+    #[test]
+    fn interpolated_reproduces_endpoints() {
+        let a = axis_view_camera(Point3::new(5.0, 0.0, 0.0), Vector3::unit_y());
+        let b = axis_view_camera(Point3::new(0.0, 0.0, 8.0), Vector3::unit_y());
+
+        assert_cameras_close(&a.interpolated(&b, 0.0), &a);
+        assert_cameras_close(&a.interpolated(&b, 1.0), &b);
+        assert_eq!(a.interpolated(&b, 0.5).ortho, a.ortho);
+    }
+
+    #[test]
+    fn interpolated_midpoint_bisects_arc() {
+        let a = axis_view_camera(Point3::new(5.0, 0.0, 0.0), Vector3::unit_y());
+        let b = axis_view_camera(Point3::new(0.0, 0.0, 5.0), Vector3::unit_y());
+
+        let mid = a.interpolated(&b, 0.5);
+        assert!((mid.length() - 5.0).abs() < 1e-4, "distance preserved on the arc");
+        let expected_dir = Vector3::new(1.0, 0.0, 1.0).normalize();
+        let dir = (mid.eye - mid.target).normalize();
+        assert!((dir - expected_dir).magnitude() < 1e-4, "eye direction bisects: {:?}", dir);
+        assert!((mid.up - Vector3::unit_y()).magnitude() < 1e-4);
+    }
+
+    #[test]
+    fn interpolated_blends_distance() {
+        let a = axis_view_camera(Point3::new(4.0, 0.0, 0.0), Vector3::unit_y());
+        let b = axis_view_camera(Point3::new(0.0, 0.0, 10.0), Vector3::unit_y());
+
+        let mid = a.interpolated(&b, 0.5);
+        assert!((mid.length() - 7.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn interpolated_antipodal_views_are_finite() {
+        // +X view to -X view: a 180-degree turn about the shared up axis.
+        let a = axis_view_camera(Point3::new(5.0, 0.0, 0.0), Vector3::unit_y());
+        let b = axis_view_camera(Point3::new(-5.0, 0.0, 0.0), Vector3::unit_y());
+
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let cam = a.interpolated(&b, t);
+            assert!(cam.eye.x.is_finite() && cam.eye.y.is_finite() && cam.eye.z.is_finite());
+            assert!((cam.length() - 5.0).abs() < 1e-3, "distance held at t={t}");
+            assert!((cam.up - Vector3::unit_y()).magnitude() < 1e-3, "up held at t={t}");
+        }
+    }
+
+    #[test]
+    fn interpolated_up_stays_orthonormal() {
+        let a = axis_view_camera(Point3::new(0.0, 6.0, 0.0), Vector3::unit_z());
+        let b = axis_view_camera(Point3::new(4.0, 3.0, 4.0), Vector3::unit_y());
+
+        for i in 1..10 {
+            let t = i as f32 / 10.0;
+            let cam = a.interpolated(&b, t);
+            assert!((cam.up.magnitude() - 1.0).abs() < 1e-4, "unit up at t={t}");
+            assert!(cam.up.dot(cam.forward()).abs() < 1e-4, "up orthogonal to forward at t={t}");
+        }
     }
 
     // ===== Pose transform test =====

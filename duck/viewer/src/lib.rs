@@ -17,6 +17,7 @@ pub mod event;
 pub mod input;
 pub mod operator;
 pub mod selection;
+mod camera_transition;
 mod compositor;
 mod scene_scale;
 mod view;
