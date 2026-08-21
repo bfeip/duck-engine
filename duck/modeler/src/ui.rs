@@ -38,6 +38,8 @@ pub enum UiAction {
     /// The camera settings changed; the edited camera must be written back to
     /// the view.
     CameraChanged,
+    /// The tessellation options changed; existing parts must be rebuilt to match.
+    TessellationChanged,
     Quit,
 }
 

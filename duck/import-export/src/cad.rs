@@ -166,8 +166,7 @@ fn import_leaf_part(
     face_color: Option<RgbaColor>,
 ) -> Result<()> {
     let t = &options.tessellation;
-    let mesh =
-        tessellate_occ_shape(shape, t.tessellation_tolerance, t.scale_factor, t.include_edges, t.include_points)?;
+    let mesh = tessellate_occ_shape(shape, t)?;
     // Start from the configured material template; honor the file's per-part
     // color override when present, keeping the template's other PBR properties.
     let mut face_material = t.face_material.clone().with_fresh_id();
@@ -459,7 +458,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(parts.len(), 1);
-        let mesh = tessellate_occ_shape(&parts[0].shape, 0.01, 1.0, false, false).unwrap();
+        let options = CadTessellationOptions {
+            include_edges: false,
+            include_points: false,
+            ..CadTessellationOptions::default()
+        };
+        let mesh = tessellate_occ_shape(&parts[0].shape, &options).unwrap();
         let mut min = [f32::MAX; 3];
         let mut max = [f32::MIN; 3];
         for v in mesh.vertices() {

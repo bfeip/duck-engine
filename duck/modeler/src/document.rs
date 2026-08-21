@@ -382,6 +382,26 @@ impl Document {
         Ok(())
     }
 
+    /// Re-tessellates every part with seam edges shown or hidden.
+    ///
+    /// Purely a display change — the shapes are untouched, sub-geometry indices
+    /// stay aligned, and nothing is recorded on the undo stack.
+    pub fn set_seam_edges_visible(&mut self, visible: bool) {
+        for index in 0..self.parts.len() {
+            let part = &mut self.parts[index];
+            if part.options.show_seam_edges == visible {
+                continue;
+            }
+            part.options.show_seam_edges = visible;
+            let id = part.id;
+            let Some(node) = self.node_for_part(id) else { continue };
+            let part = &self.parts[index];
+            if let Err(e) = retessellate_node(&part.shape, &self.scene, &part.options, node) {
+                log::warn!("Failed to re-tessellate {}: {e:#}", part.name);
+            }
+        }
+    }
+
     pub fn parts(&self) -> impl Iterator<Item = &CadPart> {
         self.parts.iter()
     }

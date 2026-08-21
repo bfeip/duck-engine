@@ -86,6 +86,9 @@ pub struct CadTessellationOptions {
     /// drawn unless the instance carries a point material, but they are required
     /// for point picking/selection.
     pub include_points: bool,
+    /// Whether to draw seam edges instead of suppressing them. A debugging aid;
+    /// degenerate edges stay suppressed either way.
+    pub show_seam_edges: bool,
 }
 
 impl Default for CadTessellationOptions {
@@ -100,6 +103,7 @@ impl Default for CadTessellationOptions {
             free_line_material: None,
             include_edges: true,
             include_points: true,
+            show_seam_edges: false,
         }
     }
 }
@@ -123,18 +127,12 @@ impl CadTessellationOptions {
 ///
 /// This is the shared tessellation kernel used by both the XCAF import path
 /// and the interactive authoring path ([`tessellate_into`]).
-pub fn tessellate_occ_shape(
-    shape: &Shape,
-    tolerance: f64,
-    scale_factor: f32,
-    include_edges: bool,
-    include_points: bool,
-) -> Result<Mesh> {
-    let s = scale_factor;
+pub fn tessellate_occ_shape(shape: &Shape, options: &CadTessellationOptions) -> Result<Mesh> {
+    let s = options.scale_factor;
 
     // --- Faces ---
     let (occt_mesh, occt_face_ranges) = shape
-        .mesh_with_tolerance_and_ranges(tolerance)
+        .mesh_with_tolerance_and_ranges(options.tessellation_tolerance)
         .context("OCCT tessellation failed")?;
 
     let mut vertices: Vec<Vertex> = (0..occt_mesh.vertices.len())
@@ -170,10 +168,13 @@ pub fn tessellate_occ_shape(
     let mut edge_indices: Vec<u32> = Vec::new();
     let mut edge_ranges: Vec<SubMeshRange> = Vec::new();
 
-    if include_edges {
-        let seams = shape.seam_edges();
+    if options.include_edges {
+        // Only needed when seams are suppressed; the scan is O(faces × edges).
+        let excluded_edges = if options.show_seam_edges { Vec::new() } else { shape.seam_edges() };
         for edge in shape.edges() {
-            let suppressed = edge.is_degenerated() || seams.iter().any(|s| s.is_same(&edge));
+            // Degenerate edges have no 3D curve to sample, so they stay suppressed
+            // even when seams are shown.
+            let suppressed = edge.is_degenerated() || excluded_edges.iter().any(|s| s.is_same(&edge));
             let points: Vec<_> = if suppressed {
                 Vec::new()
             } else {
@@ -212,7 +213,7 @@ pub fn tessellate_occ_shape(
     let mut point_indices: Vec<u32> = Vec::new();
     let mut point_ranges: Vec<SubMeshRange> = Vec::new();
 
-    if include_points {
+    if options.include_points {
         for vertex in shape.vertices() {
             let p = vertex.point();
             let base = vertices.len() as u32;
@@ -267,13 +268,7 @@ pub fn tessellate_into(
 ) -> Result<NodeHandle> {
     let mut scene = scene.lock();
 
-    let mesh = tessellate_occ_shape(
-        shape,
-        options.tessellation_tolerance,
-        options.scale_factor,
-        options.include_edges,
-        options.include_points,
-    )?;
+    let mesh = tessellate_occ_shape(shape, options)?;
     let (face_template, line_template) = options.materials_for(shape);
     let face_mat = scene.add_face_material(face_template.clone().with_fresh_id());
     let line_mat = scene.add_line_material(line_template.clone().with_fresh_id());
@@ -293,13 +288,7 @@ pub fn tessellate_into_with_materials(
 ) -> Result<NodeHandle> {
     let mut scene = scene.lock();
 
-    let mesh = tessellate_occ_shape(
-        shape,
-        options.tessellation_tolerance,
-        options.scale_factor,
-        options.include_edges,
-        options.include_points,
-    )?;
+    let mesh = tessellate_occ_shape(shape, options)?;
     tessellate_finish(&mut scene, mesh, face_material.clone(), line_material.clone(), parent, name)
 }
 
@@ -355,13 +344,7 @@ pub fn retessellate_node(
         (old.face_material_handle().cloned(), old.line_material_handle().cloned())
     };
 
-    let mesh = tessellate_occ_shape(
-        shape,
-        options.tessellation_tolerance,
-        options.scale_factor,
-        options.include_edges,
-        options.include_points,
-    )?;
+    let mesh = tessellate_occ_shape(shape, options)?;
     let mesh = scene.add_mesh(mesh);
 
     let mut instance = Instance::new(mesh);
@@ -382,6 +365,11 @@ mod tests {
 
     fn default_options() -> CadTessellationOptions {
         CadTessellationOptions::default()
+    }
+
+    /// Edges but no B-Rep points, so `edge_ranges` is the only sub-geometry list.
+    fn edges_only_options() -> CadTessellationOptions {
+        CadTessellationOptions { include_points: false, ..CadTessellationOptions::default() }
     }
 
     #[test]
@@ -436,7 +424,7 @@ mod tests {
         // meridian + two degenerate poles): none may produce line segments, but
         // each still gets its zero-length range for positional index alignment.
         let shape = opencascade::primitives::Shape::sphere(1.0).build();
-        let mesh = tessellate_occ_shape(&shape, 0.01, 1.0, true, false).unwrap();
+        let mesh = tessellate_occ_shape(&shape, &edges_only_options()).unwrap();
 
         let topology = mesh.topology().expect("topology");
         assert_eq!(topology.edge_ranges.len(), shape.edges().count());
@@ -448,11 +436,28 @@ mod tests {
     }
 
     #[test]
+    fn show_seam_edges_renders_the_seam_but_not_the_poles() {
+        // The debug toggle un-suppresses seams only: the sphere's two pole edges
+        // are degenerate and have no curve to sample.
+        let shape = opencascade::primitives::Shape::sphere(1.0).build();
+        let options =
+            CadTessellationOptions { show_seam_edges: true, ..edges_only_options() };
+        let mesh = tessellate_occ_shape(&shape, &options).unwrap();
+
+        let topology = mesh.topology().expect("topology");
+        let edges: Vec<_> = shape.edges().collect();
+        assert_eq!(topology.edge_ranges.len(), edges.len());
+        for (edge, range) in edges.iter().zip(&topology.edge_ranges) {
+            assert_eq!(range.count == 0, edge.is_degenerated());
+        }
+    }
+
+    #[test]
     fn cylinder_seam_suppressed_but_rims_kept_and_aligned() {
         // Exactly the seam edge's ranges are empty; the two rim circles render.
         // Alignment with `shape.edges()` positions is what edge picking relies on.
         let shape = opencascade::primitives::Shape::cylinder_radius_height(0.5, 2.0);
-        let mesh = tessellate_occ_shape(&shape, 0.01, 1.0, true, false).unwrap();
+        let mesh = tessellate_occ_shape(&shape, &edges_only_options()).unwrap();
 
         let topology = mesh.topology().expect("topology");
         let edges: Vec<_> = shape.edges().collect();

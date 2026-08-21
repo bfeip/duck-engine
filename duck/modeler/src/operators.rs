@@ -71,6 +71,7 @@ impl ConstructionOptions {
             })),
             include_edges: true,
             include_points: true,
+            show_seam_edges: false,
         };
         let construction_plane = Plane::xz();
         let grid = GridConfig::default();

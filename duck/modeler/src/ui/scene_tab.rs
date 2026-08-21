@@ -43,6 +43,14 @@ impl SceneTab {
         egui::CollapsingHeader::new("Snap")
             .default_open(true)
             .show(ui, |ui| snap_ui(ui, construction));
+
+        egui::CollapsingHeader::new("Debug")
+            .default_open(false)
+            .show(ui, |ui| {
+                if debug_ui(ui, construction) {
+                    actions.push(UiAction::TessellationChanged);
+                }
+            });
     }
 }
 
@@ -146,6 +154,12 @@ fn grid_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
     });
 
     changed
+}
+
+/// Diagnostic toggles. Returns true when existing parts must be re-tessellated.
+fn debug_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
+    let options = &mut construction.geometry_options;
+    ui.checkbox(&mut options.show_seam_edges, "Show seam edges").changed()
 }
 
 /// Snap master switch, per-kind toggles, and pixel tolerance. Read live by

@@ -450,6 +450,10 @@ impl<'a> ViewerState<'a> {
                 UiAction::Undo => self.apply_undo(UndoAction::Undo),
                 UiAction::Redo => self.apply_undo(UndoAction::Redo),
                 UiAction::ConstructionChanged => self.rebuild_grid(),
+                UiAction::TessellationChanged => {
+                    let show = self.construction_options.borrow().geometry_options.show_seam_edges;
+                    self.document.lock().unwrap().set_seam_edges_visible(show);
+                }
                 UiAction::CameraChanged => {
                     let mut view = self.viewer.view_mut(self.view_id).expect("main view");
                     view.set_camera(ui_camera.clone());
