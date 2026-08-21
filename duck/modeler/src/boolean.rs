@@ -3,7 +3,7 @@ use duck_engine_scene::resource::NodeId;
 use duck_engine_scene::cad::{CadTessellationOptions, tessellate_into};
 use opencascade::primitives::{Shape, ShapeType};
 
-use crate::document::{Document, PartId};
+use crate::document::{unify_same_domain, Document, PartId};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum BooleanKind {
@@ -68,7 +68,10 @@ fn compute_boolean(
         );
     }
 
-    Ok(BooleanResult { shape: normalize_boolean_result(shape), target_part_id, tool_part_ids })
+    // Unify last: the BOP splits periodic faces at their seam, leaving same-domain
+    // halves that would otherwise be drawn and picked as separate geometry.
+    let shape = unify_same_domain(normalize_boolean_result(shape));
+    Ok(BooleanResult { shape, target_part_id, tool_part_ids })
 }
 
 /// Additional boolean intersection tolerance for interactively placed parts.
@@ -186,6 +189,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A BOP splits a periodic face at its seam, leaving two faces on the same
+    /// sphere. Left alone they are drawn and picked as separate geometry, so the
+    /// result must come back unified.
+    #[test]
+    fn boolean_result_has_no_same_domain_faces() {
+        let scene = Scene::default();
+        let mut doc = Document::new(scene);
+        let options = CadTessellationOptions::default();
+        let box_part = doc.add_part("box", Shape::cube(2.0), &options).expect("box tessellates");
+        let sphere = Shape::sphere(2.0).at(dvec3(0.5, 1.0, 0.5)).build();
+        let sphere_part = doc.add_part("sphere", sphere, &options).expect("sphere tessellates");
+        let (box_node, sphere_node) =
+            (doc.node_for_part(box_part).unwrap(), doc.node_for_part(sphere_part).unwrap());
+
+        let result = compute_boolean(BooleanKind::Subtract, box_node, &[sphere_node], &doc)
+            .expect("subtract succeeds");
+
+        // Cleaning again must find nothing left to merge.
+        let faces = result.shape.faces().count();
+        assert_eq!(faces, result.shape.clean().expect("clean").faces().count());
+        assert_eq!(faces, 5);
     }
 
     /// The interactive-placement failure mode: a default-parametrization

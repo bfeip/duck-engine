@@ -5,7 +5,7 @@ use duck_engine_scene::resource::NodeId;
 use glam::DVec3;
 use opencascade::primitives::{FaceOrientation, Shape, ShapeType};
 
-use crate::document::{Document, PartId};
+use crate::document::{unify_same_domain, Document, PartId};
 
 /// The sub-geometry being extruded, identified the way the selection system reports
 /// it: by tessellation order within a part's mesh.
@@ -118,7 +118,14 @@ pub fn execute_extrude(
         // may mutate its inputs, and the source must survive unchanged if the
         // fuse or the tessellation below fails.
         let part = doc.get_part(raw.source_part).context("Source part not found")?;
-        (part.shape.deep_copy().union(&raw.prism).context("Failed to fuse pad into source")?.shape, true)
+        let fused = part
+            .shape
+            .deep_copy()
+            .union(&raw.prism)
+            .context("Failed to fuse pad into source")?
+            .shape;
+        // The fuse can split a periodic face at its seam; merge the halves back.
+        (unify_same_domain(fused), true)
     } else {
         // Region→solid or edge→face: the raw geometry is the result. A bare sketch
         // region is superseded; a solid whose edge was extruded is kept alongside.

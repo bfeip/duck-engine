@@ -40,6 +40,28 @@ impl PartKind {
     }
 }
 
+/// Merges faces and edges left split across a shared surface or curve — chiefly
+/// the two halves a boolean leaves when it divides a periodic face at its seam,
+/// which would otherwise be separate geometry.
+///
+/// A cleanup failure is not an operation failure: the original shape is kept.
+pub fn unify_same_domain(shape: Shape) -> Shape {
+    let cleaned = match shape.clean() {
+        Ok(cleaned) => cleaned,
+        Err(e) => {
+            log::warn!("Failed to unify same-domain geometry, keeping the original: {e}");
+            return shape;
+        }
+    };
+    // OCCT healing can silently discard geometry; losing every face means the
+    // cleanup ate the body.
+    if shape.faces().next().is_some() && cleaned.faces().next().is_none() {
+        log::warn!("Unifying same-domain geometry lost all faces; keeping the original");
+        return shape;
+    }
+    cleaned
+}
+
 pub struct CadPart {
     pub id: PartId,
     pub name: String,
