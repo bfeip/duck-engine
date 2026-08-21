@@ -1,7 +1,8 @@
 //! Construction grid: minor/major lines, axis cross, oriented to a construction plane.
 
 use duck_engine_viewer::common::{
-    EuclideanSpace, InnerSpace, Matrix3, Plane, Point3, Quaternion, RgbaColor, Transform, Vector3,
+    Axis, EuclideanSpace, InnerSpace, Matrix3, Plane, Point3, Quaternion, RgbaColor, Transform,
+    Vector3,
 };
 use duck_engine_viewer::scene::resource::{
     Instance, LineMaterial, Mesh, MeshIndex, MeshPrimitive, NodeFlags, NodeId, PrimitiveType,
@@ -10,6 +11,10 @@ use duck_engine_viewer::scene::resource::{
 use duck_engine_viewer::scene::Scene;
 
 const GRID_NORMAL: [f32; 3] = [0.0, 1.0, 0.0];
+
+/// Alpha applied to the axis colors so the lines sit into the grid rather than
+/// on top of it.
+const AXIS_ALPHA: f32 = 0.7;
 
 /// Visual and dimensional parameters for the construction grid.
 pub struct GridConfig {
@@ -44,9 +49,9 @@ impl Default for GridConfig {
             major_every: 5,
             minor_color: RgbaColor { r: 0.105, g: 0.105, b: 0.105, a: 0.35 },
             major_color: RgbaColor { r: 0.20, g: 0.20, b: 0.20, a: 0.45 },
-            axis_u_color: RgbaColor { r: 0.92, g: 0.28, b: 0.28, a: 0.7 },
-            axis_v_color: RgbaColor { r: 0.28, g: 0.42, b: 0.92, a: 0.7 },
-            axis_normal_color: RgbaColor { r: 0.28, g: 0.78, b: 0.35, a: 0.7 },
+            axis_u_color: Axis::X.color().with_alpha(AXIS_ALPHA),
+            axis_v_color: Axis::Z.color().with_alpha(AXIS_ALPHA),
+            axis_normal_color: Axis::Y.color().with_alpha(AXIS_ALPHA),
             normal_axis_length: 25.0,
         }
     }

@@ -15,6 +15,10 @@ use crate::scene::resource::{
 use crate::scene::{PositionedCamera, Scene, SceneData};
 use crate::view::{Corner, ViewId};
 
+/// How far the negative-end balls are darkened from their axis color, so they
+/// read as the dimmer siblings of the positive arrows.
+const NEGATIVE_END_DARKEN: f32 = 0.45;
+
 /// Configuration for an axis-triad overlay; see
 /// [`Viewer::add_axis_triad`](crate::Viewer::add_axis_triad).
 #[derive(Clone, Debug)]
@@ -144,13 +148,6 @@ fn build_triad_scene(scene: &Scene) -> Vec<TriadHandle> {
     let unlit = |color: RgbaColor| {
         FaceMaterial::new().with_base_color_factor(color).with_flags(MaterialFlags::DO_NOT_LIGHT)
     };
-    let dimmed = |color: RgbaColor| RgbaColor {
-        r: color.r * 0.55,
-        g: color.g * 0.55,
-        b: color.b * 0.55,
-        a: color.a,
-    };
-
     let mut handles = Vec::new();
     for axis in Axis::ALL {
         let dir = axis.direction();
@@ -181,7 +178,7 @@ fn build_triad_scene(scene: &Scene) -> Vec<TriadHandle> {
         });
 
         // Ball at the negative end for the opposite view.
-        let material = guard.add_face_material(unlit(dimmed(axis.color())));
+        let material = guard.add_face_material(unlit(axis.color().darkened(NEGATIVE_END_DARKEN)));
         let ball = Mesh::sphere(0.14, 16, 8, PrimitiveType::TriangleList)
             .transformed(&Matrix4::from_translation(-dir * 0.8));
         handles.push(TriadHandle {

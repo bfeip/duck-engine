@@ -29,6 +29,11 @@ const GIZMO_SCREEN_SIZE: f32 = 90.0;
 /// Neutral color for the center ball (uniform scale / view-plane translate).
 const BALL_COLOR: RgbaColor = RgbaColor { r: 0.85, g: 0.85, b: 0.85, a: 1.0 };
 
+/// Opacity of a plane handle's fill.
+const PLANE_ALPHA: f32 = 0.5;
+/// Opacity of a plane handle's fill while hovered or active.
+const PLANE_HIGHLIGHT_ALPHA: f32 = 0.8;
+
 /// Which type of gizmo to display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GizmoType {
@@ -69,13 +74,7 @@ pub fn plane_in_axes(normal: Axis) -> (Axis, Axis) {
 /// Translucent fill color for a plane handle: blend of its two in-plane axes.
 fn plane_color(normal: Axis) -> RgbaColor {
     let (a, b) = plane_in_axes(normal);
-    let (ca, cb) = (a.color(), b.color());
-    RgbaColor {
-        r: (ca.r + cb.r) * 0.5,
-        g: (ca.g + cb.g) * 0.5,
-        b: (ca.b + cb.b) * 0.5,
-        a: 0.5,
-    }
+    a.color().mix(b.color(), 0.5).with_alpha(PLANE_ALPHA)
 }
 
 /// Base (unhighlighted) color for a handle.
@@ -87,30 +86,15 @@ fn handle_base_color(id: GizmoHandleId) -> RgbaColor {
     }
 }
 
-/// Brighter color for hover/active highlighting of an axis handle.
-pub fn highlight_color(axis: Axis) -> RgbaColor {
-    match axis {
-        Axis::X => RgbaColor { r: 1.0, g: 0.5, b: 0.3, a: 1.0 },
-        Axis::Y => RgbaColor { r: 0.5, g: 1.0, b: 0.3, a: 1.0 },
-        Axis::Z => RgbaColor { r: 0.3, g: 0.5, b: 1.0, a: 1.0 },
-    }
-}
-
-/// Highlight color for any handle (hover/active).
+/// Highlight color for any handle (hover/active). Every variant lightens its
+/// base color by [`Axis::HIGHLIGHT_LIGHTEN`], so handles brighten uniformly.
 fn handle_highlight_color(id: GizmoHandleId) -> RgbaColor {
     match id {
-        GizmoHandleId::Axis(axis) => highlight_color(axis),
-        GizmoHandleId::Plane(normal) => {
-            let c = plane_color(normal);
-            // Brighten the fill and make it more opaque on highlight.
-            RgbaColor {
-                r: (c.r + 0.4).min(1.0),
-                g: (c.g + 0.4).min(1.0),
-                b: (c.b + 0.4).min(1.0),
-                a: 0.8,
-            }
-        }
-        GizmoHandleId::Ball => RgbaColor { r: 1.0, g: 1.0, b: 0.5, a: 1.0 },
+        GizmoHandleId::Axis(axis) => axis.highlight_color(),
+        GizmoHandleId::Plane(normal) => plane_color(normal)
+            .lightened(Axis::HIGHLIGHT_LIGHTEN)
+            .with_alpha(PLANE_HIGHLIGHT_ALPHA),
+        GizmoHandleId::Ball => BALL_COLOR.lightened(Axis::HIGHLIGHT_LIGHTEN),
     }
 }
 

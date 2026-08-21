@@ -66,6 +66,39 @@ impl RgbaColor {
     pub const ORANGE: Self = Self { r: 1.0, g: 0.5, b: 0.0, a: 1.0 };
     pub const GRAY: Self = Self { r: 0.5, g: 0.5, b: 0.5, a: 1.0 };
     pub const TRANSPARENT: Self = Self { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+
+    /// Axis palette: muted primaries shared by grids, gizmos, and axis widgets.
+    /// See [`Axis::color`].
+    pub const AXIS_X: Self = Self { r: 0.92, g: 0.28, b: 0.28, a: 1.0 };
+    pub const AXIS_Y: Self = Self { r: 0.28, g: 0.78, b: 0.35, a: 1.0 };
+    pub const AXIS_Z: Self = Self { r: 0.28, g: 0.42, b: 0.92, a: 1.0 };
+
+    /// The same color with a different alpha.
+    pub const fn with_alpha(self, a: f32) -> Self {
+        Self { a, ..self }
+    }
+
+    /// Linear interpolation of all four channels toward `other`. `t` is clamped
+    /// to `0.0..=1.0`.
+    pub fn mix(self, other: Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        Self {
+            r: self.r + (other.r - self.r) * t,
+            g: self.g + (other.g - self.g) * t,
+            b: self.b + (other.b - self.b) * t,
+            a: self.a + (other.a - self.a) * t,
+        }
+    }
+
+    /// Lerps rgb toward white by `t`, preserving alpha.
+    pub fn lightened(self, t: f32) -> Self {
+        self.mix(Self::WHITE, t).with_alpha(self.a)
+    }
+
+    /// Lerps rgb toward black by `t`, preserving alpha.
+    pub fn darkened(self, t: f32) -> Self {
+        self.mix(Self::BLACK, t).with_alpha(self.a)
+    }
 }
 
 /// Computes the normal matrix from a world transform matrix.
@@ -222,12 +255,20 @@ impl Axis {
     }
 
     /// RGB color convention: X=red, Y=green, Z=blue.
+    ///
+    /// The single source of truth for axis coloring; anything drawing an axis
+    /// derives its color from here.
     pub fn color(&self) -> RgbaColor {
         match self {
-            Axis::X => RgbaColor::RED,
-            Axis::Y => RgbaColor::GREEN,
-            Axis::Z => RgbaColor::BLUE,
+            Axis::X => RgbaColor::AXIS_X,
+            Axis::Y => RgbaColor::AXIS_Y,
+            Axis::Z => RgbaColor::AXIS_Z,
         }
+    }
+
+    /// Hover/active color for this axis: [`Self::color`] lightened toward white.
+    pub fn highlight_color(&self) -> RgbaColor {
+        self.color().lightened(Self::HIGHLIGHT_LIGHTEN)
     }
 
     /// Rotation matrix that transforms Y-up geometry to align with this axis.
@@ -253,6 +294,11 @@ impl Axis {
 
     /// All three axes in order.
     pub const ALL: [Axis; 3] = [Axis::X, Axis::Y, Axis::Z];
+
+    /// How far [`Self::highlight_color`] lightens toward white. Exposed so that
+    /// non-axis handles drawn alongside axes (plane fills, neutral balls) can
+    /// brighten by the same amount.
+    pub const HIGHLIGHT_LIGHTEN: f32 = 0.4;
 }
 
 #[cfg(test)]
@@ -559,4 +605,76 @@ mod tests {
         }
     }
 
+    // ===== RgbaColor Tests =====
+
+    fn assert_color_eq(actual: RgbaColor, expected: RgbaColor) {
+        assert!(
+            (actual.r - expected.r).abs() < EPSILON
+                && (actual.g - expected.g).abs() < EPSILON
+                && (actual.b - expected.b).abs() < EPSILON
+                && (actual.a - expected.a).abs() < EPSILON,
+            "{actual:?} != {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_with_alpha_leaves_rgb() {
+        let c = RgbaColor::AXIS_X.with_alpha(0.25);
+        assert_color_eq(c, RgbaColor { a: 0.25, ..RgbaColor::AXIS_X });
+    }
+
+    #[test]
+    fn test_mix_endpoints_and_midpoint() {
+        let a = RgbaColor::BLACK;
+        let b = RgbaColor { r: 1.0, g: 0.5, b: 0.0, a: 0.0 };
+
+        assert_color_eq(a.mix(b, 0.0), a);
+        assert_color_eq(a.mix(b, 1.0), b);
+        assert_color_eq(a.mix(b, 0.5), RgbaColor { r: 0.5, g: 0.25, b: 0.0, a: 0.5 });
+    }
+
+    #[test]
+    fn test_mix_clamps_t() {
+        let a = RgbaColor::BLACK;
+        let b = RgbaColor::WHITE;
+        assert_color_eq(a.mix(b, -1.0), a);
+        assert_color_eq(a.mix(b, 2.0), b);
+    }
+
+    #[test]
+    fn test_lightened_and_darkened_preserve_alpha() {
+        let c = RgbaColor::AXIS_Z.with_alpha(0.7);
+
+        assert_color_eq(c.lightened(0.0), c);
+        assert_color_eq(c.darkened(0.0), c);
+        assert_color_eq(c.lightened(1.0), RgbaColor::WHITE.with_alpha(0.7));
+        assert_color_eq(c.darkened(1.0), RgbaColor::BLACK.with_alpha(0.7));
+    }
+
+    #[test]
+    fn test_darkened_scales_channels() {
+        // darkened(t) scales rgb by (1 - t).
+        let c = RgbaColor::AXIS_Y.darkened(0.45);
+        assert_color_eq(
+            c,
+            RgbaColor {
+                r: RgbaColor::AXIS_Y.r * 0.55,
+                g: RgbaColor::AXIS_Y.g * 0.55,
+                b: RgbaColor::AXIS_Y.b * 0.55,
+                a: RgbaColor::AXIS_Y.a,
+            },
+        );
+    }
+
+    // ===== Axis color Tests =====
+
+    #[test]
+    fn test_axis_highlight_is_brighter() {
+        for axis in Axis::ALL {
+            let base = axis.color();
+            let hl = axis.highlight_color();
+            assert!(hl.r > base.r && hl.g > base.g && hl.b > base.b, "{axis:?}: {hl:?} vs {base:?}");
+            assert!((hl.a - base.a).abs() < EPSILON);
+        }
+    }
 }
