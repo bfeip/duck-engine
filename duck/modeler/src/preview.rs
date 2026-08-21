@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex};
 
-use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions};
+use duck_engine_scene::cad::{
+    classify_shape, tessellate_into_with_materials, CadTessellationOptions, GeometryClass,
+};
 use duck_engine_scene::resource::{FaceMaterialHandle, LineMaterialHandle, NodeId, Visibility};
 use duck_engine_scene::{Scene, SceneData};
 use opencascade::primitives::Shape;
@@ -19,10 +21,19 @@ pub struct PreviewSession {
     document: Arc<Mutex<Document>>,
     previews: Vec<NodeId>,
     hidden: Vec<NodeId>,
-    /// One material pair shared by every preview tessellation in this session,
-    /// so repeated rebuilds (e.g. per cursor move during a drag) don't mint a
-    /// fresh pair each time. Created on first use, dropped with the session.
-    materials: Option<(FaceMaterialHandle, LineMaterialHandle)>,
+    /// Materials shared by every preview tessellation of the same geometry
+    /// class. Created on first use, dropped with the session.
+    materials: Option<PreviewMaterials>,
+}
+
+/// The material pair a session hands to its preview tessellations, along with
+/// the [`GeometryClass`] it was instantiated for. Reused across rebuilds — e.g.
+/// per cursor move during a drag — so only a class change (a sketch becoming a
+/// solid) mints a fresh pair.
+struct PreviewMaterials {
+    class: GeometryClass,
+    face: FaceMaterialHandle,
+    line: LineMaterialHandle,
 }
 
 impl PreviewSession {
@@ -36,30 +47,33 @@ impl PreviewSession {
         self.document.lock().unwrap().scene().clone()
     }
 
-    /// The session's shared preview materials, instantiated from the option
-    /// templates on first use (honoring `shape`'s geometry class).
+    /// The preview materials for `shape`, instantiated from the option templates
+    /// for its geometry class and reused while that class holds.
     fn materials(
         &mut self,
         scene: &Scene,
         shape: &Shape,
         options: &CadTessellationOptions,
     ) -> (FaceMaterialHandle, LineMaterialHandle) {
-        // A pair from a previous scene (after a scene swap) is stale; replace it.
-        if let Some((face, _)) = &self.materials
-            && scene.get_face_material(face.id()).is_none()
-        {
-            self.materials = None;
+        let class = classify_shape(shape);
+        let reusable = self.materials.as_ref().is_some_and(|materials| {
+            // A pair from a previous scene (after a scene swap) is stale, as is
+            // one whose class no longer matches the shape being previewed.
+            materials.class == class && scene.get_face_material(materials.face.id()).is_some()
+        });
+        if !reusable {
+            let (face, line) = options.materials_for(shape);
+            let mut scene = scene.lock();
+            // Dropped under the guard; the outgoing preview node releases its own
+            // reference when it is removed, and the materials are reaped then.
+            self.materials = Some(PreviewMaterials {
+                class,
+                face: scene.add_face_material(face.clone().with_fresh_id()),
+                line: scene.add_line_material(line.clone().with_fresh_id()),
+            });
         }
-        self.materials
-            .get_or_insert_with(|| {
-                let (face, line) = options.materials_for(shape);
-                let mut scene = scene.lock();
-                (
-                    scene.add_face_material(face.clone().with_fresh_id()),
-                    scene.add_line_material(line.clone().with_fresh_id()),
-                )
-            })
-            .clone()
+        let materials = self.materials.as_ref().expect("just instantiated");
+        (materials.face.clone(), materials.line.clone())
     }
 
     /// True while no previews are tracked and no sources are hidden.
@@ -220,6 +234,9 @@ impl Drop for PreviewSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duck_engine_scene::common::RgbaColor;
+    use duck_engine_scene::resource::{FaceMaterial, NodePayload};
+    use opencascade::primitives::{Face, Wire};
 
     fn document() -> Arc<Mutex<Document>> {
         let scene = Scene::default();
@@ -228,6 +245,44 @@ mod tests {
 
     fn unit_shape() -> Shape {
         Shape::sphere(1.0).build()
+    }
+
+    /// A lone face — free geometry, the class a sketch preview has.
+    fn unit_face() -> Shape {
+        Face::from_wire(&Wire::rect(1.0, 1.0).unwrap()).unwrap().into()
+    }
+
+    const SOLID_COLOR: RgbaColor = RgbaColor { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+    const FREE_COLOR: RgbaColor = RgbaColor { r: 0.0, g: 0.0, b: 1.0, a: 0.3 };
+
+    /// Options whose two classes are told apart by base color.
+    fn classed_options() -> CadTessellationOptions {
+        CadTessellationOptions {
+            face_material: FaceMaterial::new().with_base_color_factor(SOLID_COLOR),
+            free_face_material: Some(FaceMaterial::new().with_base_color_factor(FREE_COLOR)),
+            ..Default::default()
+        }
+    }
+
+    const EPSILON: f32 = 1e-6;
+
+    fn assert_color(actual: RgbaColor, expected: RgbaColor) {
+        let close = (actual.r - expected.r).abs() < EPSILON
+            && (actual.g - expected.g).abs() < EPSILON
+            && (actual.b - expected.b).abs() < EPSILON
+            && (actual.a - expected.a).abs() < EPSILON;
+        assert!(close, "expected color {expected:?}, got {actual:?}");
+    }
+
+    /// The base color of the face material a preview node's instance is drawn with.
+    fn preview_color(document: &Arc<Mutex<Document>>, node: NodeId) -> RgbaColor {
+        with_scene(document, |scene| {
+            let NodePayload::Instance(instance) = scene.get_node(node).unwrap().payload() else {
+                panic!("preview node carries no instance");
+            };
+            let material = scene.get_instance(instance.id()).unwrap().face_material().unwrap();
+            scene.get_face_material(material).unwrap().base_color_factor()
+        })
     }
 
     /// Tessellate a standalone node directly into the document's scene (a stand-in
@@ -295,6 +350,32 @@ mod tests {
             assert_eq!(s.face_material_count(), 0);
             assert_eq!(s.line_material_count(), 0);
             assert_eq!(s.mesh_count(), 0);
+        });
+    }
+
+    #[test]
+    fn replacement_of_another_class_restyles_the_preview() {
+        let document = document();
+        let options = classed_options();
+        let mut session = PreviewSession::new(document.clone());
+
+        // A sketch stage (lone face) followed by a solid stage, as the box and
+        // cylinder tools do: the solid must not inherit the sketch materials.
+        let sketch = session.add_preview_from_shape(&unit_face(), &options, "p").unwrap();
+        assert_color(preview_color(&document, sketch), FREE_COLOR);
+
+        let solid = session.try_replace_preview(&unit_shape(), &options, "p").unwrap();
+        assert_color(preview_color(&document, solid), SOLID_COLOR);
+        // The superseded pair goes with the preview node that held it.
+        with_scene(&document, |s| {
+            assert_eq!(s.face_material_count(), 1);
+            assert_eq!(s.line_material_count(), 1);
+        });
+
+        session.cancel();
+        with_scene(&document, |s| {
+            assert_eq!(s.face_material_count(), 0);
+            assert_eq!(s.line_material_count(), 0);
         });
     }
 

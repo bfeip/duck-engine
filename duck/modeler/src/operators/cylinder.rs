@@ -12,7 +12,8 @@ use duck_engine_viewer::{
     operator::Operator,
 };
 use glam::{dvec3, DVec3};
-use opencascade::primitives::Shape;
+use log::warn;
+use opencascade::primitives::{Edge, Face, Shape, Wire};
 
 use crate::document::Document;
 use crate::preview::PreviewSession;
@@ -24,10 +25,6 @@ use super::ConstructionOptions;
 /// can't be committed.
 const EPSILON: f32 = 1e-6;
 
-/// Fixed preview height for the radius phase, so the base reads as a thin disk
-/// before the user defines a real height.
-const DISK_PREVIEW_HEIGHT: f32 = 0.01;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum CylinderAction {
     Place,
@@ -36,7 +33,7 @@ enum CylinderAction {
 
 enum Phase {
     Idle,
-    /// Center placed; the cursor drives the radius. Preview is a thin base disk.
+    /// Center placed; the cursor drives the radius. Preview is the flat base face.
     /// `plane` is the placement plane through the center.
     Radius { center: Point3, plane: Plane },
     /// Radius fixed; the cursor drives the height. Preview is the 3D cylinder.
@@ -104,6 +101,40 @@ impl CylinderOperator {
         }
     }
 
+    /// Lays the flat unit base disk (local XY, normal +Z) on `plane`, scaled to
+    /// `radius`. [`Plane::rotation`] maps the local +Z axis to the plane normal.
+    fn disk_transform(center: Point3, radius: f32, plane: &Plane) -> Transform {
+        Transform {
+            position: center,
+            rotation: plane.rotation(),
+            scale: Vector3::new(radius, radius, 1.0),
+        }
+    }
+
+    /// Unit reference cylinder for the preview: base at the origin, axis +Z,
+    /// radius 1, height 1. Scaled and oriented via the preview node transform
+    /// ([`cylinder_transform`](Self::cylinder_transform)).
+    fn reference_cylinder() -> Shape {
+        Shape::cylinder_radius_height(1.0, 1.0)
+    }
+
+    /// Unit reference base disk for the radius phase: a lone face of radius 1
+    /// centered on the origin in local XY, so it reads as a sketch until the
+    /// cursor gives the cylinder a height. Placed via the preview node transform
+    /// ([`disk_transform`](Self::disk_transform)).
+    fn reference_disk() -> Option<Shape> {
+        let edge = Edge::circle(DVec3::ZERO, DVec3::Z, 1.0)
+            .map_err(|e| warn!("Failed to build base disk edge: {e}"))
+            .ok()?;
+        let wire = Wire::from_edges(&[edge])
+            .map_err(|e| warn!("Failed to build base disk wire: {e}"))
+            .ok()?;
+        Face::from_wire(&wire)
+            .map_err(|e| warn!("Failed to build base disk face: {e}"))
+            .map(Into::into)
+            .ok()
+    }
+
     /// A radius is valid once it is non-degenerate.
     fn radius_valid(radius: f32) -> bool {
         radius > EPSILON
@@ -136,10 +167,12 @@ impl CylinderOperator {
         // direction. Otherwise fall back to the construction plane.
         let plane = Plane::from_point(snap.direction.unwrap_or(cplane.normal), center);
 
-        // A single unit cylinder, scaled each move; preview detail is irrelevant here.
-        let preview_shape = Shape::cylinder_radius_height(1.0, 1.0);
+        // A single unit disk, scaled each move; preview detail is irrelevant here.
+        let Some(preview_shape) = Self::reference_disk() else {
+            return false;
+        };
         let options = self.construction_options.borrow().geometry_options.clone();
-        if self.preview.add_preview_from_shape(&preview_shape, &options, "cylinder preview").is_none() {
+        if self.preview.add_preview_from_shape(&preview_shape, &options, "cylinder base preview").is_none() {
             return false;
         }
         // Hidden until the cursor defines a non-degenerate radius.
@@ -168,6 +201,18 @@ impl CylinderOperator {
         if !Self::radius_valid(radius) {
             return false;
         }
+
+        // Swap the flat base preview for the 3D cylinder preview.
+        let options = self.construction_options.borrow().geometry_options.clone();
+        if self
+            .preview
+            .try_replace_preview(&Self::reference_cylinder(), &options, "cylinder preview")
+            .is_none()
+        {
+            return false;
+        }
+        // Hidden until the cursor defines a non-zero height.
+        self.preview.set_preview_visibility(Visibility::Invisible);
         self.phase = Phase::Height { center, radius, plane };
         true
     }
@@ -246,7 +291,7 @@ impl CylinderOperator {
                             scene.set_node_visibility(preview_node, Visibility::Visible);
                             scene.set_node_transform(
                                 preview_node,
-                                Self::cylinder_transform(center, radius, DISK_PREVIEW_HEIGHT, &plane),
+                                Self::disk_transform(center, radius, &plane),
                             );
                         }
                         // No snap, or a degenerate radius: nothing to draw.
