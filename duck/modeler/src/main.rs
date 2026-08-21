@@ -29,7 +29,7 @@ use winit::{
 };
 
 use duck_engine_viewer::winit_support;
-use duck_engine_viewer::{OffscreenViewer, ViewId, ViewLayout, WindowSurface};
+use duck_engine_viewer::{AxisTriadConfig, OffscreenViewer, ViewId, ViewLayout, WindowSurface};
 use duck_engine_viewer::event::Event;
 use duck_engine_viewer::input::ElementState;
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode};
@@ -161,6 +161,8 @@ impl ViewerState<'static> {
         let undo_op = Arc::new(Mutex::new(UndoRedoOperator::new()));
         dispatcher.push_back(Arc::clone(&undo_op));
         drop(view);
+
+        viewer.add_axis_triad(view_id, AxisTriadConfig::default());
 
         tools.register(TransformTool::new(TransformMode::Translate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(TransformTool::new(TransformMode::Rotate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));

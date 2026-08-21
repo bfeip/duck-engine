@@ -17,12 +17,14 @@ pub mod event;
 pub mod input;
 pub mod operator;
 pub mod selection;
+mod axis_triad;
 mod camera_transition;
 mod compositor;
 mod scene_scale;
 mod view;
 mod viewer;
 
+pub use axis_triad::AxisTriadConfig;
 pub use view::{CameraLight, Corner, HeadlightMode, PixelRect, View, ViewId, ViewLayout};
 pub use viewer::{OffscreenViewer, SurfacedViewer, ViewMut, Viewer, WindowSurface};
 

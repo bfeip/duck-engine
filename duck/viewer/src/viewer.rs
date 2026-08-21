@@ -1,10 +1,12 @@
 use std::ops::{Deref, DerefMut};
+use std::sync::{Arc, Mutex};
 
 use duck_engine_common::Vector3;
 use duck_engine_scene::Scene;
 use web_time::Instant;
 
 use crate::{
+    axis_triad::{self, AxisTriad, AxisTriadConfig},
     camera_transition::CameraTransition,
     compositor::Compositor,
     event::{DeviceEvent, Event, EventContext, EventDispatcher},
@@ -67,6 +69,8 @@ pub struct Viewer {
     /// Last time update() was called, for delta_time calculation
     last_update_time: Option<Instant>,
     next_view_id: u64,
+    /// Axis-triad overlays, one record per triad view.
+    axis_triads: Vec<AxisTriad>,
 }
 
 impl Viewer {
@@ -96,6 +100,7 @@ impl Viewer {
             clear_color: wgpu::Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 },
             last_update_time: None,
             next_view_id: 0,
+            axis_triads: Vec::new(),
         }
     }
 
@@ -148,8 +153,14 @@ impl Viewer {
     }
 
     /// Remove a view. When this was the scene's last view, the scene's shared
-    /// GPU resources and selection are dropped too.
+    /// GPU resources and selection are dropped too. Axis triads mirroring the
+    /// view are removed with it.
     pub fn remove_view(&mut self, id: ViewId) {
+        self.axis_triads.retain(|t| t.view != id);
+        let dependents: Vec<ViewId> =
+            self.axis_triads.iter().filter(|t| t.target == id).map(|t| t.view).collect();
+        self.axis_triads.retain(|t| t.target != id);
+
         let Some(index) = self.views.iter().position(|v| v.id == id) else { return };
         let view = self.views.remove(index);
         if !self.views.iter().any(|v| v.scene.ptr_eq(&view.scene)) {
@@ -160,6 +171,10 @@ impl Viewer {
         }
         if self.focused_view == Some(id) {
             self.focused_view = self.views.first().map(|v| v.id);
+        }
+
+        for dependent in dependents {
+            self.remove_view(dependent);
         }
     }
 
@@ -249,6 +264,57 @@ impl Viewer {
             let view = self.views.remove(index);
             self.views.push(view);
         }
+    }
+
+    /// Add an axis-triad overlay mirroring `target`'s camera orientation.
+    /// Clicking one of its six axis handles animates `target`'s camera to look
+    /// down that axis; clicking the axis already faced flips to the opposite
+    /// side. The triad renders its own small scene in an anchored corner view
+    /// kept on top of the stack.
+    ///
+    /// The returned id is a normal view id: layout, visibility, and removal go
+    /// through the usual view APIs. Removing `target` removes the triad too.
+    ///
+    /// Pointer events over the triad's corner stay with it: clicks beside the
+    /// handles and scroll wheel input are not forwarded to views beneath.
+    pub fn add_axis_triad(&mut self, target: ViewId, config: AxisTriadConfig) -> ViewId {
+        let scene = Scene::default();
+        let pending = Arc::new(Mutex::new(None));
+        let operator = axis_triad::build_triad(&scene, Arc::clone(&pending));
+
+        let id = self.add_view(
+            "Axis Triad",
+            scene,
+            ViewLayout::Anchored {
+                corner: config.corner,
+                size: (config.size, config.size),
+                margin: config.margin,
+            },
+        );
+        {
+            let mut view = self.view_mut(id).expect("view was just added");
+            view.set_background_color(RgbaColor { r: 0.0, g: 0.0, b: 0.0, a: 0.0 });
+            view.dispatcher_mut().push_back(operator);
+            view.set_camera(PositionedCamera {
+                eye: (0.0, 0.0, config.camera_distance).into(),
+                target: (0.0, 0.0, 0.0).into(),
+                up: Vector3::unit_y(),
+                aspect: 1.0,
+                fovy: 45.0,
+                znear: 0.1,
+                zfar: config.camera_distance * 4.0,
+                ortho: config.ortho,
+            });
+        }
+
+        self.axis_triads.push(AxisTriad { view: id, target, config, pending_snap: pending });
+        self.sync_triad_cameras();
+        id
+    }
+
+    /// Remove an axis triad added with [`add_axis_triad`](Self::add_axis_triad).
+    pub fn remove_axis_triad(&mut self, id: ViewId) {
+        self.remove_view(id);
     }
 
     /// The keyboard-focused view (the view last clicked).
@@ -397,7 +463,74 @@ impl Viewer {
         let event = Event::Device(DeviceEvent::Update { delta_time });
         self.handle_event(&event);
 
+        // Triad clicks start transitions before this frame's advance; triad
+        // cameras mirror the frame's final poses afterwards.
+        self.apply_triad_snaps();
         self.advance_camera_transitions(delta_time);
+        self.sync_triad_cameras();
+        self.float_triads_to_top();
+    }
+
+    /// Start a camera transition on each triad's target view with a pending
+    /// handle click.
+    fn apply_triad_snaps(&mut self) {
+        let snaps: Vec<_> = self
+            .axis_triads
+            .iter()
+            .filter_map(|triad| {
+                let request = triad.pending_snap.lock().unwrap().take()?;
+                Some((triad.target, triad.config.snap_duration, triad.config.fit_on_snap, request))
+            })
+            .collect();
+
+        for (target, duration, fit, request) in snaps {
+            let Some(mut view) = self.view_mut(target) else { continue };
+            let bounds = if fit { view.scene.lock().bounding().bounds } else { None };
+            let camera = axis_triad::snap_camera(&view.camera, &request, bounds.as_ref());
+            view.transition_camera_to(camera, duration);
+        }
+    }
+
+    /// Orient each triad's camera to match its target view's.
+    fn sync_triad_cameras(&mut self) {
+        for i in 0..self.axis_triads.len() {
+            let (triad_view, target_view, distance) = {
+                let triad = &self.axis_triads[i];
+                (triad.view, triad.target, triad.config.camera_distance)
+            };
+            let Some(reference) = self.view(target_view).map(|v| v.camera.clone()) else {
+                continue;
+            };
+            if let Some(view) = self.views.iter_mut().find(|v| v.id == triad_view) {
+                axis_triad::aim_triad_camera(&mut view.camera, &reference, distance);
+            }
+        }
+    }
+
+    /// Keep triad views above later-added views (stable partition; no-op scan
+    /// in the common case).
+    fn float_triads_to_top(&mut self) {
+        let is_triad =
+            |id: ViewId, triads: &[AxisTriad]| triads.iter().any(|t| t.view == id);
+
+        let mut seen_triad = false;
+        let buried = self.views.iter().any(|v| {
+            if is_triad(v.id, &self.axis_triads) {
+                seen_triad = true;
+                false
+            } else {
+                seen_triad
+            }
+        });
+        if !buried {
+            return;
+        }
+
+        let triad_ids: Vec<ViewId> = self.axis_triads.iter().map(|t| t.view).collect();
+        let (rest, triads): (Vec<View>, Vec<View>) =
+            self.views.drain(..).partition(|v| !triad_ids.contains(&v.id));
+        self.views = rest;
+        self.views.extend(triads);
     }
 
     /// Advance in-flight camera transitions, dropping any whose camera was

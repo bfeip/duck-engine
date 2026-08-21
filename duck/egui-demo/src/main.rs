@@ -30,7 +30,7 @@ use duck_engine_viewer::common::Transform;
 use duck_engine_viewer::scene::{Light, LightType, Scene};
 use duck_engine_viewer::scene::resource::{NodeFlags, NodePayload};
 use duck_engine_viewer::winit_support;
-use duck_engine_viewer::{OffscreenViewer, ViewId, ViewLayout, ViewMut, WindowSurface};
+use duck_engine_viewer::{AxisTriadConfig, OffscreenViewer, ViewId, ViewLayout, ViewMut, WindowSurface};
 
 /// Debug actions triggered by key presses
 enum DebugAction {
@@ -110,6 +110,7 @@ impl ViewerState<'static> {
             dispatcher.push_back(Arc::new(Mutex::new(SelectionOperator::new())));
             dispatcher.push_back(nav_op.clone());
         }
+        viewer.add_axis_triad(view_id, AxisTriadConfig::default());
 
         let egui_ctx = egui::Context::default();
         let egui_winit = egui_winit::State::new(
