@@ -809,6 +809,43 @@ fn test_cone_directed_base_along_direction() {
     assert!(bounds.min.z < height, "Cone min.z should be less than height");
 }
 
+#[test]
+fn test_cone_directed_all_principal_axes() {
+    // The apex must land exactly at the requested point for every axis
+    // direction, with the base ring centered `height` along `direction`.
+    for direction in [
+        Vector3::unit_x(),
+        -Vector3::unit_x(),
+        Vector3::unit_y(),
+        -Vector3::unit_y(),
+        Vector3::unit_z(),
+        -Vector3::unit_z(),
+    ] {
+        let apex = Point3::new(0.0, 0.0, 0.0) - direction;
+        let mesh =
+            Mesh::cone_directed(apex, direction, 0.12, 0.3, 16, true, PrimitiveType::TriangleList);
+
+        let has_apex_vertex = mesh.vertices().iter().any(|v| {
+            let dx = v.position[0] - apex.x;
+            let dy = v.position[1] - apex.y;
+            let dz = v.position[2] - apex.z;
+            (dx * dx + dy * dy + dz * dz).sqrt() < 1e-4
+        });
+        assert!(has_apex_vertex, "no vertex at the apex for direction {direction:?}");
+
+        // Every vertex sits between the apex plane and the base plane.
+        for v in mesh.vertices() {
+            let along = (v.position[0] - apex.x) * direction.x
+                + (v.position[1] - apex.y) * direction.y
+                + (v.position[2] - apex.z) * direction.z;
+            assert!(
+                (-1e-4..=0.3 + 1e-4).contains(&along),
+                "vertex outside the cone extent for direction {direction:?}: {along}"
+            );
+        }
+    }
+}
+
 // ============== NodeFlags bounding tests ==============
 
 fn make_unit_mesh() -> Mesh {

@@ -518,10 +518,10 @@ impl Mesh {
         // Rotation matrix: maps (X, Y, Z) -> (right, -dir, up)
         #[rustfmt::skip]
         let rotation = Matrix4::new(
-            right.x,   neg_dir.x, up.x, 0.0,
-            right.y,   neg_dir.y, up.y, 0.0,
-            right.z,   neg_dir.z, up.z, 0.0,
-            0.0,       0.0,       0.0,  1.0,
+            right.x,   right.y,   right.z,   0.0,
+            neg_dir.x, neg_dir.y, neg_dir.z, 0.0,
+            up.x,      up.y,      up.z,      0.0,
+            0.0,       0.0,       0.0,       1.0,
         );
 
         // The default cone has apex at y = +half_height.
