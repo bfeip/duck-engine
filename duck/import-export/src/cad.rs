@@ -14,7 +14,7 @@ use duck_engine_scene::resource::{
     Vertex,
 };
 use duck_engine_scene::{PositionedCamera, SceneData};
-use opencascade::primitives::{Compound, EdgeType, Shape};
+use opencascade::primitives::{Compound, Shape};
 use opencascade::xcaf::{XcafColorTool, XcafDimTolTool, XcafDocument, XcafLabel, XcafShapeTool};
 
 /// Options controlling how a CAD file is imported.
@@ -241,12 +241,9 @@ fn import_pmi(
         let mut verts: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
 
-        for edge in shape.edges() {
-            let points: Vec<_> = match edge.edge_type() {
-                EdgeType::Line => vec![edge.start_point(), edge.end_point()],
-                _ => edge.approximation_segments().collect(),
-            };
-
+        // Annotation presentations are wireframe, so seams are shown; edges with no
+        // 3D curve come back empty and are skipped by the length check.
+        for points in shape.edge_polylines(true) {
             if points.len() < 2 {
                 continue;
             }

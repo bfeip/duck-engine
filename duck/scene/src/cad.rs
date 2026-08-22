@@ -13,7 +13,7 @@
 //! style the two classes differently.
 
 use anyhow::{Context, Result};
-use opencascade::primitives::{EdgeType, Shape, ShapeType};
+use opencascade::primitives::{Shape, ShapeType};
 
 use crate::common::{RgbaColor, Transform};
 use crate::resource::{
@@ -169,21 +169,10 @@ pub fn tessellate_occ_shape(shape: &Shape, options: &CadTessellationOptions) -> 
     let mut edge_ranges: Vec<SubMeshRange> = Vec::new();
 
     if options.include_edges {
-        // Only needed when seams are suppressed; the scan is O(faces × edges).
-        let excluded_edges = if options.show_seam_edges { Vec::new() } else { shape.seam_edges() };
-        for edge in shape.edges() {
-            // Degenerate edges have no 3D curve to sample, so they stay suppressed
-            // even when seams are shown.
-            let suppressed = edge.is_degenerated() || excluded_edges.iter().any(|s| s.is_same(&edge));
-            let points: Vec<_> = if suppressed {
-                Vec::new()
-            } else {
-                match edge.edge_type() {
-                    EdgeType::Line => vec![edge.start_point(), edge.end_point()],
-                    _ => edge.approximation_segments().collect(),
-                }
-            };
-
+        // Degenerate edges have no 3D curve to sample, so `edge_polylines` suppresses
+        // them even when seams are shown. Suppressed edges come back as empty
+        // polylines, keeping the result aligned with `shape.edges()`.
+        for points in shape.edge_polylines(options.show_seam_edges) {
             let seg_start = (edge_indices.len() / 2) as u32;
             let mut seg_count = 0u32;
 
@@ -214,8 +203,7 @@ pub fn tessellate_occ_shape(shape: &Shape, options: &CadTessellationOptions) -> 
     let mut point_ranges: Vec<SubMeshRange> = Vec::new();
 
     if options.include_points {
-        for vertex in shape.vertices() {
-            let p = vertex.point();
+        for p in shape.vertex_points() {
             let base = vertices.len() as u32;
             vertices.push(Vertex {
                 position: [p.x as f32 * s, p.y as f32 * s, p.z as f32 * s],

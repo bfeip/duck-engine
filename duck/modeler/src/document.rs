@@ -440,14 +440,14 @@ impl Document {
     /// as carried by a `SubGeometryKind::Face` selection) — back to its OCCT [`Face`] sub-shape.
     pub fn face_subshape(&self, node: NodeId, face_index: u32) -> Option<Face> {
         let part = self.part_for_node(node).and_then(|id| self.get_part(id))?;
-        part.shape.faces().nth(face_index as usize)
+        part.shape.face_at(face_index as usize)
     }
 
     /// Resolve a picked edge — identified by its tessellation order (`edge_index`,
     /// as carried by a `SubGeometryKind::Edge` selection) — back to its OCCT [`Edge`] sub-shape.
     pub fn edge_subshape(&self, node: NodeId, edge_index: u32) -> Option<Edge> {
         let part = self.part_for_node(node).and_then(|id| self.get_part(id))?;
-        part.shape.edges().nth(edge_index as usize)
+        part.shape.edge_at(edge_index as usize)
     }
 
     /// Resolve a picked edge to the [`Wire`] that contains it in the part's B-Rep.
@@ -458,7 +458,7 @@ impl Document {
     /// whole multi-edge profile.
     pub fn wire_for_edge(&self, node: NodeId, edge_index: u32) -> Option<Wire> {
         let part = self.part_for_node(node).and_then(|id| self.get_part(id))?;
-        let target = part.shape.edges().nth(edge_index as usize)?;
+        let target = part.shape.edge_at(edge_index as usize)?;
         part.shape.wires().find(|wire| wire.edges().any(|e| e.is_same(&target)))
     }
 }
