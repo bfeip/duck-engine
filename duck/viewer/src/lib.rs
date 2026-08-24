@@ -31,3 +31,6 @@ pub use viewer::{OffscreenViewer, SurfacedViewer, ViewMut, Viewer, WindowSurface
 // Optional integrations
 #[cfg(feature = "winit-support")]
 pub mod winit_support;
+
+#[cfg(all(emscripten, feature = "emscripten-support"))]
+pub mod emscripten_support;

@@ -989,11 +989,18 @@ impl<'a> WindowSurface<'a> {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(web)]
         let instance = wgpu::util::new_instance_with_webgpu_detection(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
             ..Default::default()
         }).await;
+        // Emscripten reaches WebGL2 through the GLES backend; there is no
+        // WebGPU backend to detect.
+        #[cfg(emscripten)]
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::GL,
+            ..Default::default()
+        });
 
         let surface = instance.create_surface(surface_target).unwrap();
 
@@ -1104,6 +1111,13 @@ impl<'a> WindowSurface<'a> {
         }
     }
 
+    /// Create a surface on the canvas named by a CSS selector (emscripten).
+    #[cfg(all(emscripten, feature = "emscripten-support"))]
+    pub async fn from_canvas_selector(selector: &str, width: u32, height: u32) -> Self {
+        let target = crate::emscripten_support::CanvasSelector::new(selector);
+        Self::new(target, width, height).await
+    }
+
     /// A clone of the shared GPU handle, for building renderers on the same
     /// device/queue (e.g. an [`OffscreenViewer`] or an egui renderer).
     pub fn gpu(&self) -> Gpu {
@@ -1198,11 +1212,18 @@ impl<'a> SurfacedViewer<'a> {
 
     /// Create a new viewer from an HTML canvas element (WebAssembly).
     /// The viewer size is automatically determined from the canvas dimensions.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(web)]
     pub async fn from_canvas(canvas: web_sys::HtmlCanvasElement) -> Self {
         let width = canvas.width();
         let height = canvas.height();
         Self::new(wgpu::SurfaceTarget::Canvas(canvas), width, height).await
+    }
+
+    /// Create a new viewer on the canvas named by a CSS selector (emscripten).
+    #[cfg(all(emscripten, feature = "emscripten-support"))]
+    pub async fn from_canvas_selector(selector: &str, width: u32, height: u32) -> Self {
+        let surface = WindowSurface::from_canvas_selector(selector, width, height).await;
+        Self::from_surface(surface, width, height)
     }
 
     /// Handle a single event, reconfiguring the surface on resize before

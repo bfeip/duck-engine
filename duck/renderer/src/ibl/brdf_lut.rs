@@ -48,12 +48,14 @@ impl BrdfLut {
             view_formats: &[],
         });
 
-        // Convert f32 RGBA to f16 RGBA
+        // Convert f32 RGBA to f16 RGBA. The baked data is a byte blob from
+        // `include_bytes!`, so it carries no alignment and must be decoded as
+        // the little-endian f32s build.rs wrote rather than cast.
         let pixel_count = (BRDF_LUT_SIZE * BRDF_LUT_SIZE) as usize;
-        let f32_data: &[f32] = bytemuck::cast_slice(BAKED_BRDF_LUT);
         let mut f16_data = vec![0u16; pixel_count * 4];
-        for i in 0..f32_data.len() {
-            f16_data[i] = half::f16::from_f32(f32_data[i]).to_bits();
+        for (channel, bytes) in f16_data.iter_mut().zip(BAKED_BRDF_LUT.chunks_exact(4)) {
+            let value = f32::from_le_bytes(bytes.try_into().expect("chunks_exact(4) yields 4 bytes"));
+            *channel = half::f16::from_f32(value).to_bits();
         }
 
         let bytes_per_pixel = 8; // Rgba16Float = 4 * 2 bytes
