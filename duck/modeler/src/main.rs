@@ -5,10 +5,12 @@ mod document;
 mod extrude;
 mod grid;
 mod history;
+#[cfg(not(target_arch = "wasm32"))]
 mod io;
 mod loft;
 mod notifications;
 mod operators;
+mod platform;
 mod preview;
 mod snap;
 mod tool;
@@ -21,14 +23,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use egui_wgpu::RendererOptions;
-use winit::{
-    application::ApplicationHandler,
-    event::{DeviceEvent, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
-    window::{Window, WindowId},
-};
 
-use duck_engine_viewer::winit_support;
 use duck_engine_viewer::{AxisTriadConfig, OffscreenViewer, ViewId, ViewLayout, WindowSurface};
 use duck_engine_viewer::event::Event;
 use duck_engine_viewer::input::ElementState;
@@ -46,6 +41,7 @@ use crate::operators::{
 use crate::delete::DeleteOperator;
 use crate::notifications::Notifications;
 use crate::undo::{UndoAction, UndoRedoOperator};
+use crate::platform::Host;
 use crate::tool_manager::ToolManager;
 use crate::ui::{ModelerUi, UiAction};
 
@@ -55,12 +51,13 @@ use document::Document;
 /// egui presents to, and the [`OffscreenViewer`] that renders the 3D scene into
 /// a texture displayed inside the central panel.
 ///
-/// Field order matters: Rust drops fields in declaration order, so egui
+/// Field order matters: Rust drops fields in declaration order, so the egui GPU
 /// resources are released before the viewer and surface. This prevents
-/// segfaults from background threads on Wayland during shutdown.
+/// segfaults from background threads on Wayland during shutdown. `host` sits
+/// after `surface` for the same reason in the other direction — it owns the
+/// window the surface was created from, which must outlive it.
 struct ViewerState<'a> {
     egui_renderer: egui_wgpu::Renderer,
-    egui_winit: egui_winit::State,
     egui_ctx: egui::Context,
     ui: ModelerUi,
     /// Stable egui texture id the offscreen color texture is registered under.
@@ -78,7 +75,7 @@ struct ViewerState<'a> {
     /// The single view filling the central panel.
     view_id: ViewId,
     surface: WindowSurface<'a>,
-    window: Arc<Window>,
+    host: Host,
 
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
@@ -94,37 +91,22 @@ struct ViewerState<'a> {
 }
 
 impl ViewerState<'static> {
-    async fn new(event_loop: &ActiveEventLoop) -> Self {
-        let window = Arc::new(
-            event_loop
-                .create_window(Window::default_attributes()
-                    .with_title("Modeler")
-                    .with_inner_size(winit::dpi::LogicalSize::new(1200, 1000))
-                ).expect("Failed to create window"),
-        );
-
-        let size = window.inner_size();
-        let surface = WindowSurface::new(Arc::clone(&window), size.width, size.height).await;
+    /// Build the application on top of an already-created surface and platform
+    /// host. `egui_ctx` is the same context the host's input integration was
+    /// built against.
+    fn new(egui_ctx: egui::Context, surface: WindowSurface<'static>, host: Host) -> Self {
+        let (width, height) = host.surface_size();
         let mut viewer = OffscreenViewer::from_gpu(
             surface.gpu(),
             surface.format(),
-            size.width,
-            size.height,
+            width,
+            height,
             surface.sample_count(),
             surface.has_compute(),
         );
 
-        let egui_ctx = egui::Context::default();
         egui_extras::install_image_loaders(&egui_ctx);
 
-        let egui_winit = egui_winit::State::new(
-            egui_ctx.clone(),
-            egui::ViewportId::ROOT,
-            &*window,
-            Some(window.scale_factor() as f32),
-            None,
-            None,
-        );
         let mut egui_renderer = egui_wgpu::Renderer::new(
             viewer.device(),
             surface.format(),
@@ -180,7 +162,6 @@ impl ViewerState<'static> {
 
         Self {
             egui_renderer,
-            egui_winit,
             egui_ctx,
             ui: ModelerUi::default(),
             scene_texture_id,
@@ -190,7 +171,7 @@ impl ViewerState<'static> {
             viewer,
             view_id,
             surface,
-            window,
+            host,
             construction_options,
             document,
             notifications,
@@ -253,38 +234,37 @@ impl<'a> ViewerState<'a> {
             Some(grid::Grid::add_to_scene(&scene, &coptions.grid, &coptions.construction_plane));
     }
 
-    /// Handle a window event. egui always sees it first (for its own hover /
-    /// focus state); events that belong to the 3D viewport are additionally
-    /// routed to the viewer with pointer-capture semantics and viewport-local
-    /// coordinates.
-    fn handle_window_event(&mut self, event: &WindowEvent) {
-        // The surface tracks the whole window; the offscreen viewer is sized
-        // from the central panel each frame, not from the window.
-        if let WindowEvent::Resized(size) = event {
-            self.surface.resize(size.width, size.height);
-        }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Some((position.x as f32, position.y as f32));
-        }
-
-        let _ = self.egui_winit.on_window_event(&self.window, event);
-
-        let Some(app_event) = winit_support::convert_window_event(event.clone()) else {
-            return;
-        };
-        if self.should_route_to_viewport(&app_event) {
-            let app_event = self.to_viewport_local(app_event);
-            self.viewer.handle_event(&app_event);
-        }
+    /// Resize the window surface. The offscreen viewer is sized from the
+    /// central panel each frame instead, not from here.
+    fn resize_surface(&mut self, width: u32, height: u32) {
+        self.surface.resize(width, height);
     }
 
-    fn handle_device_event(&mut self, event: &DeviceEvent) {
-        if self.egui_ctx.is_using_pointer() {
-            // Do not respond to device events that egui is also consuming.
-            return;
-        }
-        if let Some(app_event) = winit_support::convert_device_event(event.clone()) {
-            self.viewer.handle_event(&app_event);
+    /// Record the latest absolute cursor position, in physical pixels.
+    fn set_cursor(&mut self, x: f32, y: f32) {
+        self.last_cursor = Some((x, y));
+    }
+
+    /// Only the native platform routes raw device events, which is the sole
+    /// caller of this and of `viewer_handle_event`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn egui_wants_pointer(&self) -> bool {
+        self.egui_ctx.is_using_pointer()
+    }
+
+    /// Feed an event straight to the viewer, bypassing viewport routing.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn viewer_handle_event(&mut self, event: &Event) {
+        self.viewer.handle_event(event);
+    }
+
+    /// Route a normalized input event: events belonging to the 3D viewport go
+    /// to the viewer with pointer-capture semantics and viewport-local
+    /// coordinates; the rest are left to egui, which has already seen them.
+    fn route_input(&mut self, event: Event) {
+        if self.should_route_to_viewport(&event) {
+            let event = self.to_viewport_local(event);
+            self.viewer.handle_event(&event);
         }
     }
 
@@ -380,7 +360,7 @@ impl<'a> ViewerState<'a> {
         // Build the egui frame: docked panels, then the central panel holding
         // the (stable) 3D scene texture. The central image rect is captured to
         // size the offscreen viewer and route viewport input.
-        let raw_input = self.egui_winit.take_egui_input(&self.window);
+        let raw_input = self.host.take_egui_input();
         let egui_ctx = self.egui_ctx.clone();
         let scene_texture_id = self.scene_texture_id;
         let mut viewport_rect = None;
@@ -409,7 +389,7 @@ impl<'a> ViewerState<'a> {
                 });
         });
         drop(view);
-        self.egui_winit.handle_platform_output(&self.window, full_output.platform_output.clone());
+        self.host.handle_platform_output(full_output.platform_output.clone());
 
         // A delete request aborts any in-progress tool (deactivate tears down
         // its preview and restores hidden sources) before the parts go away.
@@ -436,16 +416,24 @@ impl<'a> ViewerState<'a> {
         // UI actions run outside the frame closure: the file dialogs block.
         for action in ui_actions {
             match action {
+                #[cfg(not(target_arch = "wasm32"))]
                 UiAction::ImportCad => {
                     let options = self.construction_options.borrow().geometry_options.clone();
                     if let Err(e) = io::import_cad_dialog(&self.document, &options) {
                         log::error!("CAD import failed: {e:#}");
                     }
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 UiAction::ExportCad => {
                     if let Err(e) = io::export_cad_dialog(&self.document) {
                         log::error!("CAD export failed: {e:#}");
                     }
+                }
+                // STEP/IGES needs OCCT's TKDESTEP, which is excluded from the
+                // web build, and a file picker the canvas does not have yet.
+                #[cfg(target_arch = "wasm32")]
+                UiAction::ImportCad | UiAction::ExportCad => {
+                    self.notifications.info("CAD file transfer is not available in the browser yet")
                 }
                 UiAction::Undo => self.apply_undo(UndoAction::Undo),
                 UiAction::Redo => self.apply_undo(UndoAction::Redo),
@@ -507,7 +495,7 @@ impl<'a> ViewerState<'a> {
             Err(e) => log::error!("Surface acquire error: {}", e),
         }
 
-        self.window.request_redraw();
+        self.host.request_redraw();
         false
     }
 
@@ -574,57 +562,6 @@ impl<'a> ViewerState<'a> {
     }
 }
 
-struct App<'a> {
-    state: Option<ViewerState<'a>>,
-}
-
-impl<'a> ApplicationHandler for App<'a> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_none() {
-            let mut state = pollster::block_on(ViewerState::new(event_loop));
-            state.set_default_scene();
-            state.window.request_redraw();
-            self.state = Some(state);
-        }
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => {
-                if let Some(state) = self.state.as_mut() {
-                    if state.handle_redraw() {
-                        event_loop.exit();
-                    }
-                }
-            }
-            _ => {
-                if let Some(state) = self.state.as_mut() {
-                    state.handle_window_event(&event);
-                }
-            }
-        }
-    }
-
-    fn device_event(
-        &mut self,
-        _event_loop: &ActiveEventLoop,
-        _device_id: winit::event::DeviceId,
-        event: DeviceEvent,
-    ) {
-        if let Some(state) = self.state.as_mut() {
-            state.handle_device_event(&event);
-        }
-    }
-}
-
 fn main() {
-    env_logger::init();
-    let event_loop = EventLoop::new().unwrap();
-    event_loop.run_app(&mut App { state: None }).unwrap();
+    platform::run();
 }

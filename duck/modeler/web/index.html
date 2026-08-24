@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Modeler</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #202124; }
+      #canvas { display: block; width: 100vw; height: 100vh; }
+      #status {
+        position: fixed; inset: 0; display: grid; place-items: center;
+        color: #ddd; font: 14px system-ui, sans-serif; pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="status">Loading the modeler…</div>
+    <script>
+      var Module = {
+        canvas: document.getElementById("canvas"),
+        onRuntimeInitialized: () => document.getElementById("status").remove(),
+      };
+    </script>
+    <script src="modeler.js"></script>
+  </body>
+</html>

@@ -5,9 +5,10 @@ edition = "2024"
 
 [dependencies]
 duck-engine-common = { path = "../common" }
-duck-engine-import-export = { path = "../import-export", features = ["cad"] }
+# `scene/cad` is the OCCT tessellation path and is needed everywhere. The
+# STEP/IGES readers in `import-export/cad` are native-only, below.
 duck-engine-scene = { path = "../scene", features = ["cad"] }
-duck-engine-viewer = { path = "../viewer", features = ["winit-support"] }
+duck-engine-viewer = { path = "../viewer" }
 opencascade = { path = "../../third-party/opencascade-rs/crates/opencascade" }
 glam = "0.24"
 anyhow = "1"
@@ -19,8 +20,16 @@ env_logger = "0.11"
 log = "0.4"
 pollster = "0.4"
 wgpu = "27.0"
-winit = "0.30"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+duck-engine-import-export = { path = "../import-export", features = ["cad"] }
+duck-engine-viewer = { path = "../viewer", features = ["winit-support"] }
 egui-winit = "0.33"
 rfd = "0.17"
+winit = "0.30"
+
+[target.'cfg(target_os = "emscripten")'.dependencies]
+duck-engine-viewer = { path = "../viewer", features = ["emscripten-support"] }
+
+[build-dependencies]
+cfg_aliases = "0.2"
