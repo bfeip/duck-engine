@@ -24,10 +24,15 @@ openusd = { version = "0.1", optional = true }
 zip = { version = "8", optional = true, default-features = false, features = ["deflate"] }
 opencascade = { path = "../../third-party/opencascade-rs/crates/opencascade", optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Web-only dependencies (wasm-bindgen browser target). Emscripten has no
+# wasm-bindgen runtime, so these must not reach it.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies]
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+
+[build-dependencies]
+cfg_aliases = "0.2"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }

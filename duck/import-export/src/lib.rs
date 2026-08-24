@@ -334,8 +334,28 @@ where
     }
 }
 
+/// Run a sync closure to completion, returning an already-finished handle.
+///
+/// Emscripten is single-threaded and has no JS event loop to yield into, so
+/// there is nothing to defer to: the work runs inline and the caller's first
+/// poll succeeds.
+#[cfg(emscripten)]
+fn run_inline<T, E>(
+    progress: SharedProgress,
+    f: impl FnOnce(&SharedProgress) -> Result<T, E>,
+) -> AsyncHandle<Result<T, E>> {
+    let done = Arc::new(AtomicBool::new(true));
+    let result = f(&progress);
+
+    AsyncHandle {
+        progress,
+        done,
+        result: std::rc::Rc::new(std::cell::RefCell::new(Some(result))),
+    }
+}
+
 /// Spawn a future as a WASM microtask, returning a handle to poll for the result.
-#[cfg(target_arch = "wasm32")]
+#[cfg(web)]
 fn spawn_async_wasm<T, E>(
     progress: SharedProgress,
     fut: impl std::future::Future<Output = Result<T, E>> + 'static,
@@ -399,12 +419,18 @@ pub fn load_async_with(
             load_sync_with_progress(source, &options, progress, &importers)
         })
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(web)]
     {
         let progress = SharedProgress::new();
         let p = progress.clone();
         spawn_async_wasm(progress, async move {
             load_chunked_wasm(source, &options, &p, &importers).await
+        })
+    }
+    #[cfg(emscripten)]
+    {
+        run_inline(SharedProgress::new(), move |progress| {
+            load_sync_with_progress(source, &options, progress, &importers)
         })
     }
 }
@@ -416,7 +442,7 @@ pub fn load_async_with(
 /// a chance to render and run `requestAnimationFrame` between yield points.
 /// A resolved `Promise` alone only creates a microtask, which runs before
 /// the browser paints.
-#[cfg(target_arch = "wasm32")]
+#[cfg(web)]
 async fn yield_to_event_loop() {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
         let global = js_sys::global();
@@ -438,7 +464,7 @@ async fn yield_to_event_loop() {
 /// glTF uses optimized chunked loading with yield points between phases. All
 /// other importers fall back to the synchronous `Importer::load` within a
 /// single microtask.
-#[cfg(target_arch = "wasm32")]
+#[cfg(web)]
 async fn load_chunked_wasm(
     source: SceneSource,
     options: &LoadOptions,
@@ -480,7 +506,7 @@ async fn load_chunked_wasm(
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(web)]
 async fn load_gltf_chunked(
     bytes: &[u8],
     options: &LoadOptions,

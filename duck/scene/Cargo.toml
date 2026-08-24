@@ -20,7 +20,9 @@ log = "0.4"
 obj-rs = "0.7"
 thiserror = "2.0"
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# uuid's `js` feature sources randomness from JS via wasm-bindgen. Emscripten
+# has a real `std` (and no wasm-bindgen runtime), so it uses the default path.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies]
 uuid = { version = "1", features = ["v7", "js"] }
 
 [dev-dependencies]

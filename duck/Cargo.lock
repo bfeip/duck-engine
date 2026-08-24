@@ -1021,6 +1021,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "cfg_aliases",
  "criterion",
  "duck-engine-common",
  "duck-engine-scene",

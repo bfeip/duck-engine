@@ -16,8 +16,10 @@
 //! ```
 
 use std::ffi::c_int;
+use std::sync::{Arc, Mutex};
 
 use duck_engine_viewer::common::{RgbaColor, Transform, Vector3};
+use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator};
 use duck_engine_viewer::scene::resource::{FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType};
 use duck_engine_viewer::scene::{PositionedCamera, Scene};
 use duck_engine_viewer::{SurfacedViewer, ViewLayout};
@@ -48,6 +50,10 @@ extern "C" fn frame() {
             None => return,
         }
     };
+
+    for event in duck_engine_viewer::emscripten_support::drain_events() {
+        viewer.handle_event(&event);
+    }
 
     if let Err(err) = viewer.render() {
         log::error!("render failed: {err}");
@@ -87,6 +93,12 @@ fn main() {
     }
 
     let view = viewer.add_view("main", scene, ViewLayout::FULL);
+    {
+        let mut view = viewer.view_mut(view).unwrap();
+        let dispatcher = view.dispatcher_mut();
+        dispatcher.push_back(Arc::new(Mutex::new(SelectionOperator::new())));
+        dispatcher.push_back(Arc::new(Mutex::new(NavigationOperator::new())));
+    }
     viewer.view_mut(view).unwrap().set_camera(PositionedCamera {
         eye: (1.5, 1.0, 2.0).into(),
         target: (0.0, 0.0, 0.0).into(),
@@ -97,6 +109,8 @@ fn main() {
         zfar: 100.0,
         ortho: false,
     });
+
+    duck_engine_viewer::emscripten_support::register_input(CANVAS);
 
     log::info!("viewer initialised, entering main loop");
 
