@@ -1,5 +1,5 @@
 use super::*;
-use duck_engine_common::{Point3, Quaternion, Vector3, Matrix4, SquareMatrix};
+use duck_engine_common::{InnerSpace, Point3, Quaternion, Vector3, Matrix4, SquareMatrix};
 use crate::common::{EPSILON, Transform};
 use crate::resource::{MeshPrimitive, PrimitiveType, Vertex};
 
@@ -843,6 +843,53 @@ fn test_cone_directed_all_principal_axes() {
                 "vertex outside the cone extent for direction {direction:?}: {along}"
             );
         }
+    }
+}
+
+#[test]
+fn test_primitive_triangle_winding_matches_normals() {
+    // Every triangle's geometric normal must agree with its vertex normals, or
+    // back-face culling drops the face from the side it should be visible from.
+    fn assert_wound_outward(name: &str, mesh: &Mesh) {
+        let verts = mesh.vertices();
+        for primitive in mesh.primitives() {
+            assert_eq!(primitive.primitive_type, PrimitiveType::TriangleList);
+            for tri in primitive.indices.chunks_exact(3) {
+                let [a, b, c] = [
+                    &verts[tri[0] as usize],
+                    &verts[tri[1] as usize],
+                    &verts[tri[2] as usize],
+                ] else {
+                    unreachable!()
+                };
+                let p = |v: &Vertex| Vector3::new(v.position[0], v.position[1], v.position[2]);
+                let n = |v: &Vertex| Vector3::new(v.normal[0], v.normal[1], v.normal[2]);
+
+                let geometric = (p(b) - p(a)).cross(p(c) - p(a));
+                if geometric.magnitude() < EPSILON {
+                    continue; // degenerate triangle (pole fans, coincident ring points)
+                }
+                let shading = n(a) + n(b) + n(c);
+                assert!(
+                    geometric.dot(shading) > 0.0,
+                    "{name}: triangle {tri:?} is wound against its vertex normals"
+                );
+            }
+        }
+    }
+
+    let tris = PrimitiveType::TriangleList;
+    assert_wound_outward("cube", &Mesh::cube(1.0, tris));
+    assert_wound_outward("sphere", &Mesh::sphere(1.0, 16, 8, tris));
+    assert_wound_outward("cylinder", &Mesh::cylinder(0.5, 2.0, 16, true, tris));
+    assert_wound_outward("cone", &Mesh::cone(0.5, 2.0, 16, true, tris));
+    assert_wound_outward("torus", &Mesh::torus(1.0, 0.25, 16, 8, tris));
+    assert_wound_outward("plane", &Mesh::plane(2.0, 2.0, 3, 3, tris));
+    assert_wound_outward("quad", &Mesh::quad(1.0, 1.0, tris));
+
+    for direction in [Vector3::unit_x(), -Vector3::unit_y(), Vector3::new(1.0, 2.0, -3.0)] {
+        let mesh = Mesh::cone_directed(Point3::new(1.0, 2.0, 3.0), direction, 0.3, 1.0, 16, true, tris);
+        assert_wound_outward("cone_directed", &mesh);
     }
 }
 

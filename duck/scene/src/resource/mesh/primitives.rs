@@ -296,13 +296,15 @@ impl Mesh {
                     ]);
                 }
                 if capped {
+                    // Increasing theta walks the ring clockwise seen from +Y, so an
+                    // up-facing fan runs i+1 -> i and a down-facing one runs i -> i+1.
                     let top_center_idx = side_vertex_count as MeshIndex;
                     let top_ring_start = top_center_idx + 1;
                     for i in 0..segments as MeshIndex {
                         indices.extend_from_slice(&[
                             top_center_idx,
-                            top_ring_start + i,
                             top_ring_start + i + 1,
+                            top_ring_start + i,
                         ]);
                     }
                     let bottom_center_idx = top_ring_start + segments as MeshIndex + 1;
@@ -310,8 +312,8 @@ impl Mesh {
                     for i in 0..segments as MeshIndex {
                         indices.extend_from_slice(&[
                             bottom_center_idx,
-                            bottom_ring_start + i + 1,
                             bottom_ring_start + i,
+                            bottom_ring_start + i + 1,
                         ]);
                     }
                 }
@@ -451,8 +453,8 @@ impl Mesh {
                     for i in 0..segments as MeshIndex {
                         indices.extend_from_slice(&[
                             cap_center_idx,
-                            cap_ring_start + i + 1,
                             cap_ring_start + i,
+                            cap_ring_start + i + 1,
                         ]);
                     }
                 }
