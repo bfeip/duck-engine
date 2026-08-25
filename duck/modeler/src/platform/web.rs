@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::ffi::c_int;
 
 use duck_engine_viewer::emscripten_support;
+use duck_engine_viewer::event::{DeviceEvent, Event};
 use duck_engine_viewer::WindowSurface;
 
 use crate::ViewerState;
@@ -75,18 +76,24 @@ extern "C" fn frame() {
             // native, so `route_input` can ask whether egui wants it.
             state.host.egui_input.on_event(&event);
 
-            if let duck_engine_viewer::event::Event::Device(
-                duck_engine_viewer::event::DeviceEvent::Resized((width, height)),
-            ) = &event
-            {
-                state.host.size = (*width, *height);
-                state.resize_surface(*width, *height);
-            }
-            if let duck_engine_viewer::event::Event::Device(
-                duck_engine_viewer::event::DeviceEvent::CursorMoved { position },
-            ) = &event
-            {
-                state.set_cursor(position.0 as f32, position.1 as f32);
+            match &event {
+                Event::Device(DeviceEvent::Resized((width, height))) => {
+                    state.host.size = (*width, *height);
+                    state.resize_surface(*width, *height);
+                }
+                Event::Device(DeviceEvent::CursorMoved { position }) => {
+                    state.set_cursor(position.0 as f32, position.1 as f32);
+                }
+                // Relative motion drives drags, and viewport routing has no arm
+                // for it. winit delivers it on a separate channel that skips
+                // routing entirely, so do the same here or drags never start.
+                Event::Device(DeviceEvent::MouseMotion { .. }) => {
+                    if !state.egui_wants_pointer() {
+                        state.viewer_handle_event(&event);
+                    }
+                    continue;
+                }
+                _ => {}
             }
 
             state.route_input(event);

@@ -245,15 +245,14 @@ impl<'a> ViewerState<'a> {
         self.last_cursor = Some((x, y));
     }
 
-    /// Only the native platform routes raw device events, which is the sole
-    /// caller of this and of `viewer_handle_event`.
-    #[cfg(not(target_arch = "wasm32"))]
     fn egui_wants_pointer(&self) -> bool {
         self.egui_ctx.is_using_pointer()
     }
 
     /// Feed an event straight to the viewer, bypassing viewport routing.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Feed an event straight to the viewer, bypassing viewport routing. Used
+    /// for relative mouse motion, which both platforms deliver outside the
+    /// normal routing path.
     fn viewer_handle_event(&mut self, event: &Event) {
         self.viewer.handle_event(event);
     }
