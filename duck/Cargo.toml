@@ -19,3 +19,14 @@ opt-level = "s"
 strip = true
 lto = true
 codegen-units = 1
+
+# egui is submoduled at `third-party/egui` so we can carry a fix that lets
+# `egui-wgpu` build for `wasm32-unknown-emscripten` (upstream PR pending; see
+# `emscripten-fix-0.33.3`). Patch the whole family, not just `egui-wgpu` —
+# otherwise the crates.io and path copies of `egui` both land in the graph and
+# their types don't unify.
+[patch.crates-io]
+egui = { path = "../third-party/egui/crates/egui" }
+egui-wgpu = { path = "../third-party/egui/crates/egui-wgpu" }
+egui-winit = { path = "../third-party/egui/crates/egui-winit" }
+egui_extras = { path = "../third-party/egui/crates/egui_extras" }

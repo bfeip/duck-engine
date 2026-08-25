@@ -1,3 +1,6 @@
 [submodule "third-party/opencascade-rs"]
 	path = third-party/opencascade-rs
 	url = https://github.com/bfeip/opencascade-rs.git
+[submodule "third-party/egui"]
+	path = third-party/egui
+	url = https://github.com/emilk/egui.git
