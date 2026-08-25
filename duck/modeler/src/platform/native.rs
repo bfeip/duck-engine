@@ -17,8 +17,10 @@ use crate::ViewerState;
 
 /// The winit window plus the egui integration that feeds off it.
 pub(crate) struct Host {
-    window: Arc<Window>,
+    // Drops before `window`: the clipboard is built from the window's raw
+    // display handle, and on Wayland runs a worker thread on that connection.
     egui_winit: egui_winit::State,
+    window: Arc<Window>,
 }
 
 impl Host {
@@ -50,7 +52,7 @@ impl Host {
             None,
         );
 
-        (Self { window, egui_winit }, surface)
+        (Self { egui_winit, window }, surface)
     }
 
     /// Surface size in physical pixels.
@@ -145,10 +147,17 @@ impl ApplicationHandler for App {
             state.viewer_handle_event(&event);
         }
     }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Release the window, surface and egui state while the event loop is still alive.
+        // `run_app` consumes the loop, so anything left here drops after it.
+        self.state = None;
+    }
 }
 
 pub(crate) fn run() {
     env_logger::init();
     let event_loop = EventLoop::new().unwrap();
-    event_loop.run_app(&mut App { state: None }).unwrap();
+    let mut app = App { state: None };
+    event_loop.run_app(&mut app).unwrap();
 }

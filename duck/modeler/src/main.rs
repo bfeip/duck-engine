@@ -50,13 +50,10 @@ use document::Document;
 /// Owns all rendering state: egui context + GPU renderer, the window surface
 /// egui presents to, and the [`OffscreenViewer`] that renders the 3D scene into
 /// a texture displayed inside the central panel.
-///
-/// Field order matters: Rust drops fields in declaration order, so the egui GPU
-/// resources are released before the viewer and surface. This prevents
-/// segfaults from background threads on Wayland during shutdown. `host` sits
-/// after `surface` for the same reason in the other direction — it owns the
-/// window the surface was created from, which must outlive it.
 struct ViewerState<'a> {
+    // Field order is drop order. The egui GPU resources go before the viewer
+    // and surface they were built against; `host` goes last, so the window
+    // outlives everything that borrowed a handle from it.
     egui_renderer: egui_wgpu::Renderer,
     egui_ctx: egui::Context,
     ui: ModelerUi,
