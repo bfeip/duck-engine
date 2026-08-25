@@ -17,8 +17,12 @@
     <canvas id="canvas"></canvas>
     <div id="status">Loading the modeler…</div>
     <script>
+      const canvas = document.getElementById("canvas");
+
+      canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
       var Module = {
-        canvas: document.getElementById("canvas"),
+        canvas,
         onRuntimeInitialized: () => document.getElementById("status").remove(),
       };
     </script>
