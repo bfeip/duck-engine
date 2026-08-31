@@ -1,19 +1,9 @@
 use anyhow::{bail, Context, Result};
 use duck_engine_scene::cad::{tessellate_into, CadTessellationOptions};
 use duck_engine_scene::resource::NodeId;
-use opencascade::primitives::{Shape, Shell, Solid, Wire};
+use opencascade::primitives::{Shape, Shell, Wire};
 
 use crate::document::Document;
-
-/// What a loft produces from its profile wires.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum LoftKind {
-    /// An open shell skinned through the profiles (no end caps).
-    #[default]
-    Surface,
-    /// A capped solid body through the profiles. Requires closed profile wires.
-    Solid,
-}
 
 /// A single loft profile, identified the way the selection system reports it: by
 /// the tessellation order of the edge the user clicked within a part's mesh.
@@ -46,25 +36,16 @@ fn resolve_profiles(doc: &Document, profiles: &[LoftProfile]) -> Result<Vec<Wire
     Ok(wires)
 }
 
-/// Skin a surface or solid through the profile wires.
-fn build_loft(wires: &[Wire], kind: LoftKind) -> Shape {
-    match kind {
-        LoftKind::Surface => Shell::loft(wires).into(),
-        LoftKind::Solid => Solid::loft(wires).into(),
-    }
-}
-
 /// Non-destructive preview: skin the loft and add a temporary scene node without
 /// modifying the source parts. The caller owns the returned `NodeId` and must
 /// remove it when the preview is rebuilt or the operation ends.
 pub fn preview_loft(
     doc: &Document,
     profiles: &[LoftProfile],
-    kind: LoftKind,
     options: &CadTessellationOptions,
 ) -> Result<NodeId> {
     let wires = resolve_profiles(doc, profiles)?;
-    let shape = build_loft(&wires, kind);
+    let shape: Shape = Shell::loft(&wires).into();
     tessellate_into(&shape, doc.scene(), options, None, Some("Loft preview"))
         .map(|node| node.id())
         .context("Failed to tessellate loft preview")
@@ -76,12 +57,11 @@ pub fn preview_loft(
 pub fn execute_loft(
     doc: &mut Document,
     profiles: &[LoftProfile],
-    kind: LoftKind,
     options: &CadTessellationOptions,
 ) -> Result<()> {
     let wires = resolve_profiles(doc, profiles)?;
-    let shape = build_loft(&wires, kind);
-    // Tessellates atomically — if this fails (e.g. degenerate solid loft), nothing changes.
+    let shape: Shape = Shell::loft(&wires).into();
+    // Tessellates atomically — if this fails, nothing changes.
     doc.undo_scope("Loft")
         .add_part("Loft".to_owned(), shape, options)
         .context("Failed to tessellate loft")?;
@@ -130,7 +110,7 @@ mod tests {
     fn surface_loft_produces_a_shell() {
         let (mut doc, profiles) = doc_with_two_squares();
         let before = doc.parts().count();
-        execute_loft(&mut doc, &profiles, LoftKind::Surface, &CadTessellationOptions::default())
+        execute_loft(&mut doc, &profiles, &CadTessellationOptions::default())
             .expect("surface loft succeeds");
         assert_eq!(doc.parts().count(), before + 1, "profiles kept, loft added");
         let loft = doc.parts().last().expect("loft part");
@@ -138,19 +118,10 @@ mod tests {
     }
 
     #[test]
-    fn solid_loft_produces_a_solid() {
-        let (mut doc, profiles) = doc_with_two_squares();
-        execute_loft(&mut doc, &profiles, LoftKind::Solid, &CadTessellationOptions::default())
-            .expect("solid loft succeeds");
-        let loft = doc.parts().last().expect("loft part");
-        assert_eq!(loft.shape.shape_type(), ShapeType::Solid);
-    }
-
-    #[test]
     fn single_profile_is_rejected() {
         let (mut doc, profiles) = doc_with_two_squares();
         let one = &profiles[..1];
-        let err = execute_loft(&mut doc, one, LoftKind::Surface, &CadTessellationOptions::default());
+        let err = execute_loft(&mut doc, one, &CadTessellationOptions::default());
         assert!(err.is_err(), "a loft needs at least two profiles");
     }
 }

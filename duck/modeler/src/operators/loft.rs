@@ -11,7 +11,7 @@ use duck_engine_viewer::{
 };
 
 use crate::document::Document;
-use crate::loft::{execute_loft, preview_loft, LoftKind, LoftProfile};
+use crate::loft::{execute_loft, preview_loft, LoftProfile};
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
@@ -26,13 +26,11 @@ enum LoftPhase {
 }
 
 pub struct LoftOperator {
-    kind: LoftKind,
     phase: LoftPhase,
 
     preview: PreviewSession,
-    /// Profiles and kind the current preview was built from, so we only rebuild on change.
+    /// Profiles the current preview was built from, so we only rebuild on change.
     preview_profiles: Vec<LoftProfile>,
-    last_kind: LoftKind,
 
     document: Arc<Mutex<Document>>,
     construction_options: Rc<RefCell<ConstructionOptions>>,
@@ -45,11 +43,9 @@ impl LoftOperator {
     ) -> Self {
         let preview = PreviewSession::new(Arc::clone(&document));
         Self {
-            kind: LoftKind::default(),
             phase: LoftPhase::default(),
             preview,
             preview_profiles: Vec::new(),
-            last_kind: LoftKind::default(),
             document,
             construction_options,
         }
@@ -75,7 +71,6 @@ impl LoftOperator {
 
         let profiles = Self::selection_snapshot(selection);
         self.preview_profiles = profiles.clone();
-        self.last_kind = self.kind;
 
         if profiles.len() < 2 {
             return;
@@ -84,7 +79,7 @@ impl LoftOperator {
         let options = self.construction_options.borrow().preview_options();
         let result = {
             let doc = self.document.lock().unwrap();
-            preview_loft(&doc, &profiles, self.kind, &options)
+            preview_loft(&doc, &profiles, &options)
         };
         match result {
             Ok(node) => self.preview.add_preview_node(node),
@@ -93,7 +88,7 @@ impl LoftOperator {
     }
 
     /// Execute the loft and clean up preview state. On success sets phase = Done;
-    /// on failure stays in Configuring so the user can retry (e.g. toggle to surface).
+    /// on failure stays in Configuring so the user can retry with different profiles.
     fn apply(&mut self) -> anyhow::Result<()> {
         let profiles = self.preview_profiles.clone();
         let options = self.construction_options.borrow().geometry_options.clone();
@@ -101,7 +96,7 @@ impl LoftOperator {
         let _ = self.preview.commit();
 
         let mut doc = self.document.lock().unwrap();
-        execute_loft(&mut doc, &profiles, self.kind, &options)?;
+        execute_loft(&mut doc, &profiles, &options)?;
         drop(doc);
 
         self.preview_profiles.clear();
@@ -126,7 +121,7 @@ impl LoftOperator {
         self.phase = LoftPhase::Cancelled;
     }
 
-    /// The loft configuration panel body (output kind, ordered profile list, Apply/Cancel).
+    /// The loft configuration panel body (ordered profile list, Apply/Cancel).
     fn render_panel(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
         let mut apply_clicked = false;
         let mut cancel_clicked = false;
@@ -153,14 +148,6 @@ impl LoftOperator {
                 })
                 .collect()
         };
-
-        ui.label("Output");
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.kind, LoftKind::Surface, "Surface");
-            ui.selectable_value(&mut self.kind, LoftKind::Solid, "Solid");
-        });
-
-        ui.separator();
 
         ui.label("Profiles");
         if entries.is_empty() {
@@ -231,7 +218,7 @@ impl Operator for LoftOperator {
         match event {
             DeviceEvent::Update { .. } => {
                 let profiles = Self::selection_snapshot(ctx.selection);
-                if profiles != self.preview_profiles || self.kind != self.last_kind {
+                if profiles != self.preview_profiles {
                     self.refresh_preview(ctx.selection);
                 }
                 false
