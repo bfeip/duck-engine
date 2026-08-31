@@ -148,11 +148,11 @@ impl ViewerState<'static> {
         tools.register(TransformTool::new(TransformMode::Scale, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(SphereOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(BoxOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(CylinderOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(RectangleOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(LineOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(CurveOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(CircleOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(CylinderOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(BooleanOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(ExtrudeOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(LoftOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
