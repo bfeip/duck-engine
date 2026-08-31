@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use duck_engine_scene::cad::{
     classify_shape, tessellate_into_with_materials, CadTessellationOptions, GeometryClass,
 };
+use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{FaceMaterialHandle, LineMaterialHandle, NodeId, Visibility};
 use duck_engine_scene::{Scene, SceneData};
 use opencascade::primitives::Shape;
@@ -158,6 +159,15 @@ impl PreviewSession {
         let mut scene = scene.lock();
         for &node in &self.previews {
             scene.set_node_visibility(node, visibility);
+        }
+    }
+
+    /// Set the transform of every tracked preview.
+    pub fn set_preview_transform(&self, transform: Transform) {
+        let scene = self.scene();
+        let mut scene = scene.lock();
+        for &node in &self.previews {
+            scene.set_node_transform(node, transform);
         }
     }
 

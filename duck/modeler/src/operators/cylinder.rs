@@ -8,7 +8,7 @@ use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     common::Transform,
     event::{DeviceEvent, Event, EventContext},
-    input::{Modifiers, MouseButton},
+    input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
     operator::Operator,
 };
 use glam::{dvec3, DVec3};
@@ -17,8 +17,9 @@ use opencascade::primitives::{Edge, Face, Shape, Wire};
 
 use crate::document::Document;
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, ToolInfo};
+use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
+use super::tweak::{commit_tweak, dimension_field, tweak_panel, TweakAction, TweakParams};
 use super::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
@@ -38,6 +39,66 @@ enum Phase {
     Radius { center: Point3, plane: Plane },
     /// Radius fixed; the cursor drives the height. Preview is the 3D cylinder.
     Height { center: Point3, radius: f32, plane: Plane },
+    /// Every point picked; the options panel drives the dimensions until the
+    /// cylinder is applied or cancelled.
+    Tweak(CylinderParams),
+}
+
+/// The dimensions of a placed cylinder, adjustable before it is committed.
+/// `base` is the first point picked and never moves: the radius grows about the
+/// axis through it and the height grows away from it along `plane.normal`.
+#[derive(Clone, Copy)]
+pub(super) struct CylinderParams {
+    base: Point3,
+    plane: Plane,
+    radius: f32,
+    height: f32,
+}
+
+impl CylinderParams {
+    /// Parameters for a finished pick, normalized so the height is positive and
+    /// grows away from `base`. A downward pick flips the plane normal rather
+    /// than moving the base off the picked point, so later height edits move
+    /// only the far cap.
+    fn from_pick(base: Point3, radius: f32, height: f32, plane: Plane) -> Self {
+        let (plane, height) = if height >= 0.0 {
+            (plane, height)
+        } else {
+            (Plane::from_point(-plane.normal, base), -height)
+        };
+        Self { base, plane, radius, height }
+    }
+}
+
+impl TweakParams for CylinderParams {
+    const NAME: &'static str = "Cylinder";
+
+    /// Scales the unit reference cylinder (base at the origin, axis +Z, radius 1,
+    /// height 1) to these dimensions.  Every scale
+    /// component stays non-negative — a negative one would make the baked
+    /// transform a reflection, flipping the face normals inward.
+    fn preview_transform(&self) -> Transform {
+        Transform {
+            position: self.base,
+            rotation: self.plane.rotation(),
+            scale: Vector3::new(self.radius, self.radius, self.height),
+        }
+    }
+
+    fn build(&self) -> Option<Shape> {
+        Some(Shape::cylinder(
+            to_dvec3(self.base),
+            self.radius as f64,
+            vec_to_dvec3(self.plane.normal),
+            self.height as f64,
+        ))
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = dimension_field(ui, "Radius", &mut self.radius);
+        changed |= dimension_field(ui, "Height", &mut self.height);
+        changed
+    }
 }
 
 pub struct CylinderOperator {
@@ -47,6 +108,9 @@ pub struct CylinderOperator {
     preview: PreviewSession,
     bindings: InputMap<CylinderAction>,
     cursor_target: Option<Point3>,
+    // Set once the cylinder is applied, so
+    // the tool cedes back to selection. Cleared on [`ModelingTool::deactivate`].
+    finished: bool,
 }
 
 fn to_dvec3(p: Point3) -> DVec3 {
@@ -79,25 +143,7 @@ impl CylinderOperator {
             preview,
             bindings,
             cursor_target: None,
-        }
-    }
-
-    /// Transform scaling the unit reference cylinder (base at origin, axis +Z,
-    /// radius 1, height 1) to a cylinder of `radius`/`height` based at `center`.
-    /// The plane's [`rotation`](Plane::rotation) maps the local +Z axis to the
-    /// plane normal, so the base disk lies in the construction plane.
-    fn cylinder_transform(center: Point3, radius: f32, height: f32, plane: &Plane) -> Transform {
-        // Keep every scale component non-negative. A negative scale would make the
-        // baked transform a reflection, flipping the cylinder's face normals inward.
-        let (base, height) = if height >= 0.0 {
-            (center, height)
-        } else {
-            (center + plane.normal * height, -height)
-        };
-        Transform {
-            position: base,
-            rotation: plane.rotation(),
-            scale: Vector3::new(radius, radius, height),
+            finished: false,
         }
     }
 
@@ -112,8 +158,8 @@ impl CylinderOperator {
     }
 
     /// Unit reference cylinder for the preview: base at the origin, axis +Z,
-    /// radius 1, height 1. Scaled and oriented via the preview node transform
-    /// ([`cylinder_transform`](Self::cylinder_transform)).
+    /// radius 1, height 1. Scaled and oriented via
+    /// [`CylinderParams::preview_transform`].
     fn reference_cylinder() -> Shape {
         Shape::cylinder_radius_height(1.0, 1.0)
     }
@@ -226,45 +272,41 @@ impl CylinderOperator {
         ctx: &mut EventContext,
     ) -> bool {
         let height = Self::height_from_cursor(center, &plane, position, ctx);
-        // A zero-height (degenerate) cylinder can't be committed; stay in the height stage.
+        // A zero-height (degenerate) cylinder can't be tweaked; stay in the height stage.
         if !Self::cylinder_valid(radius, height) {
             return false;
         }
 
-        // Build the world-space cylinder directly from the OCCT primitive, keeping
-        // the height positive so the axis stays aligned with the plane normal.
-        let (base, h) = if height >= 0.0 {
-            (center, height)
-        } else {
-            (center + plane.normal * height, -height)
-        };
-        let world_shape = Shape::cylinder(
-            to_dvec3(base),
-            radius as f64,
-            vec_to_dvec3(plane.normal),
-            h as f64,
-        );
-
-        // Discard the preview, then commit the world-space shape as a registered part.
-        let _ = self.preview.commit();
-
-        let committed = {
-            let coptions = self.construction_options.borrow();
-            let mut doc = self.document.lock().unwrap();
-            doc.add_part("Cylinder".to_owned(), world_shape, &coptions.geometry_options)
-                .is_ok()
-        };
-
-        self.phase = Phase::Idle;
-        committed
+        // Hand the cylinder to the options panel rather than committing it: the
+        // preview stays live and the dimensions stay editable until Apply.
+        let params = CylinderParams::from_pick(center, radius, height, plane);
+        self.preview.set_preview_transform(params.preview_transform());
+        self.phase = Phase::Tweak(params);
+        true
     }
 
+    /// Commit the cylinder and finish the tool. A failed build keeps the
+    /// panel open so the dimensions can be corrected.
+    fn apply(&mut self) {
+        let Phase::Tweak(params) = self.phase else { return };
+        let options = self.construction_options.borrow().geometry_options.clone();
+        if commit_tweak(&params, &mut self.preview, &self.document, &options) {
+            self.phase = Phase::Idle;
+            self.finished = true;
+        }
+    }
+
+    /// Drop the in-progress cylinder.
     pub fn cancel(&mut self) {
         self.preview.cancel();
         self.phase = Phase::Idle;
     }
 
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
+        // Every point is picked; the panel drives the preview from here.
+        if matches!(self.phase, Phase::Tweak(_)) {
+            return;
+        }
         let cursor = (position.0 as f32, position.1 as f32);
 
         let camera = ctx.camera.clone();
@@ -308,7 +350,8 @@ impl CylinderOperator {
                         scene.set_node_visibility(preview_node, Visibility::Visible);
                         scene.set_node_transform(
                             preview_node,
-                            Self::cylinder_transform(center, radius, height, &plane),
+                            CylinderParams::from_pick(center, radius, height, plane)
+                                .preview_transform(),
                         );
                     } else {
                         // Degenerate height: nothing to draw.
@@ -316,6 +359,8 @@ impl CylinderOperator {
                     }
                 }
             }
+            // Handled by the early return above.
+            Phase::Tweak(_) => {}
         }
     }
 }
@@ -327,13 +372,38 @@ impl ModelingTool for CylinderOperator {
 
     fn deactivate(&mut self) {
         self.cancel();
+        self.finished = false;
         // The modeler hides the cursor for the (now inactive) tool, but clear our
         // target so a stale point can't flash if we're reactivated before a move.
         self.cursor_target = None;
     }
 
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
     fn cursor_target(&self) -> Option<Point3> {
-        self.cursor_target
+        // Nothing left to pick while the panel is open.
+        match self.phase {
+            Phase::Tweak(_) => None,
+            _ => self.cursor_target,
+        }
+    }
+
+    fn panel_title(&self) -> Option<&str> {
+        matches!(self.phase, Phase::Tweak(_)).then_some(CylinderParams::NAME)
+    }
+
+    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
+        let Phase::Tweak(params) = &mut self.phase else { return };
+        let action = tweak_panel(ui, params);
+        let transform = params.preview_transform();
+        match action {
+            TweakAction::Changed => self.preview.set_preview_transform(transform),
+            TweakAction::Apply => self.apply(),
+            TweakAction::Cancel => self.cancel(),
+            TweakAction::None => {}
+        }
     }
 }
 
@@ -354,6 +424,9 @@ impl Operator for CylinderOperator {
                             Phase::Height { center, radius, plane } => {
                                 self.on_place_height(center, radius, plane, *position, ctx)
                             }
+                            // Swallow the click: the panel owns the cylinder now, so
+                            // a stray pick must not select or place anything.
+                            Phase::Tweak(_) => true,
                         },
                         CylinderAction::Cancel => {
                             let was_defining = !matches!(self.phase, Phase::Idle);
@@ -369,6 +442,26 @@ impl Operator for CylinderOperator {
             DeviceEvent::CursorMoved { position } => {
                 self.on_cursor_moved(*position, ctx);
                 false
+            }
+            // Keyboard equivalents of the tweak panel's Apply and Cancel buttons.
+            DeviceEvent::KeyboardInput { event: key_event, .. } => {
+                if !matches!(self.phase, Phase::Tweak(_))
+                    || key_event.state != ElementState::Pressed
+                    || key_event.repeat
+                {
+                    return false;
+                }
+                match key_event.logical_key {
+                    Key::Named(NamedKey::Enter) => {
+                        self.apply();
+                        true
+                    }
+                    Key::Named(NamedKey::Escape) => {
+                        self.cancel();
+                        true
+                    }
+                    _ => false,
+                }
             }
             _ => false,
         }
@@ -397,15 +490,30 @@ mod tests {
     }
 
     #[test]
-    fn cylinder_transform_flips_negative_height() {
+    fn from_pick_flips_negative_height_about_the_base() {
         let plane = Plane::xz();
-        let center = Point3::new(0.0, 0.0, 0.0);
-        let t = CylinderOperator::cylinder_transform(center, 2.0, -3.0, &plane);
+        let base = Point3::new(1.0, 2.0, 3.0);
+        let params = CylinderParams::from_pick(base, 2.0, -3.0, plane);
+        // The picked point stays the base; the axis flips instead (XZ normal is +Y).
+        assert!((params.base - base).magnitude() < EPSILON);
+        assert!((params.height - 3.0).abs() < EPSILON);
+        assert!((params.plane.normal + plane.normal).magnitude() < EPSILON);
+
+        let t = params.preview_transform();
         // Scale stays non-negative after the flip.
         assert!(t.scale.x >= 0.0 && t.scale.y >= 0.0 && t.scale.z >= 0.0);
-        assert!((t.scale.z - 3.0).abs() < EPSILON);
-        // Base shifts by normal * height (XZ plane normal is +Y).
-        let expected = center + plane.normal * -3.0;
-        assert!((t.position - expected).magnitude() < EPSILON);
+        assert!((t.position - base).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn height_edits_leave_the_base_cap_in_place() {
+        let plane = Plane::from_point(Vector3::new(1.0, 2.0, 3.0).normalize(), Point3::new(0.0, 0.0, 0.0));
+        let base = Point3::new(-4.0, 5.0, 6.0);
+        let mut params = CylinderParams::from_pick(base, 2.0, 3.0, plane);
+        params.height = 10.0;
+        // Only the far cap moves: base, axis and radius are untouched.
+        assert!((params.base - base).magnitude() < EPSILON);
+        assert!((params.plane.normal - plane.normal).magnitude() < EPSILON);
+        assert!((params.preview_transform().position - base).magnitude() < EPSILON);
     }
 }

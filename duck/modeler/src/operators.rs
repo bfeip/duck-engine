@@ -9,6 +9,7 @@ mod loft;
 mod rectangle;
 mod sphere;
 mod transform;
+mod tweak;
 
 pub use boolean::BooleanOperator;
 pub use r#box::BoxOperator;
