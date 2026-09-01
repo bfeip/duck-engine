@@ -5,8 +5,10 @@ use duck_engine_viewer::scene::Scene;
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext, EventDispatcher};
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers};
 use duck_engine_viewer::operator::{Operator, SelectionMode, SelectionOperator};
+use duck_engine_viewer::selection::SelectionManager;
 
 use crate::cursor::Cursor3d;
+use crate::notifications::Notifications;
 use crate::tool::{ModelingTool, ToolInfo};
 
 /// Opaque handle to a registered tool. Minted only by [`ToolManager::register`].
@@ -87,10 +89,12 @@ pub struct ToolManager {
     sel_op: Arc<Mutex<SelectionOperator>>,
     /// The modeler-owned 3D cursor, driven each frame from the active tool.
     cursor: Cursor3d,
+    /// Reports failed implicit commits, so no tool has to.
+    notifications: Notifications,
 }
 
 impl ToolManager {
-    pub fn new(sel_op: Arc<Mutex<SelectionOperator>>) -> Self {
+    pub fn new(sel_op: Arc<Mutex<SelectionOperator>>, notifications: Notifications) -> Self {
         Self {
             tools: Vec::new(),
             active: None,
@@ -101,6 +105,7 @@ impl ToolManager {
             })),
             sel_op,
             cursor: Cursor3d::default(),
+            notifications,
         }
     }
 
@@ -127,13 +132,32 @@ impl ToolManager {
 
     /// Switches the active tool; `None` returns to plain selection.
     /// Re-activating the already active tool is a no-op.
-    pub fn activate(&mut self, id: Option<ToolId>) {
+    ///
+    /// The outgoing tool first gets to commit a fully defined result: switching
+    /// away is the user moving on, not a request to throw the operation away.
+    pub fn activate(&mut self, id: Option<ToolId>, selection: &mut SelectionManager) {
+        self.switch(id, Some(selection));
+    }
+
+    /// Switches back to plain selection, discarding whatever the active tool
+    /// holds. For teardown the document itself demands — undo/redo, delete —
+    /// where committing would add a part the user never asked for.
+    pub fn discard_active(&mut self) {
+        self.switch(None, None);
+    }
+
+    /// The one activation path. `finalize` carries the outgoing tool's selection
+    /// when it should commit rather than discard.
+    fn switch(&mut self, id: Option<ToolId>, finalize: Option<&mut SelectionManager>) {
         if id == self.active {
             return;
         }
 
         // Locks must be taken strictly one at a time
         if let Some(old) = self.active {
+            if let Some(selection) = finalize {
+                self.finalize_tool(old, selection);
+            }
             self.tools[old.0].lock().unwrap().deactivate();
         }
 
@@ -152,15 +176,26 @@ impl ToolManager {
         self.active = id;
     }
 
+    /// Commits `id`'s pending result, reporting a failure on its behalf. The
+    /// caller's `deactivate` then clears whatever a failed commit left behind.
+    fn finalize_tool(&self, id: ToolId, selection: &mut SelectionManager) {
+        let mut tool = self.tools[id.0].lock().unwrap();
+        if let Err(e) = tool.finalize(selection) {
+            let name = tool.info().id;
+            log::error!("Could not finish {name}: {e:#}");
+            self.notifications.error(format!("Could not finish {name}: {e}"));
+        }
+    }
+
     /// Per-frame update. Should be called every frame.
-    pub fn update(&mut self, scene: &Scene) {
+    pub fn update(&mut self, scene: &Scene, selection: &mut SelectionManager) {
         let requested = self.switcher.lock().unwrap().pending.take();
         if let Some(id) = requested {
-            self.activate(Some(id));
+            self.activate(Some(id), selection);
         }
 
         if self.active.is_some_and(|i| self.tools[i.0].lock().unwrap().is_finished()) {
-            self.activate(None);
+            self.activate(None, selection);
         }
 
         let target = self
@@ -192,17 +227,24 @@ impl ToolManager {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use duck_engine_viewer::input::PhysicalKey;
 
     use super::*;
 
+    fn manager() -> ToolManager {
+        ToolManager::new(
+            Arc::new(Mutex::new(SelectionOperator::new())),
+            Notifications::default(),
+        )
+    }
+
     struct MockTool {
         id: &'static str,
         shortcut: Option<char>,
-        activations: Arc<AtomicUsize>,
-        deactivations: Arc<AtomicUsize>,
+        /// Lifecycle calls in the order they arrived.
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        /// Whether `finalize` reports a failed commit.
+        finalize_fails: bool,
     }
 
     impl MockTool {
@@ -210,9 +252,18 @@ mod tests {
             Self {
                 id,
                 shortcut,
-                activations: Arc::new(AtomicUsize::new(0)),
-                deactivations: Arc::new(AtomicUsize::new(0)),
+                calls: Arc::new(Mutex::new(Vec::new())),
+                finalize_fails: false,
             }
+        }
+
+        /// A tool whose pending result can't be committed.
+        fn failing(id: &'static str) -> Self {
+            Self { finalize_fails: true, ..Self::new(id, None) }
+        }
+
+        fn record(&self, call: &'static str) {
+            self.calls.lock().unwrap().push(call);
         }
     }
 
@@ -232,11 +283,19 @@ mod tests {
         }
 
         fn activate(&mut self) {
-            self.activations.fetch_add(1, Ordering::SeqCst);
+            self.record("activate");
         }
 
         fn deactivate(&mut self) {
-            self.deactivations.fetch_add(1, Ordering::SeqCst);
+            self.record("deactivate");
+        }
+
+        fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
+            self.record("finalize");
+            if self.finalize_fails {
+                anyhow::bail!("mock commit failure");
+            }
+            Ok(())
         }
     }
 
@@ -294,7 +353,7 @@ mod tests {
 
     #[test]
     fn register_binds_shortcut_to_id() {
-        let mut manager = ToolManager::new(Arc::new(Mutex::new(SelectionOperator::new())));
+        let mut manager = manager();
         manager.register(MockTool::new("plain", None));
         manager.register(MockTool::new("keyed", Some('g')));
 
@@ -305,33 +364,81 @@ mod tests {
 
     #[test]
     fn update_applies_pending_switch() {
-        let mut manager = ToolManager::new(Arc::new(Mutex::new(SelectionOperator::new())));
+        let mut manager = manager();
         let tool = MockTool::new("keyed", Some('g'));
-        let activations = Arc::clone(&tool.activations);
+        let calls = Arc::clone(&tool.calls);
         manager.register(MockTool::new("plain", None));
         manager.register(tool);
 
         let scene = Scene::default();
+        let mut selection = SelectionManager::new();
         manager.switcher.lock().unwrap().handle_key(&key_press('g'), Modifiers::default());
-        manager.update(&scene);
+        manager.update(&scene, &mut selection);
 
         assert_eq!(manager.active_tool().unwrap().info().id, "keyed");
-        assert_eq!(activations.load(Ordering::SeqCst), 1);
+        assert_eq!(*calls.lock().unwrap(), ["activate"]);
     }
 
     #[test]
     fn update_same_tool_pending_is_noop() {
-        let mut manager = ToolManager::new(Arc::new(Mutex::new(SelectionOperator::new())));
+        let mut manager = manager();
         let tool = MockTool::new("keyed", Some('g'));
-        let deactivations = Arc::clone(&tool.deactivations);
+        let calls = Arc::clone(&tool.calls);
         let id = manager.register(tool);
-        manager.activate(Some(id));
+        let mut selection = SelectionManager::new();
+        manager.activate(Some(id), &mut selection);
 
         let scene = Scene::default();
         manager.switcher.lock().unwrap().handle_key(&key_press('g'), Modifiers::default());
-        manager.update(&scene);
+        manager.update(&scene, &mut selection);
 
         assert_eq!(manager.active_tool().unwrap().info().id, "keyed");
-        assert_eq!(deactivations.load(Ordering::SeqCst), 0);
+        assert!(!calls.lock().unwrap().contains(&"deactivate"));
+    }
+
+    #[test]
+    fn switching_tools_finalizes_before_deactivating() {
+        let mut manager = manager();
+        let outgoing = MockTool::new("outgoing", None);
+        let calls = Arc::clone(&outgoing.calls);
+        let first = manager.register(outgoing);
+        let second = manager.register(MockTool::new("incoming", None));
+
+        let mut selection = SelectionManager::new();
+        manager.activate(Some(first), &mut selection);
+        manager.activate(Some(second), &mut selection);
+
+        assert_eq!(*calls.lock().unwrap(), ["activate", "finalize", "deactivate"]);
+        assert_eq!(manager.active_id(), Some(second));
+    }
+
+    #[test]
+    fn discard_active_skips_finalize() {
+        let mut manager = manager();
+        let tool = MockTool::new("tool", None);
+        let calls = Arc::clone(&tool.calls);
+        let id = manager.register(tool);
+
+        let mut selection = SelectionManager::new();
+        manager.activate(Some(id), &mut selection);
+        manager.discard_active();
+
+        assert_eq!(*calls.lock().unwrap(), ["activate", "deactivate"]);
+        assert_eq!(manager.active_id(), None);
+    }
+
+    #[test]
+    fn failed_finalize_still_deactivates_and_switches() {
+        let mut manager = manager();
+        let tool = MockTool::failing("failing");
+        let calls = Arc::clone(&tool.calls);
+        let id = manager.register(tool);
+
+        let mut selection = SelectionManager::new();
+        manager.activate(Some(id), &mut selection);
+        manager.activate(None, &mut selection);
+
+        assert_eq!(*calls.lock().unwrap(), ["activate", "finalize", "deactivate"]);
+        assert_eq!(manager.active_id(), None);
     }
 }

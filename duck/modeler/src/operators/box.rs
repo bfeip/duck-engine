@@ -10,9 +10,10 @@ use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
     operator::Operator,
+    selection::SelectionManager,
 };
 use glam::dvec3;
-use log::warn;
+use log::{error, warn};
 use opencascade::primitives::{Face, Shape, Wire};
 
 use crate::document::Document;
@@ -29,7 +30,8 @@ const EPSILON: f32 = 1e-6;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BoxAction {
     Place,
-    Cancel,
+    /// End the operation: commit if the box is fully defined, else abort.
+    Finish,
 }
 
 enum Phase {
@@ -163,7 +165,7 @@ impl BoxOperator {
             )
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
-                BoxAction::Cancel,
+                BoxAction::Finish,
             );
         let preview = PreviewSession::new(Arc::clone(&document));
         Self {
@@ -312,12 +314,20 @@ impl BoxOperator {
 
     /// Commit the box and finish the tool. A failed build keeps the
     /// panel open so the dimensions can be corrected.
-    fn apply(&mut self) {
-        let Phase::Tweak(params) = self.phase else { return };
+    fn apply(&mut self) -> anyhow::Result<()> {
+        let Phase::Tweak(params) = self.phase else { return Ok(()) };
         let options = self.construction_options.borrow().geometry_options.clone();
-        if commit_tweak(&params, &mut self.preview, &self.document, &options) {
-            self.phase = Phase::Idle;
-            self.finished = true;
+        commit_tweak(&params, &mut self.preview, &self.document, &options)?;
+        self.phase = Phase::Idle;
+        self.finished = true;
+        Ok(())
+    }
+
+    /// Apply, logging a failure. For the gestures that keep the tool active and
+    /// so must report for themselves: the panel's Apply button, Enter, right-click.
+    fn apply_and_report(&mut self) {
+        if let Err(e) = self.apply() {
+            error!("Box failed: {e:#}");
         }
     }
 
@@ -399,6 +409,14 @@ impl ModelingTool for BoxOperator {
         self.cursor_target = None;
     }
 
+    /// A box waiting on the panel is fully defined, so leaving the tool commits it.
+    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
+        if matches!(self.phase, Phase::Tweak(_)) {
+            self.apply()?;
+        }
+        Ok(())
+    }
+
     fn is_finished(&self) -> bool {
         self.finished
     }
@@ -421,7 +439,7 @@ impl ModelingTool for BoxOperator {
         let transform = params.preview_transform();
         match action {
             TweakAction::Changed => self.preview.set_preview_transform(transform),
-            TweakAction::Apply => self.apply(),
+            TweakAction::Apply => self.apply_and_report(),
             TweakAction::Cancel => self.cancel(),
             TweakAction::None => {}
         }
@@ -449,13 +467,19 @@ impl Operator for BoxOperator {
                             // stray pick must not select or place anything.
                             Phase::Tweak(_) => true,
                         },
-                        BoxAction::Cancel => {
-                            let was_defining = !matches!(self.phase, Phase::Idle);
-                            if was_defining {
-                                self.cancel();
+                        // Right-click ends the operation: it commits a box the
+                        // panel already holds, and aborts one still being picked.
+                        BoxAction::Finish => match self.phase {
+                            Phase::Idle => false,
+                            Phase::Tweak(_) => {
+                                self.apply_and_report();
+                                true
                             }
-                            was_defining
-                        }
+                            _ => {
+                                self.cancel();
+                                true
+                            }
+                        },
                     };
                 }
                 handled
@@ -474,7 +498,7 @@ impl Operator for BoxOperator {
                 }
                 match key_event.logical_key {
                     Key::Named(NamedKey::Enter) => {
-                        self.apply();
+                        self.apply_and_report();
                         true
                     }
                     Key::Named(NamedKey::Escape) => {

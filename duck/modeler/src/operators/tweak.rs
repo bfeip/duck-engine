@@ -9,8 +9,8 @@
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
+use anyhow::bail;
 use duck_engine_viewer::common::Transform;
-use log::{error, warn};
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
@@ -95,20 +95,14 @@ pub(super) fn commit_tweak<P: TweakParams>(
     preview: &mut PreviewSession,
     document: &Arc<Mutex<Document>>,
     options: &CadTessellationOptions,
-) -> bool {
+) -> anyhow::Result<()> {
     let Some(shape) = params.build() else {
-        warn!("Failed to build {}", P::NAME);
-        return false;
+        bail!("Failed to build {}", P::NAME);
     };
 
     let _ = preview.commit();
 
     let mut doc = document.lock().unwrap();
-    match doc.add_part(P::NAME.to_owned(), shape, options) {
-        Ok(_) => true,
-        Err(e) => {
-            error!("Failed to add {}: {e}", P::NAME);
-            false
-        }
-    }
+    doc.add_part(P::NAME.to_owned(), shape, options)?;
+    Ok(())
 }

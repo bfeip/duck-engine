@@ -10,6 +10,7 @@ use duck_engine_viewer::{
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
     operator::Operator,
     scene::PositionedCamera,
+    selection::SelectionManager,
 };
 use glam::{dvec3, DVec3};
 use log::warn;
@@ -301,6 +302,13 @@ impl ModelingTool for LineOperator {
         self.cancel();
         self.cursor_target = None;
         self.finished = false;
+    }
+
+    /// Leaving the tool ends the polyline where it stands, as right-click and
+    /// Enter do; too few points is no result, and `deactivate` then drops it.
+    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
+        self.finish();
+        Ok(())
     }
 
     fn is_finished(&self) -> bool {

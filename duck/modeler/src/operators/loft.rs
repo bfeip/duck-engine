@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use duck_engine_scene::resource::SubGeometryKind;
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, NamedKey},
+    input::{ElementState, Key, MouseButton, NamedKey},
     operator::{Operator, SelectionKinds, SelectionMode},
     selection::{SelectionItem, SelectionManager},
 };
@@ -194,6 +194,16 @@ impl ModelingTool for LoftOperator {
         self.phase = LoftPhase::Configuring;
     }
 
+    /// Two or more profiles are a complete loft, so leaving the tool skins them
+    /// rather than dropping the picks.
+    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
+        if self.preview_profiles.len() >= 2 {
+            self.apply()?;
+            selection.clear();
+        }
+        Ok(())
+    }
+
     fn is_finished(&self) -> bool {
         matches!(self.phase, LoftPhase::Done | LoftPhase::Cancelled)
     }
@@ -222,6 +232,14 @@ impl Operator for LoftOperator {
                     self.refresh_preview(ctx.selection);
                 }
                 false
+            }
+            // Right-click finalizes once there are profiles to skin.
+            DeviceEvent::MouseClick { button: MouseButton::Right, .. } => {
+                if self.preview_profiles.len() < 2 {
+                    return false;
+                }
+                self.apply_and_clear(ctx.selection);
+                true
             }
             DeviceEvent::KeyboardInput { event: key_event, .. } => {
                 if key_event.state != ElementState::Pressed || key_event.repeat {

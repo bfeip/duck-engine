@@ -77,7 +77,9 @@ impl ModelerUi {
             )
         };
         self.menu.show(ctx, undo_label.as_deref(), redo_label.as_deref(), &mut actions);
-        self.palette.show(ctx, tools);
+        // Before the document lock below: a palette click can commit the
+        // outgoing tool's pending shape, which locks the document itself.
+        self.palette.show(ctx, tools, selection);
         {
             // The document lock must be released before drawing the tool panel,
             // which may also lock the document, causing a deadlock.

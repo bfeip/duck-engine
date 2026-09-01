@@ -131,7 +131,7 @@ impl ViewerState<'static> {
         dispatcher.push_back(sel_op.clone());
         dispatcher.push_back(Arc::new(Mutex::new(NavigationOperator::new())));
 
-        let mut tools = ToolManager::new(sel_op);
+        let mut tools = ToolManager::new(sel_op, notifications.clone());
         tools.install(dispatcher);
 
         // Behind the tool host so an active tool keeps any key it consumes.
@@ -247,9 +247,6 @@ impl<'a> ViewerState<'a> {
     }
 
     /// Feed an event straight to the viewer, bypassing viewport routing.
-    /// Feed an event straight to the viewer, bypassing viewport routing. Used
-    /// for relative mouse motion, which both platforms deliver outside the
-    /// normal routing path.
     fn viewer_handle_event(&mut self, event: &Event) {
         self.viewer.handle_event(event);
     }
@@ -307,8 +304,6 @@ impl<'a> ViewerState<'a> {
 
     /// Translate absolute cursor coordinates from window space into the 3D
     /// viewport's local pixel space (its top-left is the offscreen origin).
-    /// Only `CursorMoved` carries an absolute position; drags/clicks are
-    /// synthesized from it downstream, so translating it is sufficient.
     fn to_viewport_local(&self, event: Event) -> Event {
         use duck_engine_viewer::event::DeviceEvent as DE;
         match (event, self.viewport_rect) {
@@ -321,12 +316,13 @@ impl<'a> ViewerState<'a> {
         }
     }
 
-    /// Applies a deferred undo/redo request: cancels any in-progress tool
-    /// (deactivation tears down previews and restores hidden sources), clears
-    /// the selection — re-tessellation invalidates sub-geometry indices and
-    /// undo may remove selected nodes outright — then replays the step.
+    /// Applies a deferred undo/redo request: discards any in-progress tool
+    /// (deactivation tears down previews and restores hidden sources) rather
+    /// than committing it, so the step being undone is the one the user meant,
+    /// clears the selection — re-tessellation invalidates sub-geometry indices
+    /// and undo may remove selected nodes outright — then replays the step.
     fn apply_undo(&mut self, action: UndoAction) {
-        self.tools.activate(None);
+        self.tools.discard_active();
         self.viewer
             .view_mut(self.view_id)
             .expect("main view")
@@ -390,7 +386,7 @@ impl<'a> ViewerState<'a> {
         // A delete request aborts any in-progress tool (deactivate tears down
         // its preview and restores hidden sources) before the parts go away.
         if self.delete_op.lock().unwrap().take_pending() {
-            self.tools.activate(None);
+            self.tools.discard_active();
             let mut view = self.viewer.view_mut(self.view_id).expect("main view");
             let n = delete::delete_selected_parts(&self.document, view.selection_mut());
             if n > 0 {
@@ -407,7 +403,9 @@ impl<'a> ViewerState<'a> {
         // After egui so a panel-driven finish (e.g. boolean Apply) cedes back
         // to selection in the same frame.
         let scene = self.scene();
-        self.tools.update(&scene);
+        let mut view = self.viewer.view_mut(self.view_id).expect("main view");
+        self.tools.update(&scene, view.selection_mut());
+        drop(view);
 
         // UI actions run outside the frame closure: the file dialogs block.
         for action in ui_actions {

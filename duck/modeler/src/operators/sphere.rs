@@ -9,8 +9,10 @@ use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
     operator::Operator,
+    selection::SelectionManager,
 };
 use glam::dvec3;
+use log::error;
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
@@ -23,7 +25,8 @@ use super::ConstructionOptions;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SphereAction {
     Place,
-    Cancel,
+    /// End the operation: commit if the sphere is fully defined, else abort.
+    Finish,
 }
 
 enum Phase {
@@ -96,7 +99,7 @@ impl SphereOperator {
             )
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
-                SphereAction::Cancel,
+                SphereAction::Finish,
             );
         let preview = PreviewSession::new(Arc::clone(&document));
         Self {
@@ -178,12 +181,20 @@ impl SphereOperator {
 
     /// Commit the sphere and finish the tool. A failed build keeps the
     /// panel open so the radius can be corrected.
-    fn apply(&mut self) {
-        let Phase::Tweak(params) = self.phase else { return };
+    fn apply(&mut self) -> anyhow::Result<()> {
+        let Phase::Tweak(params) = self.phase else { return Ok(()) };
         let options = self.construction_options.borrow().geometry_options.clone();
-        if commit_tweak(&params, &mut self.preview, &self.document, &options) {
-            self.phase = Phase::Idle;
-            self.finished = true;
+        commit_tweak(&params, &mut self.preview, &self.document, &options)?;
+        self.phase = Phase::Idle;
+        self.finished = true;
+        Ok(())
+    }
+
+    /// Apply, logging a failure. For the gestures that keep the tool active and
+    /// so must report for themselves: the panel's Apply button, Enter, right-click.
+    fn apply_and_report(&mut self) {
+        if let Err(e) = self.apply() {
+            error!("Sphere failed: {e:#}");
         }
     }
 
@@ -238,6 +249,14 @@ impl ModelingTool for SphereOperator {
         self.cursor_target = None;
     }
 
+    /// A sphere waiting on the panel is fully defined, so leaving the tool commits it.
+    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
+        if matches!(self.phase, Phase::Tweak(_)) {
+            self.apply()?;
+        }
+        Ok(())
+    }
+
     fn is_finished(&self) -> bool {
         self.finished
     }
@@ -260,7 +279,7 @@ impl ModelingTool for SphereOperator {
         let transform = params.preview_transform();
         match action {
             TweakAction::Changed => self.preview.set_preview_transform(transform),
-            TweakAction::Apply => self.apply(),
+            TweakAction::Apply => self.apply_and_report(),
             TweakAction::Cancel => self.cancel(),
             TweakAction::None => {}
         }
@@ -285,13 +304,19 @@ impl Operator for SphereOperator {
                             Phase::Tweak(_) => true,
                             Phase::Idle => self.on_place_center(*position, ctx),
                         },
-                        SphereAction::Cancel => {
-                            let was_defining = !matches!(self.phase, Phase::Idle);
-                            if was_defining {
-                                self.cancel();
+                        // Right-click ends the operation: it commits a sphere the
+                        // panel already holds, and aborts one still being picked.
+                        SphereAction::Finish => match self.phase {
+                            Phase::Idle => false,
+                            Phase::Tweak(_) => {
+                                self.apply_and_report();
+                                true
                             }
-                            was_defining
-                        }
+                            _ => {
+                                self.cancel();
+                                true
+                            }
+                        },
                     };
                 }
                 handled
@@ -310,7 +335,7 @@ impl Operator for SphereOperator {
                 }
                 match key_event.logical_key {
                     Key::Named(NamedKey::Enter) => {
-                        self.apply();
+                        self.apply_and_report();
                         true
                     }
                     Key::Named(NamedKey::Escape) => {

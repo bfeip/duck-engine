@@ -18,6 +18,9 @@ use crate::tool::{ModelingTool, ToolInfo};
 use crate::ui::icons;
 use super::ConstructionOptions;
 
+/// A drag shorter than this is degenerate: there is nothing to commit.
+const MIN_LENGTH: f64 = 1e-6;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExtrudePhase {
     /// No valid sub-geometry chosen yet — waiting for a face/edge selection.
@@ -188,6 +191,16 @@ impl ModelingTool for ExtrudeOperator {
     fn selection_mode(&self) -> SelectionMode {
         // Extrude operates on a face (→ solid pad) or an edge (→ face).
         SelectionMode::SubGeometry(SelectionKinds::FACE | SelectionKinds::EDGE)
+    }
+
+    /// A dialled-in length is a finished extrusion, so leaving the tool commits it.
+    /// A zero length has no preview and is nothing to commit.
+    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
+        if self.phase == ExtrudePhase::Extruding && self.length.abs() > MIN_LENGTH {
+            self.apply()?;
+            selection.clear();
+        }
+        Ok(())
     }
 
     fn is_finished(&self) -> bool {

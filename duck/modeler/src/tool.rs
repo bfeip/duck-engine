@@ -28,9 +28,24 @@ pub trait ModelingTool: Operator {
     fn info(&self) -> ToolInfo;
 
     /// Clean up in-progress state (preview nodes, hidden geometry).
+    /// 
     /// Called automatically before any tool switch and on auto-return;
     /// must also reset any `is_finished()` latch.
     fn deactivate(&mut self);
+
+    /// Commit whatever fully defined result the tool is holding, as if Apply had
+    /// been pressed; a tool with nothing pending should do nothing.
+    /// 
+    /// Called before [`ModelingTool::deactivate`] when the user leaves the
+    /// tool by a gesture that isn't an explicit discard, so that switching
+    /// tools completes the operation instead of throwing it away.
+    ///
+    /// The error is reported for the tool by the caller — log or notify nothing
+    /// here. `deactivate` follows either way, so a failed commit is discarded.
+    /// 
+    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     /// Called when the tool becomes the active tool.
     fn activate(&mut self) {}
@@ -41,8 +56,9 @@ pub trait ModelingTool: Operator {
     }
 
     /// The world-space point this tool wants the modeler's 3D cursor to mark
-    /// (e.g. the current snap location), or `None` to hide it. Polled each frame
-    /// while the tool is active.
+    /// (e.g. the current snap location), or `None` to hide it.
+    /// 
+    ///  Polled each frame while the tool is active.
     fn cursor_target(&self) -> Option<Point3> {
         None
     }
@@ -58,9 +74,10 @@ pub trait ModelingTool: Operator {
         None
     }
 
-    /// Fill the body of the tool's options window. Called only when
-    /// `panel_title()` is `Some`; the `ui` module owns the window chrome.
-    /// The tool's mutex is held for the duration of this call — do not
+    /// Fill the body of the tool's options window.
+    /// 
+    /// Called only when `panel_title()` is `Some`; the `ui` module owns the window chrome.
+    /// The tool's mutex is typically held for the duration of this call — do not
     /// trigger anything that re-dispatches events back into the tool.
     fn panel_ui(&mut self, _ui: &mut egui::Ui, _panel: &mut PanelContext) {}
 }

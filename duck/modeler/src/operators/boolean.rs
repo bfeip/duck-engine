@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, NamedKey},
+    input::{ElementState, Key, MouseButton, NamedKey},
     operator::{Operator, SelectionMode},
     selection::{SelectionItem, SelectionManager},
 };
@@ -249,6 +249,17 @@ impl ModelingTool for BooleanOperator {
         self.phase = BooleanPhase::Configuring;
     }
 
+    /// A picked target (with or without tools) is a configured operation, so
+    /// leaving the tool runs it rather than dropping the configuration.
+    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
+        if self.preview_target.is_some() {
+            self.apply()?;
+            // The sources `execute_boolean` consumed must not stay selected.
+            selection.clear();
+        }
+        Ok(())
+    }
+
     fn is_finished(&self) -> bool {
         matches!(self.phase, BooleanPhase::Done | BooleanPhase::Cancelled)
     }
@@ -281,6 +292,14 @@ impl Operator for BooleanOperator {
                     self.refresh_preview(ctx.selection);
                 }
                 false
+            }
+            // Right-click finalizes a configured operation.
+            DeviceEvent::MouseClick { button: MouseButton::Right, .. } => {
+                if self.preview_target.is_none() {
+                    return false;
+                }
+                self.apply_and_clear(ctx.selection);
+                true
             }
             DeviceEvent::KeyboardInput { event: key_event, .. } => {
                 if key_event.state != ElementState::Pressed || key_event.repeat {

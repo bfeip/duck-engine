@@ -1,5 +1,7 @@
 //! The left tool palette: a Select button plus one button per registered tool.
 
+use duck_engine_viewer::selection::SelectionManager;
+
 use crate::tool_manager::{ToolId, ToolManager};
 use crate::ui::icons;
 
@@ -10,7 +12,12 @@ pub struct ToolPalette;
 impl ToolPalette {
     /// Render the palette. Tool clicks are applied after the panel closure
     /// returns so no tool lock is held while egui renders.
-    pub fn show(&mut self, ctx: &egui::Context, tools: &mut ToolManager) {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        tools: &mut ToolManager,
+        selection: &mut SelectionManager,
+    ) {
         let entries = tools.palette_entries();
         let active = tools.active_id();
 
@@ -58,7 +65,7 @@ impl ToolPalette {
             });
 
         if let Some(index) = clicked {
-            tools.activate(index);
+            tools.activate(index, selection);
         }
     }
 }
