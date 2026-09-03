@@ -63,7 +63,7 @@ pub fn execute_loft(
     let shape: Shape = Shell::loft(&wires).into();
     // Tessellates atomically — if this fails, nothing changes.
     doc.undo_scope("Loft")
-        .add_part("Loft".to_owned(), shape, options)
+        .add_numbered_part("Loft", shape, options)
         .context("Failed to tessellate loft")?;
     Ok(())
 }

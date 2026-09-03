@@ -28,6 +28,12 @@ pub enum Delta {
         after: Shape,
         options: CadTessellationOptions,
     },
+    /// A part was renamed. Undo restores `before`; redo applies `after`.
+    Renamed {
+        part: PartId,
+        before: String,
+        after: String,
+    },
 }
 
 /// Everything needed to remove or resurrect a part with stable ids.

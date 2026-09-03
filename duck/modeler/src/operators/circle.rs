@@ -144,7 +144,7 @@ impl CircleOperator {
         let committed = if let Some(shape) = shape {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
-            doc.add_part("Circle".to_owned(), shape, &coptions.geometry_options)
+            doc.add_numbered_part("Circle", shape, &coptions.geometry_options)
                 .is_ok()
         } else {
             warn!("Failed to build circle shape.");

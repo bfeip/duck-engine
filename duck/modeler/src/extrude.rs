@@ -132,12 +132,21 @@ pub fn execute_extrude(
         (raw.prism, !raw.source_is_solid)
     };
 
+    // A result that supersedes its source inherits its name; one that stands
+    // alongside an untouched source is a new part.
+    let inherited = remove_source
+        .then(|| doc.get_part(raw.source_part).map(|part| part.name.clone()))
+        .flatten();
+
     // One undo step covers the added extrusion and the superseded source.
     let mut doc = doc.undo_scope("Extrude");
 
     // Tessellates atomically — if this fails, nothing is changed.
-    doc.add_part("Extrusion".to_owned(), shape, options)
-        .context("Failed to tessellate extrusion")?;
+    match inherited {
+        Some(name) => doc.add_part(name, shape, options),
+        None => doc.add_numbered_part("Extrusion", shape, options),
+    }
+    .context("Failed to tessellate extrusion")?;
     if remove_source {
         doc.remove_part(raw.source_part);
     }
@@ -257,6 +266,8 @@ mod tests {
             .expect("face extrude succeeds");
 
         assert_eq!(doc.parts().count(), 1, "source box should be replaced by the pad");
+        let part = doc.parts().next().expect("one part remains");
+        assert_eq!(part.name, "part", "a result that supersedes its source keeps its name");
     }
 
     #[test]
@@ -299,5 +310,10 @@ mod tests {
             .expect("edge extrude succeeds");
         // Extruding an edge of a solid must not delete the solid.
         assert_eq!(doc.parts().count(), 2, "solid kept, extruded face added");
+        let names: Vec<_> = doc.parts().map(|p| p.name.as_str()).collect();
+        assert!(
+            names.contains(&"part") && names.contains(&"Extrusion-001"),
+            "the untouched source keeps its name and the new face is numbered, got {names:?}"
+        );
     }
 }

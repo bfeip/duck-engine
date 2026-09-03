@@ -103,6 +103,6 @@ pub(super) fn commit_tweak<P: TweakParams>(
     let _ = preview.commit();
 
     let mut doc = document.lock().unwrap();
-    doc.add_part(P::NAME.to_owned(), shape, options)?;
+    doc.add_numbered_part(P::NAME, shape, options)?;
     Ok(())
 }

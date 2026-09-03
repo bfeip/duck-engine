@@ -226,8 +226,8 @@ impl LineOperator {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
             if doc
-                .add_part(
-                    "Region".to_owned(),
+                .add_numbered_part(
+                    "Region",
                     shape,
                     &coptions.geometry_options,
                 )
@@ -256,8 +256,8 @@ impl LineOperator {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
             committed = doc
-                .add_part(
-                    "Line".to_owned(),
+                .add_numbered_part(
+                    "Line",
                     shape,
                     &coptions.geometry_options,
                 )

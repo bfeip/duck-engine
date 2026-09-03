@@ -114,11 +114,16 @@ pub fn execute_boolean(
 ) -> Result<()> {
     let computed = compute_boolean(kind, target, tools, doc)?;
 
+    // The result supersedes the target, so it inherits the target's name.
+    let name = doc
+        .get_part(computed.target_part_id)
+        .map_or_else(|| "Boolean result".to_owned(), |part| part.name.clone());
+
     // One undo step covers the added result and the removed inputs.
     let mut doc = doc.undo_scope("Boolean");
 
     // Tessellates atomically — if this fails, nothing is changed.
-    doc.add_part("Boolean result".to_owned(), computed.shape, options)
+    doc.add_part(name, computed.shape, options)
         .context("Failed to tessellate boolean result")?;
 
     // Tessellation succeeded — remove inputs.
@@ -325,6 +330,23 @@ mod tests {
 
         doc.redo().expect("redo succeeds");
         assert_eq!(doc.parts().count(), 1, "one redo replays the boolean");
-        assert_eq!(doc.parts().next().unwrap().name, "Boolean result");
+        assert_eq!(doc.parts().next().unwrap().name, "box");
+    }
+
+    #[test]
+    fn result_inherits_the_target_name() {
+        let (mut doc, box_node, sphere_node) = doc_with_box_and_sphere();
+
+        execute_boolean(
+            BooleanKind::Subtract,
+            box_node,
+            &[sphere_node],
+            &mut doc,
+            &CadTessellationOptions::default(),
+        )
+        .expect("subtract succeeds");
+
+        let names: Vec<_> = doc.parts().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["box"], "the result supersedes the target and keeps its name");
     }
 }

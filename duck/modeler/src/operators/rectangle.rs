@@ -194,7 +194,7 @@ impl RectangleOperator {
         let committed = {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
-            doc.add_part("Rectangle".to_owned(), world_shape, &coptions.geometry_options)
+            doc.add_numbered_part("Rectangle", world_shape, &coptions.geometry_options)
                 .is_ok()
         };
 

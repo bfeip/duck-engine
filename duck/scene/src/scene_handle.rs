@@ -216,6 +216,12 @@ impl Scene {
         self.lock().set_node_visibility(node_id, visibility);
     }
 
+    /// Sets a node's display name.
+    #[track_caller]
+    pub fn set_node_name(&self, node_id: NodeId, name: Option<String>) {
+        self.lock().set_node_name(node_id, name);
+    }
+
     /// Detaches a node's subtree; see [`SceneData::remove_node`].
     #[track_caller]
     pub fn remove_node(&self, node_id: NodeId) {

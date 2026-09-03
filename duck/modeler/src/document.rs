@@ -137,6 +137,64 @@ impl Document {
         Ok(id)
     }
 
+    /// [`add_part`](Self::add_part) under an auto-numbered name derived from `base`.
+    pub fn add_numbered_part(
+        &mut self,
+        base: &str,
+        shape: Shape,
+        options: &CadTessellationOptions,
+    ) -> Result<PartId> {
+        let name = self.numbered_name(base);
+        self.add_part(name, shape, options)
+    }
+
+    /// The next free numbered name for `base` — `Box-001`, `Box-002`, … — one
+    /// past the highest suffix currently in use.
+    ///
+    /// Derived from the live part names rather than a stored counter, so undo,
+    /// redo, import, and [`set_scene`](Self::set_scene) cannot desync it.
+    pub fn numbered_name(&self, base: &str) -> String {
+        let highest = self
+            .parts
+            .iter()
+            .filter_map(|part| {
+                part.name.strip_prefix(base)?.strip_prefix('-')?.parse::<u32>().ok()
+            })
+            .max();
+        format!("{base}-{:03}", highest.map_or(1, |n| n + 1))
+    }
+
+    /// Rename a part and its scene node, recorded as its own undo step.
+    ///
+    /// A blank, unchanged, or unknown-part rename is a no-op and records nothing.
+    pub fn rename_part(&mut self, id: PartId, name: impl Into<String>) {
+        let name = name.into();
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let Some(part) = self.get_part(id) else { return };
+        if part.name == name {
+            return;
+        }
+        let before = part.name.clone();
+        let after = name.to_owned();
+        self.set_part_name(id, &after);
+        self.history
+            .record(&format!("Rename {before}"), Delta::Renamed { part: id, before, after });
+    }
+
+    /// [`rename_part`](Self::rename_part) without validation or history
+    /// recording, shared with undo/redo replay.
+    fn set_part_name(&mut self, id: PartId, name: &str) {
+        if let Some(part) = self.get_part_mut(id) {
+            part.name = name.to_owned();
+        }
+        if let Some(node) = self.node_for_part(id) {
+            self.scene.set_node_name(node, Some(name.to_owned()));
+        }
+    }
+
     /// Remove a part from the CAD store, the mapping, and the scene tree.
     ///
     /// The recorded undo snapshot keeps the detached node chain alive until
@@ -300,6 +358,10 @@ impl Document {
                 Delta::Reshaped { part, before, options, .. } => {
                     self.reshape(*part, before, options)
                 }
+                Delta::Renamed { part, before, .. } => {
+                    self.set_part_name(*part, before);
+                    Ok(())
+                }
             };
             if result.is_ok() {
                 result = applied;
@@ -326,6 +388,10 @@ impl Document {
                 }
                 Delta::Reshaped { part, after, options, .. } => {
                     self.reshape(*part, after, options)
+                }
+                Delta::Renamed { part, after, .. } => {
+                    self.set_part_name(*part, after);
+                    Ok(())
                 }
             };
             if result.is_ok() {
@@ -383,6 +449,9 @@ impl Document {
         });
         self.part_to_node.insert(snapshot.part, node);
         self.node_to_part.insert(node, snapshot.part);
+        // The node may carry a name from before a rename that this resurrection
+        // predates; the snapshot is the authority.
+        self.scene.set_node_name(node, Some(snapshot.name.clone()));
         Ok(())
     }
 
@@ -736,6 +805,89 @@ mod tests {
         )
         .expect("sphere tessellates");
         assert!(doc.redo_label().is_none());
+    }
+
+    /// The node's display name, which must track the part's.
+    fn node_name(doc: &Document, part: PartId) -> Option<String> {
+        let node = doc.node_for_part(part)?;
+        let scene = doc.scene().lock();
+        scene.get_node(node)?.name.clone()
+    }
+
+    #[test]
+    fn numbered_names_count_up_and_fill_past_the_highest() {
+        let scene = Scene::default();
+        let mut doc = Document::new(scene);
+        let opts = CadTessellationOptions::default();
+
+        assert_eq!(doc.numbered_name("Box"), "Box-001");
+        doc.add_numbered_part("Box", opencascade::primitives::Shape::cube(2.0), &opts)
+            .expect("box tessellates");
+        assert_eq!(doc.numbered_name("Box"), "Box-002");
+
+        // A different base numbers independently.
+        assert_eq!(doc.numbered_name("Sphere"), "Sphere-001");
+
+        // Gaps are not filled: the next name is one past the highest in use.
+        doc.add_part("Box-007", opencascade::primitives::Shape::cube(2.0), &opts)
+            .expect("box tessellates");
+        assert_eq!(doc.numbered_name("Box"), "Box-008");
+    }
+
+    #[test]
+    fn rename_updates_the_part_and_its_node() {
+        let (mut doc, part, _) = doc_with_box();
+
+        doc.rename_part(part, "Bracket");
+
+        assert_eq!(doc.get_part(part).unwrap().name, "Bracket");
+        assert_eq!(node_name(&doc, part).as_deref(), Some("Bracket"));
+        assert_eq!(doc.undo_label(), Some("Rename box"));
+    }
+
+    #[test]
+    fn rename_undo_redo_round_trips_both_copies() {
+        let (mut doc, part, _) = doc_with_box();
+        doc.rename_part(part, "Bracket");
+
+        doc.undo().expect("undo rename");
+        assert_eq!(doc.get_part(part).unwrap().name, "box");
+        assert_eq!(node_name(&doc, part).as_deref(), Some("box"));
+
+        doc.redo().expect("redo rename");
+        assert_eq!(doc.get_part(part).unwrap().name, "Bracket");
+        assert_eq!(node_name(&doc, part).as_deref(), Some("Bracket"));
+    }
+
+    #[test]
+    fn rename_trims_and_ignores_blank_or_unchanged_names() {
+        let (mut doc, part, _) = doc_with_box();
+        let steps_before = doc.undo_label().map(str::to_owned);
+
+        doc.rename_part(part, "   ");
+        assert_eq!(doc.get_part(part).unwrap().name, "box");
+        assert_eq!(doc.undo_label().map(str::to_owned), steps_before, "blank records nothing");
+
+        doc.rename_part(part, "box");
+        assert_eq!(doc.undo_label().map(str::to_owned), steps_before, "unchanged records nothing");
+
+        doc.rename_part(part, "  Bracket  ");
+        assert_eq!(doc.get_part(part).unwrap().name, "Bracket", "surrounding space is trimmed");
+    }
+
+    #[test]
+    fn rename_survives_delete_and_undo() {
+        let (mut doc, part, _) = doc_with_box();
+        doc.rename_part(part, "Bracket");
+        doc.remove_part(part);
+
+        doc.undo().expect("undo delete");
+        assert_eq!(doc.get_part(part).unwrap().name, "Bracket", "resurrects under the new name");
+        assert_eq!(node_name(&doc, part).as_deref(), Some("Bracket"));
+
+        doc.undo().expect("undo rename");
+        assert_eq!(doc.get_part(part).unwrap().name, "box");
+        assert_eq!(node_name(&doc, part).as_deref(), Some("box"));
     }
 
     #[test]

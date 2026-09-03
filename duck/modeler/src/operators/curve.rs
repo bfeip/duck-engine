@@ -230,8 +230,8 @@ impl CurveOperator {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
             if doc
-                .add_part(
-                    "Region".to_owned(),
+                .add_numbered_part(
+                    "Region",
                     shape,
                     &coptions.geometry_options,
                 )
@@ -260,8 +260,8 @@ impl CurveOperator {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
             committed = doc
-                .add_part(
-                    "Curve".to_owned(),
+                .add_numbered_part(
+                    "Curve",
                     shape,
                     &coptions.geometry_options,
                 )
