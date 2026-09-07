@@ -44,6 +44,21 @@ pub fn max_camera_radius(model_radius: f32) -> f32 {
     model_radius * 100.0
 }
 
+/// Returns the smallest orthographic view half-height (closest zoom) for a given
+/// model radius.
+/// 
+/// Tighter than [`min_camera_radius`]: an orthographic zoom leaves
+/// the eye where it is, so it can magnify past the point a dolly would collide.
+pub fn min_ortho_half_height(model_radius: f32) -> f32 {
+    model_radius * 0.001
+}
+
+/// Returns the largest orthographic view half-height (farthest zoom) for a given
+/// model radius.
+pub fn max_ortho_half_height(model_radius: f32) -> f32 {
+    model_radius * 100.0
+}
+
 /// Returns the zoom factor for exponential zoom.
 /// Each scroll step moves this fraction of the current distance.
 pub fn zoom_factor() -> f32 {

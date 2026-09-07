@@ -1,6 +1,6 @@
 use std::path::Path;
 use duck_engine_common::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
-use duck_engine_scene::{PositionedCamera, SceneData};
+use duck_engine_scene::{PositionedCamera, Projection, SceneData};
 use duck_engine_scene::resource::{
     AlphaMode, FaceMaterial, FaceMaterialHandle, Instance, MaterialFlags, Mesh, MeshHandle,
     MeshPrimitive, NodeFlags, NodeId, PrimitiveType, Texture, TextureHandle, Vertex,
@@ -406,35 +406,22 @@ fn extract_camera_from_node(
                 target,
                 up,
                 aspect,
-                fovy,
-                znear,
-                zfar,
-                ortho: false,
+                projection: Projection::Perspective { fovy, znear, zfar },
             })
         }
         gltf::camera::Projection::Orthographic(ortho_cam) => {
-            // glTF orthographic uses xmag/ymag as half-extents.
-            // We derive an equivalent fovy from the distance and ymag:
-            //   ymag = distance * tan(fovy/2)  →  fovy = 2 * atan(ymag / distance)
-            let ymag = ortho_cam.ymag();
-            let znear = ortho_cam.znear();
-            let zfar = ortho_cam.zfar();
-            let distance = (eye - target).magnitude();
-            let fovy = if distance > 0.0 {
-                2.0 * (ymag / distance).atan().to_degrees()
-            } else {
-                45.0
-            };
-
+            // glTF orthographic uses ymag as the vertical half-extent, and
+            // znear/zfar as distances in front of the eye. Our slab straddles
+            // the eye instead, so it has to reach as far as the glTF far plane.
             Some(PositionedCamera {
                 eye,
                 target,
                 up,
                 aspect,
-                fovy,
-                znear,
-                zfar,
-                ortho: true,
+                projection: Projection::Orthographic {
+                    half_height: ortho_cam.ymag(),
+                    half_depth: ortho_cam.zfar(),
+                },
             })
         }
     }

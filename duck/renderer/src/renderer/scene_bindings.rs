@@ -18,15 +18,24 @@ pub(crate) struct CameraUniform {
     eye_position: [f32; 3],
     /// Padding for 16-byte alignment.
     _padding: u32,
+    /// Camera forward direction in world space. Under an orthographic
+    /// projection every ray is parallel to it, so shaders use it in place of
+    /// the direction to `eye_position`.
+    view_direction: [f32; 3],
+    /// Non-zero when the projection is orthographic.
+    is_ortho: u32,
 }
 
 impl CameraUniform {
     /// Creates a `CameraUniform` from a [`PositionedCamera`].
     pub fn from_positioned_camera(camera: &PositionedCamera) -> Self {
+        let forward = camera.forward();
         Self {
             view_proj: camera.build_view_projection_matrix().into(),
             eye_position: [camera.eye.x, camera.eye.y, camera.eye.z],
             _padding: 0,
+            view_direction: [forward.x, forward.y, forward.z],
+            is_ortho: camera.projection.is_ortho() as u32,
         }
     }
 
@@ -37,6 +46,8 @@ impl CameraUniform {
             view_proj: Matrix4::identity().into(),
             eye_position: [0.0, 0.0, 0.0],
             _padding: 0,
+            view_direction: [0.0, 0.0, -1.0],
+            is_ortho: 0,
         }
     }
 }

@@ -1,3 +1,4 @@
+use duck_engine_viewer::scene::Projection;
 use duck_engine_viewer::scene::resource::SubGeometryKind;
 use duck_engine_viewer::selection::SelectionItem;
 use duck_engine_viewer::ViewMut;
@@ -16,10 +17,12 @@ fn build_camera_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
     ui.heading("Camera");
 
     let camera = view.camera();
-    ui.label(format!(
-        "Projection: {}",
-        if camera.ortho { "Orthographic" } else { "Perspective" }
-    ));
+    ui.label(match camera.projection {
+        Projection::Perspective { fovy, .. } => format!("Projection: Perspective ({fovy:.1}°)"),
+        Projection::Orthographic { half_height, .. } => {
+            format!("Projection: Orthographic ({:.2} high)", half_height * 2.0)
+        }
+    });
     ui.label(format!(
         "Position: ({:.2}, {:.2}, {:.2})",
         camera.eye.x, camera.eye.y, camera.eye.z
@@ -28,8 +31,9 @@ fn build_camera_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
         "Target: ({:.2}, {:.2}, {:.2})",
         camera.target.x, camera.target.y, camera.target.z
     ));
-    ui.label(format!("Near: {:.4}", camera.znear));
-    ui.label(format!("Far: {:.4}", camera.zfar));
+    let (near, far) = camera.projection.depth_range();
+    ui.label(format!("Near: {near:.4}"));
+    ui.label(format!("Far: {far:.4}"));
 }
 
 fn build_operators_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {

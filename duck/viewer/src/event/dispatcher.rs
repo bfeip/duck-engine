@@ -668,6 +668,7 @@ fn touch_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::Projection;
     use crate::event::AppEvent;
     use crate::input::{ElementState, MouseButton};
     use crate::scene::{PositionedCamera, Scene, SceneData};
@@ -687,10 +688,7 @@ mod tests {
             target: (0.0, 0.0, 0.0).into(),
             up: Vector3::unit_y(),
             aspect: 800.0 / 600.0,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
         };
         (None, Scene::new(SceneData::new()), SelectionManager::new(), camera)
     }

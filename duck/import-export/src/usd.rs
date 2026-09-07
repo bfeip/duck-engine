@@ -15,7 +15,7 @@ use duck_engine_common::{
 
 use openusd::sdf::{self, AbstractData, Value};
 
-use duck_engine_scene::{Light, PositionedCamera, SceneData};
+use duck_engine_scene::{Light, PositionedCamera, Projection, SceneData};
 use duck_engine_scene::resource::{
     FaceMaterial, FaceMaterialHandle, Instance, Mesh, MeshHandle, MeshPrimitive, NodeFlags, NodeId,
     NodePayload, PrimitiveType, Vertex,
@@ -893,10 +893,7 @@ fn extract_camera(data: &mut dyn AbstractData, cam_path: &sdf::Path) -> Option<P
         target: Point3::new(position.x, position.y, position.z - 1.0),
         up: Vector3::new(0.0, 1.0, 0.0),
         aspect,
-        fovy,
-        znear,
-        zfar,
-        ortho: false,
+        projection: Projection::Perspective { fovy, znear, zfar },
     })
 }
 

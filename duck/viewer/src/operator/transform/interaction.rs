@@ -710,6 +710,7 @@ impl TransformInteraction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::Projection;
     use duck_engine_scene::common::Plane;
     use std::f32::consts::PI;
 
@@ -726,16 +727,17 @@ mod tests {
     const CENTER: (f32, f32) = (400.0, 400.0);
 
     fn camera_at(eye: (f32, f32, f32), ortho: bool) -> PositionedCamera {
-        PositionedCamera {
+        let mut camera = PositionedCamera {
             eye: eye.into(),
             target: Point3::new(0.0, 0.0, 0.0),
             up: Vector3::unit_y(),
             aspect: 1.0,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-            ortho,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
+        };
+        if ortho {
+            camera.make_orthographic();
         }
+        camera
     }
 
     /// An interaction mid-drag about the origin, anchored at `anchor`.

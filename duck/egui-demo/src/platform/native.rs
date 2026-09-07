@@ -7,6 +7,8 @@ use winit::dpi::LogicalSize;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::Window;
 
+use duck_engine_viewer::scene::Projection;
+
 use crate::{App, UserEvent, ViewerState, ui};
 
 pub(crate) fn run() {
@@ -18,6 +20,7 @@ pub(crate) fn run() {
         state: None,
         ui: ui::UiState::default(),
         workflow_index: 0,
+        last_perspective: Projection::Perspective { fovy: 45.0, znear: 0.001, zfar: 100.0 },
         pending_hdr_path: None,
         pending_scene_load_path: None,
     };

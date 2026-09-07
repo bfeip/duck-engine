@@ -31,7 +31,7 @@ use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, Transf
 use duck_engine_viewer::common::{
     Vector3, InnerSpace
 };
-use duck_engine_viewer::scene::{PositionedCamera, Scene};
+use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
 use crate::operators::{
     BooleanOperator, BoxOperator, CircleOperator, ConstructionOptions, CurveOperator,
@@ -196,10 +196,7 @@ impl ViewerState<'static> {
             target,
             up,
             aspect: size.0 as f32 / size.1 as f32,
-            fovy: 35.0,
-            znear: 1.0,
-            zfar: 5_000f32,
-            ortho: false
+            projection: Projection::Perspective { fovy: 35.0, znear: 1.0, zfar: 5_000f32 },
         };
 
         let coptions = self.construction_options.borrow();

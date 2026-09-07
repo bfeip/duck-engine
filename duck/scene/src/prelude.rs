@@ -8,5 +8,5 @@
 pub use crate::resource::*;
 pub use crate::{
     BoundingResult, EnvironmentMap, EnvironmentMapId, EnvironmentSource, Light, LightType,
-    MAX_LIGHTS, PositionedCamera, Scene, SceneData, SceneGuard, SceneProperties,
+    MAX_LIGHTS, PositionedCamera, Projection, Scene, SceneData, SceneGuard, SceneProperties,
 };

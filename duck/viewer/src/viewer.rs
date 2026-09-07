@@ -11,7 +11,7 @@ use crate::{
     compositor::Compositor,
     event::{DeviceEvent, Event, EventContext, EventDispatcher},
     input::{ElementState, TouchPhase},
-    scene::{PositionedCamera, common::RgbaColor},
+    scene::{PositionedCamera, Projection, common::RgbaColor},
     selection::SelectionManager,
     renderer::{
         Gpu, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery, RenderContext, Renderer,
@@ -295,16 +295,21 @@ impl Viewer {
             let mut view = self.view_mut(id).expect("view was just added");
             view.set_background_color(RgbaColor { r: 0.0, g: 0.0, b: 0.0, a: 0.0 });
             view.dispatcher_mut().push_back(operator);
-            view.set_camera(PositionedCamera {
+            let mut camera = PositionedCamera {
                 eye: (0.0, 0.0, config.camera_distance).into(),
                 target: (0.0, 0.0, 0.0).into(),
                 up: Vector3::unit_y(),
                 aspect: 1.0,
-                fovy: 45.0,
-                znear: 0.1,
-                zfar: config.camera_distance * 4.0,
-                ortho: config.ortho,
-            });
+                projection: Projection::Perspective {
+                    fovy: 45.0,
+                    znear: 0.1,
+                    zfar: config.camera_distance * 4.0,
+                },
+            };
+            if config.ortho {
+                camera.make_orthographic();
+            }
+            view.set_camera(camera);
         }
 
         self.axis_triads.push(AxisTriad { view: id, target, config, pending_snap: pending });
@@ -931,10 +936,7 @@ fn default_camera() -> PositionedCamera {
         target: (0.0, 0.0, 0.0).into(),
         up: Vector3::unit_y(),
         aspect: 16.0 / 9.0,
-        fovy: 45.0,
-        znear: 0.001,
-        zfar: 100.0,
-        ortho: false,
+        projection: Projection::Perspective { fovy: 45.0, znear: 0.001, zfar: 100.0 },
     }
 }
 

@@ -310,6 +310,7 @@ impl SnapEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duck_engine_viewer::scene::Projection;
 
     /// A camera looking down −Z from (0, 0, 10) at the origin, 800×600 viewport.
     fn test_camera() -> PositionedCamera {
@@ -318,10 +319,7 @@ mod tests {
             target: Point3::new(0.0, 0.0, 0.0),
             up: Vector3::new(0.0, 1.0, 0.0),
             aspect: 800.0 / 600.0,
-            fovy: 45.0,
-            znear: 0.01,
-            zfar: 1000.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 1000.0 },
         }
     }
 
@@ -448,10 +446,7 @@ mod tests {
             target: Point3::new(0.0, 0.0, 0.0),
             up: Vector3::new(0.0, 0.0, -1.0),
             aspect: 800.0 / 600.0,
-            fovy: 45.0,
-            znear: 0.01,
-            zfar: 1000.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 1000.0 },
         };
         let mut engine = SnapEngine::with_defaults();
         engine.settings.enabled = false;

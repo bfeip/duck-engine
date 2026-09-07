@@ -1,6 +1,6 @@
 use crate::render_core::{FrameFamily, FrameTargets, GenCache, Gpu};
 use crate::scene::resource::MeshId;
-use crate::scene::{SceneData, SceneProperties};
+use crate::scene::{Projection, SceneData, SceneProperties};
 
 use super::batching::{DrawBatch, DrawData};
 use super::mesh::MeshGpuResources;
@@ -56,6 +56,10 @@ pub struct SceneFrame<'a> {
     pub bindings: SceneBindingRefs<'a>,
     /// Derived from `bindings.ibl` — `has_ibl` is true iff `bindings.ibl` is `Some`.
     pub scene_props: SceneProperties,
+    /// This frame's camera projection. Screen-space passes that interpret the
+    /// depth buffer need it: depth is reciprocal under perspective and linear
+    /// under orthographic.
+    pub projection: Projection,
     /// This scene's uploaded per-material bind groups.
     pub(crate) materials: &'a MaterialCache,
     /// The shared material pipeline cache, for pipelines built on demand.

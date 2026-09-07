@@ -223,7 +223,7 @@ impl GeometrySnapQuery<'_> {
             return 0.0;
         };
         let forward = self.camera.forward();
-        let mut far_depth = self.camera.znear;
+        let mut far_depth = self.camera.projection.depth_range().0;
         for corner in bounds.transform(world_transform).corners() {
             far_depth = far_depth.max((corner - self.camera.eye).dot(forward));
         }
@@ -424,7 +424,7 @@ fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4, out: 
 mod tests {
     use super::*;
     use duck_engine_viewer::common::{Plane, Ray, Transform, Vector3};
-    use duck_engine_viewer::scene::PositionedCamera;
+    use duck_engine_viewer::scene::{PositionedCamera, Projection};
     use duck_engine_viewer::scene::resource::{
         Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SubMeshRange, Topology, Vertex,
     };
@@ -471,10 +471,7 @@ mod tests {
             target: Point3::origin(),
             up: Vector3::new(0.0, 0.0, -1.0),
             aspect: 4.0 / 3.0,
-            fovy: 45.0,
-            znear: 0.01,
-            zfar: 1000.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 1000.0 },
         }
     }
 

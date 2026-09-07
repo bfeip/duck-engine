@@ -470,6 +470,7 @@ impl<T: TransformTarget> Operator for TransformDriver<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::Projection;
     use crate::event::AppEvent;
     use crate::input::MouseButton;
     use super::super::interaction::{AxisConstraint, ConstraintSpace};
@@ -492,10 +493,7 @@ mod tests {
             target: (0.0, 0.0, 0.0).into(),
             up: Vector3::unit_y(),
             aspect: 800.0 / 600.0,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
         };
         (
             Some((400.0, 300.0)),

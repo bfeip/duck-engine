@@ -36,8 +36,7 @@ impl CameraTransition {
             || (a.up.x - current.up.x).abs() > EPSILON
             || (a.up.y - current.up.y).abs() > EPSILON
             || (a.up.z - current.up.z).abs() > EPSILON
-            || (a.fovy - current.fovy).abs() > EPSILON
-            || a.ortho != current.ortho
+            || !a.projection.approx_eq(&current.projection)
     }
 
     /// Advance by `dt` seconds and return the pose to write to the view.
@@ -67,6 +66,7 @@ fn smoothstep(t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::Projection;
     use crate::common::{Point3, Vector3};
 
     fn camera(eye: Point3) -> PositionedCamera {
@@ -75,10 +75,7 @@ mod tests {
             target: Point3::new(0.0, 0.0, 0.0),
             up: Vector3::unit_y(),
             aspect: 1.0,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
         }
     }
 

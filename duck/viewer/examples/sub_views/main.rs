@@ -130,7 +130,9 @@ impl<'a> App<'a> {
             camera.target = Point3::new(0.0, 0.0, 0.0);
             camera.eye = Point3::new(0.0, 0.0, 0.0) + direction * 10.0;
             camera.up = up;
-            camera.ortho = ortho;
+            if ortho {
+                camera.make_orthographic();
+            }
             if let Some(bounds) = &bounds {
                 camera.fit_to_bounds(bounds);
             }

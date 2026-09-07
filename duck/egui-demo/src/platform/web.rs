@@ -12,6 +12,8 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys};
 use winit::window::Window;
 
+use duck_engine_viewer::scene::Projection;
+
 use crate::{App, UserEvent, ViewerState, ui};
 
 pub(crate) fn run() {
@@ -25,6 +27,7 @@ pub(crate) fn run() {
         state: None,
         ui: ui::UiState::default(),
         workflow_index: 0,
+        last_perspective: Projection::Perspective { fovy: 45.0, znear: 0.001, zfar: 100.0 },
         proxy,
         pending_scene_bytes: Rc::new(RefCell::new(None)),
         pending_hdr_bytes: Rc::new(RefCell::new(None)),

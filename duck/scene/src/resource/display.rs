@@ -157,7 +157,10 @@ fn screen_size_scale(
     camera: &PositionedCamera,
     viewport: (u32, u32),
 ) -> f32 {
-    let depth = (p - camera.eye).dot(camera.forward()).max(camera.znear);
+    // Clamping to the near plane keeps perspective depths positive; orthographic
+    // ignores the depth entirely.
+    let near = camera.projection.depth_range().0;
+    let depth = (p - camera.eye).dot(camera.forward()).max(near);
     let depth_size = camera.world_size_per_pixel(depth, viewport.1);
     depth_size * target_px
 }
@@ -165,6 +168,7 @@ fn screen_size_scale(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Projection;
 
     const EPSILON: f32 = 1e-6;
 
@@ -174,10 +178,7 @@ mod tests {
             target: Point3::new(0.0, 0.0, 0.0),
             up: Vector3::new(0.0, 1.0, 0.0),
             aspect: 1.0,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
         }
     }
 

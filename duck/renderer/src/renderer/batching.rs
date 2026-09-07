@@ -718,6 +718,7 @@ mod tests {
         Deg, EuclideanSpace, InnerSpace, Matrix4, Quaternion, Rotation3, SquareMatrix, Vector3,
     };
     use duck_engine_scene::resource::NodeFlags;
+    use crate::scene::Projection;
     use crate::scene::common::EPSILON;
 
     fn nid() -> NodeId { NodeId::new() }
@@ -1109,10 +1110,7 @@ mod tests {
             target: Point3::new(0.0, 0.0, 0.0),
             up: duck_engine_common::Vector3::new(0.0, 1.0, 0.0),
             aspect: 1.0,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
         }
     }
 

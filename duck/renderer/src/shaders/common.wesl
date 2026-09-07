@@ -4,6 +4,11 @@
 struct CameraUniform {
     view_proj: mat4x4<f32>,
     eye_position: vec3<f32>,
+    _padding: u32,
+    // Camera forward in world space; the view vector for orthographic cameras,
+    // where eye_position does not define one.
+    view_direction: vec3<f32>,
+    is_ortho: u32,
 };
 
 // Light type constants

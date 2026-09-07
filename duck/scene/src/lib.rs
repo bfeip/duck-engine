@@ -136,7 +136,7 @@ mod environment;
 mod light;
 mod scene_handle;
 
-pub use camera::PositionedCamera;
+pub use camera::{PositionedCamera, Projection};
 pub use data::{BoundingResult, SceneData, SceneProperties};
 pub use environment::{EnvironmentMap, EnvironmentMapId, EnvironmentSource};
 pub use light::{Light, LightType, MAX_LIGHTS};

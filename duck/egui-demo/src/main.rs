@@ -27,7 +27,7 @@ use duck_engine_viewer::operator::{
     NavigationMode, NavigationOperator, SelectionOperator, TransformMode, TransformOperator,
 };
 use duck_engine_viewer::common::Transform;
-use duck_engine_viewer::scene::{Light, LightType, Scene};
+use duck_engine_viewer::scene::{Light, LightType, Projection, Scene};
 use duck_engine_viewer::scene::resource::{NodeFlags, NodePayload};
 use duck_engine_viewer::winit_support;
 use duck_engine_viewer::{AxisTriadConfig, OffscreenViewer, ViewId, ViewLayout, ViewMut, WindowSurface};
@@ -263,6 +263,9 @@ struct App<'a> {
     ui: ui::UiState,
     /// Index of the currently active workflow (cycled by the W debug key).
     workflow_index: usize,
+    /// The perspective projection to restore when the O debug key switches back
+    /// from orthographic.
+    last_perspective: Projection,
     /// Pending HDR environment path to load
     #[cfg(not(target_arch = "wasm32"))]
     pending_hdr_path: Option<PathBuf>,
@@ -482,10 +485,17 @@ impl<'a> App<'a> {
     }
 
     fn toggle_ortho(&mut self) {
-        if let Some(state) = self.state.as_mut() {
-            let mut view = state.view_mut();
-            let camera = view.camera_mut();
-            camera.ortho = !camera.ortho;
+        let Some(state) = self.state.as_mut() else { return };
+        let mut view = state.view_mut();
+        let camera = view.camera_mut();
+        if camera.projection.is_ortho() {
+            let Projection::Perspective { fovy, znear, zfar } = self.last_perspective else {
+                return;
+            };
+            camera.make_perspective(fovy, znear, zfar);
+        } else {
+            self.last_perspective = camera.projection;
+            camera.make_orthographic();
         }
     }
 

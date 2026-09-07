@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use duck_engine_viewer::common::{RgbaColor, Transform, Vector3};
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator};
 use duck_engine_viewer::scene::resource::{FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType};
-use duck_engine_viewer::scene::{PositionedCamera, Scene};
+use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 use duck_engine_viewer::{SurfacedViewer, ViewLayout};
 
 const CANVAS: &str = "#canvas";
@@ -104,10 +104,7 @@ fn main() {
         target: (0.0, 0.0, 0.0).into(),
         up: Vector3::unit_y(),
         aspect: WIDTH as f32 / HEIGHT as f32,
-        fovy: 45.0,
-        znear: 0.01,
-        zfar: 100.0,
-        ortho: false,
+        projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 100.0 },
     });
 
     duck_engine_viewer::emscripten_support::register_input(CANVAS);

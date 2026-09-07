@@ -112,9 +112,9 @@ impl TurntableState {
         camera.up = forward.cross(right).normalize();
     }
 
-    /// Handle zoom via mouse wheel by adjusting camera distance.
+    /// Handle zoom via mouse wheel.
     pub fn handle_zoom(&mut self, delta: f32, camera: &mut PositionedCamera, model_radius: f32) {
-        self.radius = super::zoom_radius(self.radius, delta, model_radius);
+        self.radius = super::zoom(camera, delta, model_radius);
         self.update_camera_position(camera);
     }
 

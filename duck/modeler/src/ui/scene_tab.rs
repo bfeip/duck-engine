@@ -2,15 +2,26 @@
 //! camera projection, construction plane, grid, and snapping.
 
 use duck_engine_viewer::common::{EuclideanSpace, InnerSpace, Plane, Point3, Vector3};
-use duck_engine_viewer::scene::PositionedCamera;
+use duck_engine_viewer::scene::{PositionedCamera, Projection};
 
 use crate::operators::ConstructionOptions;
 use crate::snap::SnapFlags;
 use crate::ui::UiAction;
 
 /// The scene tab, owning the state local to it.
-#[derive(Default)]
-pub struct SceneTab;
+pub struct SceneTab {
+    /// The perspective projection to restore when switching back from
+    /// orthographic, so the toggle is lossless.
+    last_perspective: Projection,
+}
+
+impl Default for SceneTab {
+    fn default() -> Self {
+        Self {
+            last_perspective: Projection::Perspective { fovy: 35.0, znear: 1.0, zfar: 5_000.0 },
+        }
+    }
+}
 
 impl SceneTab {
     pub fn show(
@@ -22,7 +33,7 @@ impl SceneTab {
     ) {
         egui::CollapsingHeader::new("Camera")
             .default_open(true)
-            .show(ui, |ui| camera_ui(ui, camera, actions));
+            .show(ui, |ui| camera_ui(ui, camera, &mut self.last_perspective, actions));
 
         egui::CollapsingHeader::new("Construction plane")
             .default_open(true)
@@ -56,30 +67,74 @@ impl SceneTab {
 
 /// Projection controls for the view's camera. Pose is left to the navigation
 /// operator.
-fn camera_ui(ui: &mut egui::Ui, camera: &mut PositionedCamera, actions: &mut Vec<UiAction>) {
+///
+/// The two projections carry different parameters, so the grid swaps rows with
+/// the mode: orthographic has no near plane to set, and its extent is a world
+/// size rather than an angle.
+fn camera_ui(
+    ui: &mut egui::Ui,
+    camera: &mut PositionedCamera,
+    last_perspective: &mut Projection,
+    actions: &mut Vec<UiAction>,
+) {
     let mut changed = false;
     egui::Grid::new("camera_settings").num_columns(2).show(ui, |ui| {
-        ui.label("Field of view");
-        changed |= ui
-            .add(egui::Slider::new(&mut camera.fovy, 10.0..=120.0).suffix("°"))
-            .changed();
-        ui.end_row();
+        match &mut camera.projection {
+            Projection::Perspective { fovy, znear, zfar } => {
+                ui.label("Field of view");
+                changed |=
+                    ui.add(egui::Slider::new(fovy, 10.0..=120.0).suffix("°")).changed();
+                ui.end_row();
 
-        let (znear, zfar) = (camera.znear, camera.zfar);
-        ui.label("Near clip");
-        changed |= ui
-            .add(egui::DragValue::new(&mut camera.znear).speed(0.1).range(0.001..=zfar - 0.001))
-            .changed();
-        ui.end_row();
+                let far = *zfar;
+                ui.label("Near clip");
+                changed |= ui
+                    .add(egui::DragValue::new(znear).speed(0.1).range(0.001..=far - 0.001))
+                    .changed();
+                ui.end_row();
 
-        ui.label("Far clip");
-        changed |= ui
-            .add(egui::DragValue::new(&mut camera.zfar).speed(10.0).range(znear + 0.001..=f32::MAX))
-            .changed();
-        ui.end_row();
+                let near = *znear;
+                ui.label("Far clip");
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(zfar).speed(10.0).range(near + 0.001..=f32::MAX),
+                    )
+                    .changed();
+                ui.end_row();
+            }
+            Projection::Orthographic { half_height, half_depth } => {
+                let mut height = *half_height * 2.0;
+                ui.label("View height");
+                if ui
+                    .add(egui::DragValue::new(&mut height).speed(1.0).range(1e-3..=f32::MAX))
+                    .changed()
+                {
+                    *half_height = height / 2.0;
+                    changed = true;
+                }
+                ui.end_row();
+
+                ui.label("Clip depth");
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(half_depth).speed(10.0).range(1e-3..=f32::MAX),
+                    )
+                    .changed();
+                ui.end_row();
+            }
+        }
 
         ui.label("Projection");
-        changed |= ui.checkbox(&mut camera.ortho, "Orthographic").changed();
+        let mut ortho = camera.projection.is_ortho();
+        if ui.checkbox(&mut ortho, "Orthographic").changed() {
+            if ortho {
+                *last_perspective = camera.projection;
+                camera.make_orthographic();
+            } else if let Projection::Perspective { fovy, znear, zfar } = *last_perspective {
+                camera.make_perspective(fovy, znear, zfar);
+            }
+            changed = true;
+        }
         ui.end_row();
     });
 

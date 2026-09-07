@@ -6,7 +6,7 @@
 //! Run with `cargo run --example shaded -p duck-engine-renderer`.
 
 use duck_engine_renderer::{Gpu, RenderContext, Renderer, SceneResources};
-use duck_engine_renderer::scene::{Light, PositionedCamera, SceneData};
+use duck_engine_renderer::scene::{Light, PositionedCamera, Projection, SceneData};
 use duck_engine_renderer::scene::resource::{
     FaceMaterial, Instance, Mesh, NodePayload, PrimitiveType,
 };
@@ -52,10 +52,7 @@ fn main() -> anyhow::Result<()> {
         target: Point3::new(0.0, 0.0, 0.0),
         up: Vector3::new(0.0, 1.0, 0.0),
         aspect: width as f32 / height as f32,
-        fovy: 45.0,
-        znear: 0.1,
-        zfar: 100.0,
-        ortho: false,
+        projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
     };
 
     // No `set_workflow` call: the renderer starts with the built-in ShadedWorkflow.

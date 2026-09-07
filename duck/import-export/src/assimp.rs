@@ -14,7 +14,7 @@ use russimp::material::{Material as RMaterial, TextureType};
 use russimp::node::Node as RNode;
 use russimp::scene::{PostProcess, Scene as RScene};
 
-use duck_engine_scene::{Light, PositionedCamera, SceneData};
+use duck_engine_scene::{Light, PositionedCamera, Projection, SceneData};
 use duck_engine_scene::resource::{
     FaceMaterial, FaceMaterialHandle, Instance, Mesh, MeshHandle, MeshPrimitive, NodeFlags, NodeId,
     NodePayload, PrimitiveType, Texture, TextureHandle, Vertex,
@@ -527,10 +527,7 @@ fn extract_camera(cameras: &[russimp::camera::Camera]) -> Option<PositionedCamer
         target,
         up,
         aspect,
-        fovy,
-        znear,
-        zfar,
-        ortho: false,
+        projection: Projection::Perspective { fovy, znear, zfar },
     })
 }
 

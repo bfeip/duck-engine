@@ -8,7 +8,9 @@
 struct SilhouetteUniform {
     edge_color: vec4<f32>,
     threshold: f32,
-    // WGSL aligns to 32 bytes; Rust repr(C) side carries _pad: [f32; 3]
+    // 1.0 for a perspective depth curve, 0.0 for a linear (orthographic) one.
+    perspective_depth: f32,
+    // WGSL aligns to 32 bytes; Rust repr(C) side carries _pad: [f32; 2]
 };
 
 @if(depth_multisampled)
@@ -40,10 +42,12 @@ fn fs_silhouette(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<
     let dx = abs(textureLoad(depth_texture, c + vec2(1, 0), 0) - textureLoad(depth_texture, c + vec2(-1, 0), 0));
     let dy = abs(textureLoad(depth_texture, c + vec2(0, 1), 0) - textureLoad(depth_texture, c + vec2(0, -1), 0));
 
-    // Normalize gradient by (1 - depth). Because 1-d ≈ near/z when far >> near,
-    // dividing removes the depth-range dependency: the result is proportional to
-    // the view-space angular depth change and works for any near/far ratio.
-    let scale = max(1.0 - d, 1e-6);
+    // Under perspective, normalize the gradient by (1 - depth): because
+    // 1-d ≈ near/z when far >> near, dividing removes the depth-range
+    // dependency, leaving a value proportional to the view-space angular depth
+    // change that works for any near/far ratio. Orthographic depth is already
+    // linear in view-space z, so its gradient needs no normalization.
+    let scale = max(mix(1.0, 1.0 - d, silhouette.perspective_depth), 1e-6);
     if max(dx, dy) / scale < silhouette.threshold { discard; }
 
     return silhouette.edge_color;

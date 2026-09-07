@@ -63,9 +63,9 @@ impl TrackballState {
         camera.up = rotation.rotate_vector(camera.up);
     }
 
-    /// Handle zoom via mouse wheel by adjusting camera distance.
+    /// Handle zoom via mouse wheel.
     pub fn handle_zoom(&mut self, delta: f32, camera: &mut PositionedCamera, model_radius: f32) {
-        self.radius = super::zoom_radius(camera.length(), delta, model_radius);
+        self.radius = super::zoom(camera, delta, model_radius);
         let dir = (camera.eye - camera.target).normalize();
         camera.eye = camera.target + dir * self.radius;
     }

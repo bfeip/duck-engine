@@ -9,7 +9,21 @@ use super::super::pass_context::{SceneFrame, SceneRenderPass};
 pub struct SilhouetteUniform {
     pub edge_color: [f32; 4],
     pub threshold: f32,
-    pub _pad: [f32; 3], // removable?
+    /// 1.0 for a perspective depth curve, 0.0 for a linear (orthographic) one.
+    /// Selects how the shader normalizes the depth gradient.
+    pub perspective_depth: f32,
+    pub _pad: [f32; 2],
+}
+
+impl Default for SilhouetteUniform {
+    fn default() -> Self {
+        Self {
+            edge_color: [0.0, 0.0, 0.0, 1.0],
+            threshold: 0.08,
+            perspective_depth: 1.0,
+            _pad: [0.0; 2],
+        }
+    }
 }
 
 /// Silhouette edge detection pass.
@@ -42,11 +56,7 @@ impl SilhouetteEdgesPass {
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Silhouette Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[SilhouetteUniform {
-                edge_color: [0.0, 0.0, 0.0, 1.0],
-                threshold: 0.08,
-                _pad: [0.0; 3],
-            }]),
+            contents: bytemuck::cast_slice(&[SilhouetteUniform::default()]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -150,11 +160,22 @@ impl SceneRenderPass for SilhouetteEdgesPass {
         targets: &FrameTargets,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        _frame: &mut SceneFrame<'_>,
+        frame: &mut SceneFrame<'_>,
     ) {
         if self.bind_group.is_none() {
             self.bind_group = Some(self.make_bind_group(&gpu.device, targets.depth_view()));
         }
+
+        // The depth curve changes with the projection, so the normalization the
+        // shader applies has to follow the camera.
+        gpu.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[SilhouetteUniform {
+                perspective_depth: if frame.projection.is_ortho() { 0.0 } else { 1.0 },
+                ..Default::default()
+            }]),
+        );
 
         let (color_view, resolve_target) = targets.color_views(view);
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

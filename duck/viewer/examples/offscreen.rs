@@ -6,7 +6,7 @@
 //! embedding the 3D view inside a UI panel.
 
 use duck_engine_viewer::common::{RgbaColor, Transform, Vector3};
-use duck_engine_viewer::scene::{PositionedCamera, Scene};
+use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 use duck_engine_viewer::scene::resource::{FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType};
 use duck_engine_viewer::{OffscreenViewer, ViewLayout};
 
@@ -51,10 +51,7 @@ fn main() -> anyhow::Result<()> {
         target: (0.0, 0.0, 0.0).into(),
         up: Vector3::unit_y(),
         aspect: WIDTH as f32 / HEIGHT as f32,
-        fovy: 45.0,
-        znear: 0.01,
-        zfar: 100.0,
-        ortho: false,
+        projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 100.0 },
     };
     let mut view = viewer.view_mut(view).unwrap();
     view.set_camera(camera.clone());

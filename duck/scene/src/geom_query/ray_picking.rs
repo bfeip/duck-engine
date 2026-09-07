@@ -306,6 +306,7 @@ fn sort_by_distance(mut results: Vec<RayPickResult>) -> Vec<RayPickResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Projection;
     use duck_engine_common::{InnerSpace, Vector3};
 
     use crate::common::Transform;
@@ -321,10 +322,7 @@ mod tests {
             target: Point3::new(0.0, 0.0, 0.0),
             up: Vector3::new(0.0, 1.0, 0.0),
             aspect: 1.0,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
         }
     }
 

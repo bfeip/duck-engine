@@ -2,7 +2,7 @@ use duck_engine_renderer::{
     FrameTargets, Gpu, RenderContext, RenderWorkflow, Renderer, SceneFrame, SceneFrames,
     SceneRenderPass, SceneResources, abi,
 };
-use duck_engine_renderer::scene::{Light, PositionedCamera, SceneData};
+use duck_engine_renderer::scene::{Light, PositionedCamera, Projection, SceneData};
 use duck_engine_renderer::scene::resource::{
     FaceMaterial, Instance, Mesh, NodePayload, PrimitiveType,
 };
@@ -137,10 +137,7 @@ fn main() -> anyhow::Result<()> {
         target: Point3::new(0.0, 0.0, 0.0),
         up: Vector3::new(0.0, 1.0, 0.0),
         aspect: width as f32 / height as f32,
-        fovy: 45.0,
-        znear: 0.1,
-        zfar: 100.0,
-        ortho: false,
+        projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
     };
 
     renderer.set_workflow(Box::new(GoochWorkflow::new(&ctx)));

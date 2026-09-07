@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bindings::{InputBinding, InputMap};
 use crate::{common, scene_scale};
-use crate::scene::PositionedCamera;
+use crate::scene::{PositionedCamera, Projection};
 use crate::scene::geom_query::{pick_all_from_ray, RayPickQuery};
 use crate::event::{AppEvent, DeviceEvent, Event, EventContext};
 use crate::input::{Key, Modifiers, MouseButton, MouseScrollDelta};
@@ -31,13 +31,40 @@ pub(super) fn pan(dx: f32, dy: f32, camera: &mut PositionedCamera, viewport: (u3
     }
 }
 
-pub(super) fn zoom_radius(radius: f32, delta: f32, model_radius: f32) -> f32 {
+/// The exponential scale factor for one zoom step of `delta`.
+fn zoom_scale(delta: f32) -> f32 {
     let zoom_factor = scene_scale::zoom_factor();
     let factor = if delta > 0.0 { 1.0 - zoom_factor } else { 1.0 + zoom_factor };
-    (radius * factor.powf(delta.abs())).clamp(
+    factor.powf(delta.abs())
+}
+
+pub(super) fn zoom_radius(radius: f32, delta: f32, model_radius: f32) -> f32 {
+    (radius * zoom_scale(delta)).clamp(
         scene_scale::min_camera_radius(model_radius),
         scene_scale::max_camera_radius(model_radius),
     )
+}
+
+/// Applies one zoom step and returns the orbit radius the caller should place
+/// the eye at.
+///
+/// Perspective zoom is a dolly, so the radius changes. Orthographic zoom scales
+/// the view extent in place and returns the radius unchanged: the eye must stay
+/// clear of the geometry, since an orthographic near plane cannot save it.
+pub(super) fn zoom(camera: &mut PositionedCamera, delta: f32, model_radius: f32) -> f32 {
+    match camera.projection {
+        Projection::Perspective { .. } => zoom_radius(camera.length(), delta, model_radius),
+        Projection::Orthographic { half_height, half_depth } => {
+            camera.projection = Projection::Orthographic {
+                half_height: (half_height * zoom_scale(delta)).clamp(
+                    scene_scale::min_ortho_half_height(model_radius),
+                    scene_scale::max_ortho_half_height(model_radius),
+                ),
+                half_depth,
+            };
+            camera.length()
+        }
+    }
 }
 
 /// The navigation interaction mode.
@@ -404,5 +431,64 @@ impl Operator for NavigationOperator {
 
     fn name(&self) -> &str {
         "Navigation"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::{Point3, Vector3};
+
+    const MODEL_RADIUS: f32 = 10.0;
+
+    fn camera(projection: Projection) -> PositionedCamera {
+        PositionedCamera {
+            eye: Point3::new(0.0, 0.0, 20.0),
+            target: Point3::new(0.0, 0.0, 0.0),
+            up: Vector3::unit_y(),
+            aspect: 1.0,
+            projection,
+        }
+    }
+
+    #[test]
+    fn perspective_zoom_dollies_the_eye() {
+        let mut cam = camera(Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 });
+        let radius = zoom(&mut cam, 1.0, MODEL_RADIUS);
+
+        assert!(radius < 20.0, "zooming in shortens the radius, got {radius}");
+        assert!((cam.length() - 20.0).abs() < 1e-6, "the caller places the eye, not `zoom`");
+    }
+
+    #[test]
+    fn ortho_zoom_scales_the_extent_and_leaves_the_eye_alone() {
+        let mut cam = camera(Projection::Orthographic { half_height: 8.0, half_depth: 100.0 });
+        let radius = zoom(&mut cam, 1.0, MODEL_RADIUS);
+
+        assert!((radius - 20.0).abs() < 1e-6, "the eye must not advance into the model");
+        let Projection::Orthographic { half_height, half_depth } = cam.projection else {
+            panic!("projection kind changed")
+        };
+        assert!(half_height < 8.0, "zooming in shrinks the extent, got {half_height}");
+        assert!((half_depth - 100.0).abs() < 1e-6, "the slab depth is not a zoom control");
+    }
+
+    #[test]
+    fn ortho_zoom_magnifies_past_the_perspective_dolly_limit() {
+        // Perspective zoom bottoms out at 1% of the model radius; orthographic
+        // has no eye to collide with, so it goes ten times further.
+        let mut cam = camera(Projection::Orthographic { half_height: 8.0, half_depth: 100.0 });
+        for _ in 0..500 {
+            zoom(&mut cam, 1.0, MODEL_RADIUS);
+        }
+
+        let Projection::Orthographic { half_height, .. } = cam.projection else {
+            panic!("projection kind changed")
+        };
+        assert!(
+            (half_height - scene_scale::min_ortho_half_height(MODEL_RADIUS)).abs() < 1e-9,
+            "should reach the ortho floor, got {half_height}"
+        );
+        assert!(half_height < scene_scale::min_camera_radius(MODEL_RADIUS));
     }
 }

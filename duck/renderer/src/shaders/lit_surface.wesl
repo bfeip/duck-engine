@@ -76,8 +76,12 @@ fn shade_lit(in: VertexOutput, front_facing: bool, base_color: vec4<f32>) -> vec
         }
     }
 
-    // View direction (from surface to camera)
-    let v = normalize(camera.eye_position - in.world_position);
+    // View direction (from surface to camera). Orthographic cameras have no
+    // eye convergence: every fragment is viewed down the same axis.
+    var v = normalize(camera.eye_position - in.world_position);
+    if (camera.is_ortho != 0u) {
+        v = -camera.view_direction;
+    }
 
     // Accumulate light contributions
     var lo = vec3<f32>(0.0);

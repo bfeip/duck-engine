@@ -286,6 +286,7 @@ pub(crate) fn aim_triad_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::Projection;
 
     const EPSILON: f32 = 1e-4;
 
@@ -295,10 +296,7 @@ mod tests {
             target: Point3::new(0.0, 0.0, 0.0),
             up,
             aspect: 1.0,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-            ortho: false,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
         }
     }
 

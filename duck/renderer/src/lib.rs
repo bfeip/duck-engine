@@ -90,7 +90,7 @@
 //!
 //! ```no_run
 //! use duck_engine_renderer::{Gpu, RenderContext, Renderer, SceneResources};
-//! use duck_engine_renderer::scene::{PositionedCamera, Scene, SceneData};
+//! use duck_engine_renderer::scene::{PositionedCamera, Projection, Scene, SceneData};
 //! use duck_engine_renderer::scene::common::{Point3, RgbaColor, Vector3};
 //! use duck_engine_renderer::scene::resource::{
 //!     FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType,
@@ -123,10 +123,7 @@
 //!     target: Point3::new(0.0, 0.0, 0.0),
 //!     up: Vector3::new(0.0, 1.0, 0.0),
 //!     aspect: 800.0 / 600.0,
-//!     fovy: 45.0,
-//!     znear: 0.1,
-//!     zfar: 100.0,
-//!     ortho: false,
+//!     projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
 //! };
 //!
 //! // Headless one-shot: locks the scene, prepares, renders, reads back.
