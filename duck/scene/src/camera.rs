@@ -387,9 +387,10 @@ impl PositionedCamera {
         crate::common::Ray::new(world_near, direction)
     }
 
-    /// Pose interpolated toward `other` at `t` in [0, 1]: the orientation
-    /// follows the shortest arc while the target, distance, and projection
-    /// parameters blend linearly, keeping the eye on an orbit arc rather than
+    /// Pose interpolated toward `other` at `t` in [0, 1].
+    /// 
+    /// The orientation follows the shortest arc while the target, distance, and
+    /// projection parameters blend linearly, keeping the eye on an orbit arc rather than
     /// a straight chord. `aspect` and a change of projection kind are not
     /// interpolable and switch from `self`'s values to `other`'s at `t >= 1`.
     pub fn interpolated(&self, other: &PositionedCamera, t: f32) -> PositionedCamera {
