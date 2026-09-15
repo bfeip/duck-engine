@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use duck_engine_scene::resource::NodeId;
 use duck_engine_scene::cad::{CadTessellationOptions, tessellate_into};
-use opencascade::primitives::{Shape, ShapeType};
+use opencascade::primitives::Shape;
 
-use crate::document::{unify_same_domain, Document, PartId};
+use crate::document::{unify_same_domain, unwrap_single_solid, Document, PartId};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum BooleanKind {
@@ -70,7 +70,7 @@ fn compute_boolean(
 
     // Unify last: the BOP splits periodic faces at their seam, leaving same-domain
     // halves that would otherwise be drawn and picked as separate geometry.
-    let shape = unify_same_domain(normalize_boolean_result(shape));
+    let shape = unify_same_domain(unwrap_single_solid(shape));
     Ok(BooleanResult { shape, target_part_id, tool_part_ids })
 }
 
@@ -89,20 +89,6 @@ fn interactive_fuzz<'a>(shapes: impl Iterator<Item = &'a Shape>) -> f64 {
         })
         .fold(0.0f64, f64::max);
     4.0 * f32::EPSILON as f64 * extent
-}
-
-/// A boolean result is wrapped in a TopoDS_COMPOUND even when it holds a
-/// single solid; unwrap that case so the part is a plain solid. Multi-solid
-/// or mixed compounds are legitimately multi-body and stay as-is.
-fn normalize_boolean_result(shape: Shape) -> Shape {
-    if shape.shape_type() != ShapeType::Compound {
-        return shape;
-    }
-    let mut children = shape.sub_shapes();
-    match (children.next(), children.next()) {
-        (Some(only), None) if only.shape_type() == ShapeType::Solid => only,
-        _ => shape,
-    }
 }
 
 pub fn execute_boolean(

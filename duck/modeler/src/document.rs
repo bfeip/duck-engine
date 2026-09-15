@@ -62,6 +62,19 @@ pub fn unify_same_domain(shape: Shape) -> Shape {
     cleaned
 }
 
+/// Unwraps compound shapes that contain a single solid, such as from the output
+/// of a 'fuse' operation,
+pub fn unwrap_single_solid(shape: Shape) -> Shape {
+    if shape.shape_type() != ShapeType::Compound {
+        return shape;
+    }
+    let mut children = shape.sub_shapes();
+    match (children.next(), children.next()) {
+        (Some(only), None) if only.shape_type() == ShapeType::Solid => only,
+        _ => shape,
+    }
+}
+
 pub struct CadPart {
     pub id: PartId,
     pub name: String,

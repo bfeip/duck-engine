@@ -3,9 +3,9 @@ use duck_engine_scene::cad::{tessellate_into, CadTessellationOptions};
 use duck_engine_scene::common::{InnerSpace, Point3, Vector3};
 use duck_engine_scene::resource::NodeId;
 use glam::DVec3;
-use opencascade::primitives::{FaceOrientation, Shape, ShapeType};
+use opencascade::primitives::{Shape, ShapeType};
 
-use crate::document::{unify_same_domain, Document, PartId};
+use crate::document::{unify_same_domain, unwrap_single_solid, Document, PartId};
 
 /// The sub-geometry being extruded, identified the way the selection system reports
 /// it: by tessellation order within a part's mesh.
@@ -49,13 +49,13 @@ impl ExtrudeFrame {
                 let face = doc
                     .face_subshape(node, face_index)
                     .context("Selected face is not part of a known CAD part")?;
-                // `normal_at_center` returns the surface's parametric normal, which points
-                // inward for Reversed faces — flip it so the pad grows outward.
-                let sign = if face.orientation() == FaceOrientation::Forward { 1.0 } else { -1.0 };
+                // `normal_at_center` goes through `BRepGProp_Face::Normal`, which already
+                // applies the face's orientation — the normal points out of the material
+                // for Reversed and Forward faces alike, so it needs no sign correction.
                 let n = face
                     .normal_at_center()
                     .context("Selected face has no well-defined extrusion direction")?;
-                let axis = Vector3::new(n.x as f32, n.y as f32, n.z as f32) * sign;
+                let axis = Vector3::new(n.x as f32, n.y as f32, n.z as f32);
                 Ok(Self { origin: dvec3_to_point(face.center_of_mass()), axis: axis.normalize() })
             }
             ExtrudeTarget::Edge { node, edge_index } => {
@@ -124,8 +124,9 @@ pub fn execute_extrude(
             .union(&raw.prism)
             .context("Failed to fuse pad into source")?
             .shape;
-        // The fuse can split a periodic face at its seam; merge the halves back.
-        (unify_same_domain(fused), true)
+        // The fuse wraps its result in a compound and can split a periodic face at
+        // its seam; unwrap a lone solid, then merge the halves back.
+        (unify_same_domain(unwrap_single_solid(fused)), true)
     } else {
         // Region→solid or edge→face: the raw geometry is the result. A bare sketch
         // region is superseded; a solid whose edge was extruded is kept alongside.
@@ -226,6 +227,8 @@ mod tests {
     use duck_engine_scene::Scene;
     use opencascade::primitives::{Face, Wire};
 
+    use crate::document::PartKind;
+
     const SKETCH_NORMAL: Vector3 = Vector3::new(0.0, 1.0, 0.0);
 
     fn doc_with_box() -> (Document, NodeId) {
@@ -285,8 +288,35 @@ mod tests {
         assert_eq!(part.shape.shape_type(), ShapeType::Solid, "extruded region must be a solid");
     }
 
+    /// A pad fused into its source body must come back as a plain solid — an OCCT
+    /// boolean always wraps its result in a compound — and must add material on
+    /// every face, including the Reversed ones.
     #[test]
-    fn box_face_frame_axis_is_unit_and_axis_aligned() {
+    fn box_face_extrude_produces_a_solid() {
+        for face_index in 0..6 {
+            let (mut doc, node) = doc_with_box();
+            let target = ExtrudeTarget::Face { node, face_index };
+            let frame = ExtrudeFrame::new(&doc, target, SKETCH_NORMAL).expect("face resolves");
+            execute_extrude(&mut doc, target, &frame, 1.0, &CadTessellationOptions::default())
+                .expect("face extrude succeeds");
+
+            let part = doc.parts().next().expect("one part remains");
+            assert_eq!(
+                part.shape.shape_type(),
+                ShapeType::Solid,
+                "a fused pad must be a solid, face {face_index}"
+            );
+            assert_eq!(part.kind(), PartKind::Solid);
+            assert!(
+                (part.shape.volume() - (8.0 + 4.0)).abs() < 1e-6,
+                "face {face_index}: expected a 2×2×2 box plus a 2×2×1 pad, got {}",
+                part.shape.volume()
+            );
+        }
+    }
+
+    #[test]
+    fn box_face_frame_axis_is_unit_and_points_outward() {
         let (doc, node) = doc_with_box();
         for face_index in 0..6 {
             let frame = ExtrudeFrame::new(&doc, ExtrudeTarget::Face { node, face_index }, SKETCH_NORMAL)
@@ -298,6 +328,13 @@ mod tests {
                 .filter(|c| (**c - 1.0).abs() < 1e-3)
                 .count();
             assert_eq!(aligned, 1, "box face normal should be axis-aligned");
+            // The box is centered on the origin, so its outward normals point away
+            // from it. A Reversed face whose normal was wrongly flipped would aim
+            // back into the body and pad nothing.
+            let outward = frame.axis.x * frame.origin.x
+                + frame.axis.y * frame.origin.y
+                + frame.axis.z * frame.origin.z;
+            assert!(outward > 0.0, "face {face_index} normal points into the body");
         }
     }
 
