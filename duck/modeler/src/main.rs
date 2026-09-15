@@ -2,6 +2,7 @@ mod boolean;
 mod cursor;
 mod delete;
 mod document;
+mod duplicate;
 mod extrude;
 mod grid;
 mod history;
@@ -35,8 +36,8 @@ use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
 use crate::operators::{
     BooleanOperator, BoxOperator, CircleOperator, ConstructionOptions, CurveOperator,
-    CylinderOperator, ExtrudeOperator, LineOperator, LoftOperator, RectangleOperator,
-    SphereOperator, TransformTool,
+    CylinderOperator, DuplicateTool, ExtrudeOperator, LineOperator, LoftOperator,
+    RectangleOperator, SphereOperator, TransformTool,
 };
 use crate::delete::DeleteOperator;
 use crate::notifications::Notifications;
@@ -146,6 +147,7 @@ impl ViewerState<'static> {
         tools.register(TransformTool::new(TransformMode::Translate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(TransformTool::new(TransformMode::Rotate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(TransformTool::new(TransformMode::Scale, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(DuplicateTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(SphereOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(BoxOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(CylinderOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));

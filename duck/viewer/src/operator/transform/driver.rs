@@ -112,9 +112,14 @@ impl<T: TransformTarget> TransformDriver<T> {
         self.interaction.is_active()
     }
 
-    /// The target this driver transforms.
+    /// A reference to the target this driver transforms.
     pub fn target(&self) -> &T {
         &self.target
+    }
+
+    /// A mutable reference to the target this driver transforms
+    pub fn target_mut(&mut self) -> &mut T {
+        &mut self.target
     }
 
     /// Show or hide the persistent gizmo handles. When enabled, the handles

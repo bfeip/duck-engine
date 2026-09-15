@@ -36,6 +36,7 @@ pub const CYLINDER: Icon = icon!("cylinder-svgrepo-com.svg");
 pub const BOOLEAN: Icon = icon!("boolean-and.svg");
 pub const EXTRUDE: Icon = icon!("expand-up-svgrepo-com.svg");
 pub const LOFT: Icon = icon!("loft.svg");
+pub const DUPLICATE: Icon = icon!("duplicate.svg");
 
 pub const KIND_SOLID: Icon = icon!("kind-solid.svg");
 pub const KIND_FACE: Icon = icon!("kind-face.svg");

@@ -72,6 +72,12 @@ pub struct CadPart {
 }
 
 impl CadPart {
+    /// Tessellation options the part was last built with. Imported parts carry
+    /// their own colors here, so a copy made with these keeps its appearance.
+    pub fn options(&self) -> &CadTessellationOptions {
+        &self.options
+    }
+
     /// Classify the part by its top-level B-Rep shape type.
     pub fn kind(&self) -> PartKind {
         match self.shape.shape_type() {
@@ -83,6 +89,16 @@ impl CadPart {
             ShapeType::Compound => PartKind::Compound,
             ShapeType::Shape => PartKind::Other,
         }
+    }
+}
+
+/// The series a part name belongs to, i.e. the name with any
+/// [`numbered_name`](Document::numbered_name) suffix removed: `Box-003` → `Box`,
+/// `Bracket` → `Bracket`, `Part-A` → `Part-A`.
+fn numbering_base(name: &str) -> &str {
+    match name.rsplit_once('-') {
+        Some((base, suffix)) if !base.is_empty() && suffix.parse::<u32>().is_ok() => base,
+        _ => name,
     }
 }
 
@@ -162,6 +178,18 @@ impl Document {
             })
             .max();
         format!("{base}-{:03}", highest.map_or(1, |n| n + 1))
+    }
+
+    /// The next free numbered name in `source`'s series — `Box-003` yields
+    /// `Box-004`, an unnumbered `Bracket` yields `Bracket-001`.
+    ///
+    /// Falls back to `Copy` for an unknown part.
+    pub fn duplicate_name(&self, source: PartId) -> String {
+        let base = match self.get_part(source) {
+            Some(part) => numbering_base(&part.name),
+            None => "Copy",
+        };
+        self.numbered_name(base)
     }
 
     /// Rename a part and its scene node, recorded as its own undo step.
@@ -832,6 +860,25 @@ mod tests {
         doc.add_part("Box-007", opencascade::primitives::Shape::cube(2.0), &opts)
             .expect("box tessellates");
         assert_eq!(doc.numbered_name("Box"), "Box-008");
+    }
+
+    #[test]
+    fn duplicate_names_continue_the_source_series() {
+        let scene = Scene::default();
+        let mut doc = Document::new(scene);
+        let opts = CadTessellationOptions::default();
+        let cube = || opencascade::primitives::Shape::cube(2.0);
+
+        let numbered = doc.add_part("Box-001", cube(), &opts).expect("tessellates");
+        assert_eq!(doc.duplicate_name(numbered), "Box-002");
+
+        // An unnumbered name starts its own series rather than becoming Bracket-Bracket.
+        let plain = doc.add_part("Bracket", cube(), &opts).expect("tessellates");
+        assert_eq!(doc.duplicate_name(plain), "Bracket-001");
+
+        // A non-numeric suffix is part of the name, not a counter.
+        let lettered = doc.add_part("Part-A", cube(), &opts).expect("tessellates");
+        assert_eq!(doc.duplicate_name(lettered), "Part-A-001");
     }
 
     #[test]
