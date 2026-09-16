@@ -55,10 +55,11 @@ impl ConstructionOptions {
             tessellation_tolerance: 0.1,
             scale_factor: 1.0,
             face_material: FaceMaterial::new()
-                .with_base_color_factor(RgbaColor { r: 0.55, g: 0.65, b: 0.9, a: 1.0 })
+                .with_base_color_factor(RgbaColor { r: 0.34, g: 0.40, b: 0.52, a: 1.0 })
+                .with_roughness_factor(0.32)
                 // Double sided for now since regions are created with arbitrary orientation
                 .with_flags(MaterialFlags::DOUBLE_SIDED),
-            line_material: LineMaterial::new(RgbaColor { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+            line_material: LineMaterial::new(RgbaColor { r: 0.02, g: 0.025, b: 0.035, a: 1.0 }),
             // Sketch appearance for geometry that bounds no volume: free edges,
             // wires, and lone faces.
             free_face_material: Some(

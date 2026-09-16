@@ -30,7 +30,7 @@ use duck_engine_viewer::event::Event;
 use duck_engine_viewer::input::ElementState;
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode};
 use duck_engine_viewer::common::{
-    Vector3, InnerSpace
+    InnerSpace, RgbaColor, Vector3
 };
 use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
@@ -47,6 +47,9 @@ use crate::tool_manager::ToolManager;
 use crate::ui::{ModelerUi, UiAction};
 
 use document::Document;
+
+/// Viewport clear color. A cool dark grey.
+const VIEWPORT_BACKGROUND: RgbaColor = RgbaColor { r: 0.035, g: 0.040, b: 0.047, a: 1.0 };
 
 /// Owns all rendering state: egui context + GPU renderer, the window surface
 /// egui presents to, and the [`OffscreenViewer`] that renders the 3D scene into
@@ -127,6 +130,7 @@ impl ViewerState<'static> {
         let notifications = Notifications::default();
 
         let mut view = viewer.view_mut(view_id).expect("main view");
+        view.set_background_color(VIEWPORT_BACKGROUND);
         let dispatcher = view.dispatcher_mut();
         let sel_op = Arc::new(Mutex::new(SelectionOperator::new()));
         dispatcher.push_back(sel_op.clone());
