@@ -17,6 +17,9 @@ pub fn show(ui: &mut egui::Ui, view: &mut ViewMut<'_>, actions: &mut UiActions) 
         if ui.button("Spot").clicked() {
             actions.add_light = Some(LightType::Spot);
         }
+        if ui.button("Hemi").clicked() {
+            actions.add_light = Some(LightType::Hemisphere);
+        }
     });
 
     let scene_arc = view.scene();
@@ -65,10 +68,11 @@ fn build_light_editor(
     let mut delete_requested = false;
     let mut modified = false;
 
-    let light_type_name = match light {
-        Light::Point { .. } => "Point",
-        Light::Directional { .. } => "Directional",
-        Light::Spot { .. } => "Spot",
+    let light_type_name = match light.light_type() {
+        LightType::Point => "Point",
+        LightType::Directional => "Directional",
+        LightType::Spot => "Spot",
+        LightType::Hemisphere => "Hemisphere",
     };
 
     let header_id = ui.make_persistent_id(format!("light_{}_{}", index, node_id));
@@ -105,6 +109,13 @@ fn build_light_editor(
                     modified |= build_intensity_edit(ui, intensity);
                     modified |= build_range_edit(ui, range);
                     modified |= build_cone_angles_edit(ui, inner_cone_angle, outer_cone_angle);
+                }
+                Light::Hemisphere { sky_color, ground_color, intensity } => {
+                    ui.label("Sky");
+                    modified |= build_color_edit(ui, sky_color);
+                    ui.label("Ground");
+                    modified |= build_color_edit(ui, ground_color);
+                    modified |= build_intensity_edit(ui, intensity);
                 }
             }
         });

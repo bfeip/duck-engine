@@ -4,13 +4,14 @@
 
 import package::common::{
     VertexOutput, LightUniform,
-    LIGHT_TYPE_POINT, LIGHT_TYPE_DIRECTIONAL, LIGHT_TYPE_SPOT, MAX_LIGHTS
+    LIGHT_TYPE_POINT, LIGHT_TYPE_DIRECTIONAL, LIGHT_TYPE_SPOT, LIGHT_TYPE_HEMISPHERE,
+    MAX_LIGHTS
 };
 import package::camera::camera;
 import package::lighting::{lights, calculate_attenuation, calculate_spot_cone_falloff};
 import package::material::get_metallic_roughness;
 import package::normal_mapping::get_normal;
-import package::pbr::calculate_pbr_direct_light;
+import package::pbr::{calculate_pbr_direct_light, calculate_hemisphere_ambient};
 
 // Conditionally import IBL or constant ambient
 @if(has_ibl)
@@ -91,6 +92,13 @@ fn shade_lit(in: VertexOutput, front_facing: bool, base_color: vec4<f32>) -> vec
         var light_dir: vec3<f32>;
         var radiance: vec3<f32>;
 
+        // Hemisphere lights are ambient, not punctual: they contribute through
+        // their own gradient term rather than the direct BRDF.
+        if (light.light_type == LIGHT_TYPE_HEMISPHERE) {
+            lo += calculate_hemisphere_ambient(light, v, n, albedo, metallic, roughness);
+            continue;
+        }
+
         if (light.light_type == LIGHT_TYPE_POINT) {
             let params = get_point_light_params(light, in.world_position);
             light_dir = params[0];
@@ -129,11 +137,9 @@ fn shade_lit(in: VertexOutput, front_facing: bool, base_color: vec4<f32>) -> vec
 
     let color = ambient + lo;
 
-    // HDR tonemapping (simple Reinhard)
+    // HDR tonemapping (simple Reinhard). The result stays linear: the color
+    // target is an sRGB format, so the hardware performs the transfer encode.
     let mapped = color / (color + vec3<f32>(1.0));
 
-    // Gamma correction
-    let gamma_corrected = pow(mapped, vec3<f32>(1.0 / 2.2));
-
-    return vec4<f32>(gamma_corrected, alpha);
+    return vec4<f32>(mapped, alpha);
 }

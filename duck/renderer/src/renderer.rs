@@ -48,6 +48,15 @@ use mesh::MeshGpuResources;
 use pipeline::MaterialPipelineCache;
 use scene_bindings::{CameraBinding, LightsBinding};
 
+/// The color format scene passes render at, given a final presentation format.
+///
+/// Scene shaders write linear color and rely on the target to apply the sRGB
+/// transfer encode, so the scene target is always the sRGB variant. Formats with
+/// no sRGB variant are returned unchanged.
+pub fn scene_color_format(format: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    format.add_srgb_suffix()
+}
+
 /// Device-scoped render state: the GPU handles, the target configuration, and
 /// the caches that depend only on those — bind group layouts, material
 /// pipelines, and the WESL shader generator.
@@ -74,7 +83,8 @@ impl RenderContext {
     ///
     /// `format` and `sample_count` are baked into every pipeline built here, so
     /// all renderers over this context render at that configuration;
-    /// [`Renderer::preferred_sample_count`] probes a suitable count.
+    /// [`Renderer::preferred_sample_count`] probes a suitable count. `format` is
+    /// promoted to its sRGB variant by [`scene_color_format`].
     /// `has_compute` reports compute shader availability, as returned by
     /// [`Gpu`](crate::render_core::Gpu) acquisition; without it, environment
     /// map processing is skipped.
@@ -84,6 +94,7 @@ impl RenderContext {
         sample_count: u32,
         has_compute: bool,
     ) -> Self {
+        let format = scene_color_format(format);
         let layouts = BindGroupLayouts::new(&gpu.device);
         let pipelines =
             MaterialPipelineCache::new(&layouts, ShaderGenerator::new(), sample_count, format);
@@ -243,7 +254,7 @@ impl Renderer {
         if !downlevel.contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING) {
             return 1;
         }
-        let formats = [surface_format, GpuTexture::DEPTH_FORMAT]
+        let formats = [scene_color_format(surface_format), GpuTexture::DEPTH_FORMAT]
             .into_iter()
             .chain(MaskChannels::ALL.into_iter().map(MaskChannels::format));
         highest_supported_sample_count(adapter, formats)
@@ -482,5 +493,30 @@ impl Renderer {
         self.host.render(encoder, view, &mut frame);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::TextureFormat;
+
+    #[test]
+    fn scene_color_format_promotes_to_srgb() {
+        assert_eq!(scene_color_format(TextureFormat::Rgba8Unorm), TextureFormat::Rgba8UnormSrgb);
+        assert_eq!(scene_color_format(TextureFormat::Bgra8Unorm), TextureFormat::Bgra8UnormSrgb);
+    }
+
+    #[test]
+    fn scene_color_format_is_idempotent() {
+        assert_eq!(
+            scene_color_format(TextureFormat::Rgba8UnormSrgb),
+            TextureFormat::Rgba8UnormSrgb
+        );
+    }
+
+    #[test]
+    fn scene_color_format_passes_through_formats_without_an_srgb_variant() {
+        assert_eq!(scene_color_format(TextureFormat::Rgba16Float), TextureFormat::Rgba16Float);
     }
 }

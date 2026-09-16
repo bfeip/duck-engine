@@ -154,24 +154,64 @@ pub struct CameraLight {
     pub transform: Transform,
 }
 
-/// The default headlight rig: a white key + fill directional pair. The key
-/// light comes from the camera's upper-left corner; the fill from the
-/// lower-right corner.
+impl CameraLight {
+    /// A directional light aimed by `rotation` from the camera's pose.
+    pub fn directional(color: RgbaColor, intensity: f32, rotation: Quaternion) -> Self {
+        Self {
+            light: Light::directional(color, intensity),
+            transform: Transform { rotation, ..Transform::IDENTITY },
+        }
+    }
+
+    /// A hemisphere light whose sky axis is oriented by `rotation` from the
+    /// camera's pose.
+    pub fn hemisphere(
+        sky_color: RgbaColor,
+        ground_color: RgbaColor,
+        intensity: f32,
+        rotation: Quaternion,
+    ) -> Self {
+        Self {
+            light: Light::hemisphere(sky_color, ground_color, intensity),
+            transform: Transform { rotation, ..Transform::IDENTITY },
+        }
+    }
+}
+
+/// The default headlight rig: a three-point directional setup (warm key, cool
+/// fill, back rim) over a hemisphere ambient gradient.
+///
+/// Colors are linear. Intensities suit the Reinhard tonemap in the lit surface
+/// shader, which takes no 1/PI on incoming radiance.
 pub(crate) fn default_camera_lights() -> Vec<CameraLight> {
-    let white = RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-    // Upper-left: yaw +45° (toward right), then pitch -45° (downward).
-    let key_rotation = Quaternion::from_angle_x(Deg(-45.0)) * Quaternion::from_angle_y(Deg(45.0));
-    // Lower-right: yaw -45° (toward left), then pitch +45° (upward) — opposite corner.
-    let fill_rotation = Quaternion::from_angle_x(Deg(45.0)) * Quaternion::from_angle_y(Deg(-45.0));
+    // Rotations aim the light's -Z axis in camera space, where +X is right, +Y
+    // is up and -Z points away from the viewer.
     vec![
-        CameraLight {
-            light: Light::directional(white, 1.0),
-            transform: Transform { rotation: key_rotation, ..Transform::IDENTITY },
-        },
-        CameraLight {
-            light: Light::directional(white, 0.3),
-            transform: Transform { rotation: fill_rotation, ..Transform::IDENTITY },
-        },
+        // Key: from the upper left, in front of the subject.
+        CameraLight::directional(
+            RgbaColor { r: 1.0, g: 0.96, b: 0.90, a: 1.0 },
+            9.0,
+            Quaternion::from_angle_x(Deg(-40.0)) * Quaternion::from_angle_y(Deg(-30.0)),
+        ),
+        // Fill: cooler and dimmer, from the lower right.
+        CameraLight::directional(
+            RgbaColor { r: 0.72, g: 0.80, b: 1.0, a: 1.0 },
+            2.6,
+            Quaternion::from_angle_x(Deg(26.0)) * Quaternion::from_angle_y(Deg(37.0)),
+        ),
+        // Rim: from above and behind, separating the silhouette.
+        CameraLight::directional(
+            RgbaColor { r: 0.85, g: 0.90, b: 1.0, a: 1.0 },
+            5.0,
+            Quaternion::from_angle_x(Deg(36.0)) * Quaternion::from_angle_y(Deg(160.0)),
+        ),
+        // Ambient: sky axis near camera up, tilted toward the viewer.
+        CameraLight::hemisphere(
+            RgbaColor { r: 0.16, g: 0.19, b: 0.24, a: 1.0 },
+            RgbaColor { r: 0.045, g: 0.042, b: 0.040, a: 1.0 },
+            0.9,
+            Quaternion::from_angle_x(Deg(-70.0)),
+        ),
     ]
 }
 

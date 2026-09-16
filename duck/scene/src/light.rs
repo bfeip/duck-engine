@@ -14,6 +14,8 @@ pub enum LightType {
     Directional = 1,
     /// Spotlight (cone of light from a position in a direction).
     Spot = 2,
+    /// Hemisphere light (ambient gradient between a sky and a ground color).
+    Hemisphere = 3,
 }
 
 /// The photometric properties of a light source in the scene.
@@ -21,7 +23,7 @@ pub enum LightType {
 /// Position and direction are **not** stored here — they are derived from the node's
 /// world transform during rendering:
 /// - Position (Point, Spot): translation column of the world transform matrix.
-/// - Direction (Directional, Spot): negative Z-axis of the world rotation.
+/// - Direction (Directional, Spot, Hemisphere): negative Z-axis of the world rotation.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Light {
@@ -53,6 +55,18 @@ pub enum Light {
         inner_cone_angle: f32,
         /// Outer cone angle in radians (zero intensity).
         outer_cone_angle: f32,
+    },
+    /// Ambient light graded between a sky and a ground color along an axis.
+    ///
+    /// The direction is the axis pointing from sky toward ground, following the
+    /// same convention as `Directional`.
+    Hemisphere {
+        /// Color arriving along the sky axis.
+        sky_color: RgbaColor,
+        /// Color arriving along the ground axis.
+        ground_color: RgbaColor,
+        /// Intensity multiplier.
+        intensity: f32,
     },
 }
 
@@ -105,5 +119,20 @@ impl Light {
         outer_cone_angle: f32,
     ) -> Self {
         Self::Spot { color, intensity, range, inner_cone_angle, outer_cone_angle }
+    }
+
+    /// Creates a new hemisphere light.
+    pub fn hemisphere(sky_color: RgbaColor, ground_color: RgbaColor, intensity: f32) -> Self {
+        Self::Hemisphere { sky_color, ground_color, intensity }
+    }
+
+    /// The type identifier for this light.
+    pub fn light_type(&self) -> LightType {
+        match self {
+            Self::Point { .. } => LightType::Point,
+            Self::Directional { .. } => LightType::Directional,
+            Self::Spot { .. } => LightType::Spot,
+            Self::Hemisphere { .. } => LightType::Hemisphere,
+        }
     }
 }

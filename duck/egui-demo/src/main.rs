@@ -19,7 +19,7 @@ use winit::{
 #[cfg(target_arch = "wasm32")]
 use winit::event_loop::EventLoopProxy;
 
-use duck_engine_common::Point3;
+use duck_engine_common::{Deg, Point3, Quaternion, Rotation3};
 use duck_engine_viewer::event::Event;
 use duck_engine_viewer::common::RgbaColor;
 use duck_engine_viewer::input::{ElementState, Key};
@@ -431,6 +431,18 @@ impl<'a> App<'a> {
             LightType::Spot => (
                 Light::spot(white, 1.0, 30.0_f32.to_radians(), 45.0_f32.to_radians()),
                 Transform::from_position(Point3::new(0.0, 3.0, 0.0)),
+            ),
+            // Identity points -Z, so rotate the sky axis onto +Y.
+            LightType::Hemisphere => (
+                Light::hemisphere(
+                    RgbaColor { r: 0.16, g: 0.19, b: 0.24, a: 1.0 },
+                    RgbaColor { r: 0.045, g: 0.042, b: 0.040, a: 1.0 },
+                    1.0,
+                ),
+                Transform {
+                    rotation: Quaternion::from_angle_x(Deg(-90.0)),
+                    ..Transform::IDENTITY
+                },
             ),
         };
 

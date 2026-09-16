@@ -15,10 +15,11 @@ struct CameraUniform {
 const LIGHT_TYPE_POINT: u32 = 0u;
 const LIGHT_TYPE_DIRECTIONAL: u32 = 1u;
 const LIGHT_TYPE_SPOT: u32 = 2u;
+const LIGHT_TYPE_HEMISPHERE: u32 = 3u;
 
 const MAX_LIGHTS: u32 = 8u;
 
-// Single light uniform (64 bytes, matches Rust LightUniform)
+// Single light uniform (80 bytes, matches Rust LightUniform)
 struct LightUniform {
     light_type: u32,
     range: f32,
@@ -30,9 +31,12 @@ struct LightUniform {
     _padding1: f32,
     color: vec3<f32>,
     _padding2: f32,
+    // Ground color for LIGHT_TYPE_HEMISPHERE; unused by the other types.
+    secondary_color: vec3<f32>,
+    _padding3: f32,
 };
 
-// Lights array uniform (528 bytes, matches Rust LightsArrayUniform)
+// Lights array uniform (656 bytes, matches Rust LightsArrayUniform)
 // WGSL adds implicit padding after light_count to align the array to 16 bytes.
 // The Rust struct has explicit [u32; 3] padding to match this layout.
 struct LightsUniform {

@@ -53,7 +53,7 @@ impl CameraUniform {
 }
 
 /// GPU-compatible representation of a single light for shader uniforms
-/// (64 bytes, matching the WGSL `Light` struct).
+/// (80 bytes, matching the WGSL `Light` struct).
 ///
 /// Laid out for WGSL uniform buffer alignment: `vec3<f32>` requires 16-byte
 /// alignment, so scalar fields are grouped to pack around the vectors.
@@ -70,6 +70,9 @@ pub(crate) struct LightUniform {
     _padding1: f32,
     color: [f32; 3],
     _padding2: f32,
+    /// Second color channel; the ground color of a `Hemisphere`, unused otherwise.
+    secondary_color: [f32; 3],
+    _padding3: f32,
 }
 
 impl LightUniform {
@@ -86,6 +89,8 @@ impl LightUniform {
                 _padding1: 0.0,
                 color: [color.r, color.g, color.b],
                 _padding2: 0.0,
+                secondary_color: [0.0, 0.0, 0.0],
+                _padding3: 0.0,
             },
             Light::Directional { color, intensity } => LightUniform {
                 light_type: LightType::Directional as u32,
@@ -98,6 +103,8 @@ impl LightUniform {
                 _padding1: 0.0,
                 color: [color.r, color.g, color.b],
                 _padding2: 0.0,
+                secondary_color: [0.0, 0.0, 0.0],
+                _padding3: 0.0,
             },
             Light::Spot { color, intensity, range, inner_cone_angle, outer_cone_angle } => LightUniform {
                 light_type: LightType::Spot as u32,
@@ -110,6 +117,22 @@ impl LightUniform {
                 _padding1: 0.0,
                 color: [color.r, color.g, color.b],
                 _padding2: 0.0,
+                secondary_color: [0.0, 0.0, 0.0],
+                _padding3: 0.0,
+            },
+            Light::Hemisphere { sky_color, ground_color, intensity } => LightUniform {
+                light_type: LightType::Hemisphere as u32,
+                range: 0.0,
+                inner_cone_cos: 0.0,
+                outer_cone_cos: 0.0,
+                position: [0.0, 0.0, 0.0],
+                intensity: *intensity,
+                direction: resolved.direction,
+                _padding1: 0.0,
+                color: [sky_color.r, sky_color.g, sky_color.b],
+                _padding2: 0.0,
+                secondary_color: [ground_color.r, ground_color.g, ground_color.b],
+                _padding3: 0.0,
             },
         }
     }
@@ -247,6 +270,10 @@ mod tests {
         ResolvedLight { light: Light::spot(color, intensity, inner, outer), position, direction }
     }
 
+    fn hemisphere_resolved(direction: [f32; 3], sky: RgbaColor, ground: RgbaColor, intensity: f32) -> ResolvedLight {
+        ResolvedLight { light: Light::hemisphere(sky, ground, intensity), position: [0.0; 3], direction }
+    }
+
     #[test]
     fn test_light_uniform_from_point_light() {
         let color = RgbaColor { r: 0.5, g: 0.6, b: 0.7, a: 1.0 };
@@ -290,9 +317,24 @@ mod tests {
     }
 
     #[test]
+    fn test_light_uniform_from_hemisphere_light() {
+        let sky = RgbaColor { r: 0.2, g: 0.3, b: 0.4, a: 1.0 };
+        let ground = RgbaColor { r: 0.05, g: 0.04, b: 0.03, a: 1.0 };
+        let resolved = hemisphere_resolved([0.0, -1.0, 0.0], sky, ground, 1.25);
+        let uniform = LightUniform::from_resolved_light(&resolved);
+
+        assert_eq!(uniform.light_type, LightType::Hemisphere as u32);
+        assert!((uniform.direction[1] - (-1.0)).abs() < EPSILON);
+        assert!((uniform.intensity - 1.25).abs() < EPSILON);
+        assert!((uniform.color[2] - 0.4).abs() < EPSILON);
+        assert!((uniform.secondary_color[0] - 0.05).abs() < EPSILON);
+        assert!((uniform.secondary_color[2] - 0.03).abs() < EPSILON);
+    }
+
+    #[test]
     fn test_light_uniform_layout() {
-        assert_eq!(std::mem::size_of::<LightUniform>(), 64);
-        assert_eq!(std::mem::size_of::<LightsArrayUniform>(), 528);
+        assert_eq!(std::mem::size_of::<LightUniform>(), 80);
+        assert_eq!(std::mem::size_of::<LightsArrayUniform>(), 656);
     }
 
     #[test]

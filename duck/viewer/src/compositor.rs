@@ -2,6 +2,14 @@
 
 use crate::view::PixelRect;
 
+/// The composite fragment entry point for a final target of `format`.
+///
+/// View textures hold linear color. An sRGB target encodes on write; any other
+/// format needs the encode applied in the shader.
+fn composite_entry_point(format: wgpu::TextureFormat) -> &'static str {
+    if format.is_srgb() { "fs_main" } else { "fs_encode" }
+}
+
 /// Blits view textures onto the target in stack order with straight-alpha
 /// blending, so a view cleared to zero alpha overlays whatever is beneath it.
 pub(crate) struct Compositor {
@@ -56,7 +64,7 @@ impl Compositor {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(composite_entry_point(format)),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
@@ -140,5 +148,24 @@ impl Compositor {
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::TextureFormat;
+
+    #[test]
+    fn srgb_targets_let_the_hardware_encode() {
+        assert_eq!(composite_entry_point(TextureFormat::Rgba8UnormSrgb), "fs_main");
+        assert_eq!(composite_entry_point(TextureFormat::Bgra8UnormSrgb), "fs_main");
+    }
+
+    #[test]
+    fn non_srgb_targets_encode_in_the_shader() {
+        assert_eq!(composite_entry_point(TextureFormat::Rgba8Unorm), "fs_encode");
+        assert_eq!(composite_entry_point(TextureFormat::Bgra8Unorm), "fs_encode");
+        assert_eq!(composite_entry_point(TextureFormat::Rgba16Float), "fs_encode");
     }
 }

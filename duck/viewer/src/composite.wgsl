@@ -24,7 +24,25 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 @group(0) @binding(0) var view_texture: texture_2d<f32>;
 @group(0) @binding(1) var view_sampler: sampler;
 
+// View textures are sRGB, so sampling decodes to linear.
+
+// Used when the final target is an sRGB format and encodes on write.
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(view_texture, view_sampler, in.uv);
+}
+
+// sRGB transfer encode (piecewise, not pow(1/2.2)).
+fn gamma_from_linear_rgb(rgb: vec3<f32>) -> vec3<f32> {
+    let lower = rgb * 12.92;
+    let higher = 1.055 * pow(rgb, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(higher, lower, rgb < vec3<f32>(0.0031308));
+}
+
+// Used when the final target is not an sRGB format, so the encode must be
+// applied here. Alpha is straight and stays linear.
+@fragment
+fn fs_encode(in: VertexOutput) -> @location(0) vec4<f32> {
+    let linear = textureSample(view_texture, view_sampler, in.uv);
+    return vec4<f32>(gamma_from_linear_rgb(linear.rgb), linear.a);
 }

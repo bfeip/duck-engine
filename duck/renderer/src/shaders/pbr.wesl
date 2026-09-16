@@ -2,6 +2,7 @@
 // Physically Based Rendering BRDF functions (Cook-Torrance with GGX)
 
 import package::constants::PI;
+import package::common::LightUniform;
 
 // Fresnel-Schlick approximation
 fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
@@ -77,4 +78,46 @@ fn calculate_pbr_direct_light(
     let diffuse = k_d * albedo / PI;
 
     return (diffuse + specular) * light_color * n_dot_l;
+}
+
+// Analytic approximation of the split-sum environment BRDF (Lazarov), standing
+// in for the prefiltered BRDF LUT so ambient needs no environment bindings.
+fn env_brdf_approx(f0: vec3<f32>, roughness: f32, n_dot_v: f32) -> vec3<f32> {
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let r = roughness * c0 + c1;
+    let a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
+    let ab = vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+    return f0 * ab.x + ab.y;
+}
+
+// Ambient contribution of a hemisphere light: a sky-to-ground gradient sampled
+// along the surface normal for diffuse and the reflection vector for specular.
+// The gradient value is irradiance, so the diffuse term takes no 1/PI.
+fn calculate_hemisphere_ambient(
+    light: LightUniform,
+    view_dir: vec3<f32>,
+    normal: vec3<f32>,
+    albedo: vec3<f32>,
+    metallic: f32,
+    roughness: f32,
+) -> vec3<f32> {
+    // `direction` runs sky to ground, matching directional lights.
+    let up = -light.direction;
+    let sky = light.color;
+    let ground = light.secondary_color;
+
+    let n_dot_v = max(dot(normal, view_dir), 0.0);
+    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+
+    let diffuse_env = mix(ground, sky, dot(normal, up) * 0.5 + 0.5);
+    let k_d = (vec3<f32>(1.0) - fresnel_schlick_roughness(n_dot_v, f0, roughness))
+        * (1.0 - metallic);
+    let diffuse = k_d * albedo * diffuse_env;
+
+    let reflect_dir = reflect(-view_dir, normal);
+    let specular_env = mix(ground, sky, dot(reflect_dir, up) * 0.5 + 0.5);
+    let specular = specular_env * env_brdf_approx(f0, roughness, n_dot_v);
+
+    return (diffuse + specular) * light.intensity;
 }
