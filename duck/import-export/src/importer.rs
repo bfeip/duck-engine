@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+use duck_engine_scene::common::WorldUnits;
+
 use crate::{
     DetectedFormat, LoadError, LoadOptions, ProgressReporter, ProgressState, SceneLoadResult,
 };
@@ -126,6 +128,10 @@ impl Importer for GltfImporter {
         let camera = build_gltf_scene(&parsed, &mut scene, &mesh_map, options.aspect)
             .map_err(|e| LoadError::Gltf(e.to_string()))?;
 
+        // glTF defines its coordinates as meters; no file-level override exists.
+        let source_units = Some(WorldUnits::METER);
+        crate::apply_unit_policy(&mut scene, source_units, options.units);
+
         progress.update(ProgressState {
             description: "Complete".into(),
             progress: Some(1.0),
@@ -135,6 +141,7 @@ impl Importer for GltfImporter {
             scene,
             camera,
             format: DetectedFormat::Gltf,
+            source_units,
         })
     }
 }
@@ -166,7 +173,7 @@ impl Importer for UsdImporter {
         &self,
         bytes: &[u8],
         path_hint: Option<&Path>,
-        _options: &LoadOptions,
+        options: &LoadOptions,
         progress: &dyn ProgressReporter,
     ) -> Result<SceneLoadResult, LoadError> {
         progress.update(ProgressState {
@@ -182,6 +189,9 @@ impl Importer for UsdImporter {
         };
 
         let usd_result = result.map_err(|e| LoadError::Usd(e.to_string()))?;
+        let mut scene = usd_result.scene;
+        let source_units = Some(usd_result.units);
+        crate::apply_unit_policy(&mut scene, source_units, options.units);
 
         progress.update(ProgressState {
             description: "Complete".into(),
@@ -189,9 +199,10 @@ impl Importer for UsdImporter {
             stage: None,
         });
         Ok(SceneLoadResult {
-            scene: usd_result.scene,
+            scene,
             camera: usd_result.camera,
             format: DetectedFormat::Usd,
+            source_units,
         })
     }
 }
@@ -219,7 +230,7 @@ impl Importer for AssimpImporter {
         &self,
         bytes: &[u8],
         path_hint: Option<&Path>,
-        _options: &LoadOptions,
+        options: &LoadOptions,
         progress: &dyn ProgressReporter,
     ) -> Result<SceneLoadResult, LoadError> {
         progress.update(ProgressState {
@@ -235,6 +246,9 @@ impl Importer for AssimpImporter {
         };
 
         let assimp_result = result.map_err(|e| LoadError::Assimp(e.to_string()))?;
+        let mut scene = assimp_result.scene;
+        let source_units = assimp_result.units;
+        crate::apply_unit_policy(&mut scene, source_units, options.units);
 
         progress.update(ProgressState {
             description: "Complete".into(),
@@ -242,9 +256,10 @@ impl Importer for AssimpImporter {
             stage: None,
         });
         Ok(SceneLoadResult {
-            scene: assimp_result.scene,
+            scene,
             camera: assimp_result.camera,
             format: DetectedFormat::Assimp,
+            source_units,
         })
     }
 }
@@ -279,7 +294,7 @@ impl Importer for CadImporter {
         &self,
         bytes: &[u8],
         path_hint: Option<&Path>,
-        _options: &LoadOptions,
+        load_options: &LoadOptions,
         progress: &dyn ProgressReporter,
     ) -> Result<SceneLoadResult, LoadError> {
         let is_step = bytes.starts_with(b"ISO-10303-21")
@@ -296,7 +311,23 @@ impl Importer for CadImporter {
         });
 
         let mut scene = duck_engine_scene::SceneData::new();
-        let options = crate::cad::CadImportOptions::default();
+        let mut options = crate::cad::CadImportOptions::default();
+
+        // STEP and IGES carry a unit in their header, but reading it needs an
+        // OCCT binding we do not have yet; both formats are millimeters by
+        // overwhelming convention, so that is what we report.
+        let source_units = Some(WorldUnits::MILLIMETER);
+        // Tessellation scales vertices as it emits them, which converts units
+        // exactly without disturbing the B-Rep or the deflection tolerance
+        // (that stays in the file's own units).
+        let scene_units = match load_options.units {
+            crate::UnitPolicy::Preserve => WorldUnits::MILLIMETER,
+            crate::UnitPolicy::Normalize(target) => {
+                options.tessellation.scale_factor =
+                    WorldUnits::MILLIMETER.factor_to(target) as f32;
+                target
+            }
+        };
 
         let result = if let Some(path) = path_hint {
             if is_step {
@@ -314,6 +345,7 @@ impl Importer for CadImporter {
             }
         };
         result.map_err(|e| LoadError::Cad(e.to_string()))?; // CadImportResult is intentionally discarded here
+        scene.set_world_units(scene_units);
 
         progress.update(ProgressState {
             description: "Complete".into(),
@@ -331,6 +363,7 @@ impl Importer for CadImporter {
             scene,
             camera: None,
             format,
+            source_units,
         })
     }
 }

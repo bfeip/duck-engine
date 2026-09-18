@@ -9,6 +9,7 @@ mod plane;
 mod convex_polyhedron;
 mod transform;
 mod transform_ops;
+mod unit;
 
 // Re-export common types
 pub use ray::{Ray, SegmentApproach};
@@ -16,6 +17,7 @@ pub use aabb::Aabb;
 pub use plane::Plane;
 pub use convex_polyhedron::ConvexPolyhedron;
 pub use transform::Transform;
+pub use unit::{LengthDisplay, LengthUnit, WorldUnits};
 pub use transform_ops::{
     apply_scale, centroid, centroid_of_slice, compose_rotation, local_axes, local_axis_x,
     local_axis_y, local_axis_z, quaternion_from_axis_angle_safe, rotate_position_about_pivot,

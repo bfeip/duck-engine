@@ -364,7 +364,7 @@ pub fn save_cad_shapes<'a>(
         bail!("Unsupported CAD extension: {ext:?}");
     }
     let scaled: Vec<Shape> =
-        shapes.into_iter().map(|s| s.gtransform(uniform_scale(scale))).collect();
+        shapes.into_iter().map(|s| place_shape(s, uniform_scale(scale))).collect();
     let compound: Shape = Compound::from_shapes(&scaled).into();
     if is_step_extension(ext) {
         compound
@@ -414,7 +414,7 @@ fn collect_xcaf_parts(
             .into_iter()
             .flatten()
             .find(|n| !n.starts_with("=>"));
-        let shape = shape.gtransform(mat_mul(&uniform_scale(scale), &acc));
+        let shape = place_shape(&shape, mat_mul(&uniform_scale(scale), &acc));
         out.push(ImportedCadPart { name, shape, color });
     }
 }
@@ -430,6 +430,23 @@ fn mat_mul(a: &[[f64; 4]; 4], b: &[[f64; 4]; 4]) -> [[f64; 4]; 4] {
     c
 }
 
+/// Applies `mat` to `shape`, preserving analytic geometry where possible.
+///
+/// Assembly placements and unit scales are similarity transforms, which
+/// [`Shape::transformed`] handles while keeping planes planar and cylinders
+/// cylindrical. Only a genuinely affine matrix falls through to `gtransform`,
+/// which converts every surface and curve to B-splines and so degrades
+/// downstream modeling (extrude, face tweak, booleans, snapping).
+fn place_shape(shape: &Shape, mat: [[f64; 4]; 4]) -> Shape {
+    match shape.transformed(mat) {
+        Ok(placed) => placed,
+        Err(err) => {
+            log::warn!("Non-similarity CAD transform, falling back to B-spline conversion: {err}");
+            shape.gtransform(mat)
+        }
+    }
+}
+
 /// Row-major uniform scale matrix.
 fn uniform_scale(s: f64) -> [[f64; 4]; 4] {
     [
@@ -443,9 +460,15 @@ fn uniform_scale(s: f64) -> [[f64; 4]; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opencascade::primitives::EdgeType;
 
     /// Saving with one scale and loading with its inverse must round-trip
-    /// geometry at the original size.
+    /// geometry at the original size, and must not cost the shape its
+    /// analytic surfaces on the way.
+    ///
+    /// Both properties are asserted from a single save/load because OCCT's
+    /// writer keeps global session state: two STEP writes running in parallel
+    /// have been seen to fault.
     #[test]
     fn cad_parts_round_trip_scale() {
         let path = std::env::temp_dir().join("duck_cad_round_trip.step");
@@ -472,5 +495,17 @@ mod tests {
         for i in 0..3 {
             assert!((max[i] - min[i] - 2.0).abs() < 1e-3, "extent {i}: {}", max[i] - min[i]);
         }
+
+        // A unit scale must go through the similarity path. `gtransform`
+        // would convert the whole shape to B-splines, which costs later
+        // modeling its analytic geometry: face tweak's extend-and-reintersect,
+        // fillets, and boolean classification all degrade on splines. A box's
+        // edges are the cheapest witness — they stay straight lines only if
+        // the shape was never splined.
+        let edge_types: Vec<_> = parts[0].shape.edges().map(|e| e.edge_type()).collect();
+        assert!(
+            edge_types.iter().all(|t| *t == EdgeType::Line),
+            "a scaled box must keep straight edges, got {edge_types:?}"
+        );
     }
 }

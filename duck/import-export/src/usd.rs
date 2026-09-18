@@ -20,12 +20,14 @@ use duck_engine_scene::resource::{
     FaceMaterial, FaceMaterialHandle, Instance, Mesh, MeshHandle, MeshPrimitive, NodeFlags, NodeId,
     NodePayload, PrimitiveType, Vertex,
 };
-use duck_engine_scene::common::{RgbaColor, Transform, decompose_matrix};
+use duck_engine_scene::common::{LengthUnit, RgbaColor, Transform, WorldUnits, decompose_matrix};
 
 /// Result of loading a scene from USD.
 pub struct UsdLoadResult {
     pub scene: SceneData,
     pub camera: Option<PositionedCamera>,
+    /// The stage's `metersPerUnit`, or USD's centimeter default.
+    pub units: WorldUnits,
 }
 
 /// File extensions handled by the USD loader.
@@ -129,6 +131,25 @@ fn get_token(data: &mut dyn AbstractData, path: &sdf::Path, field: &str) -> Opti
     }
 }
 
+/// Read the stage's `metersPerUnit` metadata from the pseudo-root.
+///
+/// USD's own fallback when a stage declares nothing is 0.01 — centimeters —
+/// not meters.
+fn get_meters_per_unit(data: &mut dyn AbstractData) -> WorldUnits {
+    const USD_DEFAULT: WorldUnits = WorldUnits::from_unit(LengthUnit::Centimeter);
+
+    let root = sdf::Path::abs_root();
+    let Ok(val) = data.get(&root, "metersPerUnit") else {
+        return USD_DEFAULT;
+    };
+    let declared = match val.as_ref() {
+        Value::Double(d) => *d,
+        Value::Float(f) => *f as f64,
+        _ => return USD_DEFAULT,
+    };
+    WorldUnits::from_meters_per_unit(declared).unwrap_or(USD_DEFAULT)
+}
+
 /// Get a TokenVec field from a spec.
 fn get_token_vec(data: &mut dyn AbstractData, path: &sdf::Path, field: &str) -> Vec<String> {
     let val = match data.get(path, field) {
@@ -203,6 +224,7 @@ fn get_prim_children(data: &mut dyn AbstractData, path: &sdf::Path) -> Vec<Strin
 fn convert_scene(data: &mut dyn AbstractData) -> Result<UsdLoadResult> {
     let mut scene = SceneData::new();
     let root = sdf::Path::abs_root();
+    let units = get_meters_per_unit(data);
 
     // Phase 1: Collect all materials (pre-pass)
     let mut material_map: HashMap<String, FaceMaterialHandle> = HashMap::new();
@@ -225,7 +247,7 @@ fn convert_scene(data: &mut dyn AbstractData) -> Result<UsdLoadResult> {
         )?;
     }
 
-    Ok(UsdLoadResult { scene, camera })
+    Ok(UsdLoadResult { scene, camera, units })
 }
 
 // ============================================================================

@@ -14,6 +14,19 @@ fn test_scene_new() {
 }
 
 #[test]
+fn test_scene_world_units_default_is_meters() {
+    let scene = SceneData::new();
+    assert_eq!(scene.world_units(), WorldUnits::METER);
+}
+
+#[test]
+fn test_scene_world_units_survive_clone() {
+    let mut scene = SceneData::new();
+    scene.set_world_units(WorldUnits::MILLIMETER);
+    assert_eq!(scene.clone().world_units(), WorldUnits::MILLIMETER);
+}
+
+#[test]
 fn test_add_instance() {
     let mut scene = SceneData::new();
     let mesh_id = MeshId::new();

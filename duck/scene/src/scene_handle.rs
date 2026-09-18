@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 #[cfg(debug_assertions)]
 use std::thread::ThreadId;
 
-use crate::common::{Matrix4, Point3, Quaternion, Transform, Vector3};
+use crate::common::{Matrix4, Point3, Quaternion, Transform, Vector3, WorldUnits};
 use crate::{BoundingResult, EnvironmentMap, EnvironmentMapId, Light, SceneData};
 use crate::resource::{
     DisplayBehavior, EffectiveVisibility, FaceMaterial, FaceMaterialHandle, FaceMaterialId,
@@ -349,6 +349,19 @@ impl Scene {
     #[track_caller]
     pub fn set_active_environment_map(&self, id: Option<EnvironmentMapId>) {
         self.lock().set_active_environment_map(id);
+    }
+
+    /// What one world unit of this scene means in the real world.
+    #[track_caller]
+    pub fn world_units(&self) -> WorldUnits {
+        self.lock().world_units()
+    }
+
+    /// Declares what one world unit means. Labels the coordinates already
+    /// present; rescales nothing.
+    #[track_caller]
+    pub fn set_world_units(&self, units: WorldUnits) {
+        self.lock().set_world_units(units);
     }
 
     /// Sets an environment map's IBL intensity. No-op if the id is unknown.

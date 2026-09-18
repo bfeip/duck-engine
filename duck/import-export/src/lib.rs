@@ -46,6 +46,7 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
+use duck_engine_scene::common::WorldUnits;
 use duck_engine_scene::{PositionedCamera, SceneData};
 
 // ============================================================================
@@ -68,17 +69,76 @@ pub enum SceneSource {
     Bytes(Vec<u8>),
 }
 
+/// What loading does about the difference between a file's units and the
+/// units the caller wants to work in.
+///
+/// File formats disagree: glTF is meters, STEP and IGES are millimeters, USD
+/// declares its own factor. Left alone, they land in one scene a thousand-fold
+/// apart.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum UnitPolicy {
+    /// Keep file coordinates exactly as they are, and label the scene with the
+    /// unit they were detected to be in. Nothing moves; the scene simply says
+    /// what its numbers mean.
+    #[default]
+    Preserve,
+    /// Scale the geometry so one world unit is the given size, and label the
+    /// scene accordingly.
+    Normalize(WorldUnits),
+}
+
 /// Options that control scene loading behavior.
 pub struct LoadOptions {
     /// Aspect ratio for cameras embedded in glTF files. Ignored for other formats.
     /// Default: 16.0 / 9.0.
     pub aspect: f32,
+    /// How the file's units are reconciled with the scene's.
+    /// Default: [`UnitPolicy::Preserve`].
+    pub units: UnitPolicy,
 }
 
 impl Default for LoadOptions {
     fn default() -> Self {
         Self {
             aspect: 16.0 / 9.0,
+            units: UnitPolicy::default(),
+        }
+    }
+}
+
+/// Applies `policy` to a freshly-loaded scene whose coordinates are in
+/// `source` units, rescaling the tree if asked and labelling the scene either
+/// way.
+///
+/// Rescaling multiplies each root node's local translation and scale, which is
+/// exactly equivalent to prepending a uniform scale to the whole tree and
+/// leaves meshes untouched and shareable.
+///
+/// Importers that can scale their geometry more faithfully should do so and
+/// call this only to label the result — the CAD path bakes its scale into the
+/// B-Rep instead.
+pub fn apply_unit_policy(scene: &mut SceneData, source: Option<WorldUnits>, policy: UnitPolicy) {
+    let Some(source) = source else {
+        // Nothing declared; leave the scene's default label alone rather than
+        // inventing a scale.
+        return;
+    };
+    match policy {
+        UnitPolicy::Preserve => scene.set_world_units(source),
+        UnitPolicy::Normalize(target) => {
+            let factor = source.factor_to(target) as f32;
+            if (factor - 1.0).abs() > f32::EPSILON {
+                let roots: Vec<_> = scene.root_nodes().collect();
+                for id in roots {
+                    if let Some(node) = scene.get_node(id) {
+                        let mut transform = node.transform();
+                        transform.position *= factor;
+                        transform.scale *= factor;
+                        scene.set_node_transform(id, transform);
+                    }
+                }
+            }
+            scene.set_world_units(target);
         }
     }
 }
@@ -91,6 +151,15 @@ pub struct SceneLoadResult {
     pub camera: Option<PositionedCamera>,
     /// Which format was detected and loaded.
     pub format: DetectedFormat,
+    /// The units the file's coordinates were in, as detected or as defined by
+    /// the format. `None` when the format declares nothing and has no
+    /// convention to fall back on.
+    ///
+    /// Under [`UnitPolicy::Preserve`] the scene's own
+    /// [`world_units`](SceneData::world_units) matches this; under
+    /// [`UnitPolicy::Normalize`] it is the normalization target instead, and
+    /// this field records what the file said.
+    pub source_units: Option<WorldUnits>,
 }
 
 /// The file format that was detected and used for loading.
@@ -593,8 +662,68 @@ mod tests {
                 scene: SceneData::new(),
                 camera: None,
                 format: DetectedFormat::Other("Test".into()),
+                source_units: None,
             })
         }
+    }
+
+    /// A scene with one root node one unit along +X.
+    fn unit_scene() -> SceneData {
+        use duck_engine_scene::common::{Point3, Transform};
+        use duck_engine_scene::resource::NodeFlags;
+
+        let mut scene = SceneData::new();
+        scene
+            .add_node(
+                None,
+                Some("root".to_string()),
+                Transform::from_position(Point3::new(1.0, 0.0, 0.0)),
+                NodeFlags::NONE,
+            )
+            .unwrap();
+        scene
+    }
+
+    fn root_x(scene: &SceneData) -> f32 {
+        let id = scene.root_nodes().next().unwrap();
+        scene.get_node(id).unwrap().transform().position.x
+    }
+
+    #[test]
+    fn preserve_labels_without_moving_geometry() {
+        let mut scene = unit_scene();
+        apply_unit_policy(&mut scene, Some(WorldUnits::MILLIMETER), UnitPolicy::Preserve);
+
+        assert_eq!(scene.world_units(), WorldUnits::MILLIMETER);
+        assert_eq!(root_x(&scene), 1.0, "Preserve must not rescale");
+    }
+
+    #[test]
+    fn normalize_rescales_roots_and_relabels() {
+        let mut scene = unit_scene();
+        apply_unit_policy(
+            &mut scene,
+            Some(WorldUnits::MILLIMETER),
+            UnitPolicy::Normalize(WorldUnits::METER),
+        );
+
+        assert_eq!(scene.world_units(), WorldUnits::METER);
+        // One millimeter is 0.001 meters.
+        assert!((root_x(&scene) - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn undeclared_units_leave_the_scene_alone() {
+        let mut scene = unit_scene();
+        apply_unit_policy(&mut scene, None, UnitPolicy::Normalize(WorldUnits::METER));
+
+        assert_eq!(scene.world_units(), WorldUnits::METER, "default is untouched");
+        assert_eq!(root_x(&scene), 1.0, "nothing to scale by");
+    }
+
+    #[test]
+    fn default_policy_is_preserve() {
+        assert_eq!(LoadOptions::default().units, UnitPolicy::Preserve);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::rc::Rc;
 use anyhow::{Result, anyhow};
 use duck_engine_common::{InnerSpace, Matrix4, Point3, Quaternion, Rad, Rotation3, Vector3};
 use russimp::material::{Material as RMaterial, TextureType};
+use russimp::metadata::MetadataType;
 use russimp::node::Node as RNode;
 use russimp::scene::{PostProcess, Scene as RScene};
 
@@ -19,12 +20,34 @@ use duck_engine_scene::resource::{
     FaceMaterial, FaceMaterialHandle, Instance, Mesh, MeshHandle, MeshPrimitive, NodeFlags, NodeId,
     NodePayload, PrimitiveType, Texture, TextureHandle, Vertex,
 };
-use duck_engine_scene::common::{RgbaColor, Transform, decompose_matrix};
+use duck_engine_scene::common::{LengthUnit, RgbaColor, Transform, WorldUnits, decompose_matrix};
 
 /// Result of loading a scene via assimp.
 pub struct AssimpLoadResult {
     pub scene: SceneData,
     pub camera: Option<PositionedCamera>,
+    /// Units the file declared, where the format carries that (FBX's
+    /// `UnitScaleFactor`). `None` when nothing was declared — most formats
+    /// assimp handles say nothing about units at all.
+    pub units: Option<WorldUnits>,
+}
+
+/// Reads declared units from assimp's scene metadata.
+///
+/// FBX stores `UnitScaleFactor` as centimeters per unit, which is the only
+/// unit metadata assimp exposes in practice. Assimp's `GlobalScale`
+/// post-process step is deliberately *not* enabled, so the geometry is
+/// untouched and this only reports what the file said.
+fn detect_units(assimp_scene: &RScene) -> Option<WorldUnits> {
+    let metadata = assimp_scene.metadata.as_ref()?;
+    let index = metadata.keys.iter().position(|k| k == "UnitScaleFactor")?;
+    let cm_per_unit = match metadata.values.get(index)?.0.as_ref().ok()? {
+        MetadataType::Double(d) => *d,
+        MetadataType::Float(f) => *f as f64,
+        MetadataType::Int(i) => *i as f64,
+        _ => return None,
+    };
+    WorldUnits::from_meters_per_unit(cm_per_unit * LengthUnit::Centimeter.meters())
 }
 
 /// Default post-processing flags applied to every assimp load.
@@ -88,7 +111,7 @@ fn convert_scene(assimp_scene: &RScene, base_path: Option<&Path>) -> Result<Assi
     // Phase 6: Extract camera
     let camera = extract_camera(&assimp_scene.cameras);
 
-    Ok(AssimpLoadResult { scene, camera })
+    Ok(AssimpLoadResult { scene, camera, units: detect_units(assimp_scene) })
 }
 
 // ============================================================================

@@ -5,7 +5,7 @@
 //! shared handle to one; most code goes through that rather than holding a
 //! `SceneData` directly.
 
-use duck_engine_common::{Matrix4, Point3, Quaternion, SquareMatrix, Vector3};
+use duck_engine_common::{Matrix4, Point3, Quaternion, SquareMatrix, Vector3, WorldUnits};
 use image::DynamicImage;
 use std::collections::HashMap;
 use std::path::Path;
@@ -102,6 +102,10 @@ pub struct SceneData {
     /// The currently active environment map for IBL lighting.
     active_environment_map: Option<EnvironmentMapId>,
 
+    /// What one world unit means in the real world. Defaults to
+    /// [`WorldUnits::METER`].
+    world_units: WorldUnits,
+
     /// Generation counter that increments on any node add, remove, or mutation.
     /// Used by the renderer to detect when scene data need re-collection.
     node_generation: u64,
@@ -135,6 +139,7 @@ impl SceneData {
             environment_maps: HashMap::new(),
             active_environment_map: None,
 
+            world_units: WorldUnits::METER,
 
             node_generation: initial_generation(),
 
@@ -563,6 +568,19 @@ impl SceneData {
     /// Gets the currently active environment map ID, if any.
     pub fn active_environment_map(&self) -> Option<EnvironmentMapId> {
         self.active_environment_map
+    }
+
+    // ========== Units API ==========
+
+    /// What one world unit of this scene means in the real world.
+    pub fn world_units(&self) -> WorldUnits {
+        self.world_units
+    }
+
+    /// Declares what one world unit means. This only labels the coordinates
+    /// already present; it rescales nothing.
+    pub fn set_world_units(&mut self, units: WorldUnits) {
+        self.world_units = units;
     }
 
     // ========== Instance API ==========
@@ -1449,6 +1467,7 @@ impl Clone for SceneData {
             textures: self.textures.clone(),
             environment_maps: self.environment_maps.clone(),
             active_environment_map: self.active_environment_map,
+            world_units: self.world_units,
             node_generation: self.node_generation,
             bind: Arc::new(SceneBind::new()),
             slots: HashMap::new(),
