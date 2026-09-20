@@ -1,6 +1,7 @@
 mod batching;
 mod bind_group_layouts;
 mod custom_pipeline;
+mod lights;
 mod material_cache;
 mod mesh;
 mod pass_context;
@@ -13,7 +14,7 @@ mod texture;
 mod workflow;
 
 pub use batching::{
-    BatchKey, BatchMaterial, DrawBatch, DrawData, InstanceTransform, ResolvedLight, SubGeomBatch,
+    BatchKey, BatchMaterial, DrawBatch, DrawData, InstanceTransform, SubGeomBatch,
 };
 pub use custom_pipeline::CustomPipelineBuilder;
 pub use mesh::{instance_buffer_layout, vertex_buffer_layout};
@@ -33,6 +34,7 @@ use crate::{
     rgba_to_wgpu_color,
     scene::{
         PositionedCamera,
+        PositionedLight,
         Scene,
         SceneData,
         SceneProperties,
@@ -387,15 +389,15 @@ impl Renderer {
     /// `shared`, and submits the GPU work itself — so it counts as that
     /// scene's `prepare` for the frame.
     ///
-    /// `extra_lights` are composed after the scene's lights (e.g. camera-space
-    /// headlights); pass `&[]` for scene lighting only.
+    /// `lights` are resolved against `scene` and `camera` and composed after
+    /// the scene's own lights; pass `&[]` for scene lighting only.
     pub fn render_scene_to_image(
         &mut self,
         ctx: &mut RenderContext,
         shared: &mut SceneResources,
         scene: &mut Scene,
         camera: &PositionedCamera,
-        extra_lights: &[ResolvedLight],
+        lights: &[PositionedLight],
         highlight: Option<&dyn HighlightQuery>,
     ) -> Result<image::RgbaImage> {
         // Lock scene for duration of rendering
@@ -406,7 +408,8 @@ impl Renderer {
         let size = self.host.targets().size();
         self.camera.write(&self.host.gpu().queue, camera);
         let draw_data = DrawData::new(&scene, camera, size, highlight);
-        self.lights.write(&self.host.gpu().queue, draw_data.lights(), extra_lights);
+        let lights = lights::resolve_lights(lights, &scene, camera);
+        self.lights.write(&self.host.gpu().queue, &lights);
 
         // Build the frame from disjoint field borrows of `self`, `shared`, and
         // `ctx`, then hand it to the host's readback path, which owns the
@@ -444,16 +447,16 @@ impl Renderer {
     /// `shared` must have been [`prepare`](SceneResources::prepare)d for this
     /// frame; the caller holds the scene lock for the duration of the render.
     ///
-    /// `extra_lights` are composed after the scene's lights (e.g. camera-space
-    /// headlights); pass `&[]` for scene lighting only. A non-empty `highlight`
-    /// renders selection outlines and sub-geometry highlights.
+    /// `lights` are resolved against `scene` and `camera` and composed after
+    /// the scene's own lights; pass `&[]` for scene lighting only. A non-empty
+    /// `highlight` renders selection outlines and sub-geometry highlights.
     pub fn render_scene_to_view(
         &mut self,
         ctx: &mut RenderContext,
         shared: &mut SceneResources,
         scene: &SceneData,
         camera: &PositionedCamera,
-        extra_lights: &[ResolvedLight],
+        lights: &[PositionedLight],
         view: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
         highlight: Option<&dyn HighlightQuery>,
@@ -464,7 +467,8 @@ impl Renderer {
 
         // Collect, sort, and partition draw batches for this frame
         let draw_data = DrawData::new(scene, camera, size, highlight);
-        self.lights.write(&self.host.gpu().queue, draw_data.lights(), extra_lights);
+        let lights = lights::resolve_lights(lights, scene, camera);
+        self.lights.write(&self.host.gpu().queue, &lights);
 
         // Build the frame from disjoint field borrows of `self`, `shared`, and
         // `ctx`. Because the frame borrows only the scene subsystems and the

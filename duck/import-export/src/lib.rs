@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 use duck_engine_scene::common::WorldUnits;
-use duck_engine_scene::{PositionedCamera, SceneData};
+use duck_engine_scene::{Light, PositionedCamera, PositionedLight, SceneData};
 
 // ============================================================================
 // Type Aliases
@@ -112,12 +112,20 @@ impl Default for LoadOptions {
 ///
 /// Rescaling multiplies each root node's local translation and scale, which is
 /// exactly equivalent to prepending a uniform scale to the whole tree and
-/// leaves meshes untouched and shareable.
+/// leaves meshes untouched and shareable. Everything else the load produced in
+/// those same coordinates — the sidecar `lights` and `camera` — is rescaled
+/// alongside it, including light ranges, which are world-unit lengths.
 ///
 /// Importers that can scale their geometry more faithfully should do so and
 /// call this only to label the result — the CAD path bakes its scale into the
 /// B-Rep instead.
-pub fn apply_unit_policy(scene: &mut SceneData, source: Option<WorldUnits>, policy: UnitPolicy) {
+pub fn apply_unit_policy(
+    scene: &mut SceneData,
+    lights: &mut [PositionedLight],
+    camera: Option<&mut PositionedCamera>,
+    source: Option<WorldUnits>,
+    policy: UnitPolicy,
+) {
     let Some(source) = source else {
         // Nothing declared; leave the scene's default label alone rather than
         // inventing a scale.
@@ -137,6 +145,18 @@ pub fn apply_unit_policy(scene: &mut SceneData, source: Option<WorldUnits>, poli
                         scene.set_node_transform(id, transform);
                     }
                 }
+                for light in lights {
+                    light.transform.position *= factor;
+                    light.transform.scale *= factor;
+                    match &mut light.light {
+                        Light::Point { range, .. } | Light::Spot { range, .. } => *range *= factor,
+                        Light::Directional { .. } | Light::Hemisphere { .. } => {}
+                    }
+                }
+                if let Some(camera) = camera {
+                    camera.eye *= factor;
+                    camera.target *= factor;
+                }
             }
             scene.set_world_units(target);
         }
@@ -149,6 +169,9 @@ pub struct SceneLoadResult {
     pub scene: SceneData,
     /// Camera extracted from the file, if present (glTF only).
     pub camera: Option<PositionedCamera>,
+    /// Lights extracted from the file. Lights are not scene resources — the
+    /// caller installs these wherever it keeps lights, as it does `camera`.
+    pub lights: Vec<PositionedLight>,
     /// Which format was detected and loaded.
     pub format: DetectedFormat,
     /// The units the file's coordinates were in, as detected or as defined by
@@ -606,8 +629,14 @@ async fn load_gltf_chunked(
         progress: Some(0.7),
         stage: None,
     });
-    let camera = build_gltf_scene(&parsed, &mut scene, &mesh_map, options.aspect)
+    let mut camera = build_gltf_scene(&parsed, &mut scene, &mesh_map, options.aspect)
         .map_err(|e| LoadError::Gltf(e.to_string()))?;
+
+    // glTF defines its coordinates as meters; no file-level override exists.
+    let source_units = Some(WorldUnits::METER);
+    // glTF lights (KHR_lights_punctual) are not imported yet.
+    let mut lights = Vec::new();
+    apply_unit_policy(&mut scene, &mut lights, camera.as_mut(), source_units, options.units);
 
     progress.update(ProgressState {
         description: "Complete".into(),
@@ -617,7 +646,9 @@ async fn load_gltf_chunked(
     Ok(SceneLoadResult {
         scene,
         camera,
+        lights,
         format: DetectedFormat::Gltf,
+        source_units,
     })
 }
 
@@ -629,6 +660,10 @@ async fn load_gltf_chunked(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    use duck_engine_common::{Point3, Transform, Vector3};
+    use duck_engine_scene::Projection;
+    use duck_engine_scene::common::RgbaColor;
 
     /// Minimal importer used to exercise the format-agnostic plumbing.
     struct TestImporter;
@@ -661,6 +696,7 @@ mod tests {
             Ok(SceneLoadResult {
                 scene: SceneData::new(),
                 camera: None,
+                lights: Vec::new(),
                 format: DetectedFormat::Other("Test".into()),
                 source_units: None,
             })
@@ -692,7 +728,13 @@ mod tests {
     #[test]
     fn preserve_labels_without_moving_geometry() {
         let mut scene = unit_scene();
-        apply_unit_policy(&mut scene, Some(WorldUnits::MILLIMETER), UnitPolicy::Preserve);
+        apply_unit_policy(
+            &mut scene,
+            &mut [],
+            None,
+            Some(WorldUnits::MILLIMETER),
+            UnitPolicy::Preserve,
+        );
 
         assert_eq!(scene.world_units(), WorldUnits::MILLIMETER);
         assert_eq!(root_x(&scene), 1.0, "Preserve must not rescale");
@@ -703,6 +745,8 @@ mod tests {
         let mut scene = unit_scene();
         apply_unit_policy(
             &mut scene,
+            &mut [],
+            None,
             Some(WorldUnits::MILLIMETER),
             UnitPolicy::Normalize(WorldUnits::METER),
         );
@@ -715,10 +759,60 @@ mod tests {
     #[test]
     fn undeclared_units_leave_the_scene_alone() {
         let mut scene = unit_scene();
-        apply_unit_policy(&mut scene, None, UnitPolicy::Normalize(WorldUnits::METER));
+        apply_unit_policy(&mut scene, &mut [], None, None, UnitPolicy::Normalize(WorldUnits::METER));
 
         assert_eq!(scene.world_units(), WorldUnits::METER, "default is untouched");
         assert_eq!(root_x(&scene), 1.0, "nothing to scale by");
+    }
+
+    #[test]
+    fn normalize_rescales_sidecar_lights_and_camera() {
+        let mut scene = unit_scene();
+        let mut lights = vec![PositionedLight::world(
+            Light::point_with_range(RgbaColor::WHITE, 1.0, 500.0),
+            Transform::from_position(Point3::new(1000.0, 0.0, 0.0)),
+        )];
+        let mut camera = PositionedCamera {
+            eye: Point3::new(2000.0, 0.0, 0.0),
+            target: Point3::new(0.0, 0.0, 0.0),
+            up: Vector3::new(0.0, 1.0, 0.0),
+            aspect: 1.0,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
+        };
+
+        apply_unit_policy(
+            &mut scene,
+            &mut lights,
+            Some(&mut camera),
+            Some(WorldUnits::MILLIMETER),
+            UnitPolicy::Normalize(WorldUnits::METER),
+        );
+
+        // A light imported as a root node used to be rescaled with the tree;
+        // as a sidecar it must still land in the same place.
+        assert!((lights[0].transform.position.x - 1.0).abs() < 1e-6);
+        let Light::Point { range, .. } = lights[0].light else { panic!("expected a point light") };
+        assert!((range - 0.5).abs() < 1e-6, "range is a world-unit length");
+        assert!((camera.eye.x - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn preserve_leaves_sidecars_alone() {
+        let mut scene = unit_scene();
+        let mut lights = vec![PositionedLight::world(
+            Light::directional(RgbaColor::WHITE, 1.0),
+            Transform::from_position(Point3::new(1000.0, 0.0, 0.0)),
+        )];
+
+        apply_unit_policy(
+            &mut scene,
+            &mut lights,
+            None,
+            Some(WorldUnits::MILLIMETER),
+            UnitPolicy::Preserve,
+        );
+
+        assert_eq!(lights[0].transform.position.x, 1000.0);
     }
 
     #[test]

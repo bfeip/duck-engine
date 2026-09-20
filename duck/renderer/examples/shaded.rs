@@ -6,11 +6,11 @@
 //! Run with `cargo run --example shaded -p duck-engine-renderer`.
 
 use duck_engine_renderer::{Gpu, RenderContext, Renderer, SceneResources};
-use duck_engine_renderer::scene::{Light, PositionedCamera, Projection, SceneData};
+use duck_engine_renderer::scene::{Light, PositionedCamera, PositionedLight, Projection, SceneData};
 use duck_engine_renderer::scene::resource::{
-    FaceMaterial, Instance, Mesh, NodePayload, PrimitiveType,
+    FaceMaterial, Instance, Mesh, PrimitiveType,
 };
-use duck_engine_renderer::scene::common::RgbaColor;
+use duck_engine_renderer::scene::common::{RgbaColor, Transform};
 use duck_engine_common::{Point3, Vector3};
 use duck_engine_scene::resource::NodeFlags;
 use duck_engine_scene::Scene;
@@ -37,15 +37,11 @@ fn main() -> anyhow::Result<()> {
         NodeFlags::NONE,
     )?;
 
-    // A white directional light (its direction is the node's -Z axis).
-    let light_id = scene
-        .add_node(None, Some("DirectionalLight".to_string()), Default::default(), NodeFlags::NONE)
-        .unwrap()
-        .id();
-    scene.set_node_payload(
-        light_id,
-        NodePayload::Light(Light::directional(RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, 2.0)),
-    );
+    // A white directional light (its direction is the transform's -Z axis).
+    let lights = [PositionedLight::world(
+        Light::directional(RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, 2.0),
+        Transform::IDENTITY,
+    )];
 
     let camera = PositionedCamera {
         eye: Point3::new(0.0, 0.0, 3.5),
@@ -58,7 +54,7 @@ fn main() -> anyhow::Result<()> {
     // No `set_workflow` call: the renderer starts with the built-in ShadedWorkflow.
     let mut scene = Scene::new(scene);
     let image =
-        renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &[], None)?;
+        renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &lights, None)?;
     image.save("shaded.png")?;
     println!("Saved shaded.png ({width}×{height})");
     Ok(())

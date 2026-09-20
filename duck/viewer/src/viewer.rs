@@ -11,15 +11,14 @@ use crate::{
     compositor::Compositor,
     event::{DeviceEvent, Event, EventContext, EventDispatcher},
     input::{ElementState, TouchPhase},
-    scene::{PositionedCamera, Projection, common::RgbaColor},
+    scene::{PositionedCamera, PositionedLight, Projection, common::RgbaColor},
     selection::SelectionManager,
     renderer::{
         Gpu, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery, RenderContext, Renderer,
         SceneResources, SceneWorkflow, ShadedWorkflow,
     },
     view::{
-        CameraLight, HeadlightMode, PixelRect, View, ViewId, ViewLayout, ViewTarget,
-        default_camera_lights,
+        HeadlightMode, PixelRect, View, ViewId, ViewLayout, ViewTarget, default_headlight_rig,
     },
 };
 
@@ -29,6 +28,10 @@ struct SceneSlot {
     scene: Scene,
     resources: SceneResources,
     selection: SelectionManager,
+    /// Lights shared by every view of this scene. Per-scene rather than
+    /// viewer-global so that a view over its own scene
+    /// is unaffected by the lighting of any other scene.
+    lights: Vec<PositionedLight>,
 }
 
 /// Pointer capture: while any button or touch that started in a view is held,
@@ -135,8 +138,9 @@ impl Viewer {
             name: name.into(),
             scene,
             camera,
+            lights: Vec::new(),
             headlight: HeadlightMode::default(),
-            camera_lights: default_camera_lights(),
+            headlight_rig: default_headlight_rig(),
             layout,
             rect,
             visible: true,
@@ -226,6 +230,17 @@ impl Viewer {
     /// Views in stack order (last is topmost).
     pub fn views(&self) -> impl Iterator<Item = &View> {
         self.views.iter()
+    }
+
+    /// Lights shared by every view of `scene`. `None` when no view shows it.
+    pub fn scene_lights(&self, scene: &Scene) -> Option<&[PositionedLight]> {
+        self.scenes.iter().find(|s| s.scene.ptr_eq(scene)).map(|s| s.lights.as_slice())
+    }
+
+    /// Lights shared by every view of `scene`, for mutation. `None` when no
+    /// view shows it — a scene with no view has nowhere to keep them.
+    pub fn scene_lights_mut(&mut self, scene: &Scene) -> Option<&mut Vec<PositionedLight>> {
+        self.scenes.iter_mut().find(|s| s.scene.ptr_eq(scene)).map(|s| &mut s.lights)
     }
 
     /// Re-place a view; its targets resize if the resolved pixel size changed.
@@ -687,7 +702,7 @@ impl Viewer {
             // Defensive: the aspect is stamped on every rect change, but raw
             // camera mutation may have overwritten it.
             view.camera.aspect = view.rect.width as f32 / view.rect.height.max(1) as f32;
-            let headlights = view.active_camera_lights(&view.camera, &guard);
+            let lights = view.effective_lights(&slot.lights, &guard);
             let highlight: Option<&dyn HighlightQuery> = if slot.selection.config().outline_enabled
             {
                 Some(&slot.selection)
@@ -699,7 +714,7 @@ impl Viewer {
                 &mut slot.resources,
                 &guard,
                 &view.camera,
-                &headlights,
+                &lights,
                 &view.target.render_view,
                 encoder,
                 highlight,
@@ -784,6 +799,7 @@ impl Viewer {
             scene: scene.clone(),
             resources: SceneResources::new(&self.ctx),
             selection: SelectionManager::new(),
+            lights: Vec::new(),
         });
     }
 }
@@ -857,15 +873,29 @@ impl ViewMut<'_> {
         self.view.transition = None;
     }
 
-    /// Set when the view's camera-space lights contribute to rendering.
+    /// Set when the view's headlight rig contributes to rendering.
     pub fn set_headlight(&mut self, mode: HeadlightMode) {
         self.view.headlight = mode;
     }
 
-    /// Replace the view's camera-space lights (the default is a key + fill
-    /// directional pair).
-    pub fn set_camera_lights(&mut self, lights: Vec<CameraLight>) {
-        self.view.camera_lights = lights;
+    /// Replace the view's fallback headlight rig.
+    pub fn set_headlight_rig(&mut self, lights: Vec<PositionedLight>) {
+        self.view.headlight_rig = lights;
+    }
+
+    /// Lights this view alone contributes, for mutation.
+    pub fn lights_mut(&mut self) -> &mut Vec<PositionedLight> {
+        &mut self.view.lights
+    }
+
+    /// Lights shared by every view of this view's scene.
+    pub fn scene_lights(&self) -> &[PositionedLight] {
+        &self.slot.lights
+    }
+
+    /// Lights shared by every view of this view's scene, for mutation.
+    pub fn scene_lights_mut(&mut self) -> &mut Vec<PositionedLight> {
+        &mut self.slot.lights
     }
 
     /// This view's background color. Alpha below 1 shows through to views
@@ -892,26 +922,27 @@ impl ViewMut<'_> {
     /// Clear the view's scene, removing all geometry, materials, textures, and
     /// associated GPU resources, then restore a default camera and selection.
     ///
-    /// The scene clear affects every view of the scene; only this view's
-    /// camera is reset.
+    /// The scene clear and its lights affect every view of the scene; only
+    /// this view's camera is reset.
     pub fn clear_scene(&mut self) {
         self.view.scene.clear();
         self.slot.selection.clear();
         self.slot.resources.clear();
+        self.slot.lights.clear();
         self.set_camera(default_camera());
     }
 
     /// Render this view's scene from the given camera and read the result back
     /// into an RGBA image (blocking). For headless still-image / thumbnail
     /// rendering. The output size is the view's current pixel size. The view's
-    /// headlights apply, resolved against the given camera.
+    /// lights apply, resolved against the given camera.
     pub fn render_to_image(
         &mut self,
         camera: &PositionedCamera,
     ) -> Result<image::RgbaImage, anyhow::Error> {
-        let headlights = {
+        let lights = {
             let guard = self.view.scene.lock();
-            self.view.active_camera_lights(camera, &guard)
+            self.view.effective_lights(&self.slot.lights, &guard)
         };
         let highlight: Option<&dyn HighlightQuery> = if self.slot.selection.config().outline_enabled
         {
@@ -924,7 +955,7 @@ impl ViewMut<'_> {
             &mut self.slot.resources,
             &mut self.view.scene,
             camera,
-            &headlights,
+            &lights,
             highlight,
         )
     }

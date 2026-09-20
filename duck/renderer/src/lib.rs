@@ -32,8 +32,10 @@
 //! Any number of renderers draw through one `RenderContext`, and all of them
 //! render at its format and sample count. A renderer is not bound to a scene —
 //! each render call takes the scene's `SceneResources`, the
-//! [`PositionedCamera`](scene::PositionedCamera) to render from, and extra
-//! per-view (camera-space) lights to compose after the scene's own.
+//! [`PositionedCamera`](scene::PositionedCamera) to render from, and the
+//! [`PositionedLight`](scene::PositionedLight)s to light it with. Lights are
+//! not scene resources: the caller supplies the whole list, and the renderer
+//! resolves each one against the space it is posed in.
 //!
 //! # The frame
 //!
@@ -41,8 +43,8 @@
 //! scene. It is destructive — it drains the scene's removal queue — so it must
 //! run exactly once per scene per frame, before any renderer over that scene
 //! draws. Each view then calls [`Renderer::render_scene_to_view`] with its
-//! camera, extra lights, and target texture view, recording into an encoder
-//! the caller submits.
+//! camera, lights, and target texture view, recording into an encoder the
+//! caller submits.
 //!
 //! For rendering without a surface, [`Renderer::render_scene_to_image`]
 //! returns the frame as an RGBA image instead. Unlike `render_scene_to_view`
@@ -149,7 +151,7 @@ mod shaders;
 
 pub use renderer::{
     BatchKey, BatchMaterial, CustomPipelineBuilder, DrawBatch, DrawData, HiddenLineConfig,
-    HiddenLineWorkflow, InstanceTransform, RenderContext, Renderer, ResolvedLight,
+    HiddenLineWorkflow, InstanceTransform, RenderContext, Renderer,
     SceneBindingRefs, SceneFrame, SceneFrames, SceneRenderPass, SceneResources, SceneWorkflow,
     ShadedWorkflow, SubGeomBatch, instance_buffer_layout, vertex_buffer_layout,
 };

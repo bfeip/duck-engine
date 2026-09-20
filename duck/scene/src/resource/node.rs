@@ -1,4 +1,3 @@
-use crate::Light;
 use super::handle::{InstanceHandle, NodeHandle};
 use super::DisplayBehavior;
 use super::RenderLayer;
@@ -24,9 +23,6 @@ pub enum NodePayload {
     /// References a mesh+material pair to be rendered. The handle owns the
     /// instance: it is removed when no longer referenced by any node or handle.
     Instance(InstanceHandle),
-    /// A light source. Position and direction are derived from the node's world transform:
-    /// translation column → position (Point, Spot); negative Z-axis → direction (Directional, Spot).
-    Light(Light),
 }
 
 impl std::fmt::Debug for NodePayload {
@@ -34,7 +30,6 @@ impl std::fmt::Debug for NodePayload {
         match self {
             Self::None => write!(f, "None"),
             Self::Instance(h) => f.debug_tuple("Instance").field(&h.id()).finish(),
-            Self::Light(l) => f.debug_tuple("Light").field(l).finish(),
         }
     }
 }

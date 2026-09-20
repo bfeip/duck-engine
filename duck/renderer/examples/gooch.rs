@@ -2,11 +2,11 @@ use duck_engine_renderer::{
     FrameTargets, Gpu, RenderContext, RenderWorkflow, Renderer, SceneFrame, SceneFrames,
     SceneRenderPass, SceneResources, abi,
 };
-use duck_engine_renderer::scene::{Light, PositionedCamera, Projection, SceneData};
+use duck_engine_renderer::scene::{Light, PositionedCamera, PositionedLight, Projection, SceneData};
 use duck_engine_renderer::scene::resource::{
-    FaceMaterial, Instance, Mesh, NodePayload, PrimitiveType,
+    FaceMaterial, Instance, Mesh, PrimitiveType,
 };
-use duck_engine_renderer::scene::common::RgbaColor;
+use duck_engine_renderer::scene::common::{RgbaColor, Transform};
 
 use duck_engine_common::{Point3, Vector3};
 use duck_engine_scene::resource::NodeFlags;
@@ -123,14 +123,12 @@ fn main() -> anyhow::Result<()> {
         NodeFlags::NONE
     )?;
 
-    // A warm directional light; direction is the node's -Z axis (identity = toward viewer).
-    let light_id = scene.add_node(
-        None, Some("DirectionalLight".to_string()), Default::default(), NodeFlags::NONE
-    ).unwrap().id();
-    scene.set_node_payload(light_id, NodePayload::Light(Light::directional(
-        RgbaColor { r: 1.0, g: 0.95, b: 0.8, a: 1.0 },
-        1.0,
-    )));
+    // A warm directional light; direction is the transform's -Z axis
+    // (identity = toward viewer).
+    let lights = [PositionedLight::world(
+        Light::directional(RgbaColor { r: 1.0, g: 0.95, b: 0.8, a: 1.0 }, 1.0),
+        Transform::IDENTITY,
+    )];
 
     let camera = PositionedCamera {
         eye: Point3::new(0.0, 0.0, 3.5),
@@ -144,7 +142,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut scene = Scene::new(scene);
     let image =
-        renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &[], None)?;
+        renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &lights, None)?;
     image.save("gooch.png")?;
     println!("Saved gooch.png ({width}×{height})");
 

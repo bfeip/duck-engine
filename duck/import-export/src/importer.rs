@@ -125,12 +125,20 @@ impl Importer for GltfImporter {
             progress: Some(0.7),
             stage: None,
         });
-        let camera = build_gltf_scene(&parsed, &mut scene, &mesh_map, options.aspect)
+        let mut camera = build_gltf_scene(&parsed, &mut scene, &mesh_map, options.aspect)
             .map_err(|e| LoadError::Gltf(e.to_string()))?;
 
         // glTF defines its coordinates as meters; no file-level override exists.
         let source_units = Some(WorldUnits::METER);
-        crate::apply_unit_policy(&mut scene, source_units, options.units);
+        // glTF lights (KHR_lights_punctual) are not imported yet.
+        let mut lights = Vec::new();
+        crate::apply_unit_policy(
+            &mut scene,
+            &mut lights,
+            camera.as_mut(),
+            source_units,
+            options.units,
+        );
 
         progress.update(ProgressState {
             description: "Complete".into(),
@@ -140,6 +148,7 @@ impl Importer for GltfImporter {
         Ok(SceneLoadResult {
             scene,
             camera,
+            lights,
             format: DetectedFormat::Gltf,
             source_units,
         })
@@ -190,8 +199,16 @@ impl Importer for UsdImporter {
 
         let usd_result = result.map_err(|e| LoadError::Usd(e.to_string()))?;
         let mut scene = usd_result.scene;
+        let mut camera = usd_result.camera;
+        let mut lights = usd_result.lights;
         let source_units = Some(usd_result.units);
-        crate::apply_unit_policy(&mut scene, source_units, options.units);
+        crate::apply_unit_policy(
+            &mut scene,
+            &mut lights,
+            camera.as_mut(),
+            source_units,
+            options.units,
+        );
 
         progress.update(ProgressState {
             description: "Complete".into(),
@@ -200,7 +217,8 @@ impl Importer for UsdImporter {
         });
         Ok(SceneLoadResult {
             scene,
-            camera: usd_result.camera,
+            camera,
+            lights,
             format: DetectedFormat::Usd,
             source_units,
         })
@@ -247,8 +265,16 @@ impl Importer for AssimpImporter {
 
         let assimp_result = result.map_err(|e| LoadError::Assimp(e.to_string()))?;
         let mut scene = assimp_result.scene;
+        let mut camera = assimp_result.camera;
+        let mut lights = assimp_result.lights;
         let source_units = assimp_result.units;
-        crate::apply_unit_policy(&mut scene, source_units, options.units);
+        crate::apply_unit_policy(
+            &mut scene,
+            &mut lights,
+            camera.as_mut(),
+            source_units,
+            options.units,
+        );
 
         progress.update(ProgressState {
             description: "Complete".into(),
@@ -257,7 +283,8 @@ impl Importer for AssimpImporter {
         });
         Ok(SceneLoadResult {
             scene,
-            camera: assimp_result.camera,
+            camera,
+            lights,
             format: DetectedFormat::Assimp,
             source_units,
         })
@@ -362,6 +389,8 @@ impl Importer for CadImporter {
         Ok(SceneLoadResult {
             scene,
             camera: None,
+            // CAD files carry no lights.
+            lights: Vec::new(),
             format,
             source_units,
         })

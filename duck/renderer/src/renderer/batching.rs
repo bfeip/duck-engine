@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use duck_engine_common::{Matrix3, Matrix4, Point3, SquareMatrix};
 
-use crate::scene::{common, Light, PositionedCamera, SceneData};
+use crate::scene::{common, PositionedCamera, SceneData};
 use crate::scene::resource::{
     AlphaMode, DisplayBehavior, FaceMaterialId, Instance, InstanceId, LineMaterialId,
     MaterialProperties, MeshId, NodeId, NodePayload, PointMaterialId, PrimitiveType, RenderLayer,
@@ -166,29 +166,13 @@ impl DrawBatch {
     }
 }
 
-/// A light resolved to world space, combining photometric data from `NodePayload::Light`
-/// with position and direction derived from the node's world transform.
-pub struct ResolvedLight {
-    pub light: Light,
-    /// World-space position (relevant for Point and Spot lights).
-    pub position: [f32; 3],
-    /// World-space direction pointing away from lit surfaces (relevant for Directional and Spot lights).
-    pub direction: [f32; 3],
-}
-
-/// All scene data collected in a single tree traversal.
-pub(crate) struct SceneFrameData {
-    pub instance_transforms: Vec<InstanceTransform>,
-    pub lights: Vec<ResolvedLight>,
-}
-
 fn collect_scene_data_recursive(
     scene: &SceneData,
     node_id: NodeId,
     parent_transform: Matrix4,
     parent_display: DisplayBehavior,
     parent_changed: bool,
-    data: &mut SceneFrameData,
+    instance_transforms: &mut Vec<InstanceTransform>,
 ) {
     let Some(node) = scene.get_node(node_id) else { return };
 
@@ -207,30 +191,27 @@ fn collect_scene_data_recursive(
 
     let display = DisplayBehavior::inherit(parent_display, node.display());
 
-    match node.payload() {
-        NodePayload::Instance(instance) => {
-            data.instance_transforms.push(
-                InstanceTransform::new(node.id, instance.id(), world_transform).with_display(display),
-            );
-        }
-        NodePayload::Light(light) => {
-            let (position, direction) = Light::world_position_and_direction(&world_transform);
-            data.lights.push(ResolvedLight { light: light.clone(), position: position.into(), direction: direction.into() });
-        }
-        _ => {}
+    if let NodePayload::Instance(instance) = node.payload() {
+        instance_transforms.push(
+            InstanceTransform::new(node.id, instance.id(), world_transform).with_display(display),
+        );
     }
 
     for child_id in node.children() {
-        collect_scene_data_recursive(scene, child_id, world_transform, display, needs_recompute, data);
+        collect_scene_data_recursive(
+            scene,
+            child_id,
+            world_transform,
+            display,
+            needs_recompute,
+            instance_transforms,
+        );
     }
 }
 
-/// Walks the entire scene tree and collects all instances and lights in one pass.
-pub(crate) fn collect_scene_frame_data(scene: &SceneData) -> SceneFrameData {
-    let mut data = SceneFrameData {
-        instance_transforms: Vec::new(),
-        lights: Vec::new(),
-    };
+/// Walks the entire scene tree and collects every visible instance's transform.
+pub(crate) fn collect_instance_transforms(scene: &SceneData) -> Vec<InstanceTransform> {
+    let mut instance_transforms = Vec::new();
     for root_id in scene.root_nodes() {
         collect_scene_data_recursive(
             scene,
@@ -238,10 +219,10 @@ pub(crate) fn collect_scene_frame_data(scene: &SceneData) -> SceneFrameData {
             Matrix4::identity(),
             DisplayBehavior::default(),
             false,
-            &mut data,
+            &mut instance_transforms,
         );
     }
-    data
+    instance_transforms
 }
 
 /// Collects all instances grouped into batches by mesh, material, and primitive type.
@@ -558,9 +539,6 @@ pub struct DrawData {
     /// Resolved outline configuration for secondary selections. `Some` when secondary
     /// highlights exist; `None` otherwise.
     secondary_highlight_config: Option<crate::highlight_query::HighlightConfig>,
-    /// Scene lights resolved to world space during the same tree traversal that
-    /// collected the batches.
-    lights: Vec<ResolvedLight>,
 }
 
 impl DrawData {
@@ -580,9 +558,7 @@ impl DrawData {
         viewport: (u32, u32),
         highlight: Option<&dyn HighlightQuery>,
     ) -> Self {
-        let frame_data = collect_scene_frame_data(scene);
-        let lights = frame_data.lights;
-        let mut batches = collect_draw_batches(scene, frame_data.instance_transforms);
+        let mut batches = collect_draw_batches(scene, collect_instance_transforms(scene));
         sort_batches_for_transparency(&mut batches, camera.eye);
 
         // Replace the effective transform of screen-space instances before any
@@ -638,13 +614,7 @@ impl DrawData {
             secondary_highlight_sub_geom_batches,
             highlight_config,
             secondary_highlight_config,
-            lights,
         }
-    }
-
-    /// Scene lights resolved to world space for this frame.
-    pub fn lights(&self) -> &[ResolvedLight] {
-        &self.lights
     }
 
     /// All batches (opaque, transparent, selected, etc.), sorted for rendering.

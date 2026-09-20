@@ -19,9 +19,9 @@ use duck_engine_scene::Scene;
 use crate::{
     camera_transition::CameraTransition,
     event::EventDispatcher,
-    renderer::{Renderer, ResolvedLight},
+    renderer::Renderer,
     scene::{
-        Light, PositionedCamera, SceneData,
+        Light, PositionedCamera, PositionedLight, SceneData,
         common::{RgbaColor, Transform},
     },
 };
@@ -132,107 +132,58 @@ pub(crate) struct ViewTarget {
     pub bind_group: wgpu::BindGroup,
 }
 
-/// When a view's camera-space lights ([`View::camera_lights`]) contribute to
-/// its rendering.
+/// When a view's headlight rig ([`View::headlight_rig`]) contributes to its
+/// rendering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum HeadlightMode {
-    /// Active only while the view's scene has no attached light nodes and no
-    /// active environment map (evaluated each frame).
+    /// Active only while the view has no lights of its own, its scene has no
+    /// lights, and no environment map is active (evaluated each frame).
     #[default]
     Auto,
     On,
     Off,
 }
 
-/// A light rigged in camera space, composed with the view camera's pose each
-/// frame. The transform's -Z axis is the light direction and its translation
-/// is the offset from the eye, matching the node-transform conventions of
-/// scene lights.
-#[derive(Clone, Debug)]
-pub struct CameraLight {
-    pub light: Light,
-    pub transform: Transform,
-}
-
-impl CameraLight {
-    /// A directional light aimed by `rotation` from the camera's pose.
-    pub fn directional(color: RgbaColor, intensity: f32, rotation: Quaternion) -> Self {
-        Self {
-            light: Light::directional(color, intensity),
-            transform: Transform { rotation, ..Transform::IDENTITY },
-        }
-    }
-
-    /// A hemisphere light whose sky axis is oriented by `rotation` from the
-    /// camera's pose.
-    pub fn hemisphere(
-        sky_color: RgbaColor,
-        ground_color: RgbaColor,
-        intensity: f32,
-        rotation: Quaternion,
-    ) -> Self {
-        Self {
-            light: Light::hemisphere(sky_color, ground_color, intensity),
-            transform: Transform { rotation, ..Transform::IDENTITY },
-        }
-    }
-}
-
 /// The default headlight rig: a three-point directional setup (warm key, cool
-/// fill, back rim) over a hemisphere ambient gradient.
+/// fill, back rim) over a hemisphere ambient gradient, all in camera space.
 ///
 /// Colors are linear. Intensities suit the Reinhard tonemap in the lit surface
 /// shader, which takes no 1/PI on incoming radiance.
-pub(crate) fn default_camera_lights() -> Vec<CameraLight> {
+pub(crate) fn default_headlight_rig() -> Vec<PositionedLight> {
     // Rotations aim the light's -Z axis in camera space, where +X is right, +Y
     // is up and -Z points away from the viewer.
+    let directional = |color, intensity, rotation| {
+        PositionedLight::camera(Light::directional(color, intensity), Transform::from_rotation(rotation))
+    };
     vec![
         // Key: from the upper left, in front of the subject.
-        CameraLight::directional(
+        directional(
             RgbaColor { r: 1.0, g: 0.96, b: 0.90, a: 1.0 },
             9.0,
             Quaternion::from_angle_x(Deg(-40.0)) * Quaternion::from_angle_y(Deg(-30.0)),
         ),
         // Fill: cooler and dimmer, from the lower right.
-        CameraLight::directional(
+        directional(
             RgbaColor { r: 0.72, g: 0.80, b: 1.0, a: 1.0 },
             2.6,
             Quaternion::from_angle_x(Deg(26.0)) * Quaternion::from_angle_y(Deg(37.0)),
         ),
         // Rim: from above and behind, separating the silhouette.
-        CameraLight::directional(
+        directional(
             RgbaColor { r: 0.85, g: 0.90, b: 1.0, a: 1.0 },
             5.0,
             Quaternion::from_angle_x(Deg(36.0)) * Quaternion::from_angle_y(Deg(160.0)),
         ),
         // Ambient: sky axis near camera up, tilted toward the viewer.
-        CameraLight::hemisphere(
-            RgbaColor { r: 0.16, g: 0.19, b: 0.24, a: 1.0 },
-            RgbaColor { r: 0.045, g: 0.042, b: 0.040, a: 1.0 },
-            0.9,
-            Quaternion::from_angle_x(Deg(-70.0)),
+        PositionedLight::camera(
+            Light::hemisphere(
+                RgbaColor { r: 0.16, g: 0.19, b: 0.24, a: 1.0 },
+                RgbaColor { r: 0.045, g: 0.042, b: 0.040, a: 1.0 },
+                0.9,
+            ),
+            Transform::from_rotation(Quaternion::from_angle_x(Deg(-70.0))),
         ),
     ]
-}
-
-/// Resolves camera-space lights to world space against `camera`'s pose.
-pub(crate) fn resolve_camera_lights(
-    camera: &PositionedCamera,
-    lights: &[CameraLight],
-) -> Vec<ResolvedLight> {
-    let pose = camera.pose_transform().to_matrix();
-    lights
-        .iter()
-        .map(|cl| {
-            let world = pose * cl.transform.to_matrix();
-            let (position, direction) = Light::world_position_and_direction(&world);
-            ResolvedLight {
-                light: cl.light.clone(),
-                position: position.into(),
-                direction: direction.into(),
-            }
-        })
-        .collect()
 }
 
 /// One independently rendered, independently interactive region of a viewer.
@@ -246,11 +197,13 @@ pub struct View {
     /// The camera this view renders from. Its aspect is kept in sync with the
     /// view's pixel size by the viewer.
     pub(crate) camera: PositionedCamera,
-    /// When [`camera_lights`](Self::camera_lights) contribute to rendering.
+    /// Lights this view alone contributes, on top of its scene's lights.
+    pub(crate) lights: Vec<PositionedLight>,
+    /// When [`headlight_rig`](Self::headlight_rig) contributes to rendering.
     pub(crate) headlight: HeadlightMode,
-    /// Camera-space lights composed with the scene's lights while headlights
-    /// are active.
-    pub(crate) camera_lights: Vec<CameraLight>,
+    /// The fallback rig, kept apart from [`lights`](Self::lights) so that
+    /// [`HeadlightMode::Auto`]'s "no other lights" test does not see itself.
+    pub(crate) headlight_rig: Vec<PositionedLight>,
     pub(crate) layout: ViewLayout,
     /// Cached `layout.resolve()` against the current target size.
     pub(crate) rect: PixelRect,
@@ -307,35 +260,43 @@ impl View {
         &self.camera
     }
 
-    /// When this view's camera-space lights contribute to rendering.
+    /// When this view's headlight rig contributes to rendering.
     pub fn headlight(&self) -> HeadlightMode {
         self.headlight
     }
 
-    /// This view's camera-space lights.
-    pub fn camera_lights(&self) -> &[CameraLight] {
-        &self.camera_lights
+    /// Lights this view alone contributes, on top of its scene's lights.
+    pub fn lights(&self) -> &[PositionedLight] {
+        &self.lights
     }
 
-    /// Resolves this view's camera-space lights against `camera` when the
-    /// headlight mode is active for the scene's current state.
-    pub(crate) fn active_camera_lights(
+    /// This view's fallback headlight rig.
+    pub fn headlight_rig(&self) -> &[PositionedLight] {
+        &self.headlight_rig
+    }
+
+    /// The lights to render this view with: its scene's lights, then its own,
+    /// then the headlight rig if it applies.
+    ///
+    /// The rig goes last so that it, rather than a light the app deliberately
+    /// added, is what falls off the end of
+    /// [`MAX_LIGHTS`](crate::scene::MAX_LIGHTS).
+    pub(crate) fn effective_lights(
         &self,
-        camera: &PositionedCamera,
+        scene_lights: &[PositionedLight],
         scene: &SceneData,
-    ) -> Vec<ResolvedLight> {
-        let on = match self.headlight {
+    ) -> Vec<PositionedLight> {
+        let rig_on = match self.headlight {
             HeadlightMode::On => true,
             HeadlightMode::Off => false,
             HeadlightMode::Auto => {
-                !scene.has_light_nodes() && scene.active_environment_map().is_none()
+                scene_lights.is_empty()
+                    && self.lights.is_empty()
+                    && scene.active_environment_map().is_none()
             }
         };
-        if on {
-            resolve_camera_lights(camera, &self.camera_lights)
-        } else {
-            Vec::new()
-        }
+        let rig = if rig_on { self.headlight_rig.as_slice() } else { &[] };
+        scene_lights.iter().chain(&self.lights).chain(rig).cloned().collect()
     }
 
     /// The view's operator stack.

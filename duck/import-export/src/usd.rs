@@ -15,10 +15,10 @@ use duck_engine_common::{
 
 use openusd::sdf::{self, AbstractData, Value};
 
-use duck_engine_scene::{Light, PositionedCamera, Projection, SceneData};
+use duck_engine_scene::{Light, PositionedCamera, PositionedLight, Projection, SceneData};
 use duck_engine_scene::resource::{
     FaceMaterial, FaceMaterialHandle, Instance, Mesh, MeshHandle, MeshPrimitive, NodeFlags, NodeId,
-    NodePayload, PrimitiveType, Vertex,
+    PrimitiveType, Vertex,
 };
 use duck_engine_scene::common::{LengthUnit, RgbaColor, Transform, WorldUnits, decompose_matrix};
 
@@ -26,6 +26,7 @@ use duck_engine_scene::common::{LengthUnit, RgbaColor, Transform, WorldUnits, de
 pub struct UsdLoadResult {
     pub scene: SceneData,
     pub camera: Option<PositionedCamera>,
+    pub lights: Vec<PositionedLight>,
     /// The stage's `metersPerUnit`, or USD's centimeter default.
     pub units: WorldUnits,
 }
@@ -232,6 +233,7 @@ fn convert_scene(data: &mut dyn AbstractData) -> Result<UsdLoadResult> {
 
     // Phase 2: Build node hierarchy with meshes, lights, cameras
     let mut camera = None;
+    let mut lights = Vec::new();
     let mut fallback_material_id: Option<FaceMaterialHandle> = None;
     let children = get_prim_children(data, &root);
     for child_name in &children {
@@ -243,11 +245,12 @@ fn convert_scene(data: &mut dyn AbstractData) -> Result<UsdLoadResult> {
             &mut scene,
             None,
             &mut camera,
+            &mut lights,
             &mut fallback_material_id,
         )?;
     }
 
-    Ok(UsdLoadResult { scene, camera, units })
+    Ok(UsdLoadResult { scene, camera, lights, units })
 }
 
 // ============================================================================
@@ -370,6 +373,7 @@ fn build_node_recursive(
     scene: &mut SceneData,
     parent: Option<NodeId>,
     camera_out: &mut Option<PositionedCamera>,
+    lights_out: &mut Vec<PositionedLight>,
     fallback_material_id: &mut Option<FaceMaterialHandle>,
 ) -> Result<()> {
     let type_name = get_prim_type(data, prim_path).unwrap_or_default();
@@ -392,7 +396,7 @@ fn build_node_recursive(
                 let node_id = scene.add_instance_node(
                     parent, instance, name, transform, NodeFlags::NONE
                 )?.id();
-                recurse_children(data, prim_path, material_map, scene, node_id, camera_out, fallback_material_id)?;
+                recurse_children(data, prim_path, material_map, scene, node_id, camera_out, lights_out, fallback_material_id)?;
             } else if mesh_entries.len() > 1 {
                 // Split mesh: create group node, then instance children
                 let group_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?.id();
@@ -405,7 +409,7 @@ fn build_node_recursive(
                         NodeFlags::NONE
                     )?;
                 }
-                recurse_children(data, prim_path, material_map, scene, group_id, camera_out, fallback_material_id)?;
+                recurse_children(data, prim_path, material_map, scene, group_id, camera_out, lights_out, fallback_material_id)?;
             }
         }
         "Camera" => {
@@ -414,7 +418,9 @@ fn build_node_recursive(
             }
         }
         "DistantLight" | "RectLight" | "SphereLight" | "DiskLight" => {
-            extract_light(data, prim_path, &type_name, &transform.position, scene);
+            if let Some(light) = extract_light(data, prim_path, &type_name, &transform.position) {
+                lights_out.push(light);
+            }
         }
         "Material" | "Shader" => {
             // Already handled in material collection phase
@@ -422,7 +428,7 @@ fn build_node_recursive(
         _ => {
             // Xform, Scope, or unknown → create a transform node and recurse
             let node_id = scene.add_node(parent, name, transform, NodeFlags::NONE)?.id();
-            recurse_children(data, prim_path, material_map, scene, node_id, camera_out, fallback_material_id)?;
+            recurse_children(data, prim_path, material_map, scene, node_id, camera_out, lights_out, fallback_material_id)?;
         }
     }
 
@@ -437,6 +443,7 @@ fn recurse_children(
     scene: &mut SceneData,
     parent_node: NodeId,
     camera_out: &mut Option<PositionedCamera>,
+    lights_out: &mut Vec<PositionedLight>,
     fallback_material_id: &mut Option<FaceMaterialHandle>,
 ) -> Result<()> {
     let children = get_prim_children(data, prim_path);
@@ -449,6 +456,7 @@ fn recurse_children(
             scene,
             Some(parent_node),
             camera_out,
+            lights_out,
             fallback_material_id,
         )?;
     }
@@ -928,8 +936,7 @@ fn extract_light(
     light_path: &sdf::Path,
     type_name: &str,
     position: &Point3,
-    scene: &mut SceneData,
-) {
+) -> Option<PositionedLight> {
     let intensity =
         get_float_from_prop(data, &make_property_path(light_path, "inputs:intensity"))
             .unwrap_or(1.0);
@@ -955,12 +962,10 @@ fn extract_light(
         "SphereLight" | "DiskLight" | "RectLight" => {
             (Light::point(color, intensity), Transform::from_position(*position))
         }
-        _ => return,
+        _ => return None,
     };
 
-    if let Ok(node) = scene.add_node(None, None, transform, NodeFlags::NONE) {
-        scene.set_node_payload(node.id(), NodePayload::Light(light));
-    }
+    Some(PositionedLight::world(light, transform))
 }
 
 // ============================================================================

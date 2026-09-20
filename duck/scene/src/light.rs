@@ -1,5 +1,6 @@
 use crate::common::RgbaColor;
-use duck_engine_common::{InnerSpace, Matrix4, Vector3};
+use crate::resource::NodeId;
+use duck_engine_common::{InnerSpace, Matrix4, Transform, Vector3};
 
 /// Maximum number of lights supported in the scene.
 pub const MAX_LIGHTS: usize = 8;
@@ -18,10 +19,10 @@ pub enum LightType {
     Hemisphere = 3,
 }
 
-/// The photometric properties of a light source in the scene.
+/// The photometric properties of a light source.
 ///
-/// Position and direction are **not** stored here — they are derived from the node's
-/// world transform during rendering:
+/// Position and direction are **not** stored here — pair this with a pose in a
+/// [`PositionedLight`], which is resolved to a world transform at render time:
 /// - Position (Point, Spot): translation column of the world transform matrix.
 /// - Direction (Directional, Spot, Hemisphere): negative Z-axis of the world rotation.
 #[derive(Debug, Clone)]
@@ -71,7 +72,7 @@ pub enum Light {
 }
 
 impl Light {
-    /// Extracts world-space position and direction from the node's world transform matrix.
+    /// Extracts world-space position and direction from a resolved world transform matrix.
     ///
     /// - Position: translation column (W) of the matrix. Relevant for `Point` and `Spot`.
     /// - Direction: negative Z-axis of the matrix. Relevant for `Directional` and `Spot`.
@@ -134,5 +135,48 @@ impl Light {
             Self::Spot { .. } => LightType::Spot,
             Self::Hemisphere { .. } => LightType::Hemisphere,
         }
+    }
+}
+
+/// What a [`PositionedLight`]'s transform is relative to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum LightSpace {
+    /// World space.
+    World,
+    /// The pose of the camera the light is rendered with, so the light travels
+    /// with the viewpoint.
+    Camera,
+    /// A scene node's world transform, so the light follows that node through
+    /// the hierarchy.
+    Node(NodeId),
+}
+
+/// A [`Light`] with a pose, in the space named by [`space`](Self::space).
+///
+/// The transform follows the same conventions everywhere: its translation is
+/// the light position and its -Z axis is the light direction.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PositionedLight {
+    pub light: Light,
+    pub transform: Transform,
+    pub space: LightSpace,
+}
+
+impl PositionedLight {
+    /// A light posed in world space.
+    pub fn world(light: Light, transform: Transform) -> Self {
+        Self { light, transform, space: LightSpace::World }
+    }
+
+    /// A light posed relative to the camera it is rendered with.
+    pub fn camera(light: Light, transform: Transform) -> Self {
+        Self { light, transform, space: LightSpace::Camera }
+    }
+
+    /// A light posed relative to `node`'s world transform.
+    pub fn node(node: NodeId, light: Light, transform: Transform) -> Self {
+        Self { light, transform, space: LightSpace::Node(node) }
     }
 }

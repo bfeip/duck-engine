@@ -19,16 +19,12 @@ use winit::{
 #[cfg(target_arch = "wasm32")]
 use winit::event_loop::EventLoopProxy;
 
-use duck_engine_common::{Deg, Point3, Quaternion, Rotation3};
 use duck_engine_viewer::event::Event;
-use duck_engine_viewer::common::RgbaColor;
 use duck_engine_viewer::input::{ElementState, Key};
 use duck_engine_viewer::operator::{
     NavigationMode, NavigationOperator, SelectionOperator, TransformMode, TransformOperator,
 };
-use duck_engine_viewer::common::Transform;
-use duck_engine_viewer::scene::{Light, LightType, Projection, Scene};
-use duck_engine_viewer::scene::resource::{NodeFlags, NodePayload};
+use duck_engine_viewer::scene::{Projection, Scene};
 use duck_engine_viewer::winit_support;
 use duck_engine_viewer::{AxisTriadConfig, OffscreenViewer, ViewId, ViewLayout, ViewMut, WindowSurface};
 
@@ -389,9 +385,6 @@ impl<'a> App<'a> {
         if ui_actions.clear_scene {
             self.clear_scene();
         }
-        if let Some(light_type) = ui_actions.add_light {
-            self.add_light(light_type);
-        }
         if ui_actions.load_environment {
             self.open_hdr_file_dialog();
         }
@@ -418,40 +411,6 @@ impl<'a> App<'a> {
         }
     }
 
-    fn add_light(&mut self, light_type: LightType) {
-        let Some(state) = self.state.as_mut() else { return };
-        let white = RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-
-        let (light, transform) = match light_type {
-            LightType::Point => (
-                Light::point(white, 1.0),
-                Transform::from_position(Point3::new(0.0, 3.0, 0.0)),
-            ),
-            LightType::Directional => (Light::directional(white, 1.0), Transform::IDENTITY),
-            LightType::Spot => (
-                Light::spot(white, 1.0, 30.0_f32.to_radians(), 45.0_f32.to_radians()),
-                Transform::from_position(Point3::new(0.0, 3.0, 0.0)),
-            ),
-            // Identity points -Z, so rotate the sky axis onto +Y.
-            LightType::Hemisphere => (
-                Light::hemisphere(
-                    RgbaColor { r: 0.16, g: 0.19, b: 0.24, a: 1.0 },
-                    RgbaColor { r: 0.045, g: 0.042, b: 0.040, a: 1.0 },
-                    1.0,
-                ),
-                Transform {
-                    rotation: Quaternion::from_angle_x(Deg(-90.0)),
-                    ..Transform::IDENTITY
-                },
-            ),
-        };
-
-        let scene_arc = state.scene();
-        let mut scene = scene_arc.lock();
-        let node_id = scene.add_node(None, None, transform, NodeFlags::NONE).expect("add light node").id();
-        scene.set_node_payload(node_id, NodePayload::Light(light));
-        log::info!("Added {:?} light", light_type);
-    }
 
     fn clear_environment(&mut self) {
         if let Some(state) = self.state.as_mut() {

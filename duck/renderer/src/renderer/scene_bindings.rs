@@ -3,7 +3,7 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::scene::{Light, LightType, MAX_LIGHTS, PositionedCamera};
 
-use super::batching::ResolvedLight;
+use super::lights::ResolvedLight;
 
 /// GPU uniform buffer layout for camera data.
 ///
@@ -226,16 +226,9 @@ impl LightsBinding {
         LightsBinding { buffer, bind_group }
     }
 
-    /// Upload the frame's lights: the scene's lights followed by the view's
-    /// extra (camera-space) lights, truncated at [`MAX_LIGHTS`].
-    pub fn write(
-        &self,
-        queue: &wgpu::Queue,
-        scene_lights: &[ResolvedLight],
-        extra_lights: &[ResolvedLight],
-    ) {
-        let uniform =
-            LightsArrayUniform::from_resolved_lights(scene_lights.iter().chain(extra_lights));
+    /// Upload the frame's lights, truncated at [`MAX_LIGHTS`].
+    pub fn write(&self, queue: &wgpu::Queue, lights: &[ResolvedLight]) {
+        let uniform = LightsArrayUniform::from_resolved_lights(lights);
         queue.write_buffer(&self.buffer, 0, bytes_of(&uniform));
     }
 }

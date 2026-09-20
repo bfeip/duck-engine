@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::ThreadId;
 
 use crate::common::{Matrix4, Point3, Quaternion, Transform, Vector3, WorldUnits};
-use crate::{BoundingResult, EnvironmentMap, EnvironmentMapId, Light, SceneData};
+use crate::{BoundingResult, EnvironmentMap, EnvironmentMapId, SceneData};
 use crate::resource::{
     DisplayBehavior, EffectiveVisibility, FaceMaterial, FaceMaterialHandle, FaceMaterialId,
     Instance, InstanceHandle, InstanceId, LineMaterial, LineMaterialHandle, LineMaterialId, Mesh,
@@ -308,27 +308,6 @@ impl Scene {
     #[track_caller]
     pub fn instance_count(&self) -> usize {
         self.lock().instance_count()
-    }
-
-    /// Number of light nodes in the scene.
-    #[track_caller]
-    pub fn light_count(&self) -> usize {
-        self.lock().light_count()
-    }
-
-    /// Collects every light in the scene with the attached node carrying it.
-    #[track_caller]
-    pub fn light_nodes(&self) -> Vec<(NodeId, Light)> {
-        let scene = self.lock();
-        scene
-            .nodes()
-            .filter_map(|n| match n.payload() {
-                NodePayload::Light(light) if scene.is_node_attached(n.id) => {
-                    Some((n.id, light.clone()))
-                }
-                _ => None,
-            })
-            .collect()
     }
 
     // ========== Environment maps ==========

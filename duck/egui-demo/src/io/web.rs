@@ -71,6 +71,7 @@ impl App<'_> {
                 let bounds = result.scene.bounding().bounds;
                 state.viewer.set_view_scene(state.view_id, Scene::new(result.scene));
                 let mut view = state.view_mut();
+                *view.scene_lights_mut() = result.lights;
                 if let Some(camera) = result.camera {
                     view.set_camera(camera);
                 } else if let Some(bounds) = bounds {

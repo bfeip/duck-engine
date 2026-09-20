@@ -632,31 +632,10 @@ impl SceneData {
     /// Returns the current node generation counter.
     ///
     /// Increments on every node add, remove, or mutation. Consumers compare it
-    /// against the last value they saw to detect that per-node data (lights,
-    /// say) needs re-collection.
+    /// against the last value they saw to detect that per-node derived data
+    /// needs re-collection.
     pub fn node_generation(&self) -> u64 {
         self.node_generation
-    }
-
-    // ========== Light Node Helpers ==========
-
-    /// Returns true if any attached node carries a `Light` payload.
-    ///
-    /// Detached nodes (kept alive by a handle after
-    /// [`remove_node`](Self::remove_node)) are not rendered, so their lights
-    /// don't count.
-    pub fn has_light_nodes(&self) -> bool {
-        self.nodes
-            .values()
-            .any(|n| matches!(n.payload(), NodePayload::Light(_)) && self.is_node_attached(n.id))
-    }
-
-    /// Returns the number of attached nodes with a [`NodePayload::Light`] payload.
-    pub fn light_count(&self) -> usize {
-        self.nodes
-            .values()
-            .filter(|n| matches!(n.payload(), NodePayload::Light(_)) && self.is_node_attached(n.id))
-            .count()
     }
 
     // ========== Node API ==========

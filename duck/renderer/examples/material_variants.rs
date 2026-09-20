@@ -15,9 +15,9 @@
 
 use duck_engine_common::{Point3, Vector3};
 use duck_engine_renderer::{Gpu, RenderContext, Renderer, SceneResources};
-use duck_engine_renderer::scene::{Light, PositionedCamera, Projection, SceneData};
+use duck_engine_renderer::scene::{Light, PositionedCamera, PositionedLight, Projection, SceneData};
 use duck_engine_renderer::scene::resource::{
-    AlphaMode, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh, NodePayload,
+    AlphaMode, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh,
     PointMaterial, PrimitiveType, Texture, TextureHandle,
 };
 use duck_engine_renderer::scene::common::{RgbaColor, Transform};
@@ -108,15 +108,11 @@ fn main() -> anyhow::Result<()> {
         scene.add_line_material(LineMaterial::new(RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 0.3 }));
     place(&mut scene, Instance::new(lines.clone()).with_line_material(line_translucent), 7, "auto-blend-line")?;
 
-    // A white directional light (its direction is the node's -Z axis).
-    let light = scene
-        .add_node(None, Some("Light".to_string()), Default::default(), NodeFlags::NONE)
-        .unwrap()
-        .id();
-    scene.set_node_payload(
-        light,
-        NodePayload::Light(Light::directional(RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, 2.5)),
-    );
+    // A white directional light (its direction is the transform's -Z axis).
+    let lights = [PositionedLight::world(
+        Light::directional(RgbaColor { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, 2.5),
+        Transform::IDENTITY,
+    )];
 
     let camera = PositionedCamera {
         eye: Point3::new(0.0, 0.0, 4.0),
@@ -127,7 +123,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut scene = Scene::new(scene);
-    let image = renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &[], None)?;
+    let image = renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &lights, None)?;
     image.save("material_variants.png")?;
     println!("Saved material_variants.png ({width}×{height}) — all surface variants compiled");
     Ok(())

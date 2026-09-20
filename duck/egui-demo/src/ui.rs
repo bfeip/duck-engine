@@ -10,7 +10,7 @@ pub use right_panel::RightPanel;
 
 use std::sync::{Arc, Mutex};
 use duck_engine_viewer::operator::{NavigationMode, NavigationOperator};
-use duck_engine_viewer::scene::{LightType, PositionedCamera};
+use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::scene::resource::{NodeId, Visibility};
 use duck_engine_viewer::ViewMut;
 
@@ -29,7 +29,6 @@ pub struct VisibilityChange {
 pub struct UiActions {
     pub load_scene: bool,
     pub clear_scene: bool,
-    pub add_light: Option<LightType>,
     pub load_environment: bool,
     pub clear_environment: bool,
     pub visibility_changes: Vec<VisibilityChange>,

@@ -15,10 +15,10 @@ use russimp::metadata::MetadataType;
 use russimp::node::Node as RNode;
 use russimp::scene::{PostProcess, Scene as RScene};
 
-use duck_engine_scene::{Light, PositionedCamera, Projection, SceneData};
+use duck_engine_scene::{Light, PositionedCamera, PositionedLight, Projection, SceneData};
 use duck_engine_scene::resource::{
     FaceMaterial, FaceMaterialHandle, Instance, Mesh, MeshHandle, MeshPrimitive, NodeFlags, NodeId,
-    NodePayload, PrimitiveType, Texture, TextureHandle, Vertex,
+    PrimitiveType, Texture, TextureHandle, Vertex,
 };
 use duck_engine_scene::common::{LengthUnit, RgbaColor, Transform, WorldUnits, decompose_matrix};
 
@@ -26,6 +26,7 @@ use duck_engine_scene::common::{LengthUnit, RgbaColor, Transform, WorldUnits, de
 pub struct AssimpLoadResult {
     pub scene: SceneData,
     pub camera: Option<PositionedCamera>,
+    pub lights: Vec<PositionedLight>,
     /// Units the file declared, where the format carries that (FBX's
     /// `UnitScaleFactor`). `None` when nothing was declared — most formats
     /// assimp handles say nothing about units at all.
@@ -106,12 +107,12 @@ fn convert_scene(assimp_scene: &RScene, base_path: Option<&Path>) -> Result<Assi
     }
 
     // Phase 5: Load lights
-    load_lights(&assimp_scene.lights, &mut scene);
+    let lights = load_lights(&assimp_scene.lights);
 
     // Phase 6: Extract camera
     let camera = extract_camera(&assimp_scene.cameras);
 
-    Ok(AssimpLoadResult { scene, camera, units: detect_units(assimp_scene) })
+    Ok(AssimpLoadResult { scene, camera, lights, units: detect_units(assimp_scene) })
 }
 
 // ============================================================================
@@ -466,10 +467,11 @@ fn build_node_tree(
 // Lights
 // ============================================================================
 
-/// Load lights from assimp scene into our scene.
-fn load_lights(assimp_lights: &[russimp::light::Light], scene: &mut SceneData) {
+/// Convert assimp's lights into posed engine lights.
+fn load_lights(assimp_lights: &[russimp::light::Light]) -> Vec<PositionedLight> {
     use russimp::light::LightSourceType;
 
+    let mut lights = Vec::new();
     for light in assimp_lights {
         let color = RgbaColor {
             r: light.color_diffuse.r,
@@ -491,10 +493,9 @@ fn load_lights(assimp_lights: &[russimp::light::Light], scene: &mut SceneData) {
         };
         let transform = Transform::new(pos, rotation, Vector3::new(1.0, 1.0, 1.0));
 
-        if let Ok(node) = scene.add_node(None, None, transform, NodeFlags::NONE) {
-            scene.set_node_payload(node.id(), NodePayload::Light(engine_light));
-        }
+        lights.push(PositionedLight::world(engine_light, transform));
     }
+    lights
 }
 
 /// Computes the rotation quaternion that aligns the node's local -Z axis to the given direction.

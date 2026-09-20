@@ -92,5 +92,5 @@ fn build_scene_info_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
     ui.label(format!("Meshes: {}", scene.mesh_count()));
     ui.label(format!("Instances: {}", scene.instance_count()));
     ui.label(format!("Nodes: {}", scene.node_count()));
-    ui.label(format!("Lights: {}", scene.light_count()));
+    ui.label(format!("Lights: {}", view.scene_lights().len()));
 }
