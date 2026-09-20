@@ -91,8 +91,8 @@ pub fn intersect_ray_nearest(mesh: &Mesh, ray: &Ray) -> Option<TriangleMeshHit> 
         let p1 = Point3::from(v1.position);
         let p2 = Point3::from(v2.position);
 
-        if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2) {
-            if nearest.as_ref().is_none_or(|n| t < n.distance) {
+        if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2)
+            && nearest.as_ref().is_none_or(|n| t < n.distance) {
                 let w = 1.0 - u - v;
                 nearest = Some(TriangleMeshHit {
                     distance: t,
@@ -101,7 +101,6 @@ pub fn intersect_ray_nearest(mesh: &Mesh, ray: &Ray) -> Option<TriangleMeshHit> 
                     barycentric: (u, v, w),
                 });
             }
-        }
     }
 
     nearest

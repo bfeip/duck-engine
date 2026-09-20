@@ -74,8 +74,8 @@ impl MeshSpatialIndex {
                 let p0 = Point3::from(v0.position);
                 let p1 = Point3::from(v1.position);
                 let p2 = Point3::from(v2.position);
-                if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2) {
-                    if t < best_distance.get() {
+                if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2)
+                    && t < best_distance.get() {
                         best_distance.set(t);
                         best = Some(TriangleMeshHit {
                             distance: t,
@@ -84,7 +84,6 @@ impl MeshSpatialIndex {
                             barycentric: (u, v, 1.0 - u - v),
                         });
                     }
-                }
             },
         );
 
@@ -129,11 +128,10 @@ impl MeshSpatialIndex {
             };
             let p0 = Point3::from(v0.position);
             let p1 = Point3::from(v1.position);
-            if let Some(approach) = ray.closest_approach_to_segment(p0, p1) {
-                if approach.distance <= tolerance {
+            if let Some(approach) = ray.closest_approach_to_segment(p0, p1)
+                && approach.distance <= tolerance {
                     f(segment_index, &approach);
                 }
-            }
         });
     }
 }
