@@ -61,6 +61,12 @@ impl<Kind> Id<Kind> {
 // Hand-written trait impls so `Kind` carries no spurious bounds (deriving would
 // inject e.g. `Kind: Clone`). All logic delegates to the inner `Uuid`.
 
+impl<Kind> Default for Id<Kind> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<Kind> Clone for Id<Kind> {
     fn clone(&self) -> Self {
         *self

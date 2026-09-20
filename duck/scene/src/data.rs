@@ -1427,6 +1427,12 @@ impl SceneData {
     }
 }
 
+impl Default for SceneData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Clone for SceneData {
     /// Clones the scene contents into an independent scene.
     ///
