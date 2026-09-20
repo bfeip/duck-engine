@@ -872,9 +872,7 @@ fn test_primitive_triangle_winding_matches_normals() {
                     &verts[tri[0] as usize],
                     &verts[tri[1] as usize],
                     &verts[tri[2] as usize],
-                ] else {
-                    unreachable!()
-                };
+                ];
                 let p = |v: &Vertex| Vector3::new(v.position[0], v.position[1], v.position[2]);
                 let n = |v: &Vertex| Vector3::new(v.normal[0], v.normal[1], v.normal[2]);
 
