@@ -46,6 +46,20 @@ impl Transform {
         }
     }
 
+    pub fn from_rotation(rotation: Quaternion) -> Self {
+        Self {
+            rotation,
+            ..Self::IDENTITY
+        }
+    }
+
+    pub fn from_scale(scale: Vector3) -> Self {
+        Self {
+            scale,
+            ..Self::IDENTITY
+        }
+    }
+
     /// Computes the 4x4 transformation matrix (Translation * Rotation * Scale).
     pub fn to_matrix(&self) -> Matrix4 {
         let translation = Matrix4::from_translation(self.position.to_vec());
