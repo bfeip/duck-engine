@@ -26,6 +26,7 @@ mod viewer;
 
 pub use axis_triad::AxisTriadConfig;
 pub use view::{Corner, HeadlightMode, PixelRect, View, ViewId, ViewLayout};
+pub use renderer::GpuOptions;
 pub use viewer::{OffscreenViewer, SurfacedViewer, ViewMut, Viewer, WindowSurface};
 
 // Optional integrations

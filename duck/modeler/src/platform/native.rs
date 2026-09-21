@@ -11,7 +11,7 @@ use winit::{
 
 use duck_engine_viewer::event::Event;
 use duck_engine_viewer::winit_support;
-use duck_engine_viewer::WindowSurface;
+use duck_engine_viewer::{GpuOptions, WindowSurface};
 
 use crate::ViewerState;
 
@@ -41,7 +41,8 @@ impl Host {
         );
 
         let size = window.inner_size();
-        let surface = WindowSurface::new(Arc::clone(&window), size.width, size.height).await;
+        let surface = WindowSurface::new(Arc::clone(&window), size.width, size.height, GpuOptions::default())
+            .await;
 
         let egui_winit = egui_winit::State::new(
             egui_ctx,

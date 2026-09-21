@@ -8,7 +8,7 @@ use std::ffi::c_int;
 
 use duck_engine_viewer::emscripten_support;
 use duck_engine_viewer::event::{DeviceEvent, Event};
-use duck_engine_viewer::WindowSurface;
+use duck_engine_viewer::{GpuOptions, WindowSurface};
 
 use crate::ViewerState;
 use egui_input::EguiInput;
@@ -39,7 +39,9 @@ impl Host {
         // Size the canvas backing store to its CSS box before creating the
         // surface, so the first frame is not stretched.
         let (width, height) = emscripten_support::canvas_size().unwrap_or((1200, 1000));
-        let surface = WindowSurface::from_canvas_selector(CANVAS, width, height).await;
+        let surface =
+            WindowSurface::from_canvas_selector(CANVAS, width, height, GpuOptions::default())
+                .await;
 
         (Self { egui_input: EguiInput::new(), size: (width, height) }, surface)
     }

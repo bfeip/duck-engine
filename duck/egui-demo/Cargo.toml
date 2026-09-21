@@ -19,6 +19,7 @@ wgpu = "27.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 duck-engine-viewer = { path = "../viewer", features = ["winit-support"] }
+clap = { version = "4", features = ["derive"] }
 egui-winit = "0.33"
 env_logger = "0.11"
 pollster = "0.4"

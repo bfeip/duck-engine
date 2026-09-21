@@ -22,7 +22,7 @@ use duck_engine_viewer::common::{RgbaColor, Transform, Vector3};
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator};
 use duck_engine_viewer::scene::resource::{FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType};
 use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
-use duck_engine_viewer::{SurfacedViewer, ViewLayout};
+use duck_engine_viewer::{GpuOptions, SurfacedViewer, ViewLayout};
 
 const CANVAS: &str = "#canvas";
 const WIDTH: u32 = 800;
@@ -68,7 +68,7 @@ fn main() {
     // resolve without yielding to the event loop and `block_on` will not
     // deadlock the way it would under wasm-bindgen.
     let mut viewer =
-        pollster::block_on(SurfacedViewer::from_canvas_selector(CANVAS, WIDTH, HEIGHT));
+        pollster::block_on(SurfacedViewer::from_canvas_selector(CANVAS, WIDTH, HEIGHT, GpuOptions::default()));
 
     let scene = Scene::default();
     {

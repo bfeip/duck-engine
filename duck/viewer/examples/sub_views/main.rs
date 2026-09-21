@@ -29,7 +29,7 @@ use duck_engine_viewer::scene::resource::{
     FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType,
 };
 use duck_engine_viewer::{
-    AxisTriadConfig, SurfacedViewer, ViewLayout, winit_support,
+    AxisTriadConfig, GpuOptions, SurfacedViewer, ViewLayout, winit_support,
 };
 
 /// Build the shared model: a few solids around the origin.
@@ -102,6 +102,7 @@ impl<'a> App<'a> {
             Arc::clone(&window),
             size.width,
             size.height,
+            GpuOptions::default(),
         ));
 
         let model = Scene::default();

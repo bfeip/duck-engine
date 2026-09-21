@@ -14,8 +14,8 @@ use crate::{
     scene::{PositionedCamera, PositionedLight, Projection, common::RgbaColor},
     selection::SelectionManager,
     renderer::{
-        Gpu, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery, RenderContext, Renderer,
-        SceneResources, SceneWorkflow, ShadedWorkflow,
+        Gpu, GpuOptions, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery, RenderContext,
+        Renderer, SceneResources, SceneWorkflow, ShadedWorkflow,
     },
     view::{
         HeadlightMode, PixelRect, View, ViewId, ViewLayout, ViewTarget, default_headlight_rig,
@@ -1012,30 +1012,15 @@ pub struct WindowSurface<'a> {
 impl<'a> WindowSurface<'a> {
     /// Create and configure a surface for the given target, bootstrapping the
     /// wgpu instance, adapter, and device/queue.
-    pub async fn new<T>(surface_target: T, width: u32, height: u32) -> Self
+    pub async fn new<T>(surface_target: T, width: u32, height: u32, options: GpuOptions) -> Self
     where
         T: Into<wgpu::SurfaceTarget<'a>>,
     {
-        // Create wgpu instance
-        #[cfg(not(target_arch = "wasm32"))]
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            ..Default::default()
-        });
-        #[cfg(web)]
-        let instance = wgpu::util::new_instance_with_webgpu_detection(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
-            ..Default::default()
-        }).await;
-        // Emscripten reaches WebGL2 through the GLES backend; there is no
-        // WebGPU backend to detect.
-        #[cfg(emscripten)]
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::GL,
-            ..Default::default()
-        });
+        let instance = options.create_instance().await;
 
-        let surface = instance.create_surface(surface_target).unwrap();
+        let surface = instance.create_surface(surface_target).unwrap_or_else(|e| {
+            panic!("No surface on backends {:?}: {e}", options.backends)
+        });
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -1044,11 +1029,19 @@ impl<'a> WindowSurface<'a> {
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
+            .unwrap_or_else(|e| {
+                panic!(
+                    "No GPU adapter for this surface among backends {:?}: {e}",
+                    options.backends
+                )
+            });
 
-        let is_gl_backend = adapter.get_info().backend == wgpu::Backend::Gl;
+        let info = adapter.get_info();
+        let is_gl_backend = info.backend == wgpu::Backend::Gl;
         let downlevel_flags = adapter.get_downlevel_capabilities().flags;
         let has_compute = downlevel_flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS);
+
+        log::info!("Using {} adapter: {}", info.backend, info.name);
 
         if cfg!(target_arch = "wasm32") {
             if is_gl_backend {
@@ -1146,9 +1139,14 @@ impl<'a> WindowSurface<'a> {
 
     /// Create a surface on the canvas named by a CSS selector (emscripten).
     #[cfg(all(emscripten, feature = "emscripten-support"))]
-    pub async fn from_canvas_selector(selector: &str, width: u32, height: u32) -> Self {
+    pub async fn from_canvas_selector(
+        selector: &str,
+        width: u32,
+        height: u32,
+        options: GpuOptions,
+    ) -> Self {
         let target = crate::emscripten_support::CanvasSelector::new(selector);
-        Self::new(target, width, height).await
+        Self::new(target, width, height, options).await
     }
 
     /// A clone of the shared GPU handle, for building renderers on the same
@@ -1214,11 +1212,11 @@ impl<'a> DerefMut for SurfacedViewer<'a> {
 
 impl<'a> SurfacedViewer<'a> {
     /// Create a new viewer with the given surface target.
-    pub async fn new<T>(surface_target: T, width: u32, height: u32) -> Self
+    pub async fn new<T>(surface_target: T, width: u32, height: u32, options: GpuOptions) -> Self
     where
         T: Into<wgpu::SurfaceTarget<'a>>,
     {
-        let surface = WindowSurface::new(surface_target, width, height).await;
+        let surface = WindowSurface::new(surface_target, width, height, options).await;
         Self::from_surface(surface, width, height)
     }
 
@@ -1238,24 +1236,32 @@ impl<'a> SurfacedViewer<'a> {
     /// Create a new viewer from a winit Window (native platforms).
     /// The viewer size is automatically determined from the window's inner size.
     #[cfg(feature = "winit-support")]
-    pub async fn from_window(window: std::sync::Arc<winit::window::Window>) -> Self {
+    pub async fn from_window(
+        window: std::sync::Arc<winit::window::Window>,
+        options: GpuOptions,
+    ) -> Self {
         let size = window.inner_size();
-        Self::new(window, size.width, size.height).await
+        Self::new(window, size.width, size.height, options).await
     }
 
     /// Create a new viewer from an HTML canvas element (WebAssembly).
     /// The viewer size is automatically determined from the canvas dimensions.
     #[cfg(web)]
-    pub async fn from_canvas(canvas: web_sys::HtmlCanvasElement) -> Self {
+    pub async fn from_canvas(canvas: web_sys::HtmlCanvasElement, options: GpuOptions) -> Self {
         let width = canvas.width();
         let height = canvas.height();
-        Self::new(wgpu::SurfaceTarget::Canvas(canvas), width, height).await
+        Self::new(wgpu::SurfaceTarget::Canvas(canvas), width, height, options).await
     }
 
     /// Create a new viewer on the canvas named by a CSS selector (emscripten).
     #[cfg(all(emscripten, feature = "emscripten-support"))]
-    pub async fn from_canvas_selector(selector: &str, width: u32, height: u32) -> Self {
-        let surface = WindowSurface::from_canvas_selector(selector, width, height).await;
+    pub async fn from_canvas_selector(
+        selector: &str,
+        width: u32,
+        height: u32,
+        options: GpuOptions,
+    ) -> Self {
+        let surface = WindowSurface::from_canvas_selector(selector, width, height, options).await;
         Self::from_surface(surface, width, height)
     }
 
@@ -1356,8 +1362,8 @@ impl OffscreenViewer {
     ///
     /// Convenience for thumbnails / server-side rendering where no surface or
     /// external device is involved. Uses `Rgba8UnormSrgb` and no MSAA.
-    pub async fn headless(width: u32, height: u32) -> anyhow::Result<Self> {
-        let (gpu, caps) = Gpu::headless().await?;
+    pub async fn headless(width: u32, height: u32, options: GpuOptions) -> anyhow::Result<Self> {
+        let (gpu, caps) = Gpu::headless(options).await?;
         Ok(Self::from_gpu(
             gpu,
             wgpu::TextureFormat::Rgba8UnormSrgb,

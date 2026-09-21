@@ -3,16 +3,51 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use clap::{Parser, ValueEnum};
 use winit::dpi::LogicalSize;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::Window;
 
+use duck_engine_viewer::GpuOptions;
 use duck_engine_viewer::scene::Projection;
 
 use crate::{App, UserEvent, ViewerState, ui};
 
+#[derive(Parser)]
+#[command(about = "Duck Engine egui demo")]
+struct Args {
+    /// GPU backend to render with (default: platform default, or $WGPU_BACKEND)
+    #[arg(long, value_enum)]
+    backend: Option<BackendArg>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum BackendArg {
+    Vulkan,
+    Metal,
+    Dx12,
+    Gl,
+}
+
+impl BackendArg {
+    fn to_wgpu_backend(self) -> wgpu::Backends {
+        match self {
+            Self::Vulkan => wgpu::Backends::VULKAN,
+            Self::Metal => wgpu::Backends::METAL,
+            Self::Dx12 => wgpu::Backends::DX12,
+            Self::Gl => wgpu::Backends::GL,
+        }
+    }
+}
+
 pub(crate) fn run() {
     env_logger::init();
+
+    let args = Args::parse();
+    let gpu_options = match args.backend {
+        Some(backend) => GpuOptions::default().with_backends(backend.to_wgpu_backend()),
+        None => GpuOptions::default(),
+    };
 
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
 
@@ -21,6 +56,7 @@ pub(crate) fn run() {
         ui: ui::UiState::default(),
         workflow_index: 0,
         last_perspective: Projection::Perspective { fovy: 45.0, znear: 0.001, zfar: 100.0 },
+        gpu_options,
         pending_hdr_path: None,
         pending_scene_load_path: None,
     };
@@ -44,7 +80,7 @@ pub(crate) fn resume(app: &mut App, event_loop: &ActiveEventLoop) {
             .expect("Failed to create window"),
     );
 
-    let state = pollster::block_on(ViewerState::from_window(window, None));
+    let state = pollster::block_on(ViewerState::from_window(window, None, app.gpu_options));
     state.window.request_redraw();
     app.state = Some(state);
 

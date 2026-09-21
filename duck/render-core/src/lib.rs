@@ -20,7 +20,7 @@ mod texture;
 mod workflow;
 
 pub use gen_cache::GenCache;
-pub use gpu::{Gpu, GpuCapabilities};
+pub use gpu::{Gpu, GpuCapabilities, GpuOptions};
 pub use host::{RenderHost, RgbaPixels};
 pub use pipeline_cache::PipelineCache;
 pub use readback::ReadbackTarget;

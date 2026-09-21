@@ -14,7 +14,7 @@
 //! render fails. Run with `cargo run --example material_variants -p duck-engine-renderer`.
 
 use duck_engine_common::{Point3, Vector3};
-use duck_engine_renderer::{Gpu, RenderContext, Renderer, SceneResources};
+use duck_engine_renderer::{Gpu, GpuOptions, RenderContext, Renderer, SceneResources};
 use duck_engine_renderer::scene::{Light, PositionedCamera, PositionedLight, Projection, SceneData};
 use duck_engine_renderer::scene::resource::{
     AlphaMode, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh,
@@ -32,7 +32,7 @@ fn solid_texture(scene: &mut SceneData, rgba: [u8; 4]) -> TextureHandle {
 
 fn main() -> anyhow::Result<()> {
     let (width, height) = (640u32, 320u32);
-    let (gpu, caps) = pollster::block_on(Gpu::headless())?;
+    let (gpu, caps) = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
     let mut ctx =
         RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
     let mut shared = SceneResources::new(&ctx);

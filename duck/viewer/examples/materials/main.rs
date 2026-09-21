@@ -15,7 +15,7 @@ use duck_engine_viewer::scene::resource::{
     DisplayBehavior, FaceMaterial, Instance, LineMaterial, MaterialFlags, Mesh, PointMaterial,
     PrimitiveType,
 };
-use duck_engine_viewer::{SurfacedViewer, ViewLayout, winit_support};
+use duck_engine_viewer::{GpuOptions, SurfacedViewer, ViewLayout, winit_support};
 use duck_engine_viewer::operator::{
     NavigationOperator, SelectionOperator, TransformMode, TransformOperator,
 };
@@ -264,6 +264,7 @@ impl<'a> App<'a> {
             Arc::clone(&window),
             size.width,
             size.height,
+            GpuOptions::default(),
         ));
 
         let scene = Scene::default();

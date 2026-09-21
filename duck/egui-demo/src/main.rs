@@ -26,7 +26,9 @@ use duck_engine_viewer::operator::{
 };
 use duck_engine_viewer::scene::{Projection, Scene};
 use duck_engine_viewer::winit_support;
-use duck_engine_viewer::{AxisTriadConfig, OffscreenViewer, ViewId, ViewLayout, ViewMut, WindowSurface};
+use duck_engine_viewer::{
+    AxisTriadConfig, GpuOptions, OffscreenViewer, ViewId, ViewLayout, ViewMut, WindowSurface,
+};
 
 /// Debug actions triggered by key presses
 enum DebugAction {
@@ -82,9 +84,14 @@ struct ViewerState<'a> {
 impl ViewerState<'static> {
     /// Build the viewer + egui state for an existing window. `size` overrides
     /// the window's reported inner size (used on web, where it can lag).
-    async fn from_window(window: Arc<Window>, size: Option<PhysicalSize<u32>>) -> Self {
+    async fn from_window(
+        window: Arc<Window>,
+        size: Option<PhysicalSize<u32>>,
+        gpu_options: GpuOptions,
+    ) -> Self {
         let size = size.unwrap_or(window.inner_size());
-        let surface = WindowSurface::new(Arc::clone(&window), size.width, size.height).await;
+        let surface =
+            WindowSurface::new(Arc::clone(&window), size.width, size.height, gpu_options).await;
 
         let mut viewer = OffscreenViewer::from_gpu(
             surface.gpu(),
@@ -262,6 +269,9 @@ struct App<'a> {
     /// The perspective projection to restore when the O debug key switches back
     /// from orthographic.
     last_perspective: Projection,
+    /// Options for the surface created on resume.
+    #[cfg(not(target_arch = "wasm32"))]
+    gpu_options: GpuOptions,
     /// Pending HDR environment path to load
     #[cfg(not(target_arch = "wasm32"))]
     pending_hdr_path: Option<PathBuf>,

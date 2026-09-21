@@ -8,7 +8,7 @@
 use duck_engine_viewer::common::{RgbaColor, Transform, Vector3};
 use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 use duck_engine_viewer::scene::resource::{FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType};
-use duck_engine_viewer::{OffscreenViewer, ViewLayout};
+use duck_engine_viewer::{GpuOptions, OffscreenViewer, ViewLayout};
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
@@ -16,7 +16,7 @@ const HEIGHT: u32 = 600;
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let mut viewer = pollster::block_on(OffscreenViewer::headless(WIDTH, HEIGHT))?;
+    let mut viewer = pollster::block_on(OffscreenViewer::headless(WIDTH, HEIGHT, GpuOptions::default()))?;
 
     // Build a simple scene: one sphere with a PBR material.
     let scene = Scene::default();

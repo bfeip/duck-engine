@@ -12,6 +12,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys};
 use winit::window::Window;
 
+use duck_engine_viewer::GpuOptions;
 use duck_engine_viewer::scene::Projection;
 
 use crate::{App, UserEvent, ViewerState, ui};
@@ -69,7 +70,7 @@ pub(crate) fn resume(app: &mut App, event_loop: &ActiveEventLoop) {
 
     let proxy = app.proxy.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        let state = ViewerState::from_window(window, Some(size)).await;
+        let state = ViewerState::from_window(window, Some(size), GpuOptions::default()).await;
         let _ = proxy.send_event(UserEvent::Initialized(state));
     });
 }

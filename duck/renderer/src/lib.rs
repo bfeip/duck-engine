@@ -91,7 +91,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use duck_engine_renderer::{Gpu, RenderContext, Renderer, SceneResources};
+//! use duck_engine_renderer::{Gpu, GpuOptions, RenderContext, Renderer, SceneResources};
 //! use duck_engine_renderer::scene::{PositionedCamera, Projection, Scene, SceneData};
 //! use duck_engine_renderer::scene::common::{Point3, RgbaColor, Vector3};
 //! use duck_engine_renderer::scene::resource::{
@@ -100,7 +100,7 @@
 //!
 //! # fn main() -> anyhow::Result<()> {
 //! // One RenderContext, one SceneResources per scene, one Renderer per view.
-//! let (gpu, caps) = pollster::block_on(Gpu::headless())?;
+//! let (gpu, caps) = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
 //! let mut ctx =
 //!     RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
 //! let mut shared = SceneResources::new(&ctx);
@@ -158,4 +158,4 @@ pub use renderer::{
 pub use highlight_query::{HighlightConfig, HighlightQuery};
 
 // Core dispatch types needed to author custom workflows/passes.
-pub use render_core::{FrameTargets, Gpu, RenderWorkflow};
+pub use render_core::{FrameTargets, Gpu, GpuOptions, RenderWorkflow};
