@@ -605,7 +605,6 @@ impl Drop for UndoScope<'_> {
 mod tests {
     use super::*;
     use duck_engine_scene::common::Vector3;
-    use duck_engine_scene::resource::NodePayload;
 
     fn doc_with_box() -> (Document, PartId, NodeId) {
         let scene = Scene::default();
@@ -732,11 +731,8 @@ mod tests {
         let (mut doc, part, node) = doc_with_box();
         let face_material = {
             let scene = doc.scene().lock();
-            let NodePayload::Instance(instance) = scene.get_node(node).unwrap().payload()
-            else {
-                panic!("expected instance payload");
-            };
-            scene.get_instance(instance.id()).unwrap().face_material().unwrap()
+            let instance_id = scene.get_node(node).unwrap().instance().expect("expected an instance");
+            scene.get_instance(instance_id).unwrap().face_material().unwrap()
         };
 
         doc.remove_part(part);

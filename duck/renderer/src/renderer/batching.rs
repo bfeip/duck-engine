@@ -5,7 +5,7 @@ use duck_engine_common::{Matrix3, Matrix4, Point3, SquareMatrix};
 use crate::scene::{common, PositionedCamera, SceneData};
 use crate::scene::resource::{
     AlphaMode, DisplayBehavior, FaceMaterialId, Instance, InstanceId, LineMaterialId,
-    MaterialProperties, MeshId, NodeId, NodePayload, PointMaterialId, PrimitiveType, RenderLayer,
+    MaterialProperties, MeshId, NodeId, PointMaterialId, PrimitiveType, RenderLayer,
     SubGeometryElement, SubGeometryKind, Visibility,
 };
 use crate::highlight_query::HighlightQuery;
@@ -191,9 +191,9 @@ fn collect_scene_data_recursive(
 
     let display = DisplayBehavior::inherit(parent_display, node.display());
 
-    if let NodePayload::Instance(instance) = node.payload() {
+    if let Some(instance_id) = node.instance() {
         instance_transforms.push(
-            InstanceTransform::new(node.id, instance.id(), world_transform).with_display(display),
+            InstanceTransform::new(node.id, instance_id, world_transform).with_display(display),
         );
     }
 

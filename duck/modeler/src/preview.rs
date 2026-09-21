@@ -245,7 +245,7 @@ impl Drop for PreviewSession {
 mod tests {
     use super::*;
     use duck_engine_scene::common::RgbaColor;
-    use duck_engine_scene::resource::{FaceMaterial, NodePayload};
+    use duck_engine_scene::resource::FaceMaterial;
     use opencascade::primitives::{Face, Wire};
 
     fn document() -> Arc<Mutex<Document>> {
@@ -287,10 +287,12 @@ mod tests {
     /// The base color of the face material a preview node's instance is drawn with.
     fn preview_color(document: &Arc<Mutex<Document>>, node: NodeId) -> RgbaColor {
         with_scene(document, |scene| {
-            let NodePayload::Instance(instance) = scene.get_node(node).unwrap().payload() else {
-                panic!("preview node carries no instance");
-            };
-            let material = scene.get_instance(instance.id()).unwrap().face_material().unwrap();
+            let instance_id = scene
+                .get_node(node)
+                .unwrap()
+                .instance()
+                .expect("preview node carries no instance");
+            let material = scene.get_instance(instance_id).unwrap().face_material().unwrap();
             scene.get_face_material(material).unwrap().base_color_factor()
         })
     }

@@ -1,4 +1,4 @@
-use duck_engine_viewer::scene::resource::{EffectiveVisibility, NodeId, NodePayload, Visibility};
+use duck_engine_viewer::scene::resource::{EffectiveVisibility, NodeId, Visibility};
 use duck_engine_viewer::ViewMut;
 
 use super::{UiActions, VisibilityChange};
@@ -47,7 +47,7 @@ pub fn render_node_tree(
     };
 
     let has_children = node.child_count() > 0;
-    let has_instance = matches!(node.payload(), NodePayload::Instance(_));
+    let has_instance = node.instance().is_some();
 
     let visibility = node.visibility();
     let effective_visibility = scene.node_effective_visibility(node_id);

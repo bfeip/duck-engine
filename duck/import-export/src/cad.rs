@@ -10,7 +10,7 @@ use duck_engine_common::{decompose_matrix, Matrix4, RgbaColor};
 use duck_engine_scene::cad::{tessellate_occ_shape, CadTessellationOptions};
 use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{
-    Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, NodePayload, PrimitiveType,
+    Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, PrimitiveType,
     Vertex,
 };
 use duck_engine_scene::{PositionedCamera, SceneData};
@@ -181,7 +181,7 @@ fn import_leaf_part(
             .with_face_material(face_mat)
             .with_line_material(line_mat),
     );
-    scene.set_node_payload(node, NodePayload::Instance(instance_id));
+    scene.set_node_instance(node, Some(instance_id));
     Ok(())
 }
 

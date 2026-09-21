@@ -34,9 +34,7 @@ pub use mesh::{
     Mesh, MeshDescriptor, MeshId, MeshIndex, MeshPrimitive, ObjMesh, PrimitiveType,
     SubGeometryElement, SubGeometryKind, SubMeshRange, Topology, Vertex,
 };
-pub use node::{
-    EffectiveVisibility, Node, NodeFlags, NodeId, NodePayload, Visibility,
-};
+pub use node::{EffectiveVisibility, Node, NodeFlags, NodeId, Visibility};
 pub use texture::{Texture, TextureFormat, TextureId};
 
 // Handle plumbing for `SceneData`; not part of the public surface.

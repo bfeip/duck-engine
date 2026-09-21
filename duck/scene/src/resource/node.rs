@@ -1,4 +1,5 @@
 use super::handle::{InstanceHandle, NodeHandle};
+use super::InstanceId;
 use super::DisplayBehavior;
 use super::RenderLayer;
 use crate::common::{
@@ -12,27 +13,6 @@ use std::cell::Cell;
 
 /// Unique identifier for a Node in the scene tree.
 pub type NodeId = super::Id<Node>;
-
-/// The typed content of a scene node.
-#[derive(Clone, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum NodePayload {
-    /// Structural container with no content (default).
-    #[default]
-    None,
-    /// References a mesh+material pair to be rendered. The handle owns the
-    /// instance: it is removed when no longer referenced by any node or handle.
-    Instance(InstanceHandle),
-}
-
-impl std::fmt::Debug for NodePayload {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::None => write!(f, "None"),
-            Self::Instance(h) => f.debug_tuple("Instance").field(&h.id()).finish(),
-        }
-    }
-}
 
 /// Explicit visibility state set by the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -94,7 +74,9 @@ pub struct Node {
     children: Vec<NodeHandle>,
     flags: NodeFlags,
 
-    payload: NodePayload,
+    /// The instance this node draws, if any. The handle owns the instance: it
+    /// is removed when no longer referenced by any node or handle.
+    instance: Option<InstanceHandle>,
 
     // Render-presentation behavior (placement / screen-space). Inherits down
     // the subtree; resolved by the renderer, so no cache is needed here.
@@ -122,7 +104,7 @@ impl Node {
             parent: None,
             children: Vec::new(),
             flags,
-            payload: NodePayload::None,
+            instance: None,
             display: DisplayBehavior::default(),
             visibility: Visibility::default(),
             cached_effective_visibility: Cell::new(None),
@@ -341,16 +323,21 @@ impl Node {
         self.mark_bounds_dirty();
     }
 
-    /// Returns the node's payload.
-    pub fn payload(&self) -> &NodePayload {
-        &self.payload
+    /// Returns the ID of the instance this node draws, if any.
+    pub fn instance(&self) -> Option<InstanceId> {
+        self.instance.as_ref().map(InstanceHandle::id)
     }
 
-    /// Sets the node's payload and invalidates this node's bounds cache.
+    /// Returns the owning handle of the instance this node draws, if any.
+    pub fn instance_handle(&self) -> Option<&InstanceHandle> {
+        self.instance.as_ref()
+    }
+
+    /// Sets or clears the node's instance and invalidates this node's bounds cache.
     ///
     /// Ancestor bounds propagation is the caller's (SceneData's) responsibility.
-    pub fn set_payload(&mut self, payload: NodePayload) {
-        self.payload = payload;
+    pub fn set_instance(&mut self, instance: Option<InstanceHandle>) {
+        self.instance = instance;
         self.cached_bounds.set(None);
     }
 
@@ -494,7 +481,7 @@ mod tests {
         assert_eq!(node.name, None);
         assert_eq!(node.parent(), None);
         assert_eq!(node.child_count(), 0);
-        assert!(matches!(node.payload(), NodePayload::None));
+        assert!(node.instance().is_none());
     }
 
     #[test]
@@ -930,42 +917,42 @@ mod tests {
     }
 
     // ========================================================================
-    // Node Payload Tests
+    // Node Instance Tests
     // ========================================================================
 
     #[test]
-    fn test_payload_none_by_default() {
+    fn test_instance_none_by_default() {
         let node = Node::new_default();
-        assert!(matches!(node.payload(), NodePayload::None));
+        assert!(node.instance().is_none());
     }
 
     #[test]
-    fn test_set_payload_instance() {
+    fn test_set_instance() {
         let mut node = Node::new_default();
         let instance_id_a = crate::resource::Id::new();
         let instance_id_b = crate::resource::Id::new();
 
-        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(instance_id_a)));
-        assert!(matches!(node.payload(), NodePayload::Instance(h) if h.id() == instance_id_a));
+        node.set_instance(Some(InstanceHandle::unbound(instance_id_a)));
+        assert_eq!(node.instance(), Some(instance_id_a));
 
-        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(instance_id_b)));
-        assert!(matches!(node.payload(), NodePayload::Instance(h) if h.id() == instance_id_b));
+        node.set_instance(Some(InstanceHandle::unbound(instance_id_b)));
+        assert_eq!(node.instance(), Some(instance_id_b));
     }
 
     #[test]
-    fn test_set_payload_none() {
+    fn test_clear_instance() {
         let mut node = Node::new_default();
         let instance_id = crate::resource::Id::new();
 
-        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(instance_id)));
-        assert!(matches!(node.payload(), NodePayload::Instance(h) if h.id() == instance_id));
+        node.set_instance(Some(InstanceHandle::unbound(instance_id)));
+        assert_eq!(node.instance(), Some(instance_id));
 
-        node.set_payload(NodePayload::None);
-        assert!(matches!(node.payload(), NodePayload::None));
+        node.set_instance(None);
+        assert!(node.instance().is_none());
     }
 
     #[test]
-    fn test_set_payload_marks_bounds_dirty() {
+    fn test_set_instance_marks_bounds_dirty() {
         let mut node = Node::new_default();
 
         node.set_cached_world_transform(Matrix4::from_scale(1.0));
@@ -975,9 +962,9 @@ mod tests {
         )));
         assert!(!node.transform_dirty());
 
-        node.set_payload(NodePayload::Instance(InstanceHandle::unbound(crate::resource::Id::new())));
-        assert!(!node.transform_dirty()); // payload doesn't affect transform
-        assert!(node.bounds_dirty()); // payload affects bounds
+        node.set_instance(Some(InstanceHandle::unbound(crate::resource::Id::new())));
+        assert!(!node.transform_dirty()); // the instance doesn't affect transform
+        assert!(node.bounds_dirty()); // the instance affects bounds
     }
 
     // ========================================================================

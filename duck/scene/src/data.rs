@@ -17,7 +17,7 @@ use crate::resource::{
     EffectiveVisibility, FaceMaterial, FaceMaterialHandle, FaceMaterialId,
     GenericId, Handle, HandleCore, Id, Instance, InstanceHandle, InstanceId, LineMaterial,
     LineMaterialHandle, LineMaterialId, Mesh, MeshDescriptor, MeshHandle, MeshId, Node, NodeFlags,
-    NodeHandle, NodeId, NodePayload, PointMaterial, PointMaterialHandle, PointMaterialId,
+    NodeHandle, NodeId, PointMaterial, PointMaterialHandle, PointMaterialId,
     ResourceKind, SceneBind, Texture, TextureHandle, TextureId, Visibility,
 };
 
@@ -246,8 +246,8 @@ impl SceneData {
                             }
                             self.node_generation += 1;
                             true
-                            // Dropping `node` here releases its children and
-                            // payload; the next loop iteration reaps them.
+                            // Dropping `node` here releases its children and its
+                            // instance; the next loop iteration reaps them.
                         }
                         None => false,
                     },
@@ -719,8 +719,7 @@ impl SceneData {
         let node = self.add_node(parent, name, transform, flags)?;
 
         // Attach instance to node
-        // Safe to unwrap since we just created the node above
-        self.nodes.get_mut(&node.id()).unwrap().set_payload(NodePayload::Instance(instance));
+        self.set_node_instance(node.id(), Some(instance));
 
         Ok(node)
     }
@@ -919,11 +918,11 @@ impl SceneData {
 
     // ========== Node Transform Mutation API ==========
 
-    /// Sets the payload of a node and invalidates ancestor bounds.
+    /// Sets or clears the instance a node draws and invalidates ancestor bounds.
     /// Does nothing if the node does not exist.
-    pub fn set_node_payload(&mut self, node_id: NodeId, payload: NodePayload) {
+    pub fn set_node_instance(&mut self, node_id: NodeId, instance: Option<InstanceHandle>) {
         let Some(node) = self.nodes.get_mut(&node_id) else { return };
-        node.set_payload(payload);
+        node.set_instance(instance);
         self.node_generation += 1;
         self.invalidate_ancestor_bounds(node_id);
     }
@@ -1204,13 +1203,13 @@ impl SceneData {
             }
         }
 
-        let bounds = match node.payload() {
-            NodePayload::Instance(instance) => {
+        let bounds = match node.instance() {
+            Some(instance_id) => {
                 let Some(world_transform) = self.nodes_transform(node_id) else {
                     incomplete = true;
                     return BoundingResult { bounds: merged_bounds, incomplete };
                 };
-                let Some(instance) = self.get_instance(instance.id()) else {
+                let Some(instance) = self.get_instance(instance_id) else {
                     incomplete = true;
                     return BoundingResult { bounds: merged_bounds, incomplete };
                 };
@@ -1225,7 +1224,7 @@ impl SceneData {
                     (None, cb) => cb,
                 }
             }
-            _ => merged_bounds,
+            None => merged_bounds,
         };
 
         // Only cache when the subtree is fully populated.
@@ -1240,7 +1239,7 @@ impl SceneData {
     ///
     /// Specifically checks that:
     /// - Every node ID listed in any node's `children` array exists in the scene.
-    /// - Every `Instance` payload references an instance that exists.
+    /// - Every node's instance reference, where present, exists.
     /// - Every instance's mesh and material IDs exist.
     ///
     /// A scene under construction — mid-import, or between the steps of an
@@ -1253,8 +1252,8 @@ impl SceneData {
                     return false;
                 }
             }
-            if let NodePayload::Instance(instance) = node.payload() {
-                let Some(instance) = self.instances.get(&instance.id()) else {
+            if let Some(instance_id) = node.instance() {
+                let Some(instance) = self.instances.get(&instance_id) else {
                     return false;
                 };
                 if !self.meshes.contains_key(&instance.mesh()) {
@@ -1303,9 +1302,7 @@ impl SceneData {
         }
         let mut live_instances: HashSet<InstanceId> = HashSet::new();
         for id in &live_nodes {
-            if let NodePayload::Instance(h) = self.nodes[id].payload() {
-                live_instances.insert(h.id());
-            }
+            live_instances.extend(self.nodes[id].instance());
         }
         let mut live_meshes: HashSet<MeshId> = HashSet::new();
         let mut live_face: HashSet<FaceMaterialId> = HashSet::new();
@@ -1399,17 +1396,8 @@ impl SceneData {
             }
         }
         for node in self.nodes.values_mut() {
-            let instance_id = match node.payload() {
-                NodePayload::Instance(h) => Some(h.id()),
-                _ => None,
-            };
-            if let Some(id) = instance_id {
-                node.set_payload(NodePayload::Instance(canon(
-                    &mut cores,
-                    &bind,
-                    id,
-                    ResourceKind::Instance,
-                )));
+            if let Some(id) = node.instance() {
+                node.set_instance(Some(canon(&mut cores, &bind, id, ResourceKind::Instance)));
             }
             let children: Vec<NodeHandle> = node
                 .children()

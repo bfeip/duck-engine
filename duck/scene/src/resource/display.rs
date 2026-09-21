@@ -1,9 +1,9 @@
 //! Per-node render-presentation behavior.
 //!
 //! [`DisplayBehavior`] groups the placement/presentation modifiers that affect
-//! *how* a node's geometry is drawn — distinct from [`super::NodePayload`] (what
-//! a node is) and [`super::NodeFlags`] (non-visual scene-system semantics like
-//! selection, export, bounding).
+//! *how* a node's geometry is drawn — distinct from the node's
+//! [`Instance`](super::Instance) (what it draws) and [`super::NodeFlags`]
+//! (non-visual scene-system semantics like selection, export, bounding).
 //!
 //! These modifiers inherit down the subtree: setting a layer or screen-space
 //! flag on a group root applies to all descendants unless a descendant

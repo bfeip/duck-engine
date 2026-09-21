@@ -34,7 +34,7 @@
 //! ([`resource::MeshHandle`], [`resource::NodeHandle`], …). The scene's own
 //! references are handles too: an [`Instance`](resource::Instance) owns its
 //! mesh and material handles, materials own their texture handles, a node owns
-//! its children and its payload instance, and the scene owns its root nodes.
+//! its children and its instance, and the scene owns its root nodes.
 //! When a resource's last handle drops, the resource is removed automatically
 //! the next time the scene is locked or unlocked — along with anything only it
 //! was keeping alive.
@@ -55,10 +55,10 @@
 //! # The scene graph
 //!
 //! A [`Node`](resource::Node) has a local
-//! [`Transform`](common::Transform), an optional parent, children, and a
-//! [`NodePayload`](resource::NodePayload) saying what it is: nothing (a
-//! grouping node) or an [`Instance`](resource::Instance) pairing a mesh with
-//! up to three materials (face, line, point). Neither cameras nor lights are
+//! [`Transform`](common::Transform), an optional parent, children, and an
+//! optional [`Instance`](resource::Instance) — a mesh paired with up to three
+//! materials (face, line, point) — which a grouping node simply omits.
+//! Neither cameras nor lights are
 //! scene resources; consumers (views) own their [`PositionedCamera`]s and
 //! [`PositionedLight`]s. A light can still be posed by a node through
 //! [`LightSpace::Node`], without living in the tree.

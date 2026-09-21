@@ -16,7 +16,7 @@ use crate::{BoundingResult, EnvironmentMap, EnvironmentMapId, SceneData};
 use crate::resource::{
     DisplayBehavior, EffectiveVisibility, FaceMaterial, FaceMaterialHandle, FaceMaterialId,
     Instance, InstanceHandle, InstanceId, LineMaterial, LineMaterialHandle, LineMaterialId, Mesh,
-    MeshHandle, Node, NodeFlags, NodeHandle, NodeId, NodePayload, PointMaterial,
+    MeshHandle, Node, NodeFlags, NodeHandle, NodeId, PointMaterial,
     PointMaterialHandle, PointMaterialId, Visibility,
 };
 
@@ -174,10 +174,10 @@ impl Scene {
         self.lock().node_handle(id)
     }
 
-    /// Sets what a node is (instance, light, …).
+    /// Sets or clears the instance a node draws.
     #[track_caller]
-    pub fn set_node_payload(&self, node_id: NodeId, payload: NodePayload) {
-        self.lock().set_node_payload(node_id, payload);
+    pub fn set_node_instance(&self, node_id: NodeId, instance: Option<InstanceHandle>) {
+        self.lock().set_node_instance(node_id, instance);
     }
 
     /// Sets a node's local transform.

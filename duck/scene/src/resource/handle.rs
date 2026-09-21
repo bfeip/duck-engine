@@ -119,7 +119,7 @@ impl Drop for HandleCore {
 ///
 /// - an [`Instance`](super::Instance) owns its mesh and material slots,
 /// - a material owns its texture slots,
-/// - a [`Node`](super::Node) owns its payload instance and its children,
+/// - a [`Node`](super::Node) owns its instance and its children,
 /// - the scene's root list owns the root nodes.
 ///
 /// Releasing a link releases everything reachable only through it: detaching a
@@ -311,10 +311,10 @@ impl Handle<super::Node> {
         }
     }
 
-    /// Sets the node's payload, invalidating dependent caches.
-    pub fn set_payload(&self, payload: super::NodePayload) {
+    /// Sets or clears the node's instance, invalidating dependent caches.
+    pub fn set_instance(&self, instance: Option<super::InstanceHandle>) {
         if let Some(scene) = self.scene() {
-            scene.lock().set_node_payload(self.id(), payload);
+            scene.lock().set_node_instance(self.id(), instance);
         }
     }
 
@@ -491,7 +491,7 @@ mod tests {
                     NodeFlags::NONE,
                 )
                 .unwrap();
-            data.set_node_payload(root.id(), crate::resource::NodePayload::Instance(instance));
+            data.set_node_instance(root.id(), Some(instance));
             (root.id(), child.id())
         };
         assert_eq!(scene.lock().node_count(), 2);

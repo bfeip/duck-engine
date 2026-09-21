@@ -210,10 +210,7 @@ fn test_add_instance_node() {
     assert_eq!(scene.instance_count(), 1);
 
     let node = scene.get_node(node.id()).unwrap();
-    let instance_id = match node.payload() {
-        NodePayload::Instance(h) => h.id(),
-        _ => panic!("expected Instance payload"),
-    };
+    let instance_id = node.instance().expect("expected an instance");
     let instance = scene.get_instance(instance_id).unwrap();
     assert_eq!(instance.mesh(), mesh_id);
     assert_eq!(instance.face_material(), Some(mat_id));

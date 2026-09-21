@@ -2,9 +2,7 @@ use duck_engine_common::{Matrix4, SquareMatrix};
 
 use crate::common::Aabb;
 use crate::{PositionedCamera, Scene, SceneData};
-use crate::resource::{
-    DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId, NodePayload,
-};
+use crate::resource::{DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId};
 
 /// A query that can pick objects by traversing the scene tree.
 ///
@@ -137,10 +135,10 @@ fn pick_node<Q: PickQuery>(
     // Narrow phase: test this node's instance (if any). A missing instance/mesh/
     // transform just means the resource hasn't arrived yet; skip it but still
     // recurse to children.
-    if let NodePayload::Instance(instance_id) = node.payload()
+    if let Some(instance_id) = node.instance()
         && let Some(transform) = pick_transform(scene, node_id, display, view)
     {
-        collect_instance_hits(query, node, instance_id.id(), scene, &transform, results);
+        collect_instance_hits(query, node, instance_id, scene, &transform, results);
     }
 
     // Recurse to children. Missing child nodes are silently skipped.
