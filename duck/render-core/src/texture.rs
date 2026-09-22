@@ -36,12 +36,17 @@ impl GpuTexture {
     pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
     /// Create a depth texture at the given pixel dimensions.
-    #[must_use] 
+    ///
+    /// `sampled` makes the texture bindable, for passes that read depth. Only
+    /// backends where [`GpuCapabilities::samples_depth_textures`] holds can do
+    /// anything with it.
+    #[must_use]
     pub fn depth(
         device: &wgpu::Device,
         width: u32,
         height: u32,
         sample_count: u32,
+        sampled: bool,
         label: &str,
     ) -> Self {
         let size = wgpu::Extent3d {
@@ -56,7 +61,11 @@ impl GpuTexture {
             sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: Self::DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: if sampled {
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+            } else {
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+            },
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -77,6 +86,10 @@ impl GpuTexture {
 
     /// Create a mask texture at the given dimensions, with `channels`
     /// independent coverage channels.
+    ///
+    /// A multisampled mask is a resolve source only: it is left unbindable so
+    /// that wgpu's GL backend can allocate it as a renderbuffer, which is the
+    /// only way it does multisampling. Sample the resolved mask instead.
     #[must_use]
     pub fn mask(
         device: &wgpu::Device,
@@ -97,7 +110,11 @@ impl GpuTexture {
             sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: channels.format(),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: if sample_count > 1 {
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+            } else {
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+            },
             view_formats: &[],
         });
 

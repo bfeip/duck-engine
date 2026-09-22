@@ -34,6 +34,12 @@ pub struct TargetConfig {
 #[derive(Clone, Copy, Default)]
 pub struct TargetFeatures {
     pub depth: bool,
+    /// Whether the depth attachment must be bindable, for passes that read it.
+    /// Not every backend can — see
+    /// [`GpuCapabilities::samples_depth_textures`](crate::GpuCapabilities::samples_depth_textures)
+    /// — so [`FrameTargets::sampled_depth_view`] reports what the targets
+    /// actually got.
+    pub sampled_depth: bool,
 }
 
 /// Shared size-dependent frame attachments: the depth buffer and, when MSAA
@@ -58,7 +64,14 @@ impl FrameTargets {
     fn create_attachments(&mut self, gpu: &Gpu) {
         let (width, height) = self.config.size;
         self.depth = self.features.depth.then(|| {
-            GpuTexture::depth(&gpu.device, width, height, self.config.sample_count, "depth_texture")
+            GpuTexture::depth(
+                &gpu.device,
+                width,
+                height,
+                self.config.sample_count,
+                self.features.sampled_depth,
+                "depth_texture",
+            )
         });
         self.msaa_color = (self.config.sample_count > 1).then(|| {
             GpuTexture::color_attachment(
@@ -112,6 +125,17 @@ impl FrameTargets {
             .as_ref()
             .expect("FrameTargets created without TargetFeatures::depth")
             .view
+    }
+
+    /// The depth view for passes that *read* depth, or `None` when the depth
+    /// attachment was not created bindable. Such a pass has no depth to read
+    /// and should skip itself.
+    #[must_use]
+    pub fn sampled_depth_view(&self) -> Option<&wgpu::TextureView> {
+        if !self.features.sampled_depth {
+            return None;
+        }
+        self.depth.as_ref().map(|depth| &depth.view)
     }
 
     /// Returns `(render_view, resolve_target)` for a render pass that may use MSAA.

@@ -19,7 +19,23 @@ pub(crate) struct Compositor {
 }
 
 impl Compositor {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    /// Stacks view textures with straight-alpha blending.
+    pub fn blend(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::with_blend(device, format, Some(wgpu::BlendState::ALPHA_BLENDING))
+    }
+
+    /// Copies one texture over the whole target, replacing it. Used to re-encode
+    /// a finished frame into a different format, where blending the source
+    /// against the target would corrupt it.
+    pub fn blit(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::with_blend(device, format, None)
+    }
+
+    fn with_blend(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        blend: Option<wgpu::BlendState>,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("View Composite Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()),
@@ -68,7 +84,7 @@ impl Compositor {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),

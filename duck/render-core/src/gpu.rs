@@ -8,10 +8,39 @@ pub struct Gpu {
     pub queue: wgpu::Queue,
 }
 
-/// Capabilities discovered while creating a headless [`Gpu`].
+/// What the adapter behind a [`Gpu`] can do, for the decisions that have to be
+/// made before any rendering: which attachments to allocate, and which passes
+/// can run at all.
+#[derive(Clone, Copy, Debug)]
 pub struct GpuCapabilities {
     pub has_compute: bool,
+    /// Whether a texture can carry a second view format (such as an sRGB target
+    /// sampled as raw bytes).
+    pub has_view_formats: bool,
     pub backend: wgpu::Backend,
+}
+
+impl GpuCapabilities {
+    #[must_use]
+    pub fn from_adapter(adapter: &wgpu::Adapter) -> Self {
+        let flags = adapter.get_downlevel_capabilities().flags;
+        Self {
+            has_compute: flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS),
+            has_view_formats: flags.contains(wgpu::DownlevelFlags::VIEW_FORMATS),
+            backend: adapter.get_info().backend,
+        }
+    }
+
+    /// Whether a depth attachment can be read in a shader.
+    ///
+    /// False on GL for two independent reasons: naga's GLSL backend has no
+    /// `textureLoad` for depth textures, and multisampled attachments are
+    /// allocated as renderbuffers, which cannot be bound at all. Plain MSAA
+    /// still works there — only reading depth back does not.
+    #[must_use]
+    pub const fn samples_depth_textures(&self) -> bool {
+        !matches!(self.backend, wgpu::Backend::Gl)
+    }
 }
 
 /// Knobs for bringing up the wgpu instance behind a [`Gpu`].
@@ -107,13 +136,9 @@ impl Gpu {
             })?;
 
         let info = adapter.get_info();
-        let backend = info.backend;
-        log::info!("Using {backend} adapter: {}", info.name);
+        log::info!("Using {} adapter: {}", info.backend, info.name);
 
-        let has_compute = adapter
-            .get_downlevel_capabilities()
-            .flags
-            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS);
+        let capabilities = GpuCapabilities::from_adapter(&adapter);
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -128,6 +153,6 @@ impl Gpu {
             })
             .await?;
 
-        Ok((Self { device, queue }, GpuCapabilities { has_compute, backend }))
+        Ok((Self { device, queue }, capabilities))
     }
 }

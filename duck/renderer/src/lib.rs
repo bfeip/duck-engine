@@ -102,7 +102,7 @@
 //! // One RenderContext, one SceneResources per scene, one Renderer per view.
 //! let (gpu, caps) = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
 //! let mut ctx =
-//!     RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
+//!     RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps);
 //! let mut shared = SceneResources::new(&ctx);
 //! let mut renderer = Renderer::new(&mut ctx, 800, 600);
 //!
@@ -158,4 +158,4 @@ pub use renderer::{
 pub use highlight_query::{HighlightConfig, HighlightQuery};
 
 // Core dispatch types needed to author custom workflows/passes.
-pub use render_core::{FrameTargets, Gpu, GpuOptions, RenderWorkflow};
+pub use render_core::{FrameTargets, Gpu, GpuCapabilities, GpuOptions, RenderWorkflow};

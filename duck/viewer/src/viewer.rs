@@ -14,8 +14,8 @@ use crate::{
     scene::{PositionedCamera, PositionedLight, Projection, common::RgbaColor},
     selection::SelectionManager,
     renderer::{
-        Gpu, GpuOptions, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery, RenderContext,
-        Renderer, SceneResources, SceneWorkflow, ShadedWorkflow,
+        Gpu, GpuCapabilities, GpuOptions, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery,
+        RenderContext, Renderer, SceneResources, SceneWorkflow, ShadedWorkflow,
     },
     view::{
         HeadlightMode, PixelRect, View, ViewId, ViewLayout, ViewTarget, default_headlight_rig,
@@ -88,11 +88,11 @@ impl Viewer {
         width: u32,
         height: u32,
         sample_count: u32,
-        has_compute: bool,
+        capabilities: GpuCapabilities,
     ) -> Self {
-        let compositor = Compositor::new(&gpu.device, color_format);
+        let compositor = Compositor::blend(&gpu.device, color_format);
         Self {
-            ctx: RenderContext::new(gpu, color_format, sample_count, has_compute),
+            ctx: RenderContext::new(gpu, color_format, sample_count, capabilities),
             size: (width.max(1), height.max(1)),
             scenes: Vec::new(),
             views: Vec::new(),
@@ -1006,7 +1006,7 @@ pub struct WindowSurface<'a> {
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
     sample_count: u32,
-    has_compute: bool,
+    capabilities: GpuCapabilities,
 }
 
 impl<'a> WindowSurface<'a> {
@@ -1038,8 +1038,7 @@ impl<'a> WindowSurface<'a> {
 
         let info = adapter.get_info();
         let is_gl_backend = info.backend == wgpu::Backend::Gl;
-        let downlevel_flags = adapter.get_downlevel_capabilities().flags;
-        let has_compute = downlevel_flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS);
+        let capabilities = GpuCapabilities::from_adapter(&adapter);
 
         log::info!("Using {} adapter: {}", info.backend, info.name);
 
@@ -1133,7 +1132,7 @@ impl<'a> WindowSurface<'a> {
             config,
             gpu: Gpu::new(device, queue),
             sample_count,
-            has_compute,
+            capabilities,
         }
     }
 
@@ -1165,9 +1164,9 @@ impl<'a> WindowSurface<'a> {
         self.sample_count
     }
 
-    /// Whether the adapter supports compute shaders.
-    pub fn has_compute(&self) -> bool {
-        self.has_compute
+    /// What the adapter behind this surface can do.
+    pub fn capabilities(&self) -> GpuCapabilities {
+        self.capabilities
     }
 
     /// Current surface size as (width, height).
@@ -1228,7 +1227,7 @@ impl<'a> SurfacedViewer<'a> {
             width,
             height,
             surface.sample_count(),
-            surface.has_compute(),
+            surface.capabilities(),
         );
         Self { surface, core }
     }
@@ -1315,7 +1314,64 @@ pub struct OffscreenViewer {
     color_texture: wgpu::Texture,
     render_view: wgpu::TextureView,
     sample_view: wgpu::TextureView,
+    /// Set where the color target cannot carry a second, non-sRGB view.
+    encode: Option<GammaEncode>,
     core: Viewer,
+}
+
+/// The gamma-encoded copy of the frame that samplers read, for devices without
+/// `VIEW_FORMATS`.
+///
+/// The frame itself stays sRGB so views still composite in linear space; this
+/// pass samples it (decoding to linear) and writes the encode into a non-sRGB
+/// texture, which is byte-identical to what the sRGB target holds.
+struct GammaEncode {
+    blit: Compositor,
+    texture: wgpu::Texture,
+    target_view: wgpu::TextureView,
+    source: wgpu::BindGroup,
+}
+
+impl GammaEncode {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        source_view: &wgpu::TextureView,
+    ) -> Self {
+        let format = format.remove_srgb_suffix();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Offscreen Sample Target"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // A compositor over a non-sRGB format encodes in the shader, which is
+        // exactly the conversion needed here.
+        let blit = Compositor::blit(device, format);
+        let source = blit.bind(device, source_view);
+        Self { blit, texture, target_view, source }
+    }
+
+    /// Re-encode the finished frame into the sampleable copy.
+    fn run(&self, encoder: &mut wgpu::CommandEncoder, width: u32, height: u32) {
+        self.blit.composite(
+            encoder,
+            &self.target_view,
+            wgpu::Color::TRANSPARENT,
+            std::iter::once((&self.source, PixelRect { x: 0, y: 0, width, height })),
+        );
+    }
 }
 
 impl Deref for OffscreenViewer {
@@ -1344,16 +1400,22 @@ impl OffscreenViewer {
         width: u32,
         height: u32,
         sample_count: u32,
-        has_compute: bool,
+        capabilities: GpuCapabilities,
     ) -> Self {
-        let (color_texture, render_view, sample_view) =
-            Self::create_color(&gpu.device, color_format, width, height);
-        let core = Viewer::from_gpu(gpu, color_format, width, height, sample_count, has_compute);
+        let (color_texture, render_view, sample_view, encode) = Self::create_color(
+            &gpu.device,
+            color_format,
+            width,
+            height,
+            capabilities.has_view_formats,
+        );
+        let core = Viewer::from_gpu(gpu, color_format, width, height, sample_count, capabilities);
         Self {
             color_format,
             color_texture,
             render_view,
             sample_view,
+            encode,
             core,
         }
     }
@@ -1370,19 +1432,27 @@ impl OffscreenViewer {
             width,
             height,
             1,
-            caps.has_compute,
+            caps,
         ))
     }
 
+    /// The color target, its render view, the view samplers read it through,
+    /// and — where the device has no `VIEW_FORMATS` — the encode pass that
+    /// produces that view's texture.
     fn create_color(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::TextureView) {
+        has_view_formats: bool,
+    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::TextureView, Option<GammaEncode>) {
         // The sample view uses the non-sRGB variant so samplers read the raw
         // (gamma-encoded) bytes; for a non-sRGB `format` this is the same format.
         let sample_format = format.remove_srgb_suffix();
+        let reinterpretable = has_view_formats || sample_format == format;
+        let extra_view_format = [sample_format];
+        let view_formats: &[wgpu::TextureFormat] =
+            if reinterpretable && sample_format != format { &extra_view_format } else { &[] };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Offscreen Color Target"),
             size: wgpu::Extent3d {
@@ -1395,23 +1465,36 @@ impl OffscreenViewer {
             dimension: wgpu::TextureDimension::D2,
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[sample_format],
+            view_formats,
         });
         let render_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sample_view = texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(sample_format),
-            ..Default::default()
-        });
-        (texture, render_view, sample_view)
+        if reinterpretable {
+            let sample_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(sample_format),
+                ..Default::default()
+            });
+            return (texture, render_view, sample_view, None);
+        }
+
+        let encode = GammaEncode::new(device, format, width, height, &render_view);
+        let sample_view = encode.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, render_view, sample_view, Some(encode))
     }
 
     /// Resize the offscreen target, recreating the color texture.
     pub fn resize(&mut self, width: u32, height: u32) {
-        let (texture, render_view, sample_view) =
-            Self::create_color(self.core.device(), self.color_format, width, height);
+        let has_view_formats = self.core.context().capabilities().has_view_formats;
+        let (texture, render_view, sample_view, encode) = Self::create_color(
+            self.core.device(),
+            self.color_format,
+            width,
+            height,
+            has_view_formats,
+        );
         self.color_texture = texture;
         self.render_view = render_view;
         self.sample_view = sample_view;
+        self.encode = encode;
         self.core.resize(width, height);
     }
 
@@ -1426,6 +1509,10 @@ impl OffscreenViewer {
         );
         // Disjoint field borrows: `&self.render_view` alongside `&mut self.core`.
         self.core.render_to_target(&self.render_view, &mut encoder)?;
+        if let Some(encode) = &self.encode {
+            let (width, height) = self.core.size();
+            encode.run(&mut encoder, width, height);
+        }
         self.core.queue().submit(std::iter::once(encoder.finish()));
         Ok(())
     }
@@ -1433,6 +1520,13 @@ impl OffscreenViewer {
     /// The offscreen color texture being rendered into.
     pub fn texture(&self) -> &wgpu::Texture {
         &self.color_texture
+    }
+
+    /// The texture behind [`texture_view`](Self::texture_view): the color
+    /// target itself, or its gamma-encoded copy where the device cannot
+    /// reinterpret formats.
+    pub fn sample_texture(&self) -> &wgpu::Texture {
+        self.encode.as_ref().map_or(&self.color_texture, |encode| &encode.texture)
     }
 
     /// A non-sRGB view of the offscreen color texture, for sampling (e.g. egui).

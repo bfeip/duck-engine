@@ -1,4 +1,4 @@
-use crate::render_core::{FrameTargets, Gpu, RenderWorkflow, TargetConfig};
+use crate::render_core::{FrameTargets, Gpu, GpuCapabilities, RenderWorkflow, TargetConfig};
 use crate::scene::resource::PrimitiveType;
 use crate::scene::common::RgbaColor;
 
@@ -119,7 +119,10 @@ impl Default for HiddenLineConfig {
 /// 4. Visible lines — visible line color where depth compare is `LessEqual`.
 pub struct HiddenLineWorkflow {
     solid_pass: FlatColorPass,
-    silhouette_pass: SilhouetteEdgesPass,
+    /// `None` where the backend cannot read depth back — see
+    /// [`GpuCapabilities::samples_depth_textures`]. The workflow then draws
+    /// its line work without silhouette edges.
+    silhouette_pass: Option<SilhouetteEdgesPass>,
     occluded_pass: FlatColorPass,
     visible_pass: FlatColorPass,
 }
@@ -129,6 +132,7 @@ impl HiddenLineWorkflow {
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
         sample_count: u32,
+        capabilities: GpuCapabilities,
         camera_bgl: &wgpu::BindGroupLayout,
         lights_bgl: &wgpu::BindGroupLayout,
         material_color_bgl: &wgpu::BindGroupLayout,
@@ -150,7 +154,17 @@ impl HiddenLineWorkflow {
                 color: config.face_color,
             },
         );
-        let silhouette_pass = SilhouetteEdgesPass::new(device, surface_format, sample_count, shader_generator);
+        // Building the pass at all would fail on a backend that cannot read
+        // depth: its pipeline is a depth `textureLoad`.
+        let silhouette_pass = capabilities.samples_depth_textures().then(|| {
+            SilhouetteEdgesPass::new(device, surface_format, sample_count, shader_generator)
+        });
+        if silhouette_pass.is_none() {
+            log::warn!(
+                "Hidden line: silhouette edges unavailable on the {:?} backend, drawing lines only",
+                capabilities.backend,
+            );
+        }
 
         let mut make_line_pass = |label, depth_compare, color| FlatColorPass::new(
             device, surface_format, sample_count,
@@ -186,7 +200,9 @@ impl RenderWorkflow<SceneFrames> for HiddenLineWorkflow {
 
     fn resize(&mut self, gpu: &Gpu, targets: &FrameTargets) {
         self.solid_pass.resize(gpu, targets);
-        self.silhouette_pass.resize(gpu, targets);
+        if let Some(pass) = &mut self.silhouette_pass {
+            pass.resize(gpu, targets);
+        }
         self.occluded_pass.resize(gpu, targets);
         self.visible_pass.resize(gpu, targets);
     }
@@ -200,7 +216,9 @@ impl RenderWorkflow<SceneFrames> for HiddenLineWorkflow {
         frame: &mut SceneFrame<'_>,
     ) {
         self.solid_pass.execute(gpu, targets, encoder, view, frame);
-        self.silhouette_pass.execute(gpu, targets, encoder, view, frame);
+        if let Some(pass) = &mut self.silhouette_pass {
+            pass.execute(gpu, targets, encoder, view, frame);
+        }
         let has_lines = frame.draw.all_batches().iter().any(|b| b.primitive_type == PrimitiveType::LineList);
         if has_lines {
             self.occluded_pass.execute(gpu, targets, encoder, view, frame);

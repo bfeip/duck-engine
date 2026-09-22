@@ -249,7 +249,7 @@ impl OverlayPass {
         sample_count: u32,
     ) -> Self {
         Self {
-            depth: GpuTexture::depth(device, width, height, sample_count, "overlay_depth_texture"),
+            depth: GpuTexture::depth(device, width, height, sample_count, false, "overlay_depth_texture"),
         }
     }
 }
@@ -261,7 +261,7 @@ impl SceneRenderPass for OverlayPass {
 
     fn resize(&mut self, gpu: &Gpu, targets: &FrameTargets) {
         let (w, h) = targets.size();
-        self.depth = GpuTexture::depth(&gpu.device, w, h, targets.sample_count(), "overlay_depth_texture");
+        self.depth = GpuTexture::depth(&gpu.device, w, h, targets.sample_count(), false, "overlay_depth_texture");
     }
 
     fn execute(

@@ -103,7 +103,7 @@ impl ViewerState<'static> {
             width,
             height,
             surface.sample_count(),
-            surface.has_compute(),
+            surface.capabilities(),
         );
 
         egui_extras::install_image_loaders(&egui_ctx);

@@ -28,7 +28,8 @@ use crate::{
     highlight_query::HighlightQuery,
     ibl::IblResources,
     render_core::{
-        GenCache, Gpu, GpuTexture, MaskChannels, RenderHost, TargetConfig, TargetFeatures,
+        GenCache, Gpu, GpuCapabilities, GpuTexture, MaskChannels, RenderHost, TargetConfig,
+        TargetFeatures,
         highest_supported_sample_count,
     },
     rgba_to_wgpu_color,
@@ -73,7 +74,7 @@ pub struct RenderContext {
     gpu: Gpu,
     format: wgpu::TextureFormat,
     sample_count: u32,
-    has_compute: bool,
+    capabilities: GpuCapabilities,
 
     layouts: BindGroupLayouts,
     /// Material pipelines, their layouts, and the shader generator.
@@ -87,21 +88,21 @@ impl RenderContext {
     /// all renderers over this context render at that configuration;
     /// [`Renderer::preferred_sample_count`] probes a suitable count. `format` is
     /// promoted to its sRGB variant by [`scene_color_format`].
-    /// `has_compute` reports compute shader availability, as returned by
-    /// [`Gpu`](crate::render_core::Gpu) acquisition; without it, environment
-    /// map processing is skipped.
+    /// `capabilities` are the adapter's, as returned by
+    /// [`Gpu`](crate::render_core::Gpu) acquisition; they decide which
+    /// attachments and passes are available.
     pub fn new(
         gpu: Gpu,
         format: wgpu::TextureFormat,
         sample_count: u32,
-        has_compute: bool,
+        capabilities: GpuCapabilities,
     ) -> Self {
         let format = scene_color_format(format);
         let layouts = BindGroupLayouts::new(&gpu.device);
         let pipelines =
             MaterialPipelineCache::new(&layouts, ShaderGenerator::new(), sample_count, format);
 
-        Self { gpu, format, sample_count, has_compute, layouts, pipelines }
+        Self { gpu, format, sample_count, capabilities, layouts, pipelines }
     }
 
     /// The GPU handle pair, cloneable for sharing the device/queue.
@@ -129,10 +130,15 @@ impl RenderContext {
         self.sample_count
     }
 
+    /// What the adapter behind this context can do.
+    pub fn capabilities(&self) -> GpuCapabilities {
+        self.capabilities
+    }
+
     /// Whether the device supports compute shaders; without it environment maps
     /// are not processed.
     pub fn has_compute(&self) -> bool {
-        self.has_compute
+        self.capabilities.has_compute
     }
 
     /// Compile a user-supplied WESL shader with access to all engine shader modules.
@@ -203,7 +209,7 @@ impl SceneResources {
             &ctx.gpu.device,
             &ctx.gpu.queue,
             &ctx.layouts.ibl,
-            ctx.has_compute,
+            ctx.capabilities.has_compute,
         );
 
         Self {
@@ -252,10 +258,6 @@ impl Renderer {
         adapter: &wgpu::Adapter,
         surface_format: wgpu::TextureFormat,
     ) -> u32 {
-        let downlevel = adapter.get_downlevel_capabilities().flags;
-        if !downlevel.contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING) {
-            return 1;
-        }
         let formats = [scene_color_format(surface_format), GpuTexture::DEPTH_FORMAT]
             .into_iter()
             .chain(MaskChannels::ALL.into_iter().map(MaskChannels::format));
@@ -290,7 +292,10 @@ impl Renderer {
         let host = RenderHost::new(
             ctx.gpu.clone(),
             config,
-            TargetFeatures { depth: true },
+            TargetFeatures {
+                depth: true,
+                sampled_depth: ctx.capabilities.samples_depth_textures(),
+            },
             Box::new(shaded_workflow),
         );
 
@@ -365,6 +370,7 @@ impl Renderer {
             &ctx.gpu.device,
             self.host.targets().format(),
             self.host.targets().sample_count(),
+            ctx.capabilities,
             &ctx.layouts.camera,
             &ctx.layouts.light,
             &ctx.layouts.color,

@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     let (width, height) = (640u32, 320u32);
     let (gpu, caps) = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
     let mut ctx =
-        RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps.has_compute);
+        RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps);
     let mut shared = SceneResources::new(&ctx);
     let mut renderer = Renderer::new(&mut ctx, width, height);
 

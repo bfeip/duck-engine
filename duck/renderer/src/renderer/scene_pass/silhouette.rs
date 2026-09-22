@@ -162,8 +162,11 @@ impl SceneRenderPass for SilhouetteEdgesPass {
         view: &wgpu::TextureView,
         frame: &mut SceneFrame<'_>,
     ) {
+        // The workflow only builds this pass where depth is readable.
+        let Some(depth_view) = targets.sampled_depth_view() else { return };
+
         if self.bind_group.is_none() {
-            self.bind_group = Some(self.make_bind_group(&gpu.device, targets.depth_view()));
+            self.bind_group = Some(self.make_bind_group(&gpu.device, depth_view));
         }
 
         // The depth curve changes with the projection, so the normalization the
