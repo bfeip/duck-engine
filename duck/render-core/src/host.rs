@@ -1,6 +1,6 @@
-use crate::{
-    FrameFamily, FrameTargets, Gpu, ReadbackTarget, RenderWorkflow, TargetConfig, TargetFeatures,
-};
+use std::ops::{Deref, DerefMut};
+
+use crate::{FrameFamily, FrameTargets, Gpu, ReadbackTarget, TargetConfig, Workflow};
 
 /// Tightly-packed RGBA8 pixel data read back from the GPU.
 pub struct RgbaPixels {
@@ -16,24 +16,21 @@ pub struct RgbaPixels {
 /// The caller builds an `F::Frame<'_>` from its own state each frame and hands
 /// it to [`render`](Self::render). Because the frame is built from the
 /// *caller's* fields and the host borrows only its own, `&mut host` and the
-/// frame coexist without conflict — the borrow-split this design preserves.
+/// frame coexist without conflict.
 pub struct RenderHost<F: FrameFamily> {
     gpu: Gpu,
     targets: FrameTargets,
-    workflow: Box<dyn RenderWorkflow<F>>,
+    workflow: Workflow<F>,
     /// Cached for headless rendering, reused across frames at the same size.
     readback: Option<ReadbackTarget>,
 }
 
 impl<F: FrameFamily> RenderHost<F> {
-    #[must_use] 
-    pub fn new(
-        gpu: Gpu,
-        config: TargetConfig,
-        features: TargetFeatures,
-        workflow: Box<dyn RenderWorkflow<F>>,
-    ) -> Self {
-        let targets = FrameTargets::new(&gpu, config, features);
+    /// Create a host running `workflow`. The attachments come from the
+    /// workflow's passes. See [`Workflow::target_features`].
+    #[must_use]
+    pub fn new(gpu: Gpu, config: TargetConfig, workflow: Workflow<F>) -> Self {
+        let targets = FrameTargets::new(&gpu, config, workflow.target_features().clone());
         Self { gpu, targets, workflow, readback: None }
     }
 
@@ -52,12 +49,48 @@ impl<F: FrameFamily> RenderHost<F> {
         self.targets.config()
     }
 
+    /// The active rendering workflow.
+    #[must_use]
+    pub const fn workflow(&self) -> &Workflow<F> {
+        &self.workflow
+    }
+
+    /// Edit the active workflow in place — insert, replace or remove a pass, or
+    /// retune one via [`Workflow::pass_mut`].
+    ///
+    /// The returned guard reconciles the frame's attachments with the edited
+    /// pass list when it drops, so a workflow can never run against
+    /// attachments it did not ask for. Reconciliation is skipped when the edit
+    /// changed no structure.
+    pub fn workflow_mut(&mut self) -> WorkflowGuard<'_, F> {
+        let revision = self.workflow.revision();
+        WorkflowGuard { host: self, revision }
+    }
+
     /// Replace the active rendering workflow.
     ///
-    /// The new workflow takes effect immediately on the next frame. The
-    /// previous workflow and all its GPU resources are dropped.
-    pub fn set_workflow(&mut self, workflow: Box<dyn RenderWorkflow<F>>) {
+    /// The new workflow takes effect immediately on the next frame, with
+    /// attachments reallocated to match its passes. The previous workflow and
+    /// all its GPU resources are dropped.
+    pub fn set_workflow(&mut self, workflow: Workflow<F>) {
         self.workflow = workflow;
+        self.reconcile_targets();
+    }
+
+    /// Reallocate attachments to match the current workflow, then let its
+    /// passes rebuild their size-dependent resources.
+    ///
+    /// Infallible: conflicting declarations are rejected when a pass is
+    /// inserted, so by the time a workflow is installed its feature union is
+    /// already known good.
+    fn reconcile_targets(&mut self) {
+        let features = self.workflow.target_features();
+        if features != self.targets.features() {
+            let features = features.clone();
+            self.targets.set_features(&self.gpu, features);
+        }
+        self.workflow.resize(&self.gpu, &self.targets);
+        self.readback = None;
     }
 
     /// Recreate size-dependent attachments and forward to the workflow.
@@ -124,5 +157,38 @@ impl<F: FrameFamily> RenderHost<F> {
         self.readback = Some(target);
 
         Ok(RgbaPixels { width, height, data })
+    }
+}
+
+/// Mutable access to a host's [`Workflow`], reconciling the frame's
+/// attachments with the pass list on drop.
+///
+/// Returned by [`RenderHost::workflow_mut`]; derefs to the workflow, so it is
+/// used as if it were one.
+pub struct WorkflowGuard<'a, F: FrameFamily> {
+    host: &'a mut RenderHost<F>,
+    /// The workflow's revision when the guard was taken.
+    revision: u64,
+}
+
+impl<F: FrameFamily> Deref for WorkflowGuard<'_, F> {
+    type Target = Workflow<F>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.host.workflow
+    }
+}
+
+impl<F: FrameFamily> DerefMut for WorkflowGuard<'_, F> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.host.workflow
+    }
+}
+
+impl<F: FrameFamily> Drop for WorkflowGuard<'_, F> {
+    fn drop(&mut self) {
+        if self.host.workflow.revision() != self.revision {
+            self.host.reconcile_targets();
+        }
     }
 }

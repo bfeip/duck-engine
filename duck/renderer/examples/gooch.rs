@@ -1,6 +1,6 @@
 use duck_engine_renderer::{
-    FrameTargets, Gpu, GpuOptions, RenderContext, RenderWorkflow, Renderer, SceneFrame, SceneFrames,
-    SceneRenderPass, SceneResources, abi,
+    FrameTargets, Gpu, GpuOptions, Pass, PassBuilder, PassId, RenderContext, Renderer, SceneFrame,
+    SceneFrames, SceneResources, TargetFeatures, Workflow, abi,
 };
 use duck_engine_renderer::scene::{Light, PositionedCamera, PositionedLight, Projection, SceneData};
 use duck_engine_renderer::scene::resource::{
@@ -19,10 +19,10 @@ struct GoochPass {
 }
 
 impl GoochPass {
-    fn new(ctx: &RenderContext) -> Self {
-        let shader = ctx.compile_user_wesl(GOOCH_WESL)
+    fn new(builder: &PassBuilder<'_>) -> Self {
+        let shader = builder.compile_wesl(GOOCH_WESL)
             .expect("failed to compile gooch shader");
-        let pipeline = ctx.custom_pipeline_builder()
+        let pipeline = builder.pipeline()
             .shader(&shader, "vs_main", "fs_main")
             .label("Gooch")
             .build();
@@ -30,7 +30,12 @@ impl GoochPass {
     }
 }
 
-impl SceneRenderPass for GoochPass {
+impl Pass<SceneFrames> for GoochPass {
+    // The pass clears and depth-tests, so it needs the shared depth buffer.
+    fn target_features(&self) -> TargetFeatures {
+        TargetFeatures::depth()
+    }
+
     fn execute(
         &mut self,
         gpu: &Gpu,
@@ -74,31 +79,6 @@ impl SceneRenderPass for GoochPass {
     }
 }
 
-struct GoochWorkflow {
-    pass: GoochPass,
-}
-
-impl GoochWorkflow {
-    fn new(ctx: &RenderContext) -> Self {
-        Self { pass: GoochPass::new(ctx) }
-    }
-}
-
-impl RenderWorkflow<SceneFrames> for GoochWorkflow {
-    fn name(&self) -> &'static str { "Gooch" }
-
-    fn execute(
-        &mut self,
-        gpu: &Gpu,
-        targets: &FrameTargets,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        frame: &mut SceneFrame<'_>,
-    ) {
-        self.pass.execute(gpu, targets, encoder, view, frame);
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     let width = 800u32;
     let height = 600u32;
@@ -107,7 +87,12 @@ fn main() -> anyhow::Result<()> {
     let mut ctx =
         RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps);
     let mut shared = SceneResources::new(&ctx);
-    let mut renderer = Renderer::new(&mut ctx, width, height);
+
+    // A workflow is just a named pass list, so a wholly custom stack is one
+    // pass in one workflow — no wrapper type needed.
+    let gooch = Workflow::new("Gooch")
+        .with(PassId("gooch"), GoochPass::new(&ctx.pass_builder((width, height))));
+    let mut renderer = Renderer::with_workflow(&mut ctx, width, height, gooch);
 
     // Build scene: UV sphere with a plain unlit material.
     // The Gooch pass ignores material bind groups and drives color purely from
@@ -137,8 +122,6 @@ fn main() -> anyhow::Result<()> {
         aspect: width as f32 / height as f32,
         projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
     };
-
-    renderer.set_workflow(Box::new(GoochWorkflow::new(&ctx)));
 
     let mut scene = Scene::new(scene);
     let image =

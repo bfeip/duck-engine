@@ -1,13 +1,14 @@
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::abi;
-use crate::render_core::{FrameTargets, Gpu};
+use crate::render_core::{FrameTargets, Gpu, Pass, TargetFeatures};
 use crate::scene::resource::PrimitiveType;
 use crate::scene::common::RgbaColor;
 
+use super::super::PassBuilder;
 use super::super::batching::SubGeomBatch;
 use super::super::mesh::{instance_buffer_layout, vertex_buffer_layout};
-use super::super::pass_context::{SceneFrame, SceneRenderPass};
+use super::super::pass_context::{SceneFrame, SceneFrames};
 
 /// A writable flat-color GPU resource: a `vec4<f32>` uniform buffer plus its
 /// bind group against the shared color material layout (group 2 /
@@ -117,12 +118,12 @@ fn build_pipeline(
 /// - **Faces** as a translucent overlay (highlight color at `face_alpha`).
 /// - **Edges / points** re-drawn solid in the highlight color.
 ///
-/// Primary and secondary selections use their respective tier colors. Deliberately
-/// mirrors [`FlatColorPass`](super::flat_color::FlatColorPass): it reuses the
+/// Primary and secondary selections use their respective tier colors.
+/// Deliberately mirrors [`FlatColorPass`](super::FlatColorPass): it reuses the
 /// `flat_color.wesl` shader (camera at group 0, `material_color` at group 2; the
-/// lights group is an unused filler so the color stays at group 2) and
-/// [`MeshGpuResources::draw_subgeom`](crate::renderer::mesh::MeshGpuResources::draw_subgeom).
-pub(crate) struct SubGeomHighlightPass {
+/// lights group is an unused filler so the color stays at group 2), drawing
+/// index sub-ranges of the already-uploaded meshes.
+pub struct SubGeomHighlightPass {
     triangle_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     point_pipeline: wgpu::RenderPipeline,
@@ -135,23 +136,25 @@ pub(crate) struct SubGeomHighlightPass {
 }
 
 impl SubGeomHighlightPass {
-    pub(crate) fn new(
-        device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
-        sample_count: u32,
-        camera_bgl: &wgpu::BindGroupLayout,
-        lights_bgl: &wgpu::BindGroupLayout,
-        material_color_bgl: &wgpu::BindGroupLayout,
-        shader_generator: &mut crate::shaders::ShaderGenerator,
-    ) -> Self {
-        let shader = shader_generator
-            .generate_flat_color_shader(device)
-            .expect("Failed to generate flat color shader");
+    #[must_use]
+    pub fn new(builder: &mut PassBuilder<'_>) -> Self {
+        let device = builder.device();
+        let surface_format = builder.format();
+        let sample_count = builder.sample_count();
+        let layouts = builder.layouts();
+        let material_color_bgl = &layouts.color;
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("SubGeom Highlight Pipeline Layout"),
-            bind_group_layouts: &[camera_bgl, lights_bgl, material_color_bgl],
+            bind_group_layouts: &[&layouts.camera, &layouts.light, material_color_bgl],
             push_constant_ranges: &[],
         });
+        let primary = TierColors::new(device, material_color_bgl, "Primary");
+        let secondary = TierColors::new(device, material_color_bgl, "Secondary");
+
+        let (shaders, device) = builder.shaders();
+        let shader = shaders
+            .generate_flat_color_shader(device)
+            .expect("Failed to generate flat color shader");
 
         let make = |topology, label| build_pipeline(device, &pipeline_layout, &shader, surface_format, sample_count, topology, label);
         let triangle_pipeline = make(wgpu::PrimitiveTopology::TriangleList, "SubGeom Highlight Triangle Pipeline");
@@ -166,8 +169,8 @@ impl SubGeomHighlightPass {
             shader,
             surface_format,
             sample_count,
-            primary: TierColors::new(device, material_color_bgl, "Primary"),
-            secondary: TierColors::new(device, material_color_bgl, "Secondary"),
+            primary,
+            secondary,
         }
     }
 
@@ -202,7 +205,11 @@ impl SubGeomHighlightPass {
     }
 }
 
-impl SceneRenderPass for SubGeomHighlightPass {
+impl Pass<SceneFrames> for SubGeomHighlightPass {
+    fn target_features(&self) -> TargetFeatures {
+        TargetFeatures::depth()
+    }
+
     fn is_active(&self, frame: &SceneFrame<'_>) -> bool {
         frame.draw.has_sub_geom_highlights()
     }

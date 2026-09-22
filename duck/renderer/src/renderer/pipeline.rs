@@ -324,7 +324,7 @@ fn build_material_bind_group_layout(
 
 /// Cache key for render pipelines: the surface variant plus its primitive topology.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct PipelineCacheKey {
+pub struct PipelineCacheKey {
     pub surface: SurfaceConfig,
     pub primitive_type: PrimitiveType,
 }

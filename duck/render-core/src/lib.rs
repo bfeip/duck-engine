@@ -21,12 +21,15 @@ mod workflow;
 
 pub use gen_cache::GenCache;
 pub use gpu::{Gpu, GpuCapabilities, GpuOptions};
-pub use host::{RenderHost, RgbaPixels};
+pub use host::{RenderHost, RgbaPixels, WorkflowGuard};
 pub use pipeline_cache::PipelineCache;
 pub use readback::ReadbackTarget;
 pub use shader::ShaderLibrary;
 pub use targets::{
-    FrameTargets, TargetConfig, TargetFeatures, highest_supported_sample_count,
+    AuxAttachment, AuxConflict, AuxKind, AuxTarget, FrameTargets, TargetConfig, TargetFeatures,
+    highest_supported_sample_count,
 };
 pub use texture::{GpuTexture, MaskChannels};
-pub use workflow::{FrameFamily, RenderWorkflow};
+pub use workflow::{FrameFamily, Pass, PassId, Workflow, WorkflowError};
+#[doc(hidden)]
+pub use workflow::AsAny;

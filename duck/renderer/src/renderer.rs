@@ -4,23 +4,26 @@ mod custom_pipeline;
 mod lights;
 mod material_cache;
 mod mesh;
+pub mod pass;
 mod pass_context;
 mod pipeline;
 mod prepare;
 mod scene_bindings;
-mod scene_pass;
 mod surface_config;
 mod texture;
-mod workflow;
+pub mod workflow;
 
 pub use batching::{
     BatchKey, BatchMaterial, DrawBatch, DrawData, InstanceTransform, SubGeomBatch,
 };
+pub use bind_group_layouts::BindGroupLayouts;
 pub use custom_pipeline::CustomPipelineBuilder;
 pub use mesh::{instance_buffer_layout, vertex_buffer_layout};
-pub use pass_context::{SceneFrame, SceneFrames, SceneRenderPass, SceneWorkflow};
+pub use pass_context::{DrawOptions, SceneFrame, SceneFrames, ScenePass, SceneWorkflow};
+pub use pipeline::PipelineCacheKey;
 pub use scene_bindings::SceneBindingRefs;
-pub use workflow::{HiddenLineConfig, HiddenLineWorkflow, ShadedWorkflow};
+pub use surface_config::{MaterialTextureSlot, SurfaceConfig, TexturePresence};
+pub use workflow::HiddenLineConfig;
 
 use anyhow::Result;
 
@@ -29,7 +32,7 @@ use crate::{
     ibl::IblResources,
     render_core::{
         GenCache, Gpu, GpuCapabilities, GpuTexture, MaskChannels, RenderHost, TargetConfig,
-        TargetFeatures,
+        WorkflowGuard,
         highest_supported_sample_count,
     },
     rgba_to_wgpu_color,
@@ -45,7 +48,6 @@ use crate::{
     shaders::ShaderGenerator
 };
 
-use bind_group_layouts::BindGroupLayouts;
 use material_cache::MaterialCache;
 use mesh::MeshGpuResources;
 use pipeline::MaterialPipelineCache;
@@ -164,20 +166,111 @@ impl RenderContext {
         )
     }
 
-    /// Get the bind group layout for the camera uniform (group 0).
-    ///
-    /// Prefer [`custom_pipeline_builder`](Self::custom_pipeline_builder) for
-    /// building custom pipelines — this method is a lower-level escape hatch.
-    pub fn camera_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.layouts.camera
+    /// The shared bind group layouts: camera, lights, flat color, and IBL.
+    pub fn layouts(&self) -> &BindGroupLayouts {
+        &self.layouts
     }
 
-    /// Get the bind group layout for the lights uniform (group 1).
+    /// Everything needed to construct a render pass, for a target of `size`.
     ///
-    /// Prefer [`custom_pipeline_builder`](Self::custom_pipeline_builder) for
-    /// building custom pipelines — this method is a lower-level escape hatch.
-    pub fn lights_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.layouts.light
+    /// This is the one interface every pass constructor takes — built-in and
+    /// user-written alike. [`Renderer::pass_builder`] is the usual way to get
+    /// one, since it supplies its own target configuration.
+    pub fn pass_builder(&mut self, size: (u32, u32)) -> PassBuilder<'_> {
+        let config = TargetConfig { size, format: self.format, sample_count: self.sample_count };
+        PassBuilder { ctx: self, config }
+    }
+}
+
+/// Everything a render pass constructor needs: the device, the target
+/// configuration it will render at, the adapter's capabilities, the shared bind
+/// group layouts, and the engine shader library.
+///
+/// Obtained from [`Renderer::pass_builder`] or [`RenderContext::pass_builder`].
+/// Passing one builder rather than a handful of positional arguments is what
+/// lets built-in and user-written passes be constructed the same way, and so
+/// composed in the same [`SceneWorkflow`].
+pub struct PassBuilder<'a> {
+    ctx: &'a mut RenderContext,
+    config: TargetConfig,
+}
+
+impl PassBuilder<'_> {
+    /// The GPU handle pair.
+    pub fn gpu(&self) -> &Gpu {
+        &self.ctx.gpu
+    }
+
+    /// The wgpu device.
+    pub fn device(&self) -> &wgpu::Device {
+        &self.ctx.gpu.device
+    }
+
+    /// The wgpu queue.
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.ctx.gpu.queue
+    }
+
+    /// Size, color format and sample count the pass will render at.
+    pub fn config(&self) -> TargetConfig {
+        self.config
+    }
+
+    /// The target color format. Pipelines built here must use it.
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+
+    /// The MSAA sample count (1 = no MSAA), baked into every pipeline.
+    pub fn sample_count(&self) -> u32 {
+        self.config.sample_count
+    }
+
+    /// What the adapter can do. A pass whose pipeline needs an optional
+    /// capability should check here and build no pipeline without it, then skip
+    /// itself from [`Pass::is_active`](crate::render_core::Pass::is_active).
+    pub fn capabilities(&self) -> GpuCapabilities {
+        self.ctx.capabilities
+    }
+
+    /// The shared bind group layouts: camera, lights, flat color, and IBL.
+    pub fn layouts(&self) -> &BindGroupLayouts {
+        &self.ctx.layouts
+    }
+
+    /// The engine shader library and the device, for compiling a built-in
+    /// shader variant:
+    ///
+    /// ```ignore
+    /// let (shaders, device) = builder.shaders();
+    /// let module = shaders.generate_outline_mask_shader(device)?;
+    /// ```
+    ///
+    /// Handed back as a pair because generating a variant needs both, and
+    /// borrowing them from the builder one at a time would alias.
+    pub fn shaders(&mut self) -> (&mut ShaderGenerator, &wgpu::Device) {
+        (self.ctx.pipelines.shader_generator_mut(), &self.ctx.gpu.device)
+    }
+
+    /// Compile a user-supplied WESL shader against the engine shader modules.
+    ///
+    /// # Errors
+    ///
+    /// Returns the WESL compilation error.
+    pub fn compile_wesl(&self, source: &str) -> Result<wgpu::ShaderModule> {
+        crate::shaders::compile_user_wesl(&self.ctx.gpu.device, source)
+    }
+
+    /// A pipeline builder pre-configured with this target's format and sample
+    /// count and the engine's standard vertex and instance buffer layouts.
+    pub fn pipeline(&self) -> CustomPipelineBuilder<'_> {
+        CustomPipelineBuilder::new(
+            &self.ctx.gpu.device,
+            self.config.format,
+            self.config.sample_count,
+            &self.ctx.layouts.camera,
+            &self.ctx.layouts.light,
+        )
     }
 }
 
@@ -271,6 +364,21 @@ impl Renderer {
     /// is not bound to a scene: pass the scene's [`SceneResources`] per render
     /// call.
     pub fn new(ctx: &mut RenderContext, width: u32, height: u32) -> Self {
+        let workflow = workflow::shaded(&mut ctx.pass_builder((width, height)));
+        Self::with_workflow(ctx, width, height, workflow)
+    }
+
+    /// Create a renderer running `workflow` from the start, rather than
+    /// installing the default one and immediately replacing it.
+    ///
+    /// Build the workflow from this context's [`pass_builder`](RenderContext::pass_builder)
+    /// at the same size.
+    pub fn with_workflow(
+        ctx: &mut RenderContext,
+        width: u32,
+        height: u32,
+        workflow: SceneWorkflow,
+    ) -> Self {
         let config = TargetConfig {
             size: (width, height),
             format: ctx.format,
@@ -280,24 +388,9 @@ impl Renderer {
         let camera = CameraBinding::new(&ctx.gpu.device, &ctx.layouts.camera);
         let lights = LightsBinding::new(&ctx.gpu.device, &ctx.layouts.light);
 
-        let shaded_workflow = ShadedWorkflow::new(
-            &ctx.gpu.device,
-            config,
-            &ctx.layouts.camera,
-            &ctx.layouts.light,
-            &ctx.layouts.color,
-            ctx.pipelines.shader_generator_mut(),
-        );
-
-        let host = RenderHost::new(
-            ctx.gpu.clone(),
-            config,
-            TargetFeatures {
-                depth: true,
-                sampled_depth: ctx.capabilities.samples_depth_textures(),
-            },
-            Box::new(shaded_workflow),
-        );
+        // Attachments come from the workflow's passes, so a workflow that needs
+        // no readable depth buffer does not make every view pay for one.
+        let host = RenderHost::new(ctx.gpu.clone(), config, workflow);
 
         Self {
             host,
@@ -339,44 +432,34 @@ impl Renderer {
 
     /// Replace the active rendering workflow.
     ///
-    /// The new workflow takes effect immediately on the next frame. The previous
-    /// workflow and all its GPU resources are dropped; the material pipelines
-    /// cached in [`RenderContext`] are retained across workflow swaps.
-    pub fn set_workflow(&mut self, workflow: Box<SceneWorkflow>) {
+    /// The new workflow takes effect immediately on the next frame, with the
+    /// frame attachments reallocated to match its passes. The previous workflow
+    /// and all its GPU resources are dropped; the material pipelines cached in
+    /// [`RenderContext`] are retained across workflow swaps.
+    pub fn set_workflow(&mut self, workflow: SceneWorkflow) {
         self.host.set_workflow(workflow);
     }
 
-    /// Create a new [`ShadedWorkflow`] configured for this renderer's target and
-    /// MSAA settings. Pass to [`set_workflow`](Self::set_workflow) to activate it.
-    pub fn shaded_workflow(&self, ctx: &mut RenderContext) -> ShadedWorkflow {
-        ShadedWorkflow::new(
-            &ctx.gpu.device,
-            self.host.targets().config(),
-            &ctx.layouts.camera,
-            &ctx.layouts.light,
-            &ctx.layouts.color,
-            ctx.pipelines.shader_generator_mut(),
-        )
+    /// The active rendering workflow.
+    pub fn workflow(&self) -> &SceneWorkflow {
+        self.host.workflow()
     }
 
-    /// Create a new [`HiddenLineWorkflow`] configured for this renderer's target and
-    /// MSAA settings. Pass to [`set_workflow`](Self::set_workflow) to activate it.
-    pub fn hidden_line_workflow(
-        &self,
-        ctx: &mut RenderContext,
-        config: HiddenLineConfig,
-    ) -> HiddenLineWorkflow {
-        HiddenLineWorkflow::new(
-            &ctx.gpu.device,
-            self.host.targets().format(),
-            self.host.targets().sample_count(),
-            ctx.capabilities,
-            &ctx.layouts.camera,
-            &ctx.layouts.light,
-            &ctx.layouts.color,
-            ctx.pipelines.shader_generator_mut(),
-            config,
-        )
+    /// Edit the active workflow in place: insert a pass next to a known one,
+    /// swap one out, drop one, or retune one through
+    /// [`Workflow::pass_mut`](crate::render_core::Workflow::pass_mut).
+    ///
+    /// Frame attachments are reconciled with the edited pass list when the
+    /// returned guard drops.
+    pub fn workflow_mut(&mut self) -> WorkflowGuard<'_, SceneFrames> {
+        self.host.workflow_mut()
+    }
+
+    /// A [`PassBuilder`] configured for this renderer's target size, format and
+    /// MSAA settings — the way to construct a pass that will go into this
+    /// renderer's workflow.
+    pub fn pass_builder<'a>(&self, ctx: &'a mut RenderContext) -> PassBuilder<'a> {
+        ctx.pass_builder(self.host.targets().size())
     }
 
     /// Resize the render target to `new_size` (width, height) in pixels.

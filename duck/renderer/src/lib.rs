@@ -10,7 +10,7 @@
 //!
 //! Two dependencies are re-exported at the crate root: [`scene`], and
 //! [`render_core`] — the scene-agnostic dispatch layer this crate is built on,
-//! whose [`Gpu`], [`FrameTargets`], and [`RenderWorkflow`] appear throughout
+//! whose [`Gpu`], [`FrameTargets`], [`Pass`] and [`Workflow`] appear throughout
 //! this crate's API.
 //!
 //! # Context, scene, and view state
@@ -54,23 +54,68 @@
 //!
 //! # Workflows and passes
 //!
-//! What a renderer draws each frame is decided by its workflow, an ordered
-//! sequence of render passes. The default is [`ShadedWorkflow`] — PBR-lit
-//! faces, lines and points, selection outlines, overlay geometry —
-//! and [`HiddenLineWorkflow`] renders technical-drawing style line work;
-//! switch with [`Renderer::set_workflow`].
+//! What a renderer draws each frame is decided by its workflow. A
+//! [`SceneWorkflow`] is a named, ordered, id-addressable list of passes — not a
+//! type per rendering style — so there is one concept to learn, the pass, and
+//! one way to compose passes.
 //!
-//! Custom rendering plugs in at two levels. A pass implements
-//! [`SceneRenderPass`] and reads the per-frame [`SceneFrame`]: the scene, the
-//! collected [`DrawBatch`]es, and the standard bind groups
-//! ([`SceneBindingRefs`]), drawn via [`SceneFrame::draw_batch`] or raw wgpu
-//! calls. A whole workflow implements
-//! [`RenderWorkflow<SceneFrames>`](RenderWorkflow). Custom WESL shaders
-//! compile against the engine's shader modules with
-//! [`RenderContext::compile_user_wesl`], pipelines come from
-//! [`RenderContext::custom_pipeline_builder`], and the bind group
-//! conventions those shaders rely on are the constants in [`abi`]. The
-//! `gooch` example walks a custom workflow end to end.
+//! [`workflow::shaded`] builds the default: PBR-lit faces, lines and points,
+//! selection outlines, and overlay geometry. [`workflow::hidden_line`] builds
+//! technical-drawing style line work. Install either with
+//! [`Renderer::set_workflow`], or hand one to [`Renderer::with_workflow`] at
+//! construction.
+//!
+//! Because a workflow is an editable list, a caller adjusts a stock one rather
+//! than rebuilding it. Every built-in pass is public in [`pass`] and registered
+//! under a constant in [`pass::ids`]:
+//!
+//! ```ignore
+//! let mut workflow = workflow::shaded(&mut renderer.pass_builder(&mut ctx));
+//!
+//! // Insert a pass at a named point.
+//! workflow.insert_after(pass::ids::FACES, PassId("ghost"), GhostPass::new(&b))?;
+//! // Reuse a built-in pass from another workflow.
+//! workflow.insert_after(pass::ids::LINES_AND_POINTS, pass::ids::SILHOUETTE, s)?;
+//! // Retune one in place — no pipeline is rebuilt.
+//! workflow.pass_mut::<FlatColorPass>(pass::ids::SOLID)?.set_color(queue, c);
+//! // Or drop one.
+//! workflow.remove(pass::ids::SUB_GEOM_HIGHLIGHT);
+//! ```
+//!
+//! [`Renderer::workflow_mut`] does the same to the workflow a renderer is
+//! already running.
+//!
+//! ## Writing a pass
+//!
+//! A pass implements [`Pass<SceneFrames>`](Pass) and reads the per-frame
+//! [`SceneFrame`]: the scene, the collected [`DrawBatch`]es, and the standard
+//! bind groups ([`SceneBindingRefs`]). It can draw geometry through its own
+//! pipeline with [`SceneFrame::draw_batch`], or with full engine material
+//! shading via [`SceneFrame::bind_scene_groups`] and
+//! [`SceneFrame::draw_batches`] — the same methods the built-in passes use.
+//! [`SceneFrame::surface_pipeline`] and [`SceneFrame::material_bind_group`]
+//! expose the shared caches for finer control.
+//!
+//! Every pass — built-in or user-written — is constructed from a
+//! [`PassBuilder`], which carries the device, target configuration, adapter
+//! capabilities, shared [`BindGroupLayouts`], and the engine shader library.
+//! That common interface is what lets passes from different sources compose in
+//! one workflow. Custom WESL shaders compile against the engine's modules with
+//! [`PassBuilder::compile_wesl`], pipelines come from
+//! [`PassBuilder::pipeline`], and the bind group conventions those shaders rely
+//! on are the constants in [`abi`].
+//!
+//! ## Attachments
+//!
+//! A pass does not own the attachments it shares. It declares what it needs
+//! from [`Pass::target_features`] — the depth buffer, a readable depth buffer,
+//! or a named [`AuxTarget`] — the workflow keeps the union across its passes,
+//! and the host allocates and resizes them. That is how one pass hands a
+//! texture to another: both declare the same [`AuxTarget`] and neither holds
+//! the other. It also means a workflow only pays for what its passes use.
+//!
+//! The `gooch` example builds a wholly custom workflow; `custom_pass` edits a
+//! stock one.
 //!
 //! # Highlights
 //!
@@ -147,15 +192,19 @@ pub mod abi;
 pub mod ibl;
 mod highlight_query;
 mod renderer;
-mod shaders;
+pub mod shaders;
 
 pub use renderer::{
-    BatchKey, BatchMaterial, CustomPipelineBuilder, DrawBatch, DrawData, HiddenLineConfig,
-    HiddenLineWorkflow, InstanceTransform, RenderContext, Renderer,
-    SceneBindingRefs, SceneFrame, SceneFrames, SceneRenderPass, SceneResources, SceneWorkflow,
-    ShadedWorkflow, SubGeomBatch, instance_buffer_layout, vertex_buffer_layout,
+    BatchKey, BatchMaterial, BindGroupLayouts, CustomPipelineBuilder, DrawBatch, DrawData,
+    DrawOptions, HiddenLineConfig, InstanceTransform, MaterialTextureSlot, PassBuilder,
+    PipelineCacheKey, RenderContext, Renderer, SceneBindingRefs, SceneFrame, SceneFrames,
+    ScenePass, SceneResources, SceneWorkflow, SubGeomBatch, SurfaceConfig, TexturePresence,
+    instance_buffer_layout, pass, scene_color_format, vertex_buffer_layout, workflow,
 };
 pub use highlight_query::{HighlightConfig, HighlightQuery};
 
 // Core dispatch types needed to author custom workflows/passes.
-pub use render_core::{FrameTargets, Gpu, GpuCapabilities, GpuOptions, RenderWorkflow};
+pub use render_core::{
+    AuxKind, AuxTarget, FrameTargets, Gpu, GpuCapabilities, GpuOptions, Pass, PassId,
+    TargetFeatures, Workflow, WorkflowError, WorkflowGuard,
+};

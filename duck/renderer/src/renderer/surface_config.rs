@@ -32,7 +32,7 @@ use crate::scene::resource::{AlphaMode, MaterialProperties};
 ///
 /// [`ALL`]: MaterialTextureSlot::ALL
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum MaterialTextureSlot {
+pub enum MaterialTextureSlot {
     BaseColor,
     Normal,
     MetallicRoughness,
@@ -71,7 +71,7 @@ impl MaterialTextureSlot {
 /// [`MaterialTextureSlot`]. Keys the material bind-group-layout cache; iterate
 /// [`slots`](TexturePresence::slots) to walk the present channels in binding order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub(crate) struct TexturePresence {
+pub struct TexturePresence {
     pub base_color: bool,
     pub normal: bool,
     pub metallic_roughness: bool,
@@ -98,7 +98,7 @@ impl TexturePresence {
 /// A material variant for one pass: scene-layer [`MaterialProperties`] plus the
 /// IBL and depth-prepass context. Hashable so it can key the pipeline cache.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct SurfaceConfig {
+pub struct SurfaceConfig {
     /// The material's own GPU-relevant properties (device-free, scene-layer).
     pub props: MaterialProperties,
     /// Whether the scene has an active environment map. Only matters when lit.

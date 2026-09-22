@@ -44,7 +44,7 @@ fn engine_library() -> ShaderLibrary {
 /// import package::camera::camera;    // the camera uniform global
 /// import package::lighting::lights;  // the lights uniform global
 /// ```
-pub(crate) fn compile_user_wesl(device: &wgpu::Device, source: &str) -> anyhow::Result<wgpu::ShaderModule> {
+pub fn compile_user_wesl(device: &wgpu::Device, source: &str) -> anyhow::Result<wgpu::ShaderModule> {
     engine_library().compile_adhoc(device, source)
 }
 
@@ -54,7 +54,7 @@ pub(crate) fn compile_user_wesl(device: &wgpu::Device, source: &str) -> anyhow::
 /// method maps typed renderer state (material/scene properties, MSAA flags) to
 /// the module path + feature flags the library compiles. Variant caching lives
 /// in the library.
-pub(crate) struct ShaderGenerator {
+pub struct ShaderGenerator {
     library: ShaderLibrary,
 }
 

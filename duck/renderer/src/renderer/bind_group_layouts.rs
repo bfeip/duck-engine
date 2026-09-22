@@ -13,12 +13,12 @@ use crate::ibl::ibl_bind_group_layout;
 /// the first bind group of each kind) lets multiple instances — e.g. one camera
 /// binding per view — share a single layout, and gives pipeline-layout
 /// construction one place to borrow from.
-pub(crate) struct BindGroupLayouts {
+pub struct BindGroupLayouts {
     pub camera: wgpu::BindGroupLayout,
     pub light: wgpu::BindGroupLayout,
     /// Color material layout for the standalone flat-color overlay shader
-    /// (a single `vec4` uniform). Surface materials use the dynamically-derived
-    /// layouts in [`MaterialLayoutCache`](super::pipeline::MaterialLayoutCache) instead.
+    /// (a single `vec4` uniform). Surface materials use layouts derived from
+    /// their texture set instead, cached alongside the material pipelines.
     pub color: wgpu::BindGroupLayout,
     pub ibl: wgpu::BindGroupLayout,
 }

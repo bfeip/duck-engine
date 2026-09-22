@@ -1,8 +1,8 @@
-//! Minimal headless render with the built-in [`ShadedWorkflow`].
+//! Minimal headless render with the default shaded workflow.
 //!
-//! The counterpart to `gooch.rs`: where that example installs a *custom*
-//! workflow, this one uses the renderer's default shaded workflow — the simplest
-//! end-to-end use of the standard pipeline (PBR lit geometry, depth, MSAA off).
+//! The simplest end-to-end use of the standard pipeline: PBR lit geometry,
+//! depth, MSAA off. `gooch.rs` installs a wholly custom workflow instead, and
+//! `custom_pass.rs` edits this one.
 //! Run with `cargo run --example shaded -p duck-engine-renderer`.
 
 use duck_engine_renderer::{Gpu, GpuOptions, RenderContext, Renderer, SceneResources};
@@ -51,7 +51,7 @@ fn main() -> anyhow::Result<()> {
         projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
     };
 
-    // No `set_workflow` call: the renderer starts with the built-in ShadedWorkflow.
+    // No `set_workflow` call: `Renderer::new` installs `workflow::shaded`.
     let mut scene = Scene::new(scene);
     let image =
         renderer.render_scene_to_image(&mut ctx, &mut shared, &mut scene, &camera, &lights, None)?;

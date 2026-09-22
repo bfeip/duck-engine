@@ -1,90 +1,55 @@
-use crate::render_core::{FrameTargets, Gpu, GpuCapabilities, RenderWorkflow, TargetConfig};
-use crate::scene::resource::PrimitiveType;
-use crate::scene::common::RgbaColor;
+//! The stock rendering workflows.
+//!
+//! Each is a function returning a [`SceneWorkflow`] — an ordered pass list, not
+//! a distinct type — so a caller can start from one and adjust it rather than
+//! rebuild it:
+//!
+//! ```ignore
+//! let mut workflow = workflow::shaded(&mut renderer.pass_builder(&mut ctx));
+//! workflow.insert_after(pass::ids::OVERLAY, PassId("grid"), GridPass::new(b))?;
+//! renderer.set_workflow(workflow);
+//! ```
 
-use super::pass_context::{SceneFrame, SceneFrames, SceneRenderPass};
-use super::scene_pass::{
-    FlatColorPass, FlatColorPassDesc,
-    MainPass, OverlayPass, SilhouetteEdgesPass, SubGeomHighlightPass, outline_passes,
+use crate::render_core::Workflow;
+use crate::scene::common::RgbaColor;
+use crate::scene::resource::PrimitiveType;
+
+use super::PassBuilder;
+use super::pass::{
+    FlatColorPass, FlatColorPassDesc, MainPass, OutlineCompositePass, OutlineMaskPass,
+    OverlayPass, SilhouetteEdgesPass, SubGeomHighlightPass, ids,
 };
-use crate::shaders::ShaderGenerator;
+use super::pass_context::SceneWorkflow;
 
 /// The default shaded rendering workflow.
 ///
 /// Runs the standard pass sequence: scene faces, the highlight outline mask,
 /// scene lines and points, the outline composite, overlay (always-on-top)
-/// geometry, and sub-geometry highlights. Custom passes can be injected via
-/// [`ShadedWorkflow::set_passes`].
-pub struct ShadedWorkflow {
-    passes: Vec<Box<dyn SceneRenderPass>>,
+/// geometry, and sub-geometry highlights.
+///
+/// The order carries two constraints worth preserving when editing it: the
+/// outline mask sits between the two geometry passes so it depth-tests against
+/// faces only, and the composite runs after lines and points so nothing cuts
+/// the outline band.
+#[must_use]
+pub fn shaded(builder: &mut PassBuilder<'_>) -> SceneWorkflow {
+    let outline_mask = OutlineMaskPass::new(builder);
+    let outline_composite = OutlineCompositePass::new(builder);
+    let sub_geom = SubGeomHighlightPass::new(builder);
+
+    Workflow::new("Shaded")
+        .with(ids::FACES, MainPass::faces())
+        // Between the two geometry passes: the mask depth-tests against faces only.
+        .with(ids::OUTLINE_MASK, outline_mask)
+        .with(ids::LINES_AND_POINTS, MainPass::lines_and_points())
+        // After lines and points, so nothing cuts the outline band.
+        .with(ids::OUTLINE_COMPOSITE, outline_composite)
+        .with(ids::OVERLAY, OverlayPass::new())
+        // Sub-geometry highlights draw on top of the node outlines.
+        .with(ids::SUB_GEOM_HIGHLIGHT, sub_geom)
 }
 
-impl ShadedWorkflow {
-    pub(super) fn new(
-        device: &wgpu::Device,
-        config: TargetConfig,
-        camera_bgl: &wgpu::BindGroupLayout,
-        lights_bgl: &wgpu::BindGroupLayout,
-        material_color_bgl: &wgpu::BindGroupLayout,
-        shader_generator: &mut ShaderGenerator,
-    ) -> Self {
-        let (width, height) = config.size;
-        let sample_count = config.sample_count;
-        let (outline_mask, outline_composite) =
-            outline_passes(device, config, camera_bgl, shader_generator);
-        Self {
-            passes: vec![
-                Box::new(MainPass::faces()),
-                // Between the two geometry passes: the mask depth-tests against
-                // faces only.
-                Box::new(outline_mask),
-                Box::new(MainPass::lines_and_points()),
-                // After lines and points, so nothing cuts the outline band.
-                Box::new(outline_composite),
-                Box::new(OverlayPass::new(device, width, height, sample_count)),
-                // Sub-geometry highlights draw on top of the node outlines.
-                Box::new(SubGeomHighlightPass::new(
-                    device, config.format, sample_count,
-                    camera_bgl, lights_bgl, material_color_bgl, shader_generator,
-                )),
-            ],
-        }
-    }
-
-    /// Replace the pass list. Passes execute in order; each receives the same
-    /// [`SceneFrame`] and can skip itself by returning `false` from
-    /// [`SceneRenderPass::is_active`].
-    pub fn set_passes(&mut self, passes: Vec<Box<dyn SceneRenderPass>>) {
-        self.passes = passes;
-    }
-}
-
-impl RenderWorkflow<SceneFrames> for ShadedWorkflow {
-    fn name(&self) -> &'static str { "Shaded" }
-
-    fn resize(&mut self, gpu: &Gpu, targets: &FrameTargets) {
-        for pass in &mut self.passes {
-            pass.resize(gpu, targets);
-        }
-    }
-
-    fn execute(
-        &mut self,
-        gpu: &Gpu,
-        targets: &FrameTargets,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        frame: &mut SceneFrame<'_>,
-    ) {
-        for pass in &mut self.passes {
-            if pass.is_active(frame) {
-                pass.execute(gpu, targets, encoder, view, frame);
-            }
-        }
-    }
-}
-
-/// Color configuration for [`HiddenLineWorkflow`].
+/// Color configuration for [`hidden_line`].
 #[derive(Clone, Debug)]
 pub struct HiddenLineConfig {
     /// Background / face color (also used as the clear color).
@@ -109,120 +74,70 @@ impl Default for HiddenLineConfig {
 ///
 /// Renders scene geometry as solid faces with silhouette edges detected from
 /// the depth buffer, plus explicit `LineList` primitives in two flat colors:
-/// one for occluded lines and one for visible lines. All colors are configured
-/// via [`HiddenLineConfig`].
+/// one for occluded lines and one for visible lines.
 ///
 /// Pass sequence:
-/// 1. Solid — clear to face color, render all triangles, write depth.
-/// 2. Silhouette — fullscreen depth-discontinuity edge detection.
-/// 3. Occluded lines — hidden line color where depth compare is `Greater`.
-/// 4. Visible lines — visible line color where depth compare is `LessEqual`.
-pub struct HiddenLineWorkflow {
-    solid_pass: FlatColorPass,
-    /// `None` where the backend cannot read depth back — see
-    /// [`GpuCapabilities::samples_depth_textures`]. The workflow then draws
-    /// its line work without silhouette edges.
-    silhouette_pass: Option<SilhouetteEdgesPass>,
-    occluded_pass: FlatColorPass,
-    visible_pass: FlatColorPass,
-}
+/// 1. [`ids::SOLID`] — clear to face color, render all triangles, write depth.
+/// 2. [`ids::SILHOUETTE`] — fullscreen depth-discontinuity edge detection.
+///    Skips itself on backends that cannot sample depth textures.
+/// 3. [`ids::OCCLUDED_LINES`] — hidden line color where depth compare is `Greater`.
+/// 4. [`ids::VISIBLE_LINES`] — visible line color where depth compare is `LessEqual`.
+///
+/// `config` seeds the colors; they can be changed later without rebuilding the
+/// workflow, since each line pass is a [`FlatColorPass`] addressed by its id:
+///
+/// ```ignore
+/// workflow.pass_mut::<FlatColorPass>(ids::VISIBLE_LINES)
+///     .unwrap()
+///     .set_color(queue, color);
+/// ```
+#[must_use]
+pub fn hidden_line(builder: &mut PassBuilder<'_>, config: HiddenLineConfig) -> SceneWorkflow {
+    let solid = FlatColorPass::new(
+        builder,
+        FlatColorPassDesc {
+            label: "Hidden Line Solid",
+            cull_mode: Some(wgpu::Face::Back),
+            depth_compare: wgpu::CompareFunction::Less,
+            depth_write: true,
+            // Push faces slightly away so coplanar edges pass depth test.
+            depth_bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+            clear_color: Some(crate::rgba_to_wgpu_color(config.face_color)),
+            primitive_filter: PrimitiveType::TriangleList,
+            color: config.face_color,
+        },
+    );
+    let silhouette = SilhouetteEdgesPass::new(builder);
 
-impl HiddenLineWorkflow {
-    pub(super) fn new(
-        device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
-        sample_count: u32,
-        capabilities: GpuCapabilities,
-        camera_bgl: &wgpu::BindGroupLayout,
-        lights_bgl: &wgpu::BindGroupLayout,
-        material_color_bgl: &wgpu::BindGroupLayout,
-        shader_generator: &mut ShaderGenerator,
-        config: HiddenLineConfig,
-    ) -> Self {
-        let solid_pass = FlatColorPass::new(
-            device, surface_format, sample_count,
-            camera_bgl, lights_bgl, material_color_bgl, shader_generator,
-            FlatColorPassDesc {
-                label: "Hidden Line Solid",
-                cull_mode: Some(wgpu::Face::Back),
-                depth_compare: wgpu::CompareFunction::Less,
-                depth_write: true,
-                // Push faces slightly away so coplanar edges pass depth test.
-                depth_bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
-                clear_color: Some(crate::rgba_to_wgpu_color(config.face_color)),
-                primitive_filter: PrimitiveType::TriangleList,
-                color: config.face_color,
-            },
-        );
-        // Building the pass at all would fail on a backend that cannot read
-        // depth: its pipeline is a depth `textureLoad`.
-        let silhouette_pass = capabilities.samples_depth_textures().then(|| {
-            SilhouetteEdgesPass::new(device, surface_format, sample_count, shader_generator)
-        });
-        if silhouette_pass.is_none() {
-            log::warn!(
-                "Hidden line: silhouette edges unavailable on the {:?} backend, drawing lines only",
-                capabilities.backend,
-            );
-        }
-
-        let mut make_line_pass = |label, depth_compare, color| FlatColorPass::new(
-            device, surface_format, sample_count,
-            camera_bgl, lights_bgl, material_color_bgl, shader_generator,
+    let mut line_pass = |label, depth_compare, color| {
+        FlatColorPass::new(
+            builder,
             FlatColorPassDesc {
                 label,
                 cull_mode: None,
                 depth_compare,
                 depth_write: false,
-                depth_bias: Default::default(),
+                depth_bias: wgpu::DepthBiasState::default(),
                 clear_color: None,
                 primitive_filter: PrimitiveType::LineList,
                 color,
             },
-        );
-        let occluded_pass = make_line_pass(
-            "Hidden Line Occluded",
-            wgpu::CompareFunction::Greater,
-            config.hidden_line_color,
-        );
-        let visible_pass = make_line_pass(
-            "Hidden Line Visible",
-            wgpu::CompareFunction::LessEqual,
-            config.visible_line_color,
-        );
+        )
+    };
+    let occluded = line_pass(
+        "Hidden Line Occluded",
+        wgpu::CompareFunction::Greater,
+        config.hidden_line_color,
+    );
+    let visible = line_pass(
+        "Hidden Line Visible",
+        wgpu::CompareFunction::LessEqual,
+        config.visible_line_color,
+    );
 
-        Self { solid_pass, silhouette_pass, occluded_pass, visible_pass }
-    }
-}
-
-impl RenderWorkflow<SceneFrames> for HiddenLineWorkflow {
-    fn name(&self) -> &'static str { "Hidden Line" }
-
-    fn resize(&mut self, gpu: &Gpu, targets: &FrameTargets) {
-        self.solid_pass.resize(gpu, targets);
-        if let Some(pass) = &mut self.silhouette_pass {
-            pass.resize(gpu, targets);
-        }
-        self.occluded_pass.resize(gpu, targets);
-        self.visible_pass.resize(gpu, targets);
-    }
-
-    fn execute(
-        &mut self,
-        gpu: &Gpu,
-        targets: &FrameTargets,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        frame: &mut SceneFrame<'_>,
-    ) {
-        self.solid_pass.execute(gpu, targets, encoder, view, frame);
-        if let Some(pass) = &mut self.silhouette_pass {
-            pass.execute(gpu, targets, encoder, view, frame);
-        }
-        let has_lines = frame.draw.all_batches().iter().any(|b| b.primitive_type == PrimitiveType::LineList);
-        if has_lines {
-            self.occluded_pass.execute(gpu, targets, encoder, view, frame);
-            self.visible_pass.execute(gpu, targets, encoder, view, frame);
-        }
-    }
+    Workflow::new("Hidden Line")
+        .with(ids::SOLID, solid)
+        .with(ids::SILHOUETTE, silhouette)
+        .with(ids::OCCLUDED_LINES, occluded)
+        .with(ids::VISIBLE_LINES, visible)
 }

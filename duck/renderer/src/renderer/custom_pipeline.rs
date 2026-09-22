@@ -33,6 +33,7 @@ pub struct CustomPipelineBuilder<'a> {
     blend: wgpu::BlendState,
     cull_mode: Option<wgpu::Face>,
     depth_write: bool,
+    depth_compare: wgpu::CompareFunction,
     label: Option<&'a str>,
 }
 
@@ -58,6 +59,7 @@ impl<'a> CustomPipelineBuilder<'a> {
             blend: wgpu::BlendState::REPLACE,
             cull_mode: Some(wgpu::Face::Back),
             depth_write: true,
+            depth_compare: wgpu::CompareFunction::Less,
             label: None,
         }
     }
@@ -123,6 +125,16 @@ impl<'a> CustomPipelineBuilder<'a> {
         self
     }
 
+    /// Set the depth test. Defaults to `Less` (draw what is in front).
+    ///
+    /// `Greater` draws only where the pass's geometry is *behind* what the
+    /// depth buffer already holds, which is how an x-ray or hidden-line effect
+    /// selects occluded geometry.
+    pub fn depth_compare(mut self, compare: wgpu::CompareFunction) -> Self {
+        self.depth_compare = compare;
+        self
+    }
+
     /// Set a debug label for the pipeline.
     pub fn label(mut self, label: &'a str) -> Self {
         self.label = Some(label);
@@ -180,7 +192,7 @@ impl<'a> CustomPipelineBuilder<'a> {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: GpuTexture::DEPTH_FORMAT,
                 depth_write_enabled: self.depth_write,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_compare: self.depth_compare,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

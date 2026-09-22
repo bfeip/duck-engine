@@ -1,16 +1,17 @@
 use crate::abi;
-use crate::render_core::{FrameTargets, Gpu, GpuTexture};
+use crate::render_core::{FrameTargets, Gpu, GpuTexture, Pass, TargetFeatures};
 use crate::scene::resource::PrimitiveType;
 use crate::scene::common::RgbaColor;
 
+use super::super::PassBuilder;
 use super::super::mesh::{instance_buffer_layout, vertex_buffer_layout};
-use super::super::pass_context::{SceneFrame, SceneRenderPass};
+use super::super::pass_context::{SceneFrame, SceneFrames};
 
 /// Per-instance configuration for [`FlatColorPass`].
 ///
 /// Encodes everything that distinguishes different flat-color pass variants
 /// so all can be driven by one struct + one pipeline builder.
-pub(crate) struct FlatColorPassDesc {
+pub struct FlatColorPassDesc {
     pub label: &'static str,
     pub cull_mode: Option<wgpu::Face>,
     pub depth_compare: wgpu::CompareFunction,
@@ -77,58 +78,99 @@ fn build_flat_color_pipeline(
 }
 
 /// A flat-color geometry pass parameterized by [`FlatColorPassDesc`].
-pub(crate) struct FlatColorPass {
+pub struct FlatColorPass {
     pipeline: wgpu::RenderPipeline,
     pipeline_layout: wgpu::PipelineLayout,
     shader: wgpu::ShaderModule,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
+    color_buffer: wgpu::Buffer,
     color_bind_group: wgpu::BindGroup,
     desc: FlatColorPassDesc,
 }
 
 impl FlatColorPass {
-    pub(crate) fn new(
-        device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
-        sample_count: u32,
-        camera_bgl: &wgpu::BindGroupLayout,
-        lights_bgl: &wgpu::BindGroupLayout,
-        material_color_bgl: &wgpu::BindGroupLayout,
-        shader_generator: &mut crate::shaders::ShaderGenerator,
-        desc: FlatColorPassDesc,
-    ) -> Self {
+    #[must_use]
+    pub fn new(builder: &mut PassBuilder<'_>, desc: FlatColorPassDesc) -> Self {
         use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-        let shader = shader_generator
-            .generate_flat_color_shader(device)
-            .expect("Failed to generate flat color shader");
+        let device = builder.device();
+        let surface_format = builder.format();
+        let sample_count = builder.sample_count();
+        let layouts = builder.layouts();
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(desc.label),
-            bind_group_layouts: &[camera_bgl, lights_bgl, material_color_bgl],
+            bind_group_layouts: &[&layouts.camera, &layouts.light, &layouts.color],
             push_constant_ranges: &[],
         });
-        let pipeline = build_flat_color_pipeline(device, &pipeline_layout, &shader, surface_format, sample_count, &desc);
 
         let color_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some(desc.label),
             contents: bytemuck::bytes_of(&desc.color),
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let color_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(desc.label),
-            layout: material_color_bgl,
+            layout: &layouts.color,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: color_buffer.as_entire_binding(),
             }],
         });
 
-        Self { pipeline, pipeline_layout, shader, surface_format, sample_count, color_bind_group, desc }
+        let (shaders, device) = builder.shaders();
+        let shader = shaders
+            .generate_flat_color_shader(device)
+            .expect("Failed to generate flat color shader");
+        let pipeline = build_flat_color_pipeline(device, &pipeline_layout, &shader, surface_format, sample_count, &desc);
+
+        Self {
+            pipeline,
+            pipeline_layout,
+            shader,
+            surface_format,
+            sample_count,
+            color_buffer,
+            color_bind_group,
+            desc,
+        }
+    }
+
+    /// The color this pass draws in.
+    #[must_use]
+    pub const fn color(&self) -> RgbaColor {
+        self.desc.color
+    }
+
+    /// Recolor this pass, with no pipeline rebuild — this is how a live
+    /// workflow's colors are retuned through
+    /// [`Workflow::pass_mut`](crate::render_core::Workflow::pass_mut).
+    pub fn set_color(&mut self, queue: &wgpu::Queue, color: RgbaColor) {
+        self.desc.color = color;
+        queue.write_buffer(&self.color_buffer, 0, bytemuck::bytes_of(&color));
+    }
+
+    /// The color the pass clears its color attachment to, if it clears.
+    pub fn set_clear_color(&mut self, clear_color: Option<wgpu::Color>) {
+        self.desc.clear_color = clear_color;
     }
 }
 
-impl SceneRenderPass for FlatColorPass {
+impl Pass<SceneFrames> for FlatColorPass {
+    fn target_features(&self) -> TargetFeatures {
+        TargetFeatures::depth()
+    }
+
+    fn is_active(&self, frame: &SceneFrame<'_>) -> bool {
+        // A clearing pass must always run, even with nothing to draw.
+        self.desc.clear_color.is_some()
+            || frame
+                .draw
+                .all_batches()
+                .iter()
+                .any(|b| b.primitive_type == self.desc.primitive_filter)
+    }
+
     fn resize(&mut self, gpu: &Gpu, targets: &FrameTargets) {
         let sample_count = targets.sample_count();
         if self.sample_count != sample_count {

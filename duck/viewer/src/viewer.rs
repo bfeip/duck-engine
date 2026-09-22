@@ -14,8 +14,8 @@ use crate::{
     scene::{PositionedCamera, PositionedLight, Projection, common::RgbaColor},
     selection::SelectionManager,
     renderer::{
-        Gpu, GpuCapabilities, GpuOptions, HiddenLineConfig, HiddenLineWorkflow, HighlightQuery,
-        RenderContext, Renderer, SceneResources, SceneWorkflow, ShadedWorkflow,
+        Gpu, GpuCapabilities, GpuOptions, HighlightQuery, PassBuilder, RenderContext, Renderer,
+        SceneFrames, SceneResources, SceneWorkflow, WorkflowGuard,
     },
     view::{
         HeadlightMode, PixelRect, View, ViewId, ViewLayout, ViewTarget, default_headlight_rig,
@@ -905,18 +905,29 @@ impl ViewMut<'_> {
     }
 
     /// Replace the view's rendering workflow.
-    pub fn set_workflow(&mut self, workflow: Box<SceneWorkflow>) {
+    ///
+    /// Build one with [`workflow::shaded`](crate::renderer::workflow::shaded),
+    /// [`workflow::hidden_line`](crate::renderer::workflow::hidden_line), or by
+    /// hand, from this view's [`pass_builder`](Self::pass_builder).
+    pub fn set_workflow(&mut self, workflow: SceneWorkflow) {
         self.view.renderer.set_workflow(workflow);
     }
 
-    /// Create a [`ShadedWorkflow`] configured for this view.
-    pub fn shaded_workflow(&mut self) -> ShadedWorkflow {
-        self.view.renderer.shaded_workflow(self.ctx)
+    /// The view's active rendering workflow.
+    pub fn workflow(&self) -> &SceneWorkflow {
+        self.view.renderer.workflow()
     }
 
-    /// Create a [`HiddenLineWorkflow`] configured for this view.
-    pub fn hidden_line_workflow(&mut self, config: HiddenLineConfig) -> HiddenLineWorkflow {
-        self.view.renderer.hidden_line_workflow(self.ctx, config)
+    /// Edit the view's workflow in place: insert a pass next to a known one,
+    /// swap one out, drop one, or retune one.
+    pub fn workflow_mut(&mut self) -> WorkflowGuard<'_, SceneFrames> {
+        self.view.renderer.workflow_mut()
+    }
+
+    /// A [`PassBuilder`] configured for this view's target size, format and
+    /// MSAA settings, for constructing a pass to put in its workflow.
+    pub fn pass_builder(&mut self) -> PassBuilder<'_> {
+        self.view.renderer.pass_builder(self.ctx)
     }
 
     /// Clear the view's scene, removing all geometry, materials, textures, and

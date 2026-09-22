@@ -481,13 +481,14 @@ impl<'a> App<'a> {
     }
 
     fn cycle_workflow(&mut self) {
-        use duck_engine_viewer::renderer::SceneWorkflow;
+        use duck_engine_viewer::renderer::workflow;
         let Some(state) = self.state.as_mut() else { return };
         self.workflow_index = (self.workflow_index + 1) % 2;
         let mut view = state.view_mut();
-        let workflow: Box<SceneWorkflow> = match self.workflow_index {
-            0 => Box::new(view.shaded_workflow()),
-            _ => Box::new(view.hidden_line_workflow(Default::default())),
+        let mut builder = view.pass_builder();
+        let workflow = match self.workflow_index {
+            0 => workflow::shaded(&mut builder),
+            _ => workflow::hidden_line(&mut builder, Default::default()),
         };
         log::info!("Switched to '{}' workflow", workflow.name());
         view.set_workflow(workflow);
