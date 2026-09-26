@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use duck_engine_scene::cad::CadTessellationOptions;
 use anyhow::bail;
 use duck_engine_viewer::common::Transform;
+use duck_engine_viewer::operator::{Handle, HandleDrag};
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
@@ -21,7 +22,15 @@ use crate::preview::PreviewSession;
 pub(super) const MIN_DIMENSION: f32 = 1e-6;
 
 /// The parameters of a placed primitive, still adjustable before commit.
-pub(super) trait TweakParams {
+///
+/// Two editors drive the same values: the panel's numeric fields via
+/// [`ui`](TweakParams::ui), and the 3D grips via
+/// [`handles`](TweakParams::handles) / [`apply_handle`](TweakParams::apply_handle).
+/// Both end in the same place — a new [`preview_transform`](TweakParams::preview_transform)
+/// on the preview node.
+///
+/// `Copy` because a grip drag edits from a snapshot taken when it was grabbed.
+pub(super) trait TweakParams: Copy {
     /// Panel title and committed part name.
     const NAME: &'static str;
 
@@ -34,6 +43,18 @@ pub(super) trait TweakParams {
     /// The dimension fields, one [`dimension_field`] per row of a two-column
     /// grid. Returns true when a value changed.
     fn ui(&mut self, ui: &mut egui::Ui) -> bool;
+
+    /// The dimension grips for these parameters, or empty for none.
+    fn handles(&self) -> Vec<Handle> {
+        Vec::new()
+    }
+
+    /// Applies a grip drag, editing from `grabbed` — the parameters as they
+    /// were when the grip was taken.
+    ///
+    /// A [`HandleDrag`] carries its total offset from the grab rather than an
+    /// increment, so editing from the live value would compound it.
+    fn apply_handle(&mut self, _drag: &HandleDrag, _grabbed: &Self) {}
 }
 
 /// What the user asked of the panel this frame.

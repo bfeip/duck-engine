@@ -1,5 +1,5 @@
 use duck_engine_viewer::common::Point3;
-use duck_engine_viewer::operator::{Operator, SelectionMode};
+use duck_engine_viewer::operator::{Handle, HandleEvent, Operator, SelectionMode};
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::ui::icons::Icon;
@@ -68,6 +68,23 @@ pub trait ModelingTool: Operator {
     fn selection_mode(&self) -> SelectionMode {
         SelectionMode::default()
     }
+
+    /// The draggable handles this tool wants shown, or empty for none.
+    ///
+    /// Polled each frame while the tool is active, like
+    /// [`ModelingTool::cursor_target`], so it should be cheap and is free to
+    /// return a different set as the tool changes phase.
+    fn handles(&self) -> Vec<Handle> {
+        Vec::new()
+    }
+
+    /// Act on a grab, drag, release or cancel of one of this tool's handles.
+    ///
+    /// Only called for ids this tool's [`handles`](ModelingTool::handles)
+    /// produced. [`HandleEvent::Begin`] is the cue to snapshot whatever
+    /// [`HandleEvent::Drag`] edits: a drag reports its total offset from the
+    /// grab point, not a per-event increment.
+    fn on_handle(&mut self, _event: &HandleEvent) {}
 
     /// Title of the tool's options window, or `None` if the tool has no panel.
     fn panel_title(&self) -> Option<&str> {

@@ -47,7 +47,7 @@ pub use cgmath::{point3, vec2, vec3, vec4, ortho, perspective};
 
 /// An RGBA color, with values between 0.0 and 1.0
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RgbaColor {
     pub r: f32,

@@ -8,9 +8,10 @@
 
 use duck_engine_common::{InnerSpace, Point3, Vector3, EPSILON};
 use duck_engine_scene::common::{Plane, Ray};
+use duck_engine_scene::PositionedCamera;
 
 /// The locus a drag point is confined to.
-pub(super) enum DragGeometry {
+pub enum DragGeometry {
     /// Ray plane intersection. The grabbed point stays exactly under the cursor.
     Plane(Plane),
 
@@ -21,13 +22,13 @@ pub(super) enum DragGeometry {
 impl DragGeometry {
     /// The line through `origin` along `direction`, which need not be
     /// normalized.
-    pub(super) fn axis(origin: Point3, direction: Vector3) -> Self {
+    pub fn axis(origin: Point3, direction: Vector3) -> Self {
         let direction = direction.normalize();
         DragGeometry::Axis { origin, direction }
     }
 
     /// The plane through `point` with the given normal.
-    pub(super) fn plane(normal: Vector3, point: Point3) -> Self {
+    pub fn plane(normal: Vector3, point: Point3) -> Self {
         DragGeometry::Plane(Plane::from_point(normal, point))
     }
 
@@ -37,7 +38,7 @@ impl DragGeometry {
     /// (near-)parallel to the geometry, or the solution lies behind the ray's
     /// origin. Past a vanishing line the solution inverts, and a drag must not
     /// jump to the mirrored side.
-    pub(super) fn solve(&self, ray: &Ray) -> Option<Point3> {
+    pub fn solve(&self, ray: &Ray) -> Option<Point3> {
         match self {
             // `intersect_plane` already rejects both near-parallel rays and
             // solutions behind the origin.
@@ -54,11 +55,76 @@ impl DragGeometry {
     }
 }
 
+/// Solves `geometry` against the rays through two screen pixels: the one a drag
+/// was anchored at, and the one it has reached.
+///
+/// Returns `(anchor_point, cursor_point)`; the drag is their difference. `None`
+/// when either end is degenerate — a caller that must keep a drag alive across
+/// a vanishing line falls back to a view-plane solve.
+pub fn solve_drag(
+    geometry: &DragGeometry,
+    anchor: (f32, f32),
+    cursor: (f32, f32),
+    camera: &PositionedCamera,
+    size: (u32, u32),
+) -> Option<(Point3, Point3)> {
+    let (width, height) = size;
+    let anchor_ray = camera.ray_from_screen_point(anchor.0, anchor.1, width, height);
+    let cursor_ray = camera.ray_from_screen_point(cursor.0, cursor.1, width, height);
+    Some((geometry.solve(&anchor_ray)?, geometry.solve(&cursor_ray)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duck_engine_scene::Projection;
 
     const EPSILON: f32 = 1e-6;
+
+    /// A camera looking down -Z from five units out, with a square viewport.
+    fn camera() -> PositionedCamera {
+        PositionedCamera {
+            eye: Point3::new(0.0, 0.0, 5.0),
+            target: Point3::new(0.0, 0.0, 0.0),
+            up: Vector3::new(0.0, 1.0, 0.0),
+            aspect: 1.0,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
+        }
+    }
+
+    #[test]
+    fn solve_drag_returns_both_ends_on_the_geometry() {
+        let geometry = DragGeometry::plane(Vector3::unit_z(), Point3::new(0.0, 0.0, 0.0));
+        let (anchor, cursor) =
+            solve_drag(&geometry, (100.0, 100.0), (140.0, 100.0), &camera(), (200, 200))
+                .expect("both rays cross the plane");
+
+        let DragGeometry::Plane(plane) = &geometry else { unreachable!() };
+        assert!(plane.signed_distance(anchor).abs() < EPSILON);
+        assert!(plane.signed_distance(cursor).abs() < EPSILON);
+        // Dragging right moves the solved point in +x and nothing else.
+        assert!(cursor.x > anchor.x);
+        assert!((cursor.y - anchor.y).abs() < EPSILON);
+    }
+
+    #[test]
+    fn solve_drag_of_an_unmoved_cursor_is_zero() {
+        let geometry = DragGeometry::axis(Point3::new(0.0, 0.0, 0.0), Vector3::unit_x());
+        let (anchor, cursor) =
+            solve_drag(&geometry, (120.0, 90.0), (120.0, 90.0), &camera(), (200, 200))
+                .expect("the ray is skew to the axis");
+
+        assert!((cursor - anchor).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn solve_drag_rejects_a_degenerate_end() {
+        // A plane seen exactly edge-on from this camera: neither ray solves.
+        let geometry = DragGeometry::plane(Vector3::unit_z(), Point3::new(0.0, 0.0, 20.0));
+        assert!(
+            solve_drag(&geometry, (100.0, 100.0), (140.0, 100.0), &camera(), (200, 200)).is_none()
+        );
+    }
 
     #[test]
     fn plane_solve_lies_on_plane() {

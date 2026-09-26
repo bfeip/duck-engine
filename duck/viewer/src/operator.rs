@@ -1,7 +1,14 @@
+mod drag;
+mod handle;
 mod navigation;
 mod selection;
 mod transform;
 
+pub use drag::{solve_drag, DragGeometry};
+pub use handle::{
+    DragKind, Handle, HandleDrag, HandleEvent, HandleId, HandleInput, HandleOutcome, HandleSet,
+    HandleShape,
+};
 pub use navigation::{NavigationMode, NavigationOperator};
 pub use selection::{SelectionKinds, SelectionMode, SelectionOperator};
 pub use transform::{

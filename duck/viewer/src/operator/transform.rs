@@ -11,7 +11,6 @@
 //! construction; its gizmo handle set reflects that mode. Separate transform
 //! operations are separate operators.
 
-mod drag;
 mod driver;
 pub mod gizmo;
 mod interaction;

@@ -4,7 +4,9 @@ use duck_engine_viewer::bindings::{InputBinding, InputMap};
 use duck_engine_viewer::scene::Scene;
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext, EventDispatcher};
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers};
-use duck_engine_viewer::operator::{Operator, SelectionMode, SelectionOperator};
+use duck_engine_viewer::operator::{
+    HandleInput, HandleOutcome, HandleSet, Operator, SelectionMode, SelectionOperator,
+};
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::cursor::Cursor3d;
@@ -16,19 +18,55 @@ use crate::tool::{ModelingTool, ToolInfo};
 pub struct ToolId(usize);
 
 /// The single dispatcher-registered operator for all modeling tools.
-/// 
-/// Forwards events to the active tool, if any. Registered once at startup, in front
-/// of the selection/navigation operators.
+///
+/// Forwards events to the active tool, if any, and drives the handles that tool
+/// asks for. Registered once at startup, in front of the selection/navigation
+/// operators.
+#[derive(Default)]
 struct ToolHost {
     active: Option<Arc<Mutex<dyn ModelingTool>>>,
+    /// Scene-side state of the active tool's handles.
+    handles: HandleSet,
+    /// Pointer state of a drag on one of them.
+    input: HandleInput,
+}
+
+impl ToolHost {
+    /// Drops any handle drag in progress, for teardown that happens outside
+    /// dispatch. The handles themselves go on the next frame's sync.
+    fn abort_drag(&mut self) {
+        self.input.abort();
+    }
 }
 
 impl Operator for ToolHost {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        match &self.active {
-            Some(tool) => tool.lock().unwrap().dispatch(event, ctx),
-            None => false,
+        // Frame tick: bring the handle set in line with what the active tool
+        // wants. No tool means an empty set, which is also how a tool switch
+        // tears its handles down — nothing else has to plumb a scene through.
+        // Runs during a drag too, so a grip tracks the face it is moving.
+        if matches!(event, Event::Device(DeviceEvent::Update { .. })) {
+            let handles = match &self.active {
+                Some(tool) => tool.lock().unwrap().handles(),
+                None => Vec::new(),
+            };
+            self.handles.sync(&handles, &ctx.scene);
         }
+
+        let Some(tool) = self.active.clone() else { return false };
+
+        // Handles see pointer events before the tool does, so a click that
+        // lands on one never reaches the tool underneath.
+        match self.input.dispatch(event, &mut self.handles, ctx) {
+            HandleOutcome::Ignored => {}
+            HandleOutcome::Consumed => return true,
+            HandleOutcome::Event(handle_event) => {
+                tool.lock().unwrap().on_handle(&handle_event);
+                return true;
+            }
+        }
+
+        tool.lock().unwrap().dispatch(event, ctx)
     }
 
     fn name(&self) -> &str {
@@ -98,7 +136,7 @@ impl ToolManager {
         Self {
             tools: Vec::new(),
             active: None,
-            host: Arc::new(Mutex::new(ToolHost { active: None })),
+            host: Arc::new(Mutex::new(ToolHost::default())),
             switcher: Arc::new(Mutex::new(ToolSwitcher {
                 bindings: InputMap::new(),
                 pending: None,
@@ -152,6 +190,9 @@ impl ToolManager {
         if id == self.active {
             return;
         }
+
+        // A handle drag must not outlive the tool whose parameters it edits.
+        self.host.lock().unwrap().abort_drag();
 
         // Locks must be taken strictly one at a time
         if let Some(old) = self.active {

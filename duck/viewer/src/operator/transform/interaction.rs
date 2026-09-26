@@ -19,7 +19,7 @@ use crate::common::{
 };
 use crate::input::{Key, Modifiers, MouseButton, NamedKey};
 
-use super::drag::DragGeometry;
+use crate::operator::drag::DragGeometry;
 use super::gizmo::{GizmoHandleId, GizmoType};
 
 /// Rotation rate used only when the rotation plane is too edge-on to solve an
