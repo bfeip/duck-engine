@@ -9,7 +9,7 @@ use duck_engine_viewer::{
     common::Transform,
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
-    operator::Operator,
+    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleShape, Operator},
     selection::SelectionManager,
 };
 use glam::dvec3;
@@ -20,12 +20,19 @@ use crate::document::Document;
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
-use super::tweak::{commit_tweak, dimension_field, tweak_panel, TweakAction, TweakParams};
+use super::tweak::{
+    commit_tweak, dimension_field, tweak_panel, TweakAction, TweakParams, MIN_DIMENSION,
+};
 use super::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
 const EPSILON: f32 = 1e-6;
+
+/// The box's dimension grips, one per axis of [`BoxParams`].
+const WIDTH: HandleId = HandleId(0);
+const DEPTH: HandleId = HandleId(1);
+const HEIGHT: HandleId = HandleId(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BoxAction {
@@ -139,6 +146,46 @@ impl TweakParams for BoxParams {
         changed |= dimension_field(ui, "Height", &mut self.height);
         changed
     }
+
+    /// One grip per dimension, on the face that dimension moves.
+    ///
+    /// The footprint is read from [`local_rect`](BoxParams::local_rect) so the
+    /// grips follow the anchor along with everything else.
+    fn handles(&self) -> Vec<Handle> {
+        let (u, v) = self.plane.basis();
+        let (offset, half_width, half_depth) = self.local_rect();
+        let centre = self.base + offset;
+        vec![
+            Handle::new(WIDTH, HandleShape::Cube, centre + u * half_width).with_direction(u),
+            Handle::new(DEPTH, HandleShape::Cube, centre + v * half_depth).with_direction(v),
+            Handle::new(HEIGHT, HandleShape::Cube, centre + self.plane.normal * self.height)
+                .with_direction(self.plane.normal),
+        ]
+    }
+
+    /// The grabbed face follows the cursor; the opposite one stays put.
+    fn apply_handle(&mut self, drag: &HandleDrag, grabbed: &Self) {
+        let (u, v) = grabbed.plane.basis();
+        match drag.id {
+            // The footprint grows about its centre, so a grip on one face
+            // carries only half the width: doubling keeps it under the cursor.
+            WIDTH => self.width = grip_dimension(grabbed.width, 2.0 * drag.distance_along(u)),
+            DEPTH => self.depth = grip_dimension(grabbed.depth, 2.0 * drag.distance_along(v)),
+            // Height grows away from `base`, which never moves, so the far face
+            // follows the cursor one for one.
+            HEIGHT => {
+                self.height =
+                    grip_dimension(grabbed.height, drag.distance_along(grabbed.plane.normal));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A dimension moved by `delta`, held at or above [`MIN_DIMENSION`] so a grip
+/// dragged past the opposite face flattens the box rather than inverting it.
+fn grip_dimension(from: f32, delta: f32) -> f32 {
+    (from + delta).max(MIN_DIMENSION)
 }
 
 pub struct BoxOperator {
@@ -148,6 +195,10 @@ pub struct BoxOperator {
     preview: PreviewSession,
     bindings: InputMap<BoxAction>,
     cursor_target: Option<Point3>,
+    /// Dimensions as they were when the held grip was grabbed; `None` when no
+    /// grip is held. A drag reports its total offset, so it is applied to this
+    /// rather than to the live dimensions.
+    grabbed: Option<BoxParams>,
     // Set once the box is applied, so the
     // tool cedes back to selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
@@ -175,8 +226,16 @@ impl BoxOperator {
             preview,
             bindings,
             cursor_target: None,
+            grabbed: None,
             finished: false,
         }
+    }
+
+    /// Writes `params` back into the tweak phase and refreshes the preview.
+    /// The 3D twin of the panel's [`TweakAction::Changed`] arm.
+    fn set_tweak(&mut self, params: BoxParams) {
+        self.preview.set_preview_transform(params.preview_transform());
+        self.phase = Phase::Tweak(params);
     }
 
     /// Lays the flat unit footprint face (local XY, normal +Z) on `plane`, scaled to
@@ -404,6 +463,7 @@ impl ModelingTool for BoxOperator {
     fn deactivate(&mut self) {
         self.cancel();
         self.finished = false;
+        self.grabbed = None;
         // The modeler hides the cursor for the (now inactive) tool, but clear our
         // target so a stale point can't flash if we're reactivated before a move.
         self.cursor_target = None;
@@ -426,6 +486,35 @@ impl ModelingTool for BoxOperator {
         match self.phase {
             Phase::Tweak(_) => None,
             _ => self.cursor_target,
+        }
+    }
+
+    /// Grips only once the box is placed — until then the cursor is still
+    /// defining it, and a grip would be something to fight with.
+    fn handles(&self) -> Vec<Handle> {
+        match &self.phase {
+            Phase::Tweak(params) => params.handles(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn on_handle(&mut self, event: &HandleEvent) {
+        let Phase::Tweak(params) = self.phase else { return };
+        match event {
+            HandleEvent::Begin(_) => self.grabbed = Some(params),
+            HandleEvent::Drag(drag) => {
+                let Some(grabbed) = self.grabbed else { return };
+                let mut edited = params;
+                edited.apply_handle(drag, &grabbed);
+                self.set_tweak(edited);
+            }
+            HandleEvent::End(_) => self.grabbed = None,
+            // Put the dimensions back as they were when the grip was taken.
+            HandleEvent::Cancel(_) => {
+                if let Some(grabbed) = self.grabbed.take() {
+                    self.set_tweak(grabbed);
+                }
+            }
         }
     }
 
@@ -565,6 +654,136 @@ mod tests {
         // Only the top face moves: base, plane and footprint are untouched.
         let after = params.footprint_corners();
         for (a, b) in before.iter().zip(after.iter()) {
+            assert!((a - b).magnitude() < EPSILON);
+        }
+        assert!((params.preview_transform().position - base).magnitude() < EPSILON);
+    }
+
+    /// A drag of `offset` on the grip `id`, as the handle machinery reports it.
+    fn drag(id: HandleId, offset: Vector3) -> HandleDrag {
+        let grab = Point3::new(0.0, 0.0, 0.0);
+        HandleDrag { id, grab, point: grab + offset, modifiers: Modifiers::default() }
+    }
+
+    #[test]
+    fn handles_sit_on_the_face_each_one_moves() {
+        let base = Point3::new(-1.0, 0.5, 2.0);
+        let plane = skewed_plane(base);
+        let params = BoxParams::from_pick(base, 4.0, 6.0, 2.0, plane);
+        let (u, v) = plane.basis();
+
+        let handles = params.handles();
+        assert_eq!(handles.len(), 3);
+
+        // Each grip sits half an extent out along its own axis — except height,
+        // which grows a full extent away from the base.
+        let expected = [
+            (WIDTH, base + u * 2.0, u),
+            (DEPTH, base + v * 3.0, v),
+            (HEIGHT, base + plane.normal * 2.0, plane.normal),
+        ];
+        for (id, anchor, direction) in expected {
+            let handle = handles.iter().find(|h| h.id == id).expect("grip is present");
+            assert!((handle.anchor - anchor).magnitude() < 1e-5, "{id:?} anchor");
+            assert!((handle.direction - direction).magnitude() < 1e-5, "{id:?} direction");
+        }
+    }
+
+    /// The footprint grows about its centre, so a face only travels half as far
+    /// as the dimension grows. Doubling is what keeps the grabbed face under
+    /// the cursor; height, anchored at the base, must not be doubled.
+    #[test]
+    fn footprint_grips_double_the_drag_and_height_does_not() {
+        let base = Point3::new(-1.0, 0.5, 2.0);
+        let plane = skewed_plane(base);
+        let grabbed = BoxParams::from_pick(base, 4.0, 6.0, 2.0, plane);
+        let (u, v) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(WIDTH, u * 1.5), &grabbed);
+        assert!((params.width - 7.0).abs() < EPSILON);
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(DEPTH, v * 1.5), &grabbed);
+        assert!((params.depth - 9.0).abs() < EPSILON);
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(HEIGHT, plane.normal * 1.5), &grabbed);
+        assert!((params.height - 3.5).abs() < EPSILON);
+    }
+
+    #[test]
+    fn a_grip_moves_only_its_own_dimension() {
+        let base = Point3::new(0.0, 0.0, 0.0);
+        let plane = skewed_plane(base);
+        let grabbed = BoxParams::from_pick(base, 4.0, 6.0, 2.0, plane);
+        let (u, _) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(WIDTH, u * 1.0), &grabbed);
+        assert!((params.depth - grabbed.depth).abs() < EPSILON);
+        assert!((params.height - grabbed.height).abs() < EPSILON);
+        assert!((params.base - grabbed.base).magnitude() < EPSILON);
+    }
+
+    /// Off-axis motion is the common case — the cursor rarely tracks the grip's
+    /// axis exactly — and must not bleed into the dimension.
+    #[test]
+    fn a_grip_ignores_motion_across_its_axis() {
+        let base = Point3::new(0.0, 0.0, 0.0);
+        let plane = Plane::xz();
+        let grabbed = BoxParams::from_pick(base, 4.0, 6.0, 2.0, plane);
+        let (u, v) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(WIDTH, u * 1.0 + v * 5.0 + plane.normal * 5.0), &grabbed);
+        assert!((params.width - 6.0).abs() < EPSILON);
+    }
+
+    /// Dragging a grip past the opposite face flattens the box instead of
+    /// inverting it: a negative extent would reflect the baked transform.
+    #[test]
+    fn a_grip_dragged_through_the_box_clamps() {
+        let base = Point3::new(0.0, 0.0, 0.0);
+        let plane = Plane::xz();
+        let grabbed = BoxParams::from_pick(base, 4.0, 6.0, 2.0, plane);
+        let (u, _) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(WIDTH, u * -50.0), &grabbed);
+        assert_eq!(params.width, MIN_DIMENSION);
+        assert!(params.preview_transform().scale.x >= 0.0);
+    }
+
+    /// A drag carries its total offset from the grab, so applying successive
+    /// reports to the same snapshot must not compound them.
+    #[test]
+    fn successive_drags_from_one_grab_do_not_compound() {
+        let base = Point3::new(0.0, 0.0, 0.0);
+        let plane = Plane::xz();
+        let grabbed = BoxParams::from_pick(base, 4.0, 6.0, 2.0, plane);
+        let (u, _) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(WIDTH, u * 1.0), &grabbed);
+        params.apply_handle(&drag(WIDTH, u * 1.0), &grabbed);
+        assert!((params.width - 6.0).abs() < EPSILON);
+    }
+
+    /// The grips are the 3D twin of the panel fields, so a grip drag has to
+    /// leave the box where the equivalent typed value would.
+    #[test]
+    fn a_height_grip_leaves_the_footprint_in_place() {
+        let base = Point3::new(-4.0, 5.0, 6.0);
+        let plane = skewed_plane(base);
+        let grabbed = BoxParams::from_pick(base, 3.0, 7.0, 2.0, plane);
+        let before = grabbed.footprint_corners();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(HEIGHT, plane.normal * 9.0), &grabbed);
+
+        assert!((params.height - 11.0).abs() < EPSILON);
+        for (a, b) in before.iter().zip(params.footprint_corners().iter()) {
             assert!((a - b).magnitude() < EPSILON);
         }
         assert!((params.preview_transform().position - base).magnitude() < EPSILON);
