@@ -8,7 +8,7 @@ use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     common::Transform,
     event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
+    input::{ElementState, Key, KeyEvent, Modifiers, MouseButton, NamedKey},
     operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator},
     selection::SelectionManager,
 };
@@ -401,6 +401,47 @@ impl BoxOperator {
         self.phase = Phase::Idle;
     }
 
+    /// Advances the pick by one point.
+    fn on_place(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
+        match self.phase {
+            Phase::Idle => self.on_place_center(position, ctx),
+            Phase::Base { center, plane } => self.on_place_corner(center, plane, position, ctx),
+            Phase::Height { center, width, depth, plane } => {
+                self.on_place_height(center, width, depth, plane, position, ctx)
+            }
+            // Swallow the click: the panel owns the box now, so a stray pick
+            // must not select or place anything.
+            Phase::Tweak(_) => true,
+        }
+    }
+
+    /// Ends the operation: commits a box the panel already holds, and aborts
+    /// one still being picked.
+    fn on_finish(&mut self) -> bool {
+        match self.phase {
+            Phase::Idle => return false,
+            Phase::Tweak(_) => self.apply_and_report(),
+            Phase::Base { .. } | Phase::Height { .. } => self.cancel(),
+        }
+        true
+    }
+
+    /// Keyboard equivalents of the tweak panel's Apply and Cancel buttons.
+    fn on_key(&mut self, event: &KeyEvent) -> bool {
+        if !matches!(self.phase, Phase::Tweak(_))
+            || event.state != ElementState::Pressed
+            || event.repeat
+        {
+            return false;
+        }
+        match event.logical_key {
+            Key::Named(NamedKey::Enter) => self.apply_and_report(),
+            Key::Named(NamedKey::Escape) => self.cancel(),
+            _ => return false,
+        }
+        true
+    }
+
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
 
@@ -549,31 +590,8 @@ impl Operator for BoxOperator {
                 let mut handled = false;
                 for action in actions {
                     handled |= match action {
-                        BoxAction::Place => match self.phase {
-                            Phase::Idle => self.on_place_center(*position, ctx),
-                            Phase::Base { center, plane } => {
-                                self.on_place_corner(center, plane, *position, ctx)
-                            }
-                            Phase::Height { center, width, depth, plane } => {
-                                self.on_place_height(center, width, depth, plane, *position, ctx)
-                            }
-                            // Swallow the click: the panel owns the box now, so a
-                            // stray pick must not select or place anything.
-                            Phase::Tweak(_) => true,
-                        },
-                        // Right-click ends the operation: it commits a box the
-                        // panel already holds, and aborts one still being picked.
-                        BoxAction::Finish => match self.phase {
-                            Phase::Idle => false,
-                            Phase::Tweak(_) => {
-                                self.apply_and_report();
-                                true
-                            }
-                            _ => {
-                                self.cancel();
-                                true
-                            }
-                        },
+                        BoxAction::Place => self.on_place(*position, ctx),
+                        BoxAction::Finish => self.on_finish(),
                     };
                 }
                 handled
@@ -582,26 +600,7 @@ impl Operator for BoxOperator {
                 self.on_cursor_moved(*position, ctx);
                 false
             }
-            // Keyboard equivalents of the tweak panel's Apply and Cancel buttons.
-            DeviceEvent::KeyboardInput { event: key_event, .. } => {
-                if !matches!(self.phase, Phase::Tweak(_))
-                    || key_event.state != ElementState::Pressed
-                    || key_event.repeat
-                {
-                    return false;
-                }
-                match key_event.logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        self.apply_and_report();
-                        true
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        self.cancel();
-                        true
-                    }
-                    _ => false,
-                }
-            }
+            DeviceEvent::KeyboardInput { event, .. } => self.on_key(event),
             _ => false,
         }
     }
