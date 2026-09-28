@@ -461,42 +461,35 @@ impl BoxOperator {
             }
             Phase::Base { center, plane } => {
                 self.cursor_target = snap.map(|s| s.position);
-                let dims = snap.map(|s| Self::footprint_dims(center, s.position, &plane));
-                if let Some(preview_node) = self.preview.preview_node() {
-                    let mut scene = ctx.scene.lock();
-                    match dims {
-                        Some((width, depth)) if Self::footprint_valid(width, depth) => {
-                            scene.set_node_visibility(preview_node, Visibility::Visible);
-                            scene.set_node_transform(
-                                preview_node,
-                                Self::footprint_transform(center, width, depth, &plane),
-                            );
-                        }
-                        // No snap, or a degenerate footprint: nothing to draw.
-                        _ => scene.set_node_visibility(preview_node, Visibility::Invisible),
-                    }
-                }
+                // No snap, or a degenerate footprint: nothing to draw.
+                let transform = snap
+                    .map(|s| Self::footprint_dims(center, s.position, &plane))
+                    .filter(|&(width, depth)| Self::footprint_valid(width, depth))
+                    .map(|(width, depth)| Self::footprint_transform(center, width, depth, &plane));
+                self.show_preview(transform);
             }
             Phase::Height { center, width, depth, plane } => {
                 let height = Self::height_from_cursor(center, &plane, cursor, ctx);
                 self.cursor_target = Some(center + plane.normal * height);
-                if let Some(preview_node) = self.preview.preview_node() {
-                    let mut scene = ctx.scene.lock();
-                    if Self::box_valid(width, depth, height) {
-                        scene.set_node_visibility(preview_node, Visibility::Visible);
-                        scene.set_node_transform(
-                            preview_node,
-                            BoxParams::from_pick(center, width, depth, height, plane)
-                                .preview_transform(),
-                        );
-                    } else {
-                        // Degenerate height: nothing to draw.
-                        scene.set_node_visibility(preview_node, Visibility::Invisible);
-                    }
-                }
+                // Degenerate height: nothing to draw.
+                let transform = Self::box_valid(width, depth, height).then(|| {
+                    BoxParams::from_pick(center, width, depth, height, plane).preview_transform()
+                });
+                self.show_preview(transform);
             }
             // Handled by the early return above.
             Phase::Tweak(_) => {}
+        }
+    }
+
+    /// Shows the preview at `transform`, or hides it when there is nothing to draw.
+    fn show_preview(&self, transform: Option<Transform>) {
+        match transform {
+            Some(transform) => {
+                self.preview.set_preview_transform(transform);
+                self.preview.set_preview_visibility(Visibility::Visible);
+            }
+            None => self.preview.set_preview_visibility(Visibility::Invisible),
         }
     }
 }
