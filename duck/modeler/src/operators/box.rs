@@ -21,7 +21,8 @@ use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
 use super::tweak::{
-    commit_tweak, dimension_field, tweak_panel, TweakAction, TweakParams, MIN_DIMENSION,
+    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, TweakAction,
+    TweakParams,
 };
 use super::ConstructionOptions;
 
@@ -185,12 +186,6 @@ impl TweakParams for BoxParams {
             _ => {}
         }
     }
-}
-
-/// A dimension moved by `delta`, held at or above [`MIN_DIMENSION`] so a grip
-/// dragged past the opposite face flattens the box rather than inverting it.
-fn grip_dimension(from: f32, delta: f32) -> f32 {
-    (from + delta).max(MIN_DIMENSION)
 }
 
 pub struct BoxOperator {
@@ -539,21 +534,8 @@ impl ModelingTool for BoxOperator {
 
     fn on_handle(&mut self, event: &HandleEvent) {
         let Phase::Tweak(params) = self.phase else { return };
-        match event {
-            HandleEvent::Begin(_) => self.grabbed = Some(params),
-            HandleEvent::Drag(drag) => {
-                let Some(grabbed) = self.grabbed else { return };
-                let mut edited = params;
-                edited.apply_handle(drag, &grabbed);
-                self.set_tweak(edited);
-            }
-            HandleEvent::End(_) => self.grabbed = None,
-            // Put the dimensions back as they were when the grip was taken.
-            HandleEvent::Cancel(_) => {
-                if let Some(grabbed) = self.grabbed.take() {
-                    self.set_tweak(grabbed);
-                }
-            }
+        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
+            self.set_tweak(edited);
         }
     }
 
@@ -606,6 +588,7 @@ impl Operator for BoxOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operators::tweak::MIN_DIMENSION;
 
     /// A plane aligned with no world axis, so a mistaken basis shows up.
     fn skewed_plane(origin: Point3) -> Plane {

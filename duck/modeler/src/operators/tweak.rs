@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use duck_engine_scene::cad::CadTessellationOptions;
 use anyhow::bail;
 use duck_engine_viewer::common::Transform;
-use duck_engine_viewer::operator::{Handle, HandleDrag};
+use duck_engine_viewer::operator::{Handle, HandleDrag, HandleEvent};
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
@@ -55,6 +55,39 @@ pub(super) trait TweakParams: Copy {
     /// A [`HandleDrag`] carries its total offset from the grab rather than an
     /// increment, so editing from the live value would compound it.
     fn apply_handle(&mut self, _drag: &HandleDrag, _grabbed: &Self) {}
+}
+
+/// A dimension moved by `delta`, held at or above [`MIN_DIMENSION`] so a grip
+/// dragged past the opposite face flattens the shape rather than inverting it.
+pub(super) fn grip_dimension(from: f32, delta: f32) -> f32 {
+    (from + delta).max(MIN_DIMENSION)
+}
+
+/// Runs one grip event against `params`, keeping the grab snapshot in
+/// `grabbed`. Returns the parameters to show, or `None` when they are unchanged.
+pub(super) fn handle_tweak<P: TweakParams>(
+    params: P,
+    grabbed: &mut Option<P>,
+    event: &HandleEvent,
+) -> Option<P> {
+    match event {
+        HandleEvent::Begin(_) => {
+            *grabbed = Some(params);
+            None
+        }
+        HandleEvent::Drag(drag) => {
+            let grabbed = (*grabbed)?;
+            let mut edited = params;
+            edited.apply_handle(drag, &grabbed);
+            Some(edited)
+        }
+        HandleEvent::End(_) => {
+            *grabbed = None;
+            None
+        }
+        // Put the parameters back as they were when the grip was taken.
+        HandleEvent::Cancel(_) => grabbed.take(),
+    }
 }
 
 /// What the user asked of the panel this frame.
