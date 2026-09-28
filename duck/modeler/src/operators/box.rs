@@ -9,7 +9,7 @@ use duck_engine_viewer::{
     common::Transform,
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
-    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleShape, Operator},
+    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator},
     selection::SelectionManager,
 };
 use glam::dvec3;
@@ -30,9 +30,9 @@ use super::ConstructionOptions;
 const EPSILON: f32 = 1e-6;
 
 /// The box's dimension grips, one per axis of [`BoxParams`].
-const WIDTH: HandleId = HandleId(0);
-const DEPTH: HandleId = HandleId(1);
-const HEIGHT: HandleId = HandleId(2);
+const WIDTH_HANDLE: HandleId = HandleId(0);
+const DEPTH_HANDLE: HandleId = HandleId(1);
+const HEIGHT_HANDLE: HandleId = HandleId(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BoxAction {
@@ -147,7 +147,8 @@ impl TweakParams for BoxParams {
         changed
     }
 
-    /// One grip per dimension, on the face that dimension moves.
+    /// One grip per dimension, on the face that dimension moves, each tied back
+    /// to the base by a leader line so all three meet at the bottom centre.
     ///
     /// The footprint is read from [`local_rect`](BoxParams::local_rect) so the
     /// grips follow the anchor along with everything else.
@@ -155,11 +156,15 @@ impl TweakParams for BoxParams {
         let (u, v) = self.plane.basis();
         let (offset, half_width, half_depth) = self.local_rect();
         let centre = self.base + offset;
+        let grip = |id, anchor, direction: Vector3| {
+            Handle::new(id, HandleShape::Cube, anchor)
+                .with_direction(direction)
+                .with_reach(HandleReach::Leader(centre))
+        };
         vec![
-            Handle::new(WIDTH, HandleShape::Cube, centre + u * half_width).with_direction(u),
-            Handle::new(DEPTH, HandleShape::Cube, centre + v * half_depth).with_direction(v),
-            Handle::new(HEIGHT, HandleShape::Cube, centre + self.plane.normal * self.height)
-                .with_direction(self.plane.normal),
+            grip(WIDTH_HANDLE, centre + u * half_width, u),
+            grip(DEPTH_HANDLE, centre + v * half_depth, v),
+            grip(HEIGHT_HANDLE, centre + self.plane.normal * self.height, self.plane.normal),
         ]
     }
 
@@ -169,11 +174,11 @@ impl TweakParams for BoxParams {
         match drag.id {
             // The footprint grows about its centre, so a grip on one face
             // carries only half the width: doubling keeps it under the cursor.
-            WIDTH => self.width = grip_dimension(grabbed.width, 2.0 * drag.distance_along(u)),
-            DEPTH => self.depth = grip_dimension(grabbed.depth, 2.0 * drag.distance_along(v)),
+            WIDTH_HANDLE => self.width = grip_dimension(grabbed.width, 2.0 * drag.distance_along(u)),
+            DEPTH_HANDLE => self.depth = grip_dimension(grabbed.depth, 2.0 * drag.distance_along(v)),
             // Height grows away from `base`, which never moves, so the far face
             // follows the cursor one for one.
-            HEIGHT => {
+            HEIGHT_HANDLE => {
                 self.height =
                     grip_dimension(grabbed.height, drag.distance_along(grabbed.plane.normal));
             }
@@ -678,14 +683,37 @@ mod tests {
         // Each grip sits half an extent out along its own axis — except height,
         // which grows a full extent away from the base.
         let expected = [
-            (WIDTH, base + u * 2.0, u),
-            (DEPTH, base + v * 3.0, v),
-            (HEIGHT, base + plane.normal * 2.0, plane.normal),
+            (WIDTH_HANDLE, base + u * 2.0, u),
+            (DEPTH_HANDLE, base + v * 3.0, v),
+            (HEIGHT_HANDLE, base + plane.normal * 2.0, plane.normal),
         ];
         for (id, anchor, direction) in expected {
             let handle = handles.iter().find(|h| h.id == id).expect("grip is present");
             assert!((handle.anchor - anchor).magnitude() < 1e-5, "{id:?} anchor");
             assert!((handle.direction - direction).magnitude() < 1e-5, "{id:?} direction");
+        }
+    }
+
+    /// Every grip's leader runs back to the bottom centre, so the three meet
+    /// there however the box is sized.
+    #[test]
+    fn every_grips_leader_runs_back_to_the_base() {
+        let base = Point3::new(-1.0, 0.5, 2.0);
+        let params = BoxParams::from_pick(base, 4.0, 6.0, 2.0, skewed_plane(base));
+        let (offset, _, _) = params.local_rect();
+        let centre = base + offset;
+
+        for handle in params.handles() {
+            let HandleReach::Leader(origin) = handle.reach else {
+                panic!("{:?} has no leader", handle.id);
+            };
+            assert!((origin - centre).magnitude() < 1e-5, "{:?} leader origin", handle.id);
+            // A leader only reads as a leader if it actually spans something.
+            assert!(
+                (handle.anchor - origin).magnitude() > 1e-5,
+                "{:?} leader is degenerate",
+                handle.id
+            );
         }
     }
 
@@ -700,15 +728,15 @@ mod tests {
         let (u, v) = plane.basis();
 
         let mut params = grabbed;
-        params.apply_handle(&drag(WIDTH, u * 1.5), &grabbed);
+        params.apply_handle(&drag(WIDTH_HANDLE, u * 1.5), &grabbed);
         assert!((params.width - 7.0).abs() < EPSILON);
 
         let mut params = grabbed;
-        params.apply_handle(&drag(DEPTH, v * 1.5), &grabbed);
+        params.apply_handle(&drag(DEPTH_HANDLE, v * 1.5), &grabbed);
         assert!((params.depth - 9.0).abs() < EPSILON);
 
         let mut params = grabbed;
-        params.apply_handle(&drag(HEIGHT, plane.normal * 1.5), &grabbed);
+        params.apply_handle(&drag(HEIGHT_HANDLE, plane.normal * 1.5), &grabbed);
         assert!((params.height - 3.5).abs() < EPSILON);
     }
 
@@ -720,7 +748,7 @@ mod tests {
         let (u, _) = plane.basis();
 
         let mut params = grabbed;
-        params.apply_handle(&drag(WIDTH, u * 1.0), &grabbed);
+        params.apply_handle(&drag(WIDTH_HANDLE, u * 1.0), &grabbed);
         assert!((params.depth - grabbed.depth).abs() < EPSILON);
         assert!((params.height - grabbed.height).abs() < EPSILON);
         assert!((params.base - grabbed.base).magnitude() < EPSILON);
@@ -736,7 +764,7 @@ mod tests {
         let (u, v) = plane.basis();
 
         let mut params = grabbed;
-        params.apply_handle(&drag(WIDTH, u * 1.0 + v * 5.0 + plane.normal * 5.0), &grabbed);
+        params.apply_handle(&drag(WIDTH_HANDLE, u * 1.0 + v * 5.0 + plane.normal * 5.0), &grabbed);
         assert!((params.width - 6.0).abs() < EPSILON);
     }
 
@@ -750,7 +778,7 @@ mod tests {
         let (u, _) = plane.basis();
 
         let mut params = grabbed;
-        params.apply_handle(&drag(WIDTH, u * -50.0), &grabbed);
+        params.apply_handle(&drag(WIDTH_HANDLE, u * -50.0), &grabbed);
         assert_eq!(params.width, MIN_DIMENSION);
         assert!(params.preview_transform().scale.x >= 0.0);
     }
@@ -765,8 +793,8 @@ mod tests {
         let (u, _) = plane.basis();
 
         let mut params = grabbed;
-        params.apply_handle(&drag(WIDTH, u * 1.0), &grabbed);
-        params.apply_handle(&drag(WIDTH, u * 1.0), &grabbed);
+        params.apply_handle(&drag(WIDTH_HANDLE, u * 1.0), &grabbed);
+        params.apply_handle(&drag(WIDTH_HANDLE, u * 1.0), &grabbed);
         assert!((params.width - 6.0).abs() < EPSILON);
     }
 
@@ -780,7 +808,7 @@ mod tests {
         let before = grabbed.footprint_corners();
 
         let mut params = grabbed;
-        params.apply_handle(&drag(HEIGHT, plane.normal * 9.0), &grabbed);
+        params.apply_handle(&drag(HEIGHT_HANDLE, plane.normal * 9.0), &grabbed);
 
         assert!((params.height - 11.0).abs() < EPSILON);
         for (a, b) in before.iter().zip(params.footprint_corners().iter()) {

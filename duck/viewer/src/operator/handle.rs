@@ -8,9 +8,15 @@
 //! [`HandleInput`] turns pointer events into [`HandleEvent`]s against a set.
 //! A drag reports the world point its locus solves to, not a scalar, so the
 //! owner decides what the motion means: [`HandleDrag::distance_along`] for a
-//! dimension or radius, [`HandleDrag::angle_about`] for an angle. Shape and
-//! drag locus are independent — a [`HandleShape::Ring`] that reads as an angle
-//! control is an ordinary [`DragKind::Plane`] drag underneath.
+//! dimension or radius, [`HandleDrag::angle_about`] for an angle.
+//!
+//! A handle's appearance is three independent choices, so that the combinations
+//! nobody has needed yet cost nothing: [`HandleShape`] is the form of the grab,
+//! [`HandleReach`] is where that grab sits relative to the anchor, and
+//! [`DragKind`] is the locus a drag on it solves against. A ring that reads as
+//! an angle control is a [`HandleShape::Ring`] over an ordinary
+//! [`DragKind::Plane`]; a dimension grip out on a face with a line back to its
+//! origin is a [`HandleShape::Cube`] with a [`HandleReach::Leader`].
 
 mod set;
 mod shape;
@@ -47,18 +53,21 @@ pub enum DragKind {
     View,
 }
 
-/// A handle's appearance.
+/// The form of a handle's grab.
 ///
 /// Built at unit size about the origin along `+Y` — the axis the mesh
 /// primitives already build along — and turned onto the handle's direction when
 /// the set places it. The renderer holds it at a constant on-screen size.
+///
+/// Where the grab sits relative to the anchor, and what connects the two, is the
+/// separate concern of [`HandleReach`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum HandleShape {
-    /// Cone-tipped arm. Offsets and distances.
-    Arrow,
-    /// Cube-tipped arm. Extents.
+    /// Cone pointing along the direction. Offsets and distances.
+    Cone,
+    /// Cube. Extents.
     Cube,
-    /// Sphere at the anchor. Free grabs.
+    /// Sphere. Free grabs.
     Ball,
     /// Torus in the plane normal to the direction. Angles.
     Ring,
@@ -71,6 +80,45 @@ pub enum HandleShape {
     /// by id, and so the geometry is uploaded once however often the handles
     /// around it are rebuilt.
     Custom(MeshHandle),
+}
+
+/// How far a handle's grab sits from its anchor, and what bridges the gap.
+///
+/// The anchor is always the point the drag locus passes through. `Arm` puts the
+/// grab out at the end of a stem, so there the anchor is the tail; every other
+/// reach leaves the grab on the anchor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HandleReach {
+    /// The grab sits on the anchor.
+    None,
+    /// A stem from the anchor out along the direction, with the grab at its far
+    /// end. Constant on-screen length, like the shape.
+    Arm,
+    /// A displacement from the anchor, in world axes but at a constant
+    /// on-screen magnitude, with nothing drawn between. For a grab that wants
+    /// to sit clear of its anchor without a visible connection.
+    Offset(Vector3),
+    /// A leader line running back to a world point, tying the grab to whatever
+    /// it measures from.
+    ///
+    /// Unlike `Arm`, the leader spans the real world distance rather than a
+    /// constant pixel length, so it still meets that point at any zoom. It is
+    /// annotation only and never pickable.
+    Leader(Point3),
+}
+
+impl HandleReach {
+    /// Whether a handle displaying `self` can be updated into one displaying
+    /// `other` by writing transforms, rather than rebuilding its geometry.
+    ///
+    /// Only a leader's origin is a transform; `Arm` and `Offset` are baked into
+    /// the mesh, and `Leader` alone owns a second node.
+    fn reusable_as(&self, other: &HandleReach) -> bool {
+        match (self, other) {
+            (HandleReach::Leader(_), HandleReach::Leader(_)) => true,
+            (a, b) => a == b,
+        }
+    }
 }
 
 /// One draggable manipulator.
@@ -87,6 +135,8 @@ pub struct Handle {
     /// Orients both the shape and the drag locus.
     pub direction: Vector3,
     pub color: RgbaColor,
+    /// Where the grab sits relative to the anchor. See [`HandleReach`].
+    pub reach: HandleReach,
 }
 
 impl Handle {
@@ -99,12 +149,19 @@ impl Handle {
             anchor,
             direction: Vector3::unit_y(),
             color: HANDLE_COLOR,
+            reach: HandleReach::None,
         }
     }
 
     /// Orients the shape and the drag locus. Need not be normalized.
     pub fn with_direction(mut self, direction: Vector3) -> Self {
         self.direction = direction;
+        self
+    }
+
+    /// Sets where the grab sits relative to the anchor. See [`HandleReach`].
+    pub fn with_reach(mut self, reach: HandleReach) -> Self {
+        self.reach = reach;
         self
     }
 
