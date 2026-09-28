@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use duck_engine_common::{InnerSpace, MetricSpace, Point3, Quaternion, Vector3};
+use duck_engine_common::{MetricSpace, Point3, Quaternion, Vector3};
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     common::Transform,
@@ -133,12 +133,8 @@ impl SphereOperator {
         };
         let center = snap.position;
         // Polar axis: the snapped direction (e.g. a face normal) when present, else
-        // a skewed fallback that keeps the seam/poles off every world axis so a
-        // later boolean's cutting plane isn't near-coincident with them (OCCT
-        // boolean near-coincidence robustness).
-        let axis = snap
-            .direction
-            .unwrap_or_else(|| Vector3::new(1.0, 2.0, 3.0).normalize());
+        // world Z.
+        let axis = snap.direction.unwrap_or_else(Vector3::unit_z);
         // Does not need preview tessellation detail because we only make the
         // sphere once, and then scale it.
         let preview_shape = Shape::sphere(1.0).build();
