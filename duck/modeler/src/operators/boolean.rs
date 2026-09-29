@@ -2,13 +2,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use duck_engine_scene::resource::NodeId;
+use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions};
+use duck_engine_scene::common::RgbaColor;
+use duck_engine_scene::resource::{FaceMaterial, LineMaterial, NodeFlags, NodeId};
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, MouseButton, NamedKey},
     operator::{Operator, SelectionMode},
     selection::{SelectionItem, SelectionManager},
 };
+use opencascade::primitives::Shape;
 
 use crate::boolean::{execute_boolean, preview_boolean, BooleanKind};
 use crate::document::Document;
@@ -141,13 +144,57 @@ impl BooleanOperator {
 
         match result {
             Ok(preview) => {
-                self.preview.add_preview_node(preview);
+                self.preview.add_preview_node(preview.node);
                 self.preview.hide_source_node(target_node);
-                for tool in tools {
+                for &tool in &tools {
                     self.preview.hide_source_node(tool);
                 }
+                self.show_removed(&tools, &preview.removed, &options);
+                // No preview is a part: picks must reach the hidden parts beneath.
+                self.preview.set_preview_flags(NodeFlags::DO_NOT_SELECT);
             }
             Err(e) => log::warn!("Boolean preview failed: {e}"),
+        }
+    }
+
+    /// Show the `removed` material in translucent red.
+    fn show_removed(
+        &mut self,
+        tools: &[NodeId],
+        removed: &[Shape],
+        options: &CadTessellationOptions,
+    ) {
+        // A subtract removes its tools whole, and their meshes already exist.
+        let (ghosted, pieces): (&[NodeId], &[Shape]) =
+            if self.kind == BooleanKind::Subtract { (tools, &[]) } else { (&[], removed) };
+        if ghosted.is_empty() && pieces.is_empty() {
+            return;
+        }
+
+        let scene = self.document.lock().unwrap().scene().clone();
+        let (face, line) = {
+            let mut scene = scene.lock();
+            (
+                scene.add_face_material(removed_face_material()),
+                scene.add_line_material(removed_line_material()),
+            )
+        };
+        for &tool in ghosted {
+            self.preview.ghost_source_node(tool, &face, &line);
+        }
+        for piece in pieces {
+            match tessellate_into_with_materials(
+                piece,
+                &scene,
+                options,
+                &face,
+                &line,
+                None,
+                Some("Boolean removed"),
+            ) {
+                Ok(node) => self.preview.add_preview_node(node.id()),
+                Err(e) => log::warn!("Removed material could not be tessellated: {e}"),
+            }
         }
     }
 
@@ -239,6 +286,19 @@ impl BooleanOperator {
     }
 }
 
+/// Translucent red for the material an operation removes. Single-sided: the
+/// faces it shares with the result face the other way, so culling hides them
+/// rather than letting them z-fight.
+fn removed_face_material() -> FaceMaterial {
+    FaceMaterial::new()
+        .with_base_color_factor(RgbaColor { r: 0.85, g: 0.08, b: 0.12, a: 0.4 })
+        .with_roughness_factor(0.32)
+}
+
+fn removed_line_material() -> LineMaterial {
+    LineMaterial::new(RgbaColor { r: 0.6, g: 0.05, b: 0.08, a: 1.0 })
+}
+
 impl ModelingTool for BooleanOperator {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "boolean", icon: icons::BOOLEAN, shortcut: None }
@@ -323,5 +383,48 @@ impl Operator for BooleanOperator {
 
     fn name(&self) -> &str {
         "Boolean"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duck_engine_scene::Scene;
+    use glam::dvec3;
+
+    /// Each kind shows what it removes exactly once: a subtract as a ghost of
+    /// its tool, an intersect as the two removed pieces, a union not at all.
+    #[test]
+    fn preview_shows_each_kinds_removed_material_once() {
+        let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
+        let document = Arc::new(Mutex::new(Document::new(Scene::default())));
+        let (target, tool) = {
+            let options = construction.borrow().geometry_options.clone();
+            let mut doc = document.lock().unwrap();
+            let target = doc.add_part("box", Shape::cube(2.0), &options).unwrap();
+            let sphere = Shape::sphere(1.0).at(dvec3(2.0, 2.0, 2.0)).build();
+            let tool = doc.add_part("sphere", sphere, &options).unwrap();
+            (doc.node_for_part(target).unwrap(), doc.node_for_part(tool).unwrap())
+        };
+        let mut selection = SelectionManager::new();
+        selection.add(SelectionItem::Node(target));
+        selection.add(SelectionItem::Node(tool));
+        let mut op = BooleanOperator::new(construction, document.clone(), Notifications::default());
+
+        for (kind, removed_nodes) in
+            [(BooleanKind::Subtract, 1), (BooleanKind::Intersect, 2), (BooleanKind::Union, 0)]
+        {
+            op.kind = kind;
+            op.refresh_preview(&selection);
+
+            // The result node plus the removed material.
+            let previews = op.preview.preview_nodes();
+            assert_eq!(previews.len(), 1 + removed_nodes);
+            let scene = document.lock().unwrap().scene().clone();
+            let scene = scene.lock();
+            for &node in previews {
+                assert!(scene.get_node(node).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));
+            }
+        }
     }
 }

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use duck_engine_scene::resource::NodeId;
 use duck_engine_scene::cad::{CadTessellationOptions, tessellate_into};
-use opencascade::primitives::Shape;
+use opencascade::primitives::{BooleanPair, Shape};
 
 use crate::document::{unify_same_domain, unwrap_single_solid, Document, PartId};
 
@@ -17,14 +17,18 @@ struct BooleanResult {
     shape: Shape,
     target_part_id: PartId,
     tool_part_ids: Vec<PartId>,
+    /// See [`BooleanPreview::removed`]; gathered only on request.
+    removed: Vec<Shape>,
 }
 
 /// Resolve nodes to shapes and compute the boolean result, without touching the scene.
+/// With `keep_removed`, also gather the input material the result drops.
 fn compute_boolean(
     kind: BooleanKind,
     target: NodeId,
     tools: &[NodeId],
     doc: &Document,
+    keep_removed: bool,
 ) -> Result<BooleanResult> {
     let target_part_id = doc.part_for_node(target)
         .context("Target node is not a known CAD part")?;
@@ -45,11 +49,36 @@ fn compute_boolean(
     let target_volume = target_part.shape.volume();
     let mut shape = target_part.shape.deep_copy();
     let fuzz = interactive_fuzz(std::iter::once(&shape).chain(&tool_shapes));
+    let mut removed = Vec::new();
     for tool in &tool_shapes {
         let result = match kind {
-            BooleanKind::Subtract  => shape.subtract_with_fuzz(tool, fuzz)?,
-            BooleanKind::Union     => shape.union_with_fuzz(tool, fuzz)?,
-            BooleanKind::Intersect => shape.intersect_with_fuzz(tool, fuzz)?,
+            BooleanKind::Subtract => {
+                // A subtract keeps none of its tool.
+                if keep_removed {
+                    removed.push(tool.clone());
+                }
+                shape.subtract_with_fuzz(tool, fuzz)?
+            }
+            BooleanKind::Union => shape.union_with_fuzz(tool, fuzz)?,
+            BooleanKind::Intersect => {
+                // One intersection serves the result and what this step drops
+                // from either side.
+                let pair = BooleanPair::new(&shape, tool, fuzz)?;
+                if keep_removed {
+                    for piece in [pair.subtract(), pair.subtract_reversed()] {
+                        match piece {
+                            // Unified like the result (see below).
+                            Ok(piece) if piece.faces().next().is_some() => {
+                                removed.push(unify_same_domain(unwrap_single_solid(piece.shape)));
+                            }
+                            // That side lost nothing.
+                            Ok(_) => {}
+                            Err(e) => log::warn!("Could not compute removed material: {e}"),
+                        }
+                    }
+                }
+                pair.intersect()?
+            }
         };
         if let Some(warnings) = &result.warnings {
             log::warn!("boolean completed with warnings:\n{warnings}");
@@ -71,7 +100,7 @@ fn compute_boolean(
     // Unify last: the BOP splits periodic faces at their seam, leaving same-domain
     // halves that would otherwise be drawn and picked as separate geometry.
     let shape = unify_same_domain(unwrap_single_solid(shape));
-    Ok(BooleanResult { shape, target_part_id, tool_part_ids })
+    Ok(BooleanResult { shape, target_part_id, tool_part_ids, removed })
 }
 
 /// Additional boolean intersection tolerance for interactively placed parts.
@@ -98,7 +127,7 @@ pub fn execute_boolean(
     doc: &mut Document,
     options: &CadTessellationOptions,
 ) -> Result<()> {
-    let computed = compute_boolean(kind, target, tools, doc)?;
+    let computed = compute_boolean(kind, target, tools, doc, false)?;
 
     // The result supersedes the target, so it inherits the target's name.
     let name = doc
@@ -121,20 +150,31 @@ pub fn execute_boolean(
     Ok(())
 }
 
+/// A non-destructive boolean preview.
+pub struct BooleanPreview {
+    /// Temporary scene node showing the result. The caller owns it and must
+    /// remove it when done.
+    pub node: NodeId,
+    /// The input material the result drops, as separate shapes: a subtract's
+    /// tools, the part of each intersect input outside the result, and nothing
+    /// for a union.
+    pub removed: Vec<Shape>,
+}
+
 /// Non-destructive preview: compute the boolean and add a temporary scene node
-/// without modifying the source parts or document. The caller owns the returned
-/// NodeId and must remove it when done.
+/// without modifying the source parts or document.
 pub fn preview_boolean(
     kind: BooleanKind,
     target: NodeId,
     tools: &[NodeId],
     doc: &Document,
     options: &CadTessellationOptions,
-) -> Result<NodeId> {
-    let computed = compute_boolean(kind, target, tools, doc)?;
-    tessellate_into(&computed.shape, doc.scene(), options, None, Some("Boolean preview"))
-        .map(|node| node.id())
-        .context("Failed to tessellate boolean preview")
+) -> Result<BooleanPreview> {
+    let computed = compute_boolean(kind, target, tools, doc, true)?;
+    let node = tessellate_into(&computed.shape, doc.scene(), options, None, Some("Boolean preview"))
+        .context("Failed to tessellate boolean preview")?
+        .id();
+    Ok(BooleanPreview { node, removed: computed.removed })
 }
 
 #[cfg(test)]
@@ -167,7 +207,7 @@ mod tests {
     fn boolean_shares_no_faces_with_document_parts() {
         let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
 
-        let result = compute_boolean(BooleanKind::Subtract, box_node, &[sphere_node], &doc)
+        let result = compute_boolean(BooleanKind::Subtract, box_node, &[sphere_node], &doc, false)
             .expect("subtract succeeds");
 
         for node in [box_node, sphere_node] {
@@ -196,7 +236,7 @@ mod tests {
         let (box_node, sphere_node) =
             (doc.node_for_part(box_part).unwrap(), doc.node_for_part(sphere_part).unwrap());
 
-        let result = compute_boolean(BooleanKind::Subtract, box_node, &[sphere_node], &doc)
+        let result = compute_boolean(BooleanKind::Subtract, box_node, &[sphere_node], &doc, false)
             .expect("subtract succeeds");
 
         // Cleaning again must find nothing left to merge.
@@ -242,6 +282,7 @@ mod tests {
             doc.node_for_part(box_part).unwrap(),
             &[doc.node_for_part(sphere_part).unwrap()],
             &doc,
+            false,
         )
         .expect("near-coincident subtract succeeds");
 
@@ -334,5 +375,79 @@ mod tests {
 
         let names: Vec<_> = doc.parts().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["box"], "the result supersedes the target and keeps its name");
+    }
+
+    fn assert_volume(shape: &Shape, expected: f64) {
+        let volume = shape.volume();
+        assert!(
+            (volume - expected).abs() < 1e-4 * expected,
+            "expected volume {expected}, got {volume}"
+        );
+    }
+
+    /// The box and the sphere share an eighth of the sphere; an intersect keeps
+    /// that and reports the rest of each input, target first.
+    #[test]
+    fn intersect_preview_removes_each_input_outside_the_result() {
+        use std::f64::consts::PI;
+
+        let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
+        let preview = preview_boolean(
+            BooleanKind::Intersect,
+            box_node,
+            &[sphere_node],
+            &doc,
+            &CadTessellationOptions::default(),
+        )
+        .expect("intersect succeeds");
+
+        let shared = PI / 6.0;
+        assert_eq!(preview.removed.len(), 2);
+        assert_volume(&preview.removed[0], 8.0 - shared);
+        assert_volume(&preview.removed[1], 4.0 / 3.0 * PI - shared);
+    }
+
+    /// A subtract keeps none of its tools, so each is removed whole.
+    #[test]
+    fn subtract_preview_removes_the_tools_whole() {
+        use std::f64::consts::PI;
+
+        let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
+        let preview = preview_boolean(
+            BooleanKind::Subtract,
+            box_node,
+            &[sphere_node],
+            &doc,
+            &CadTessellationOptions::default(),
+        )
+        .expect("subtract succeeds");
+
+        assert_eq!(preview.removed.len(), 1);
+        assert_volume(&preview.removed[0], 4.0 / 3.0 * PI);
+    }
+
+    #[test]
+    fn union_preview_removes_nothing() {
+        let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
+        let preview = preview_boolean(
+            BooleanKind::Union,
+            box_node,
+            &[sphere_node],
+            &doc,
+            &CadTessellationOptions::default(),
+        )
+        .expect("union succeeds");
+
+        assert!(preview.removed.is_empty());
+    }
+
+    #[test]
+    fn removed_material_is_only_gathered_on_request() {
+        let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
+        for kind in [BooleanKind::Subtract, BooleanKind::Union, BooleanKind::Intersect] {
+            let result = compute_boolean(kind, box_node, &[sphere_node], &doc, false)
+                .expect("boolean succeeds");
+            assert!(result.removed.is_empty());
+        }
     }
 }

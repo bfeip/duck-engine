@@ -4,7 +4,9 @@ use duck_engine_scene::cad::{
     classify_shape, tessellate_into_with_materials, CadTessellationOptions, GeometryClass,
 };
 use duck_engine_scene::common::Transform;
-use duck_engine_scene::resource::{FaceMaterialHandle, LineMaterialHandle, NodeId, Visibility};
+use duck_engine_scene::resource::{
+    FaceMaterialHandle, Instance, LineMaterialHandle, NodeFlags, NodeId, Visibility,
+};
 use duck_engine_scene::{Scene, SceneData};
 use opencascade::primitives::Shape;
 
@@ -171,6 +173,15 @@ impl PreviewSession {
         }
     }
 
+    /// Set the flags of every tracked preview.
+    pub fn set_preview_flags(&self, flags: NodeFlags) {
+        let scene = self.scene();
+        let mut scene = scene.lock();
+        for &node in &self.previews {
+            scene.set_node_flags(node, flags);
+        }
+    }
+
     /// Hide `node` for the preview's duration and track it for restoration on
     /// cancel or drop. Does nothing if it is already hidden by this session.
     pub fn hide_source_node(&mut self, node: NodeId) {
@@ -179,6 +190,38 @@ impl PreviewSession {
         }
         self.scene().set_node_visibility(node, Visibility::Invisible);
         self.hidden.push(node);
+    }
+
+    /// Hide `node` as [`hide_source_node`](Self::hide_source_node) does, and
+    /// track a preview in its place drawing the same mesh with `face` and
+    /// `line`. The preview is not selectable, so picks reach the source beneath
+    /// it. Returns `None`, changing nothing, if `node` has no instance.
+    pub fn ghost_source_node(
+        &mut self,
+        node: NodeId,
+        face: &FaceMaterialHandle,
+        line: &LineMaterialHandle,
+    ) -> Option<NodeId> {
+        let ghost = {
+            let scene = self.scene();
+            let mut scene = scene.lock();
+            let source = scene.get_node(node)?;
+            let (parent, name, transform, display) =
+                (source.parent(), source.name.clone(), source.transform(), source.display());
+            let mesh = scene.get_instance(source.instance()?)?.mesh_handle().clone();
+            let instance = Instance::new(mesh)
+                .with_face_material(face.clone())
+                .with_line_material(line.clone());
+            let ghost = scene
+                .add_instance_node(parent, instance, name, transform, NodeFlags::DO_NOT_SELECT)
+                .ok()?
+                .id();
+            scene.set_node_display(ghost, display);
+            ghost
+        };
+        self.previews.push(ghost);
+        self.hide_source_node(node);
+        Some(ghost)
     }
 
     /// Remove all previews and restore every hidden source. Idempotent; the
@@ -245,7 +288,7 @@ impl Drop for PreviewSession {
 mod tests {
     use super::*;
     use duck_engine_scene::common::RgbaColor;
-    use duck_engine_scene::resource::FaceMaterial;
+    use duck_engine_scene::resource::{FaceMaterial, LineMaterial};
     use opencascade::primitives::{Face, Wire};
 
     fn document() -> Arc<Mutex<Document>> {
@@ -474,5 +517,101 @@ mod tests {
         // The preview must land in the new scene, not the one present at construction.
         session.add_preview_from_shape(&unit_shape(), &CadTessellationOptions::default(), "p");
         with_scene(&document, |s| assert_eq!(s.node_count(), 1));
+    }
+
+    /// A material pair in the document's scene for ghosting sources with.
+    fn ghost_materials(document: &Arc<Mutex<Document>>) -> (FaceMaterialHandle, LineMaterialHandle) {
+        let scene = document.lock().unwrap().scene().clone();
+        let mut scene = scene.lock();
+        (
+            scene.add_face_material(FaceMaterial::new().with_base_color_factor(FREE_COLOR)),
+            scene.add_line_material(LineMaterial::new(FREE_COLOR)),
+        )
+    }
+
+    #[test]
+    fn ghost_draws_the_source_mesh_in_its_place() {
+        let document = document();
+        let source = add_source(&document);
+        let (face, line) = ghost_materials(&document);
+        let mut session = PreviewSession::new(document.clone());
+
+        let ghost = session.ghost_source_node(source, &face, &line).expect("source has an instance");
+
+        assert_eq!(session.preview_node(), Some(ghost));
+        assert_eq!(visibility(&document, source), Visibility::Invisible);
+        with_scene(&document, |s| {
+            let instance_of =
+                |node| s.get_instance(s.get_node(node).unwrap().instance().unwrap()).unwrap();
+            assert_eq!(instance_of(ghost).mesh(), instance_of(source).mesh());
+            assert_eq!(instance_of(ghost).face_material(), Some(face.id()));
+            assert_eq!(instance_of(ghost).line_material(), Some(line.id()));
+            assert!(s.get_node(ghost).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));
+        });
+    }
+
+    #[test]
+    fn ghost_cancel_restores_the_source_and_keeps_its_mesh() {
+        let document = document();
+        let source = add_source(&document);
+        let (face, line) = ghost_materials(&document);
+        let mut session = PreviewSession::new(document.clone());
+        session.ghost_source_node(source, &face, &line);
+
+        session.cancel();
+        assert_eq!(visibility(&document, source), Visibility::Visible);
+        with_scene(&document, |s| {
+            assert_eq!(s.node_count(), 1);
+            assert_eq!(s.mesh_count(), 1, "the source still owns its mesh");
+        });
+    }
+
+    #[test]
+    fn ghost_commit_hands_back_the_hidden_source() {
+        let document = document();
+        let source = add_source(&document);
+        let (face, line) = ghost_materials(&document);
+        let mut session = PreviewSession::new(document.clone());
+        session.ghost_source_node(source, &face, &line);
+
+        assert_eq!(session.commit(), vec![source]);
+        assert_eq!(visibility(&document, source), Visibility::Invisible);
+        with_scene(&document, |s| assert_eq!(s.node_count(), 1));
+    }
+
+    #[test]
+    fn ghost_of_a_node_without_instance_changes_nothing() {
+        let document = document();
+        let bare = document
+            .lock()
+            .unwrap()
+            .scene()
+            .add_node(None, None, Transform::IDENTITY, NodeFlags::NONE)
+            .unwrap()
+            .id();
+        let (face, line) = ghost_materials(&document);
+        let mut session = PreviewSession::new(document.clone());
+
+        assert!(session.ghost_source_node(bare, &face, &line).is_none());
+        assert!(session.is_empty());
+        assert_eq!(visibility(&document, bare), Visibility::Visible);
+    }
+
+    #[test]
+    fn set_preview_flags_marks_every_preview() {
+        let document = document();
+        let options = CadTessellationOptions::default();
+        let mut session = PreviewSession::new(document.clone());
+        let previews = [
+            session.add_preview_from_shape(&unit_shape(), &options, "a").unwrap(),
+            session.add_preview_from_shape(&unit_shape(), &options, "b").unwrap(),
+        ];
+
+        session.set_preview_flags(NodeFlags::DO_NOT_SELECT);
+        with_scene(&document, |s| {
+            for node in previews {
+                assert!(s.get_node(node).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));
+            }
+        });
     }
 }
