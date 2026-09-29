@@ -9,7 +9,7 @@ use duck_engine_viewer::{
     common::Transform,
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
-    operator::Operator,
+    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator},
     selection::SelectionManager,
 };
 use glam::{dvec3, DVec3};
@@ -20,12 +20,19 @@ use crate::document::Document;
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
-use super::tweak::{commit_tweak, dimension_field, tweak_panel, TweakAction, TweakParams};
+use super::tweak::{
+    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, TweakAction,
+    TweakParams,
+};
 use super::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
 const EPSILON: f32 = 1e-6;
+
+/// The cylinder's dimension grips.
+const RADIUS_HANDLE: HandleId = HandleId(0);
+const HEIGHT_HANDLE: HandleId = HandleId(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum CylinderAction {
@@ -101,6 +108,37 @@ impl TweakParams for CylinderParams {
         changed |= dimension_field(ui, "Height", &mut self.height);
         changed
     }
+
+    /// A radius grip on the base rim and a height grip on the far cap, each tied
+    /// back to the base by a leader line so both meet at the bottom centre.
+    fn handles(&self) -> Vec<Handle> {
+        let (u, _) = self.plane.basis();
+        let grip = |id, anchor, direction: Vector3| {
+            Handle::new(id, HandleShape::Cube, anchor)
+                .with_direction(direction)
+                .with_reach(HandleReach::Leader(self.base))
+        };
+        vec![
+            grip(RADIUS_HANDLE, self.base + u * self.radius, u),
+            grip(HEIGHT_HANDLE, self.base + self.plane.normal * self.height, self.plane.normal),
+        ]
+    }
+
+    /// The grabbed rim or cap follows the cursor one for one: the radius is
+    /// measured from the axis and the height from `base`, neither of which moves.
+    fn apply_handle(&mut self, drag: &HandleDrag, grabbed: &Self) {
+        match drag.id {
+            RADIUS_HANDLE => {
+                let (u, _) = grabbed.plane.basis();
+                self.radius = grip_dimension(grabbed.radius, drag.distance_along(u));
+            }
+            HEIGHT_HANDLE => {
+                self.height =
+                    grip_dimension(grabbed.height, drag.distance_along(grabbed.plane.normal));
+            }
+            _ => {}
+        }
+    }
 }
 
 pub struct CylinderOperator {
@@ -110,6 +148,10 @@ pub struct CylinderOperator {
     preview: PreviewSession,
     bindings: InputMap<CylinderAction>,
     cursor_target: Option<Point3>,
+    /// Dimensions as they were when the held grip was grabbed; `None` when no
+    /// grip is held. A drag reports its total offset, so it is applied to this
+    /// rather than to the live dimensions.
+    grabbed: Option<CylinderParams>,
     // Set once the cylinder is applied, so
     // the tool cedes back to selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
@@ -145,8 +187,16 @@ impl CylinderOperator {
             preview,
             bindings,
             cursor_target: None,
+            grabbed: None,
             finished: false,
         }
+    }
+
+    /// Writes `params` back into the tweak phase and refreshes the preview.
+    /// The 3D twin of the panel's [`TweakAction::Changed`] arm.
+    fn set_tweak(&mut self, params: CylinderParams) {
+        self.preview.set_preview_transform(params.preview_transform());
+        self.phase = Phase::Tweak(params);
     }
 
     /// Lays the flat unit base disk (local XY, normal +Z) on `plane`, scaled to
@@ -383,6 +433,7 @@ impl ModelingTool for CylinderOperator {
     fn deactivate(&mut self) {
         self.cancel();
         self.finished = false;
+        self.grabbed = None;
         // The modeler hides the cursor for the (now inactive) tool, but clear our
         // target so a stale point can't flash if we're reactivated before a move.
         self.cursor_target = None;
@@ -405,6 +456,22 @@ impl ModelingTool for CylinderOperator {
         match self.phase {
             Phase::Tweak(_) => None,
             _ => self.cursor_target,
+        }
+    }
+
+    /// Grips only once the cylinder is placed — until then the cursor is still
+    /// defining it, and a grip would be something to fight with.
+    fn handles(&self) -> Vec<Handle> {
+        match &self.phase {
+            Phase::Tweak(params) => params.handles(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn on_handle(&mut self, event: &HandleEvent) {
+        let Phase::Tweak(params) = self.phase else { return };
+        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
+            self.set_tweak(edited);
         }
     }
 
@@ -500,6 +567,7 @@ impl Operator for CylinderOperator {
 mod tests {
     use super::*;
     use duck_engine_common::InnerSpace;
+    use crate::operators::tweak::MIN_DIMENSION;
 
     #[test]
     fn cylinder_valid_accepts_nondegenerate() {
@@ -539,5 +607,143 @@ mod tests {
         assert!((params.base - base).magnitude() < EPSILON);
         assert!((params.plane.normal - plane.normal).magnitude() < EPSILON);
         assert!((params.preview_transform().position - base).magnitude() < EPSILON);
+    }
+
+    /// A plane aligned with no world axis, so a mistaken basis shows up.
+    fn skewed_plane(origin: Point3) -> Plane {
+        Plane::from_point(Vector3::new(1.0, 2.0, 3.0).normalize(), origin)
+    }
+
+    /// A drag of `offset` on the grip `id`, as the handle machinery reports it.
+    fn drag(id: HandleId, offset: Vector3) -> HandleDrag {
+        let grab = Point3::new(0.0, 0.0, 0.0);
+        HandleDrag { id, grab, point: grab + offset, modifiers: Modifiers::default() }
+    }
+
+    #[test]
+    fn grips_sit_on_the_rim_and_the_far_cap() {
+        let base = Point3::new(-1.0, 0.5, 2.0);
+        let plane = skewed_plane(base);
+        let params = CylinderParams::from_pick(base, 2.0, 5.0, plane);
+        let (u, _) = plane.basis();
+
+        let handles = params.handles();
+        assert_eq!(handles.len(), 2);
+
+        let expected = [
+            (RADIUS_HANDLE, base + u * 2.0, u),
+            (HEIGHT_HANDLE, base + plane.normal * 5.0, plane.normal),
+        ];
+        for (id, anchor, direction) in expected {
+            let handle = handles.iter().find(|h| h.id == id).expect("grip is present");
+            assert!((handle.anchor - anchor).magnitude() < 1e-5, "{id:?} anchor");
+            assert!((handle.direction - direction).magnitude() < 1e-5, "{id:?} direction");
+        }
+    }
+
+    #[test]
+    fn every_grips_leader_runs_back_to_the_base() {
+        let base = Point3::new(-1.0, 0.5, 2.0);
+        let params = CylinderParams::from_pick(base, 2.0, 5.0, skewed_plane(base));
+
+        for handle in params.handles() {
+            let HandleReach::Leader(origin) = handle.reach else {
+                panic!("{:?} has no leader", handle.id);
+            };
+            assert!((origin - base).magnitude() < EPSILON, "{:?} leader origin", handle.id);
+            assert!(
+                (handle.anchor - origin).magnitude() > 1e-5,
+                "{:?} leader is degenerate",
+                handle.id
+            );
+        }
+    }
+
+    /// The radius is measured from the axis, not across the diameter, so unlike
+    /// the box footprint it must not be doubled.
+    #[test]
+    fn both_grips_follow_the_drag_one_for_one() {
+        let base = Point3::new(-1.0, 0.5, 2.0);
+        let plane = skewed_plane(base);
+        let grabbed = CylinderParams::from_pick(base, 2.0, 5.0, plane);
+        let (u, _) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(RADIUS_HANDLE, u * 1.5), &grabbed);
+        assert!((params.radius - 3.5).abs() < 1e-5);
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(HEIGHT_HANDLE, plane.normal * 1.5), &grabbed);
+        assert!((params.height - 6.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_grip_moves_only_its_own_dimension() {
+        let base = Point3::new(-4.0, 5.0, 6.0);
+        let plane = skewed_plane(base);
+        let grabbed = CylinderParams::from_pick(base, 2.0, 5.0, plane);
+        let (u, _) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(RADIUS_HANDLE, u * 1.0), &grabbed);
+        assert!((params.height - grabbed.height).abs() < EPSILON);
+        assert!((params.base - base).magnitude() < EPSILON);
+        assert!((params.plane.normal - plane.normal).magnitude() < EPSILON);
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(HEIGHT_HANDLE, plane.normal * 9.0), &grabbed);
+        assert!((params.radius - grabbed.radius).abs() < EPSILON);
+        assert!((params.base - base).magnitude() < EPSILON);
+        assert!((params.preview_transform().position - base).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn a_grip_ignores_motion_across_its_axis() {
+        let base = Point3::new(0.0, 0.0, 0.0);
+        let plane = Plane::xz();
+        let grabbed = CylinderParams::from_pick(base, 2.0, 5.0, plane);
+        let (u, v) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(RADIUS_HANDLE, u * 1.0 + v * 5.0 + plane.normal * 5.0), &grabbed);
+        assert!((params.radius - 3.0).abs() < EPSILON);
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(HEIGHT_HANDLE, plane.normal * 1.0 + u * 5.0 + v * 5.0), &grabbed);
+        assert!((params.height - 6.0).abs() < EPSILON);
+    }
+
+    /// Dragging a grip through the axis or past the base flattens the cylinder
+    /// instead of inverting it: a negative scale would reflect the baked transform.
+    #[test]
+    fn a_grip_dragged_through_the_cylinder_clamps() {
+        let base = Point3::new(0.0, 0.0, 0.0);
+        let plane = Plane::xz();
+        let grabbed = CylinderParams::from_pick(base, 2.0, 5.0, plane);
+        let (u, _) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(RADIUS_HANDLE, u * -50.0), &grabbed);
+        assert_eq!(params.radius, MIN_DIMENSION);
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(HEIGHT_HANDLE, plane.normal * -50.0), &grabbed);
+        assert_eq!(params.height, MIN_DIMENSION);
+        assert!(params.preview_transform().scale.z >= 0.0);
+    }
+
+    /// A drag carries its total offset from the grab, so applying successive
+    /// reports to the same snapshot must not compound them.
+    #[test]
+    fn successive_drags_from_one_grab_do_not_compound() {
+        let base = Point3::new(0.0, 0.0, 0.0);
+        let plane = Plane::xz();
+        let grabbed = CylinderParams::from_pick(base, 2.0, 5.0, plane);
+        let (u, _) = plane.basis();
+
+        let mut params = grabbed;
+        params.apply_handle(&drag(RADIUS_HANDLE, u * 1.0), &grabbed);
+        params.apply_handle(&drag(RADIUS_HANDLE, u * 1.0), &grabbed);
+        assert!((params.radius - 3.0).abs() < EPSILON);
     }
 }
