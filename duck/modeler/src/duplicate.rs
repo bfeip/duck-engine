@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
-use duck_engine_scene::common::{matrix4_to_row_major_f64, Matrix4};
-use opencascade::primitives::Shape;
+use duck_engine_scene::common::Matrix4;
 
-use crate::document::{Document, PartId};
+use crate::document::{place, Document, PartId};
 
 /// Copy each of `sources` once per entry in `placements`, transforming each
 /// copy's B-Rep by its placement. Results are source-major: every placement of
@@ -28,7 +27,7 @@ pub fn duplicate_parts(
                 (part.shape.deep_copy(), part.options().clone())
             };
             let name = doc.duplicate_name(source);
-            let shape = place(shape, placement);
+            let shape = place(&shape, placement);
             let id = doc
                 .add_part(name, shape, &options)
                 .context("Failed to tessellate the duplicated part")?;
@@ -38,17 +37,6 @@ pub fn duplicate_parts(
     Ok(copies)
 }
 
-/// Move `shape` by `placement`. A similarity keeps surfaces analytic (planes
-/// stay planes); only a non-uniform scale needs the B-spline-converting
-/// general transform.
-fn place(shape: Shape, placement: &Matrix4) -> Shape {
-    let mat = matrix4_to_row_major_f64(placement);
-    match shape.transformed(mat) {
-        Ok(placed) => placed,
-        Err(_) => shape.gtransform(mat),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,6 +44,7 @@ mod tests {
     use duck_engine_scene::cad::CadTessellationOptions;
     use duck_engine_scene::common::{Point3, SquareMatrix, Vector3};
     use duck_engine_scene::Scene;
+    use opencascade::primitives::Shape;
 
     const EPSILON: f32 = 1e-4;
 

@@ -155,14 +155,13 @@ impl ModelerTarget {
         Some(FaceTarget { node: node_id, part, face_index: element.index })
     }
 
-    /// Snapshot of the tessellation options for one begin/commit.
+    /// Snapshot of the tessellation options, for the face ghost.
     fn geometry_options(&self) -> CadTessellationOptions {
         self.construction_options.borrow().geometry_options.clone()
     }
 
     /// Bake every committed node's transform into its CAD part.
     fn bake_nodes(&mut self, nodes: &[NodeId], ctx: &mut EventContext) {
-        let options = self.geometry_options();
         let mut doc = self.document.lock().unwrap();
         // One undo step covers a multi-select bake.
         let mut doc = doc.undo_scope("Transform");
@@ -176,7 +175,7 @@ impl ModelerTarget {
                 .get_node(node)
                 .map(|n| n.transform().to_matrix());
             if let Some(delta) = delta
-                && let Err(e) = doc.bake_transform(part, delta, &options) {
+                && let Err(e) = doc.bake_transform(part, delta) {
                     log::error!("transform bake failed for node {node:?}: {e}");
                     self.notifications.error(format!("Transform failed: {e}"));
                 }
@@ -227,8 +226,7 @@ impl TransformTarget for ModelerTarget {
                 self.bake_nodes(&nodes, ctx);
             }
             Some(ActiveRoute::Face(target)) => {
-                let options = self.geometry_options();
-                self.face.commit(target, interaction, ctx, &options, &self.notifications);
+                self.face.commit(target, interaction, ctx, &self.notifications);
             }
             None => {}
         }
@@ -349,7 +347,6 @@ impl FaceTweakTarget {
         target: FaceTarget,
         interaction: &TransformInteraction,
         ctx: &mut EventContext,
-        options: &CadTessellationOptions,
         notifications: &Notifications,
     ) {
         let camera = ctx.camera.clone();
@@ -358,12 +355,8 @@ impl FaceTweakTarget {
         self.preview.cancel();
         self.resolved = None;
 
-        let result = self.document.lock().unwrap().tweak_faces(
-            target.part,
-            &[target.face_index],
-            delta,
-            options,
-        );
+        let result =
+            self.document.lock().unwrap().tweak_faces(target.part, &[target.face_index], delta);
         match result {
             Ok(()) => ctx.selection.clear(),
             Err(e) => {
