@@ -393,6 +393,21 @@ impl Document {
         Ok(())
     }
 
+    /// Replace a part's shape in place, preserving its `NodeId` and appearance,
+    /// as one undo step labelled `label`. The part is untouched on error.
+    ///
+    /// Re-tessellates with the part's own options, which keep an imported
+    /// part's colors.
+    pub fn reshape_part(&mut self, part: PartId, shape: Shape, label: &str) -> Result<()> {
+        let (before, options) = {
+            let cad_part = self.get_part(part).context("reshape_part: part not found")?;
+            (cad_part.shape.clone(), cad_part.options.clone())
+        };
+        self.reshape(part, &shape, &options)?;
+        self.history.record(label, Delta::Reshaped { part, before, after: shape, options });
+        Ok(())
+    }
+
     /// Groups every mutation made through the returned guard into one undo step.
     /// Nested scopes merge into the outermost one, whose label wins.
     pub fn undo_scope(&mut self, label: impl Into<String>) -> UndoScope<'_> {
@@ -820,6 +835,24 @@ mod tests {
 
         doc.redo().expect("redo tweak");
         assert!((max_y(&doc, part) - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reshape_part_keeps_the_node_and_undoes_as_one_step() {
+        let (mut doc, part, node) = doc_with_box();
+
+        let taller = opencascade::primitives::Shape::box_with_dimensions(2.0, 3.0, 2.0);
+        doc.reshape_part(part, taller, "Stretch").expect("reshape succeeds");
+        assert_eq!(doc.node_for_part(part), Some(node), "node id must be preserved");
+        assert!((max_y(&doc, part) - 3.0).abs() < 1e-6);
+        assert_eq!(doc.undo_label(), Some("Stretch"));
+
+        doc.undo().expect("undo reshape");
+        assert_eq!(doc.node_for_part(part), Some(node));
+        assert!((max_y(&doc, part) - 2.0).abs() < 1e-6, "shape restored");
+
+        doc.redo().expect("redo reshape");
+        assert!((max_y(&doc, part) - 3.0).abs() < 1e-6, "captured result replayed");
     }
 
     #[test]

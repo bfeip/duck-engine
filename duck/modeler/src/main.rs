@@ -4,6 +4,7 @@ mod delete;
 mod document;
 mod duplicate;
 mod extrude;
+mod fillet;
 mod grid;
 mod history;
 #[cfg(not(target_arch = "wasm32"))]
