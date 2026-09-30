@@ -160,7 +160,7 @@ impl ViewerState<'static> {
         tools.register(CurveOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(CircleOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(BooleanOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(ExtrudeOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(ExtrudeOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(LoftOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
 
         Self {

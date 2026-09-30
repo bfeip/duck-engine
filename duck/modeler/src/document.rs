@@ -75,6 +75,23 @@ pub fn unwrap_single_solid(shape: Shape) -> Shape {
     }
 }
 
+/// Additional boolean intersection tolerance for interactively placed parts.
+///
+/// Placement flows through f32 (snaps, tessellated pick positions), so inputs
+/// meant to coincide can sit a few f32 ulps of the coordinate magnitude apart
+/// — far beyond OCCT's 1e-7 default, in the near-coincidence band where the
+/// BOP misclassifies splits and a subtract silently removes nothing. Four
+/// ulps of the inputs' extent covers that placement error with margin.
+pub fn interactive_fuzz<'a>(shapes: impl Iterator<Item = &'a Shape>) -> f64 {
+    let extent = shapes
+        .map(|shape| {
+            let aabb = opencascade::bounding_box::aabb(shape);
+            aabb.min().abs().max_element().max(aabb.max().abs().max_element())
+        })
+        .fold(0.0f64, f64::max);
+    4.0 * f32::EPSILON as f64 * extent
+}
+
 pub struct CadPart {
     pub id: PartId,
     pub name: String,

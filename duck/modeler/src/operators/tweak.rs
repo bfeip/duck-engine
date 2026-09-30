@@ -1,11 +1,12 @@
-//! Post-placement parameter tweaking for the primitive tools.
+//! Live parameter tweaking for tools that hold their result as preview
+//! geometry until it is applied.
 //!
-//! Once its last point is picked, a primitive tool holds the shape as live
-//! preview geometry and opens an options panel instead of committing. The
-//! numeric fields drive only the preview node's transform — the unit reference
-//! shape is never re-tessellated — and the world-space shape is built once, on
-//! apply.
+//! A tool's panel fields and its 3D grips edit the same parameters. The
+//! primitive tools additionally drive only their preview node's transform — the
+//! unit reference shape is never re-tessellated — and build the world-space
+//! shape once, on apply.
 
+use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
@@ -21,30 +22,19 @@ use crate::preview::PreviewSession;
 /// degenerate and can't be built.
 pub(super) const MIN_DIMENSION: f32 = 1e-6;
 
-/// The parameters of a placed primitive, still adjustable before commit.
+/// Parameters a tool holds live, as preview geometry, until they are applied.
 ///
 /// Two editors drive the same values: the panel's numeric fields via
 /// [`ui`](TweakParams::ui), and the 3D grips via
 /// [`handles`](TweakParams::handles) / [`apply_handle`](TweakParams::apply_handle).
-/// Both end in the same place — a new [`preview_transform`](TweakParams::preview_transform)
-/// on the preview node.
 ///
 /// `Copy` because a grip drag edits from a snapshot taken when it was grabbed.
 pub(super) trait TweakParams: Copy {
-    /// Panel title and committed part name.
-    const NAME: &'static str;
-
-    /// Places the tool's unit reference shape for these parameters.
-    fn preview_transform(&self) -> Transform;
-
-    /// The world-space shape to commit.
-    fn build(&self) -> Option<Shape>;
-
-    /// The dimension fields, one [`dimension_field`] per row of a two-column
-    /// grid. Returns true when a value changed.
+    /// The fields, one row each of a two-column grid. Returns true when a
+    /// value changed.
     fn ui(&mut self, ui: &mut egui::Ui) -> bool;
 
-    /// The dimension grips for these parameters, or empty for none.
+    /// The grips for these parameters, or empty for none.
     fn handles(&self) -> Vec<Handle> {
         Vec::new()
     }
@@ -55,6 +45,22 @@ pub(super) trait TweakParams: Copy {
     /// A [`HandleDrag`] carries its total offset from the grab rather than an
     /// increment, so editing from the live value would compound it.
     fn apply_handle(&mut self, _drag: &HandleDrag, _grabbed: &Self) {}
+}
+
+/// The parameters of a placed primitive.
+///
+/// Both editors end in the same place — a new
+/// [`preview_transform`](PrimitiveParams::preview_transform) on the preview
+/// node holding the tool's unit reference shape.
+pub(super) trait PrimitiveParams: TweakParams {
+    /// Panel title and committed part name.
+    const NAME: &'static str;
+
+    /// Places the tool's unit reference shape for these parameters.
+    fn preview_transform(&self) -> Transform;
+
+    /// The world-space shape to commit.
+    fn build(&self) -> Option<Shape>;
 }
 
 /// A dimension moved by `delta`, held at or above [`MIN_DIMENSION`] so a grip
@@ -93,24 +99,51 @@ pub(super) fn handle_tweak<P: TweakParams>(
 /// What the user asked of the panel this frame.
 pub(super) enum TweakAction {
     None,
-    /// A dimension changed; the preview transform needs refreshing.
+    /// A value changed; the preview needs refreshing.
     Changed,
     Apply,
     Cancel,
 }
 
-/// One labelled dimension row of the tweak panel's grid. Returns true when the
-/// value changed.
+/// One labelled dimension row of the tweak panel's grid: a length that must
+/// stay above [`MIN_DIMENSION`]. Returns true when the value changed.
 pub(super) fn dimension_field(ui: &mut egui::Ui, label: &str, value: &mut f32) -> bool {
+    length_field(ui, label, value, MIN_DIMENSION..=f32::MAX)
+}
+
+/// One labelled length row of the tweak panel's grid, held within `range`.
+/// Returns true when the value changed.
+pub(super) fn length_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+) -> bool {
     ui.label(label);
-    let changed = ui
-        .add(egui::DragValue::new(value).speed(0.5).range(MIN_DIMENSION..=f32::MAX))
-        .changed();
+    let changed = ui.add(egui::DragValue::new(value).speed(0.5).range(range)).changed();
     ui.end_row();
     changed
 }
 
-/// Body of a primitive's options window: its dimension fields, then Cancel / Apply.
+/// One labelled angle row of the tweak panel's grid, shown in degrees and held
+/// within `±limit` radians. Returns true when the value changed.
+pub(super) fn angle_field(ui: &mut egui::Ui, label: &str, radians: &mut f32, limit: f32) -> bool {
+    ui.label(label);
+    let limit = limit.to_degrees();
+    let mut degrees = radians.to_degrees();
+    let changed = ui
+        .add(egui::DragValue::new(&mut degrees).speed(0.5).range(-limit..=limit).suffix("°"))
+        .changed();
+    // Written back only on an edit, so an untouched value never drifts through
+    // the degree round trip.
+    if changed {
+        *radians = degrees.to_radians();
+    }
+    ui.end_row();
+    changed
+}
+
+/// Body of a tool's options window: its fields, then Cancel / Apply.
 pub(super) fn tweak_panel<P: TweakParams>(ui: &mut egui::Ui, params: &mut P) -> TweakAction {
     let changed = egui::Grid::new("tweak_params")
         .num_columns(2)
@@ -144,7 +177,7 @@ pub(super) fn tweak_panel<P: TweakParams>(ui: &mut egui::Ui, params: &mut P) -> 
 /// Build the world-space shape, drop the preview, and register it as a part.
 /// A failed build leaves the preview session untouched so the parameters can be
 /// corrected and applied again.
-pub(super) fn commit_tweak<P: TweakParams>(
+pub(super) fn commit_tweak<P: PrimitiveParams>(
     params: &P,
     preview: &mut PreviewSession,
     document: &Arc<Mutex<Document>>,

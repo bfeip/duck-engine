@@ -170,6 +170,9 @@ impl HandleSet {
     }
 
     /// Discards the displayed handles and builds `handles` in their place.
+    ///
+    /// A lit handle that survives the rebuild stays lit: it may be the one
+    /// being dragged.
     fn rebuild(&mut self, handles: &[Handle], scene: &mut SceneData) {
         for shown in self.shown.drain(..) {
             scene.remove_node(shown.node.id());
@@ -177,7 +180,7 @@ impl HandleSet {
                 scene.remove_node(leader.node.id());
             }
         }
-        self.highlighted = None;
+        let highlighted = self.highlighted.take();
 
         if handles.is_empty() {
             return;
@@ -225,6 +228,11 @@ impl HandleSet {
                 color: handle.color,
                 reach: handle.reach,
             });
+        }
+
+        if let Some(id) = highlighted.filter(|&id| self.shown.iter().any(|s| s.id == id)) {
+            self.paint(id, true, scene);
+            self.highlighted = Some(id);
         }
     }
 
@@ -331,25 +339,32 @@ impl HandleSet {
         let mut scene = scene.lock();
 
         // Restore whatever was lit, then light the new one.
-        for (target, lit) in [(self.highlighted, false), (id, true)] {
-            let Some(target) = target else { continue };
-            let Some(shown) = self.shown.iter().find(|s| s.id == target) else { continue };
-            let color = match lit {
-                true => shown.color.lightened(Axis::HIGHLIGHT_LIGHTEN),
-                false => shown.color,
-            };
-            if let Some(material) = scene.get_face_material_mut(shown.material.id()) {
-                material.set_base_color_factor(color);
-            }
-            // The leader is part of the same grip, so it lights with it.
-            if let Some(leader) = &shown.leader
-                && let Some(material) = scene.get_line_material_mut(leader.material.id())
-            {
-                material.set_color(color);
-            }
+        if let Some(previous) = self.highlighted {
+            self.paint(previous, false, &mut scene);
+        }
+        if let Some(id) = id {
+            self.paint(id, true, &mut scene);
         }
 
         self.highlighted = id;
+    }
+
+    /// Colors handle `id` lit or in its own color.
+    fn paint(&self, id: HandleId, lit: bool, scene: &mut SceneData) {
+        let Some(shown) = self.shown.iter().find(|s| s.id == id) else { return };
+        let color = match lit {
+            true => shown.color.lightened(Axis::HIGHLIGHT_LIGHTEN),
+            false => shown.color,
+        };
+        if let Some(material) = scene.get_face_material_mut(shown.material.id()) {
+            material.set_base_color_factor(color);
+        }
+        // The leader is part of the same grip, so it lights with it.
+        if let Some(leader) = &shown.leader
+            && let Some(material) = scene.get_line_material_mut(leader.material.id())
+        {
+            material.set_color(color);
+        }
     }
 
     /// The handle currently lit, if any.
@@ -541,6 +556,43 @@ mod tests {
         // Clearing puts it back.
         set.set_highlight(None, &scene);
         assert_eq!(scene.lock().get_face_material(lit).unwrap().base_color_factor().r, base.r);
+    }
+
+    /// A set that changes shape mid-drag rebuilds, and the grip being dragged
+    /// must not go dark when it does.
+    #[test]
+    fn a_rebuild_keeps_a_surviving_handle_lit() {
+        let scene = Scene::default();
+        let mut set = HandleSet::new();
+        let base = RgbaColor { r: 0.5, g: 0.5, b: 0.5, a: 1.0 };
+        let grip = handle(0, HandleShape::Cone, Point3::new(0.0, 0.0, 0.0)).with_color(base);
+        set.sync(std::slice::from_ref(&grip), &scene);
+        set.set_highlight(Some(HandleId(0)), &scene);
+
+        // A second handle joins, which forces a rebuild.
+        let before = set.node_ids();
+        set.sync(
+            &[grip, handle(1, HandleShape::Ring, Point3::new(1.0, 0.0, 0.0)).with_color(base)],
+            &scene,
+        );
+        assert!(!set.node_ids().contains(&before[0]), "the set was not rebuilt");
+
+        assert_eq!(set.highlighted(), Some(HandleId(0)));
+        let lit = set.material_of(HandleId(0)).unwrap();
+        let dim = set.material_of(HandleId(1)).unwrap();
+        assert!(scene.lock().get_face_material(lit).unwrap().base_color_factor().r > base.r);
+        assert_eq!(scene.lock().get_face_material(dim).unwrap().base_color_factor().r, base.r);
+    }
+
+    #[test]
+    fn a_rebuild_drops_the_highlight_of_a_handle_that_is_gone() {
+        let scene = Scene::default();
+        let mut set = HandleSet::new();
+        set.sync(&[handle(0, HandleShape::Cone, Point3::new(0.0, 0.0, 0.0))], &scene);
+        set.set_highlight(Some(HandleId(0)), &scene);
+
+        set.sync(&[handle(1, HandleShape::Cone, Point3::new(0.0, 0.0, 0.0))], &scene);
+        assert_eq!(set.highlighted(), None);
     }
 
     #[test]

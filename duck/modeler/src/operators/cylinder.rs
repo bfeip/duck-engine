@@ -21,8 +21,8 @@ use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
 use super::tweak::{
-    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, TweakAction,
-    TweakParams,
+    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
+    TweakAction, TweakParams,
 };
 use super::ConstructionOptions;
 
@@ -79,7 +79,7 @@ impl CylinderParams {
     }
 }
 
-impl TweakParams for CylinderParams {
+impl PrimitiveParams for CylinderParams {
     const NAME: &'static str = "Cylinder";
 
     /// Scales the unit reference cylinder (base at the origin, axis +Z, radius 1,
@@ -102,7 +102,9 @@ impl TweakParams for CylinderParams {
             self.height as f64,
         ))
     }
+}
 
+impl TweakParams for CylinderParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = dimension_field(ui, "Radius", &mut self.radius);
         changed |= dimension_field(ui, "Height", &mut self.height);

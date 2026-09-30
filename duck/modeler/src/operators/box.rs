@@ -21,8 +21,8 @@ use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
 use super::tweak::{
-    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, TweakAction,
-    TweakParams,
+    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
+    TweakAction, TweakParams,
 };
 use super::ConstructionOptions;
 
@@ -108,7 +108,7 @@ impl BoxParams {
     }
 }
 
-impl TweakParams for BoxParams {
+impl PrimitiveParams for BoxParams {
     const NAME: &'static str = "Box";
 
     /// Scales the unit reference box (footprint in local XY, height along local
@@ -140,7 +140,9 @@ impl TweakParams for BoxParams {
         let dir = self.plane.normal * self.height;
         Some(face.extrude(dvec3(dir.x as f64, dir.y as f64, dir.z as f64)).into())
     }
+}
 
+impl TweakParams for BoxParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = dimension_field(ui, "Width", &mut self.width);
         changed |= dimension_field(ui, "Length", &mut self.depth);

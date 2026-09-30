@@ -20,8 +20,8 @@ use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
 use super::tweak::{
-    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, TweakAction,
-    TweakParams,
+    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
+    TweakAction, TweakParams,
 };
 use super::ConstructionOptions;
 
@@ -58,7 +58,7 @@ pub(super) struct SphereParams {
     radius: f32,
 }
 
-impl TweakParams for SphereParams {
+impl PrimitiveParams for SphereParams {
     const NAME: &'static str = "Sphere";
 
     fn preview_transform(&self) -> Transform {
@@ -73,7 +73,9 @@ impl TweakParams for SphereParams {
                 .build(),
         )
     }
+}
 
+impl TweakParams for SphereParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         dimension_field(ui, "Radius", &mut self.radius)
     }

@@ -3,7 +3,7 @@ use duck_engine_scene::resource::NodeId;
 use duck_engine_scene::cad::{CadTessellationOptions, tessellate_into};
 use opencascade::primitives::{BooleanPair, Shape};
 
-use crate::document::{unify_same_domain, unwrap_single_solid, Document, PartId};
+use crate::document::{interactive_fuzz, unify_same_domain, unwrap_single_solid, Document, PartId};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum BooleanKind {
@@ -101,23 +101,6 @@ fn compute_boolean(
     // halves that would otherwise be drawn and picked as separate geometry.
     let shape = unify_same_domain(unwrap_single_solid(shape));
     Ok(BooleanResult { shape, target_part_id, tool_part_ids, removed })
-}
-
-/// Additional boolean intersection tolerance for interactively placed parts.
-///
-/// Placement flows through f32 (snaps, tessellated pick positions), so inputs
-/// meant to coincide can sit a few f32 ulps of the coordinate magnitude apart
-/// — far beyond OCCT's 1e-7 default, in the near-coincidence band where the
-/// BOP misclassifies splits and a subtract silently removes nothing. Four
-/// ulps of the inputs' extent covers that placement error with margin.
-fn interactive_fuzz<'a>(shapes: impl Iterator<Item = &'a Shape>) -> f64 {
-    let extent = shapes
-        .map(|shape| {
-            let aabb = opencascade::bounding_box::aabb(shape);
-            aabb.min().abs().max_element().max(aabb.max().abs().max_element())
-        })
-        .fold(0.0f64, f64::max);
-    4.0 * f32::EPSILON as f64 * extent
 }
 
 pub fn execute_boolean(
