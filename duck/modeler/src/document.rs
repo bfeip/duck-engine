@@ -75,6 +75,17 @@ pub fn unwrap_single_solid(shape: Shape) -> Shape {
     }
 }
 
+/// `shape` moved by `placement`. A similarity keeps surfaces analytic (planes
+/// stay planes); only a non-uniform scale needs the B-spline-converting general
+/// transform.
+pub fn place(shape: &Shape, placement: &Matrix4) -> Shape {
+    let mat = matrix4_to_row_major_f64(placement);
+    match shape.transformed(mat) {
+        Ok(placed) => placed,
+        Err(_) => shape.gtransform(mat),
+    }
+}
+
 /// Additional boolean intersection tolerance for interactively placed parts.
 ///
 /// Placement flows through f32 (snaps, tessellated pick positions), so inputs
@@ -297,52 +308,15 @@ impl Document {
         }
     }
 
-    /// Bake a transform into the part's CAD geometry then
-    /// re-tessellate the part in place (preserving its `NodeId`) and reset the node
-    /// transform to identity.
-    pub fn bake_transform(
-        &mut self,
-        part: PartId,
-        transform: Matrix4,
-        options: &CadTessellationOptions,
-    ) -> Result<()> {
-        let node = self
-            .node_for_part(part)
-            .context("bake_transform: no node for part")?;
-
-        // Transpose common's column-major f32 matrix into OCCT's row-major f64 array.
-        let mat = matrix4_to_row_major_f64(&transform);
-
-        let before = {
-            let cad_part = self
-                .get_part_mut(part)
-                .context("bake_transform: part not found")?;
-            let before = cad_part.shape.clone();
-            // A similarity keeps surfaces analytic (planes stay planes); only a
-            // non-uniform scale needs the B-spline-converting general transform.
-            cad_part.shape = match cad_part.shape.transformed(mat) {
-                Ok(shape) => shape,
-                Err(_) => cad_part.shape.gtransform(mat),
-            };
-            cad_part.options = options.clone();
-            before
+    /// Bake a transform into the part's CAD geometry, then re-tessellate the
+    /// part in place (preserving its `NodeId`) and reset the node transform to
+    /// identity. The part is untouched on error.
+    pub fn bake_transform(&mut self, part: PartId, transform: Matrix4) -> Result<()> {
+        let baked = {
+            let cad_part = self.get_part(part).context("bake_transform: part not found")?;
+            place(&cad_part.shape, &transform)
         };
-
-        let after = {
-            let cad_part = self
-                .get_part(part)
-                .context("bake_transform: part not found")?;
-            retessellate_node(&cad_part.shape, &self.scene, options, node)?;
-            self.scene.set_node_transform(node, Transform::IDENTITY);
-            cad_part.shape.clone()
-        };
-
-        self.history.record(
-            "Transform",
-            Delta::Reshaped { part, before, after, options: options.clone() },
-        );
-
-        Ok(())
+        self.reshape_part(part, baked, "Transform")
     }
 
     /// Transform the given faces (by tessellation index) of a part's B-Rep and
@@ -356,12 +330,7 @@ impl Document {
         part: PartId,
         face_indices: &[u32],
         transform: Matrix4,
-        options: &CadTessellationOptions,
     ) -> Result<()> {
-        let node = self
-            .node_for_part(part)
-            .context("tweak_faces: no node for part")?;
-
         let tweaked = {
             let cad_part = self.get_part(part).context("tweak_faces: part not found")?;
             let faces: Vec<_> = face_indices
@@ -377,20 +346,7 @@ impl Document {
             let mat = matrix4_to_row_major_f64(&transform);
             cad_part.shape.tweak_faces(faces, mat)?
         };
-
-
-        retessellate_node(&tweaked, &self.scene, options, node)?;
-
-        let cad_part = self.get_part_mut(part).context("tweak_faces: part not found")?;
-        let before = std::mem::replace(&mut cad_part.shape, tweaked.clone());
-        cad_part.options = options.clone();
-
-        self.history.record(
-            "Tweak face",
-            Delta::Reshaped { part, before, after: tweaked, options: options.clone() },
-        );
-
-        Ok(())
+        self.reshape_part(part, tweaked, "Tweak face")
     }
 
     /// Replace a part's shape in place, preserving its `NodeId` and appearance,
@@ -636,7 +592,8 @@ impl Drop for UndoScope<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_scene::common::Vector3;
+    use duck_engine_scene::common::{RgbaColor, Vector3};
+    use duck_engine_scene::resource::FaceMaterial;
 
     fn doc_with_box() -> (Document, PartId, NodeId) {
         let scene = Scene::default();
@@ -676,7 +633,7 @@ mod tests {
         let face = top_face_index(&doc, part);
         let transform = Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0));
 
-        doc.tweak_faces(part, &[face], transform, &CadTessellationOptions::default())
+        doc.tweak_faces(part, &[face], transform)
             .expect("translating the top face up re-solves");
 
         assert_eq!(doc.parts().count(), 1, "tweak edits the part in place");
@@ -689,7 +646,7 @@ mod tests {
         let (mut doc, part, _) = doc_with_box();
         let transform = Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0));
 
-        let result = doc.tweak_faces(part, &[99], transform, &CadTessellationOptions::default());
+        let result = doc.tweak_faces(part, &[99], transform);
 
         assert!(result.is_err());
         assert!((max_y(&doc, part) - 2.0).abs() < 1e-6, "failed tweak must not modify the shape");
@@ -724,7 +681,7 @@ mod tests {
         let face = top_face_index(&doc, part);
         let transform = Matrix4::from_translation(Vector3::new(0.0, 0.5, 0.0));
 
-        doc.tweak_faces(part, &[face], transform, &CadTessellationOptions::default())
+        doc.tweak_faces(part, &[face], transform)
             .expect("tweaking the boolean result re-solves");
 
         assert_eq!(doc.node_for_part(part), Some(node), "node id must be preserved");
@@ -806,7 +763,7 @@ mod tests {
     fn undo_redo_restore_baked_transform() {
         let (mut doc, part, node) = doc_with_box();
         let up = Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0));
-        doc.bake_transform(part, up, &CadTessellationOptions::default())
+        doc.bake_transform(part, up)
             .expect("bake succeeds");
         assert!((max_y(&doc, part) - 3.0).abs() < 1e-6);
 
@@ -824,7 +781,7 @@ mod tests {
         let (mut doc, part, node) = doc_with_box();
         let face = top_face_index(&doc, part);
         let up = Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0));
-        doc.tweak_faces(part, &[face], up, &CadTessellationOptions::default())
+        doc.tweak_faces(part, &[face], up)
             .expect("tweak succeeds");
         assert!((max_y(&doc, part) - 3.0).abs() < 1e-6);
 
@@ -835,6 +792,37 @@ mod tests {
 
         doc.redo().expect("redo tweak");
         assert!((max_y(&doc, part) - 3.0).abs() < 1e-6);
+    }
+
+    fn assert_part_color(doc: &Document, part: PartId, expected: RgbaColor) {
+        let color = doc.get_part(part).unwrap().options().face_material.base_color_factor();
+        let channels = [(color.r, expected.r), (color.g, expected.g), (color.b, expected.b), (color.a, expected.a)];
+        let close = channels.iter().all(|(got, want)| (got - want).abs() < 1e-6);
+        assert!(close, "expected {expected:?}, got {color:?}");
+    }
+
+    /// Moving or tweaking a part keeps its own tessellation options, which carry
+    /// an imported part's color for later copies to inherit. Undo brings back
+    /// the same options.
+    #[test]
+    fn reshaping_keeps_the_part_options() {
+        let red = RgbaColor { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+        let options = CadTessellationOptions {
+            face_material: FaceMaterial::new().with_base_color_factor(red),
+            ..Default::default()
+        };
+        let mut doc = Document::new(Scene::default());
+        let part = doc.add_part("imported", Shape::cube(2.0), &options).expect("cube tessellates");
+        let up = Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0));
+
+        doc.bake_transform(part, up).expect("bake succeeds");
+        let face = top_face_index(&doc, part);
+        doc.tweak_faces(part, &[face], up).expect("tweak succeeds");
+        assert_part_color(&doc, part, red);
+
+        doc.undo().expect("undo tweak");
+        doc.undo().expect("undo bake");
+        assert_part_color(&doc, part, red);
     }
 
     #[test]
@@ -1012,7 +1000,7 @@ mod tests {
         let face = top_face_index(&doc, part);
         let squash = Matrix4::from_nonuniform_scale(1.0, 0.5, 1.0);
 
-        let result = doc.tweak_faces(part, &[face], squash, &CadTessellationOptions::default());
+        let result = doc.tweak_faces(part, &[face], squash);
 
         assert!(result.is_err(), "non-uniform scale must be rejected");
         assert!((max_y(&doc, part) - 2.0).abs() < 1e-6, "failed tweak must not modify the shape");

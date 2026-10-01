@@ -1,0 +1,4 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 20 V13 A9 9 0 0 1 13 4 H20"/>
+  <path d="M4 10 V4 H10" stroke-dasharray="1 2.5" stroke-opacity="0.6"/>
+</svg>

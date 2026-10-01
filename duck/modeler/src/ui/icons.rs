@@ -35,6 +35,7 @@ pub const CIRCLE: Icon = icon!("circle-svgrepo-com.svg");
 pub const CYLINDER: Icon = icon!("cylinder-svgrepo-com.svg");
 pub const BOOLEAN: Icon = icon!("boolean-and.svg");
 pub const EXTRUDE: Icon = icon!("expand-up-svgrepo-com.svg");
+pub const FILLET: Icon = icon!("fillet.svg");
 pub const LOFT: Icon = icon!("loft.svg");
 pub const DUPLICATE: Icon = icon!("duplicate.svg");
 

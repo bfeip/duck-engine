@@ -37,7 +37,7 @@ use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
 use crate::operators::{
     BooleanOperator, BoxOperator, CircleOperator, ConstructionOptions, CurveOperator,
-    CylinderOperator, DuplicateTool, ExtrudeOperator, LineOperator, LoftOperator,
+    CylinderOperator, DuplicateTool, ExtrudeOperator, FilletOperator, LineOperator, LoftOperator,
     RectangleOperator, SphereOperator, TransformTool,
 };
 use crate::delete::DeleteOperator;
@@ -162,6 +162,7 @@ impl ViewerState<'static> {
         tools.register(CircleOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
         tools.register(BooleanOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(ExtrudeOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(FilletOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(LoftOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
 
         Self {
