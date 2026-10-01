@@ -1,4 +1,4 @@
-use duck_engine_common::{InnerSpace, Vector3};
+use duck_engine_common::{consts, InnerSpace, Real, Vector3};
 
 use crate::bindings::InputMap;
 use crate::input::{ElementState, Key, Modifiers};
@@ -8,17 +8,17 @@ use crate::scene_scale;
 use super::NavigationAction;
 
 /// Mouse look sensitivity in radians per pixel of mouse movement.
-const LOOK_SENSITIVITY: f32 = 0.003;
+const LOOK_SENSITIVITY: Real = 0.003;
 
 /// Maximum pitch angle (looking up/down) in radians. Just under 90 degrees.
-const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_2 - 0.01;
+const MAX_PITCH: Real = consts::FRAC_PI_2 - 0.01;
 
 /// Internal state for walk-style navigation (movement keys + mouse look).
 pub(super) struct WalkState {
     /// Current yaw angle (horizontal rotation) in radians.
-    pub yaw: f32,
+    pub yaw: Real,
     /// Current pitch angle (vertical rotation) in radians.
-    pub pitch: f32,
+    pub pitch: Real,
     forward_pressed: bool,
     backward_pressed: bool,
     left_pressed: bool,
@@ -40,15 +40,15 @@ impl WalkState {
     /// Initialize yaw and pitch from current camera orientation.
     pub fn init_from_camera(&mut self, camera: &PositionedCamera) {
         let forward = camera.forward();
-        self.yaw = f32::atan2(forward.x, forward.z);
+        self.yaw = Real::atan2(forward.x, forward.z);
         let horizontal_length = (forward.x * forward.x + forward.z * forward.z).sqrt();
-        self.pitch = f32::atan2(forward.y, horizontal_length);
+        self.pitch = Real::atan2(forward.y, horizontal_length);
     }
 
     /// Handle mouse look based on mouse drag delta.
     pub fn handle_look(&mut self, dx: f32, dy: f32, camera: &mut PositionedCamera) {
-        self.yaw -= dx * LOOK_SENSITIVITY;
-        self.pitch -= dy * LOOK_SENSITIVITY;
+        self.yaw -= dx as Real * LOOK_SENSITIVITY;
+        self.pitch -= dy as Real * LOOK_SENSITIVITY;
         self.pitch = self.pitch.clamp(-MAX_PITCH, MAX_PITCH);
         self.update_camera_target(camera);
     }
@@ -73,7 +73,7 @@ impl WalkState {
         &self,
         camera: &mut PositionedCamera,
         delta_time: f32,
-        model_radius: f32,
+        model_radius: Real,
     ) -> bool {
         let mut movement = Vector3::new(0.0, 0.0, 0.0);
         let forward_flat = Vector3::new(self.yaw.sin(), 0.0, self.yaw.cos()).normalize();
@@ -86,7 +86,7 @@ impl WalkState {
 
         if movement.magnitude2() > 0.0 {
             let walk_speed = scene_scale::walk_speed(model_radius);
-            movement = movement.normalize() * walk_speed * delta_time;
+            movement = movement.normalize() * walk_speed * delta_time as Real;
             camera.eye += movement;
             camera.target += movement;
             return true;

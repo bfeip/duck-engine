@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use duck_engine_common::{decompose_matrix, Matrix4, RgbaColor};
+use duck_engine_common::{decompose_matrix, Matrix4, Real, RgbaColor};
 use duck_engine_scene::cad::{tessellate_occ_shape, CadTessellationOptions};
 use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{
@@ -191,10 +191,10 @@ fn matrix_to_transform(mat: [[f64; 4]; 4]) -> Transform {
     //   new(c0r0, c0r1, c0r2, c0r3,  c1r0, c1r1, ...)
     // mat is row-major: mat[row][col], so c{col}r{row} = mat[row][col].
     let m = Matrix4::new(
-        mat[0][0] as f32, mat[1][0] as f32, mat[2][0] as f32, mat[3][0] as f32, // col 0
-        mat[0][1] as f32, mat[1][1] as f32, mat[2][1] as f32, mat[3][1] as f32, // col 1
-        mat[0][2] as f32, mat[1][2] as f32, mat[2][2] as f32, mat[3][2] as f32, // col 2
-        mat[0][3] as f32, mat[1][3] as f32, mat[2][3] as f32, mat[3][3] as f32, // col 3
+        mat[0][0] as Real, mat[1][0] as Real, mat[2][0] as Real, mat[3][0] as Real, // col 0
+        mat[0][1] as Real, mat[1][1] as Real, mat[2][1] as Real, mat[3][1] as Real, // col 1
+        mat[0][2] as Real, mat[1][2] as Real, mat[2][2] as Real, mat[3][2] as Real, // col 2
+        mat[0][3] as Real, mat[1][3] as Real, mat[2][3] as Real, mat[3][3] as Real, // col 3
     );
     decompose_matrix(&m)
 }
@@ -252,7 +252,7 @@ fn import_pmi(
                 let base = verts.len() as u32;
                 for p in window {
                     verts.push(Vertex {
-                        position: [p.x as f32 * s, p.y as f32 * s, p.z as f32 * s],
+                        position: (*p * s).as_vec3().to_array(),
                         normal: [0.0, 0.0, 0.0],
                         tex_coords: [0.0, 0.0, 0.0],
                     });

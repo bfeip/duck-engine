@@ -1,7 +1,7 @@
 //! Construction grid: minor/major lines, axis cross, oriented to a construction plane.
 
 use duck_engine_viewer::common::{
-    Axis, EuclideanSpace, InnerSpace, Matrix3, Plane, Point3, Quaternion, RgbaColor, Transform,
+    Axis, EuclideanSpace, InnerSpace, Matrix3, Plane, Point3, Quaternion, Real, RgbaColor, Transform,
     Vector3,
 };
 use duck_engine_viewer::scene::resource::{
@@ -21,9 +21,9 @@ pub struct GridConfig {
     /// Whether the grid is drawn at all. Snapping is unaffected.
     pub visible: bool,
     /// Full side length of the grid in world units.
-    pub size: f32,
+    pub size: Real,
     /// Distance between adjacent minor lines in world units.
-    pub minor_spacing: f32,
+    pub minor_spacing: Real,
     /// A major line is drawn every Nth minor line.
     pub major_every: u32,
     /// Color of the minor (fine) gridlines.
@@ -37,7 +37,7 @@ pub struct GridConfig {
     /// Color of the construction-plane normal indicator line.
     pub axis_normal_color: RgbaColor,
     /// Length of the short normal-axis indicator line, in world units.
-    pub normal_axis_length: f32,
+    pub normal_axis_length: Real,
 }
 
 impl Default for GridConfig {
@@ -126,8 +126,8 @@ enum GridLayer {
 }
 
 fn build_grid_mesh(config: &GridConfig, layer: GridLayer) -> Mesh {
-    let half = config.size / 2.0;
-    let spacing = config.minor_spacing.max(f32::EPSILON);
+    let half = config.size as f32 / 2.0;
+    let spacing = (config.minor_spacing as f32).max(f32::EPSILON);
     let major_every = config.major_every.max(1) as i32;
     let half_steps = (half / spacing).floor() as i32;
 
@@ -166,8 +166,8 @@ fn build_grid_mesh(config: &GridConfig, layer: GridLayer) -> Mesh {
     )
 }
 
-fn build_axis_mesh(direction: [f32; 3], length: f32) -> Mesh {
-    let half = length / 2.0;
+fn build_axis_mesh(direction: [f32; 3], length: Real) -> Mesh {
+    let half = length as f32 / 2.0;
     let a = [-direction[0] * half, -direction[1] * half, -direction[2] * half];
     let b = [direction[0] * half, direction[1] * half, direction[2] * half];
     let vertices = vec![

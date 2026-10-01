@@ -1,4 +1,4 @@
-use duck_engine_common::{InnerSpace, Point3, Rotation, point3, vec3};
+use duck_engine_common::{consts, InnerSpace, Point3, Real, Rotation, point3, vec3};
 
 use crate::scene::PositionedCamera;
 use crate::scene::common::quaternion_from_axis_angle_safe;
@@ -8,11 +8,11 @@ use super::ORBIT_SENSITIVITY;
 /// Internal state for orbit-style navigation (orbit / pan / zoom).
 pub(super) struct TurntableState {
     /// Azimuth angle in radians (horizontal rotation around target).
-    pub azimuth: f32,
+    pub azimuth: Real,
     /// Elevation angle in radians (vertical rotation).
-    pub elevation: f32,
+    pub elevation: Real,
     /// Base distance from camera to target.
-    pub radius: f32,
+    pub radius: Real,
     /// Custom orbit pivot point. When set, orbit rotates the camera around
     /// this point instead of `camera.target`.
     pub pivot: Option<Point3>,
@@ -37,12 +37,12 @@ impl TurntableState {
         let direction = camera.eye - camera.target;
 
         // Calculate azimuth (horizontal angle around Y-axis)
-        self.azimuth = f32::atan2(direction.x, direction.z);
+        self.azimuth = Real::atan2(direction.x, direction.z);
 
         // Calculate elevation (vertical angle from horizontal plane)
         let horizontal_distance =
-            f32::sqrt(direction.x * direction.x + direction.z * direction.z);
-        self.elevation = f32::atan2(direction.y, horizontal_distance);
+            Real::sqrt(direction.x * direction.x + direction.z * direction.z);
+        self.elevation = Real::atan2(direction.y, horizontal_distance);
     }
 
     /// Initialize orbit parameters for orbiting around an explicit pivot point.
@@ -52,8 +52,8 @@ impl TurntableState {
         // Compute elevation from eye-to-pivot direction (for elevation clamping)
         let direction = camera.eye - pivot;
         let horizontal_distance =
-            f32::sqrt(direction.x * direction.x + direction.z * direction.z);
-        self.elevation = f32::atan2(direction.y, horizontal_distance);
+            Real::sqrt(direction.x * direction.x + direction.z * direction.z);
+        self.elevation = Real::atan2(direction.y, horizontal_distance);
     }
 
     /// Update camera position based on current orbit parameters (non-pivot orbit only).
@@ -79,12 +79,12 @@ impl TurntableState {
     fn handle_pivot_orbit(&mut self, dx: f64, dy: f64, camera: &mut PositionedCamera) {
         let pivot = self.pivot.unwrap();
 
-        let d_azimuth = -(dx as f32) * ORBIT_SENSITIVITY;
-        let d_elevation = dy as f32 * ORBIT_SENSITIVITY;
+        let d_azimuth = -(dx as Real) * ORBIT_SENSITIVITY;
+        let d_elevation = dy as Real * ORBIT_SENSITIVITY;
 
         // Clamp cumulative elevation to prevent going over the poles
         let new_elevation = self.elevation + d_elevation;
-        const MAX_ELEVATION: f32 = std::f32::consts::FRAC_PI_2 - 0.01;
+        const MAX_ELEVATION: Real = consts::FRAC_PI_2 - 0.01;
         let clamped = new_elevation.clamp(-MAX_ELEVATION, MAX_ELEVATION);
         let actual_d_elevation = clamped - self.elevation;
         self.elevation = clamped;
@@ -113,7 +113,7 @@ impl TurntableState {
     }
 
     /// Handle zoom via mouse wheel.
-    pub fn handle_zoom(&mut self, delta: f32, camera: &mut PositionedCamera, model_radius: f32) {
+    pub fn handle_zoom(&mut self, delta: f32, camera: &mut PositionedCamera, model_radius: Real) {
         self.radius = super::zoom(camera, delta, model_radius);
         self.update_camera_position(camera);
     }
@@ -124,13 +124,13 @@ impl TurntableState {
             return self.handle_pivot_orbit(dx, dy, camera);
         }
 
-        let dx = dx as f32 * ORBIT_SENSITIVITY;
-        let dy = dy as f32 * ORBIT_SENSITIVITY;
+        let dx = dx as Real * ORBIT_SENSITIVITY;
+        let dy = dy as Real * ORBIT_SENSITIVITY;
 
         self.azimuth -= dx;
 
         self.elevation += dy;
-        const MAX_ELEVATION: f32 = std::f32::consts::FRAC_PI_2 - 0.01;
+        const MAX_ELEVATION: Real = consts::FRAC_PI_2 - 0.01;
         self.elevation = self.elevation.clamp(-MAX_ELEVATION, MAX_ELEVATION);
 
         self.update_camera_position(camera);

@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::common::{Aabb, Axis, InnerSpace, Matrix4, Point3, RgbaColor, Vector3};
+use crate::common::{Aabb, Axis, InnerSpace, Matrix4, Point3, Real, RgbaColor, Vector3};
 use crate::event::{DeviceEvent, Event, EventContext};
 use crate::geom_query::{RayPickQuery, pick_all_from_ray};
 use crate::input::MouseButton;
@@ -30,7 +30,7 @@ pub struct AxisTriadConfig {
     /// Distance from the anchored corner in physical pixels (x, y).
     pub margin: (u32, u32),
     /// Distance of the triad camera from the triad origin.
-    pub camera_distance: f32,
+    pub camera_distance: Real,
     /// Orthographic triad camera.
     pub ortho: bool,
     /// Seconds a snap takes to animate the target camera; non-positive snaps
@@ -70,7 +70,7 @@ impl AxisTriadConfig {
         self
     }
 
-    pub fn with_camera_distance(mut self, distance: f32) -> Self {
+    pub fn with_camera_distance(mut self, distance: Real) -> Self {
         self.camera_distance = distance;
         self
     }
@@ -275,7 +275,7 @@ pub(crate) fn snap_camera(
 pub(crate) fn aim_triad_camera(
     camera: &mut PositionedCamera,
     reference: &PositionedCamera,
-    distance: f32,
+    distance: Real,
 ) {
     let direction = (reference.eye - reference.target).normalize();
     camera.target = Point3::new(0.0, 0.0, 0.0);
@@ -288,7 +288,7 @@ mod tests {
     use super::*;
     use crate::scene::Projection;
 
-    const EPSILON: f32 = 1e-4;
+    const EPSILON: Real = 1e-4;
 
     fn camera(eye: Point3, up: Vector3) -> PositionedCamera {
         PositionedCamera {

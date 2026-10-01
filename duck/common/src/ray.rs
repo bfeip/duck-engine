@@ -1,6 +1,6 @@
 use crate::{EuclideanSpace, InnerSpace, Matrix4, Point3, Vector3};
 use crate::plane::Plane;
-use crate::EPSILON;
+use crate::{Real, EPSILON};
 
 /// The closest approach between a ray and a line segment.
 ///
@@ -8,11 +8,11 @@ use crate::EPSILON;
 #[derive(Debug, Copy, Clone)]
 pub struct SegmentApproach {
     /// Parameter along the ray at the closest approach point
-    pub t: f32,
+    pub t: Real,
     /// Closest point on the segment to the ray
     pub closest_on_segment: Point3,
     /// Minimum 3D distance between the ray and the segment
-    pub distance: f32,
+    pub distance: Real,
 }
 
 /// A ray in 3D space, defined by an origin point and a direction vector.
@@ -34,7 +34,7 @@ impl Ray {
 
     /// Returns a point along the ray at parameter t.
     /// The point is calculated as: origin + t * direction
-    pub fn point_at(&self, t: f32) -> Point3 {
+    pub fn point_at(&self, t: Real) -> Point3 {
         self.origin + self.direction * t
     }
 
@@ -78,7 +78,7 @@ impl Ray {
         // p0 is -b (so degenerate/parallel cases use -b, not b).
         if e < EPSILON {
             // Degenerate segment: both endpoints are the same point — project p0 onto the ray
-            seg_t = 0.0_f32;
+            seg_t = 0.0;
             ray_t = -b;
         } else {
             let c = self.direction.dot(d);
@@ -87,7 +87,7 @@ impl Ray {
 
             if denom < EPSILON {
                 // Ray and segment are parallel — project p0 onto the ray
-                seg_t = 0.0_f32;
+                seg_t = 0.0;
                 ray_t = -b;
             } else {
                 // Solving the 2×2 system from differentiating |P(s) - Q(t)|²:
@@ -125,7 +125,7 @@ impl Ray {
     /// extrusion length along a fixed axis.
     ///
     /// Returns `None` if the ray and the axis are (near-)parallel.
-    pub fn closest_param_on_axis(&self, origin: Point3, dir: Vector3) -> Option<f32> {
+    pub fn closest_param_on_axis(&self, origin: Point3, dir: Vector3) -> Option<Real> {
         let v = dir.normalize();
         let u = self.direction; // unit
         let w0 = self.origin - origin;
@@ -144,7 +144,7 @@ impl Ray {
     /// Finds the intersection of the ray with a plane.
     /// Returns `Some((t, point))` where `t` is the distance along the ray.
     /// Returns `None` if the ray is parallel to the plane or points away from it.
-    pub fn intersect_plane(&self, plane: &Plane) -> Option<(f32, Point3)> {
+    pub fn intersect_plane(&self, plane: &Plane) -> Option<(Real, Point3)> {
         let denom = plane.normal.dot(self.direction);
 
         if denom.abs() < EPSILON {
@@ -173,7 +173,7 @@ impl Ray {
         v0: Point3,
         v1: Point3,
         v2: Point3,
-    ) -> Option<(f32, f32, f32)> {
+    ) -> Option<(Real, Real, Real)> {
         let edge1 = v1 - v0;
         let edge2 = v2 - v0;
         let h = self.direction.cross(edge2);
@@ -181,7 +181,7 @@ impl Ray {
 
         // Reject degenerate triangles (ray parallel to triangle plane).
         // Use a very small threshold to avoid rejecting thin-but-valid triangles.
-        const DET_EPSILON: f32 = 1e-10;
+        const DET_EPSILON: Real = 1e-10;
         if det > -DET_EPSILON && det < DET_EPSILON {
             return None;
         }
@@ -319,7 +319,7 @@ mod tests {
         let ray = Ray::new(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0));
 
         // Rotate 90 degrees around Z axis
-        let rotation = Matrix4::from_angle_z(Rad(std::f32::consts::PI / 2.0));
+        let rotation = Matrix4::from_angle_z(Rad(crate::consts::PI / 2.0));
         let transformed = ray.transform(&rotation);
 
         // Direction should now point in +Y
@@ -347,7 +347,7 @@ mod tests {
 
         // Combined transform: translate, rotate, scale
         let transform = Matrix4::from_translation(Vector3::new(0.0, 5.0, 0.0))
-            * Matrix4::from_angle_z(Rad(std::f32::consts::PI / 2.0))
+            * Matrix4::from_angle_z(Rad(crate::consts::PI / 2.0))
             * Matrix4::from_scale(2.0);
 
         let transformed = ray.transform(&transform);
@@ -521,13 +521,13 @@ mod tests {
         // Simulates a single face of a 32-segment cylinder with extreme values.
         // This is the geometry formerly caused precision failures with the
         // division-based Möller–Trumbore bounds check.
-        use std::f32::consts::PI;
-        let radius: f32 = 1.0e-10;
-        let height: f32 = 10000.0;
+        use crate::consts::PI;
+        let radius: Real = 1.0e-10;
+        let height: Real = 10000.0;
         let segments = 32;
 
-        let angle0 = 2.0 * PI * 0.0 / segments as f32;
-        let angle1 = 2.0 * PI * 1.0 / segments as f32;
+        let angle0 = 2.0 * PI * 0.0 / segments as Real;
+        let angle1 = 2.0 * PI * 1.0 / segments as Real;
 
         let v0 = Point3::new(radius * angle0.cos(), radius * angle0.sin(), 0.0);
         let v1 = Point3::new(radius * angle1.cos(), radius * angle1.sin(), 0.0);
@@ -601,6 +601,21 @@ mod tests {
         let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
 
         assert!(ray.intersect_plane(&plane).is_none());
+    }
+
+    #[test]
+    #[cfg(not(feature = "single-precision"))]
+    fn test_ray_intersect_plane_far_origin_lands_on_plane() {
+        // A camera ~1e4 units out hitting a construction plane at a skewed
+        // angle: f32 leaves the hit ~1e-3 off the plane, f64 ~1e-12.
+        let plane = Plane::from_point(Vector3::new(0.0, 1.0, 0.0), Point3::origin());
+        let origin = Point3::new(3000.0, 7000.0, -5000.0);
+        let target = Point3::new(12.345, 0.0, 67.891);
+        let ray = Ray::new(origin, target - origin);
+
+        let (_, point) = ray.intersect_plane(&plane).unwrap();
+        assert!(point.y.abs() < 1e-9, "hit is {} off the plane", point.y);
+        assert!((point - target).magnitude() < 1e-9);
     }
 
     // ===== Segment Closest Approach Tests =====

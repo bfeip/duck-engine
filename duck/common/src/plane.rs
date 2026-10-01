@@ -3,7 +3,7 @@ use crate::{
     Vector3, Vector4,
 };
 
-use crate::EPSILON;
+use crate::{Real, EPSILON};
 
 /// A plane in 3D space defined by a normal and distance from origin.
 ///
@@ -15,13 +15,13 @@ pub struct Plane {
     /// Unit normal pointing "outside" the half-space
     pub normal: Vector3,
     /// Signed distance from origin along the normal
-    pub d: f32,
+    pub d: Real,
 }
 
 impl Plane {
     /// Creates a plane from a normal and a distance.
     /// The normal will be normalized automatically.
-    pub fn new(normal: Vector3, d: f32) -> Self {
+    pub fn new(normal: Vector3, d: Real) -> Self {
         let normal = normal.normalize();
         Self { normal, d }
     }
@@ -36,7 +36,7 @@ impl Plane {
 
     /// Creates a plane from the coefficients of the plane equation ax + by + cz + d = 0.
     /// The coefficients will be normalized so that (a, b, c) becomes a unit vector.
-    pub fn from_coefficients(a: f32, b: f32, c: f32, d: f32) -> Self {
+    pub fn from_coefficients(a: Real, b: Real, c: Real, d: Real) -> Self {
         let length = (a * a + b * b + c * c).sqrt();
         if length < EPSILON {
             // Degenerate plane, return a default
@@ -68,7 +68,7 @@ impl Plane {
     /// - Positive: point is on the "outside" (same side as normal)
     /// - Zero: point is on the plane
     /// - Negative: point is on the "inside" (opposite side from normal)
-    pub fn signed_distance(&self, point: Point3) -> f32 {
+    pub fn signed_distance(&self, point: Point3) -> Real {
         self.normal.dot(point.to_vec()) + self.d
     }
 
@@ -104,7 +104,7 @@ impl Plane {
         &self,
         start: Point3,
         end: Point3,
-    ) -> Option<(f32, Point3)> {
+    ) -> Option<(Real, Point3)> {
         let direction = end - start;
         let denom = self.normal.dot(direction);
 
@@ -278,7 +278,7 @@ mod tests {
         let plane = Plane::from_point(Vector3::new(0.0, 1.0, 0.0), Point3::origin());
 
         // Rotate 90 degrees around X axis: Y -> Z
-        let rotation = Matrix4::from_angle_x(Rad(std::f32::consts::FRAC_PI_2));
+        let rotation = Matrix4::from_angle_x(Rad(crate::consts::FRAC_PI_2));
         let transformed = plane.transform(&rotation);
 
         // Normal should now point in +Z direction

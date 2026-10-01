@@ -1,5 +1,5 @@
 use std::path::Path;
-use duck_engine_common::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
+use duck_engine_common::{array_to_matrix4, InnerSpace, Matrix4, Point3, Real, SquareMatrix, Vector3};
 use duck_engine_scene::{PositionedCamera, Projection, SceneData};
 use duck_engine_scene::resource::{
     AlphaMode, FaceMaterial, FaceMaterialHandle, Instance, MaterialFlags, Mesh, MeshHandle,
@@ -348,7 +348,7 @@ fn load_material(
 
 /// Converts a glTF transform to a 4x4 matrix.
 fn transform_to_matrix(transform: &gltf::scene::Transform) -> Matrix4 {
-    Matrix4::from(transform.clone().matrix())
+    array_to_matrix4(transform.clone().matrix())
 }
 
 /// Decomposes a glTF transform into position, rotation, and scale.
@@ -363,7 +363,7 @@ fn decompose_transform(transform: &gltf::scene::Transform) -> duck_engine_scene:
 fn extract_camera_from_node(
     gltf_node: &gltf::Node,
     world_transform: Matrix4,
-    aspect: f32,
+    aspect: Real,
 ) -> Option<PositionedCamera> {
 
     let gltf_camera = gltf_node.camera()?;
@@ -397,9 +397,9 @@ fn extract_camera_from_node(
 
     match gltf_camera.projection() {
         gltf::camera::Projection::Perspective(persp) => {
-            let fovy = persp.yfov().to_degrees();
-            let znear = persp.znear();
-            let zfar = persp.zfar().unwrap_or(1000.0);
+            let fovy = persp.yfov().to_degrees() as Real;
+            let znear = persp.znear() as Real;
+            let zfar = persp.zfar().unwrap_or(1000.0) as Real;
 
             Some(PositionedCamera {
                 eye,
@@ -419,8 +419,8 @@ fn extract_camera_from_node(
                 up,
                 aspect,
                 projection: Projection::Orthographic {
-                    half_height: ortho_cam.ymag(),
-                    half_depth: ortho_cam.zfar(),
+                    half_height: ortho_cam.ymag() as Real,
+                    half_depth: ortho_cam.zfar() as Real,
                 },
             })
         }
@@ -433,7 +433,7 @@ fn extract_camera_from_node(
 fn find_camera_recursive(
     gltf_node: &gltf::Node,
     parent_transform: Matrix4,
-    aspect: f32,
+    aspect: Real,
 ) -> Option<PositionedCamera> {
     let local_transform = transform_to_matrix(&gltf_node.transform());
     let world_transform = parent_transform * local_transform;
@@ -464,7 +464,7 @@ fn find_camera_recursive(
 /// * `aspect` - Aspect ratio to use for the camera (if found)
 pub fn load_gltf_scene_from_path<P: AsRef<Path>>(
     path: P,
-    aspect: f32,
+    aspect: Real,
 ) -> anyhow::Result<GltfLoadResult> {
     let path = path.as_ref();
     let base_path = path.parent().map(|p| p.to_path_buf());
@@ -484,7 +484,7 @@ pub fn load_gltf_scene_from_path<P: AsRef<Path>>(
 /// * `aspect` - Aspect ratio to use for the camera (if found)
 pub fn load_gltf_scene_from_slice(
     data: &[u8],
-    aspect: f32,
+    aspect: Real,
 ) -> anyhow::Result<GltfLoadResult> {
     let (document, buffers, images) = gltf::import_slice(data)?;
     load_gltf_from_data(document, buffers, images, None, aspect)
@@ -589,7 +589,7 @@ pub fn build_gltf_scene(
     parsed: &ParsedGltf,
     scene: &mut SceneData,
     mesh_map: &GltfMeshMap,
-    aspect: f32,
+    aspect: Real,
 ) -> anyhow::Result<Option<PositionedCamera>> {
     use std::collections::HashMap;
 
@@ -624,7 +624,7 @@ fn load_gltf_from_data(
     buffers: Vec<gltf::buffer::Data>,
     images: Vec<gltf::image::Data>,
     base_path: Option<&Path>,
-    aspect: f32,
+    aspect: Real,
 ) -> anyhow::Result<GltfLoadResult> {
     let parsed = ParsedGltf {
         document,

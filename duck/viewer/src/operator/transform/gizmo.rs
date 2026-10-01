@@ -5,7 +5,7 @@
 //! [`GizmoState`] owns the gizmo's scene resources: it adds/removes the handle
 //! nodes, positions them at the pivot, hit-tests them, and drives highlights.
 
-use duck_engine_common::{Deg, Matrix4, Point3, Vector3, Vector4};
+use duck_engine_common::{Deg, Matrix4, Point3, Real, Vector3, Vector4};
 use duck_engine_scene::{PositionedCamera, Scene, SceneData};
 use duck_engine_scene::resource::NodeFlags;
 
@@ -105,7 +105,7 @@ fn gizmo_material(color: RgbaColor) -> FaceMaterial {
 
 /// Build a plane handle: a small translucent quad in the coordinate plane whose
 /// normal is `normal`, offset into the positive corner between its two axes.
-fn build_plane_handle(normal: Axis, size: f32) -> GizmoHandle {
+fn build_plane_handle(normal: Axis, size: Real) -> GizmoHandle {
     let quad_size = size * 0.22;
     let center_dist = size * 0.3;
     let (u_axis, v_axis) = plane_in_axes(normal);
@@ -129,14 +129,14 @@ fn build_plane_handle(normal: Axis, size: f32) -> GizmoHandle {
 }
 
 /// Build the center ball handle (uniform scale / view-plane translate).
-fn build_ball_handle(size: f32) -> GizmoHandle {
+fn build_ball_handle(size: Real) -> GizmoHandle {
     let mesh = Mesh::sphere(size * 0.09, SEGMENTS, SEGMENTS / 2, PrimitiveType::TriangleList);
     let material = gizmo_material(BALL_COLOR);
     GizmoHandle { mesh, material, id: GizmoHandleId::Ball }
 }
 
 /// Build translation gizmo handles: cylinder shaft + cone arrowhead per axis.
-pub fn build_translate_handles(size: f32) -> Vec<GizmoHandle> {
+pub fn build_translate_handles(size: Real) -> Vec<GizmoHandle> {
     let shaft_radius = size * 0.025;
     let shaft_height = size * 0.8;
     let cone_radius = size * 0.08;
@@ -186,7 +186,7 @@ pub fn build_translate_handles(size: f32) -> Vec<GizmoHandle> {
 }
 
 /// Build scale gizmo handles: cylinder shaft + cube tip per axis.
-pub fn build_scale_handles(size: f32) -> Vec<GizmoHandle> {
+pub fn build_scale_handles(size: Real) -> Vec<GizmoHandle> {
     let shaft_radius = size * 0.025;
     let shaft_height = size * 0.8;
     let cube_size = size * 0.1;
@@ -229,7 +229,7 @@ pub fn build_scale_handles(size: f32) -> Vec<GizmoHandle> {
 }
 
 /// Build rotation gizmo handles: one torus ring per axis.
-pub fn build_rotate_handles(size: f32) -> Vec<GizmoHandle> {
+pub fn build_rotate_handles(size: Real) -> Vec<GizmoHandle> {
     let major_radius = size;
     let minor_radius = size * 0.02;
 
@@ -262,7 +262,7 @@ pub fn build_rotate_handles(size: f32) -> Vec<GizmoHandle> {
 }
 
 /// Build gizmo handles for a given type.
-pub fn build_handles(gizmo_type: GizmoType, size: f32) -> Vec<GizmoHandle> {
+pub fn build_handles(gizmo_type: GizmoType, size: Real) -> Vec<GizmoHandle> {
     match gizmo_type {
         GizmoType::Translate => build_translate_handles(size),
         GizmoType::Rotate => build_rotate_handles(size),

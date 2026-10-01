@@ -12,11 +12,10 @@ use duck_engine_viewer::{
     scene::PositionedCamera,
     selection::SelectionManager,
 };
-use glam::{dvec3, DVec3};
 use log::warn;
 use opencascade::primitives::{Edge, Shape, Wire};
 
-use crate::document::Document;
+use crate::document::{point3_to_dvec3, Document};
 use crate::preview::PreviewSession;
 use crate::snap::{Snap, SnapKind, SnapProvider, WireStartSnap};
 use crate::tool::{ModelingTool, ToolInfo};
@@ -54,9 +53,6 @@ pub struct LineOperator {
     finished: bool,
 }
 
-fn to_dvec3(p: &Point3) -> DVec3 {
-    dvec3(p.x as f64, p.y as f64, p.z as f64)
-}
 
 /// Builds an open polyline wire shape from `points` (one segment per consecutive
 /// pair). Returns `None` if there are fewer than two points.
@@ -66,7 +62,7 @@ fn open_wire_shape(points: &[Point3]) -> Option<Shape> {
     }
     let edges: Vec<Edge> = points
         .windows(2)
-        .map(|w| Edge::segment(to_dvec3(&w[0]), to_dvec3(&w[1])))
+        .map(|w| Edge::segment(point3_to_dvec3(w[0]), point3_to_dvec3(w[1])))
         .collect::<Result<_, _>>()
         .map_err(|e| warn!("Failed to build polyline edge: {e}"))
         .ok()?;
@@ -82,7 +78,7 @@ fn closed_wire(points: &[Point3]) -> Option<Wire> {
     if points.len() < 3 {
         return None;
     }
-    Wire::from_ordered_points(points.iter().map(to_dvec3))
+    Wire::from_ordered_points(points.iter().copied().map(point3_to_dvec3))
         .map_err(|e| warn!("Failed to build closed wire: {e}"))
         .ok()
 }

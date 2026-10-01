@@ -2,8 +2,8 @@
 //! context arrives through [`SnapInput`] and the [`SceneData`].
 
 use duck_engine_viewer::common::{
-    transform_normal, transform_point, Aabb, EuclideanSpace, InnerSpace, Matrix4, Point3, Ray,
-    Vector3,
+    array_to_point3, array_to_vec3, transform_normal, transform_point, Aabb, EuclideanSpace,
+    InnerSpace, Matrix4, Point3, Ray, Real,
 };
 use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
 use duck_engine_viewer::scene::{PositionedCamera, Scene};
@@ -111,7 +111,7 @@ impl SnapProvider for GridSnap {
         // Guide point: round the in-plane ray hit to the nearest gridline
         // intersection.
         if let Some((_, hit)) = input.ray.intersect_plane(input.plane) {
-            let spacing = input.grid.minor_spacing.max(f32::EPSILON);
+            let spacing = input.grid.minor_spacing.max(Real::EPSILON);
             let rel = hit - origin;
             let cu = (rel.dot(u) / spacing).round() * spacing;
             let cv = (rel.dot(v) / spacing).round() * spacing;
@@ -164,7 +164,7 @@ impl SnapProvider for GeometrySnap {
         // tie-break between overlapping shapes: keep only the hit nearest along
         // the ray (the visible surface).
         let mut nearest_face: Option<Snap> = None;
-        let mut nearest_d2 = f32::INFINITY;
+        let mut nearest_d2 = Real::INFINITY;
         snaps.retain(|s| {
             if s.kind != SnapKind::Face {
                 return true;
@@ -180,7 +180,7 @@ impl SnapProvider for GeometrySnap {
 
         // Collapse coincident corners (shared B-rep vertices emitted by the same
         // mesh). Guard on kind so an edge candidate is never merged into a corner.
-        const EPSILON: f32 = 1e-10;
+        const EPSILON: Real = 1e-10;
         snaps.dedup_by(|a: &mut Snap, b: &mut Snap| {
             a.kind == SnapKind::Corner
                 && b.kind == SnapKind::Corner
@@ -203,7 +203,7 @@ struct GeometrySnapQuery<'a> {
     pixel_tolerance: f32,
     /// Factor mapping world-space distances into the current (possibly local)
     /// coordinate space; updated alongside the ray by [`Self::transform`].
-    local_scale: f32,
+    local_scale: Real,
     exclude_nodes: &'a [NodeId],
     want_corners: bool,
     want_edges: bool,
@@ -218,7 +218,7 @@ impl GeometrySnapQuery<'_> {
     /// Every segment lies inside the mesh bounds, so its depth is at most the
     /// farthest corner's, and `world_size_per_pixel` is non-decreasing in depth;
     /// the 2× margin covers off-axis perspective distortion.
-    fn local_edge_tolerance(&self, mesh: &Mesh, world_transform: &Matrix4) -> f32 {
+    fn local_edge_tolerance(&self, mesh: &Mesh, world_transform: &Matrix4) -> Real {
         let Some(bounds) = mesh.bounding() else {
             return 0.0;
         };
@@ -227,7 +227,7 @@ impl GeometrySnapQuery<'_> {
         for corner in bounds.transform(world_transform).corners() {
             far_depth = far_depth.max((corner - self.camera.eye).dot(forward));
         }
-        let world_tolerance = self.pixel_tolerance
+        let world_tolerance = self.pixel_tolerance as Real
             * self.camera.world_size_per_pixel(far_depth, self.viewport.1)
             * 2.0;
         world_tolerance * self.local_scale
@@ -252,10 +252,11 @@ impl PickQuery for GeometrySnapQuery<'_> {
                 return true;
             }
             let s = self.camera.project_point_screen(corner, w, h);
-            min_x = min_x.min(s.x);
-            min_y = min_y.min(s.y);
-            max_x = max_x.max(s.x);
-            max_y = max_y.max(s.y);
+            let (sx, sy) = (s.x as f32, s.y as f32);
+            min_x = min_x.min(sx);
+            min_y = min_y.min(sy);
+            max_x = max_x.max(sx);
+            max_y = max_y.max(sy);
         }
 
         let tol = self.pixel_tolerance;
@@ -270,7 +271,7 @@ impl PickQuery for GeometrySnapQuery<'_> {
         let scale = [matrix.x, matrix.y, matrix.z]
             .iter()
             .map(|col| col.truncate().magnitude())
-            .fold(0.0_f32, f32::max);
+            .fold(0.0, Real::max);
 
         Self {
             ray: self.ray.transform(matrix),
@@ -317,14 +318,14 @@ impl PickQuery for GeometrySnapQuery<'_> {
                 if let Some([v0, v1, v2]) = mesh.triangle(hit.triangle_index) {
                     // Möller–Trumbore weights: hit = w·v0 + u·v1 + v·v2.
                     let (u, v, w) = hit.barycentric;
-                    let mut normal = Vector3::from(v0.normal) * w
-                        + Vector3::from(v1.normal) * u
-                        + Vector3::from(v2.normal) * v;
-                    if normal.magnitude2() <= f32::EPSILON {
+                    let mut normal = array_to_vec3(v0.normal) * w
+                        + array_to_vec3(v1.normal) * u
+                        + array_to_vec3(v2.normal) * v;
+                    if normal.magnitude2() <= Real::EPSILON {
                         // Missing/cancelling vertex normals: use the flat one.
-                        let p0 = Point3::from(v0.position);
-                        normal = (Point3::from(v1.position) - p0)
-                            .cross(Point3::from(v2.position) - p0);
+                        let p0 = array_to_point3(v0.position);
+                        normal = (array_to_point3(v1.position) - p0)
+                            .cross(array_to_point3(v2.position) - p0);
                     }
                     results.push(Snap {
                         position: transform_point(world_transform, hit.hit_point),
@@ -341,8 +342,8 @@ impl PickQuery for GeometrySnapQuery<'_> {
             let local_tolerance = self.local_edge_tolerance(mesh, world_transform);
             index.for_each_segment_within(mesh, &self.ray, local_tolerance, |i, approach| {
                 let Some([v0, v1]) = mesh.segment(i) else { return };
-                let w0 = transform_point(world_transform, Point3::from(v0.position));
-                let w1 = transform_point(world_transform, Point3::from(v1.position));
+                let w0 = transform_point(world_transform, array_to_point3(v0.position));
+                let w1 = transform_point(world_transform, array_to_point3(v1.position));
                 results.push(Snap {
                     position: transform_point(world_transform, approach.closest_on_segment),
                     direction: Some((w1 - w0).normalize()),
@@ -361,7 +362,7 @@ impl PickQuery for GeometrySnapQuery<'_> {
 fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4, out: &mut Vec<Snap>) {
     let vertices = mesh.vertices();
     let mut push_corner = |local: [f32; 3]| {
-        let position = transform_point(world, Point3::new(local[0], local[1], local[2]));
+        let position = transform_point(world, array_to_point3(local));
         out.push(Snap {
             position,
             direction: None,
@@ -431,7 +432,7 @@ mod tests {
 
     use crate::grid::GridConfig;
 
-    const EPSILON: f32 = 1e-3;
+    const EPSILON: Real = 1e-3;
 
     fn close(a: Point3, b: Point3) -> bool {
         (a - b).magnitude2() < EPSILON * EPSILON
@@ -462,7 +463,7 @@ mod tests {
     /// Screen pixel a world point projects to under the test viewport (800×600).
     fn screen_of(cam: &PositionedCamera, p: Point3) -> (f32, f32) {
         let s = cam.project_point_screen(p, 800, 600);
-        (s.x, s.y)
+        (s.x as f32, s.y as f32)
     }
 
     fn dummy_camera() -> PositionedCamera {

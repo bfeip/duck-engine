@@ -281,8 +281,8 @@ impl SnapEngine {
                 continue;
             }
             let screen = cam.project_point_screen(c.position, vw, vh);
-            let dx = screen.x - input.cursor.0;
-            let dy = screen.y - input.cursor.1;
+            let dx = screen.x as f32 - input.cursor.0;
+            let dy = screen.y as f32 - input.cursor.1;
             let dist = (dx * dx + dy * dy).sqrt();
 
             // The fallback projects onto the cursor itself, so it is never gated;
@@ -344,7 +344,7 @@ mod tests {
     /// The screen pixel a world point projects to, used to aim candidates/cursor.
     fn screen_of(cam: &PositionedCamera, p: Point3) -> (f32, f32) {
         let s = cam.project_point_screen(p, 800, 600);
-        (s.x, s.y)
+        (s.x as f32, s.y as f32)
     }
 
     fn bare_engine() -> SnapEngine {

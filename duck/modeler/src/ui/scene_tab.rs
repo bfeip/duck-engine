@@ -1,7 +1,7 @@
 //! The scene tab: settings that belong to the scene rather than any one part —
 //! camera projection, construction plane, grid, and snapping.
 
-use duck_engine_viewer::common::{EuclideanSpace, InnerSpace, Plane, Point3, Vector3};
+use duck_engine_viewer::common::{EuclideanSpace, InnerSpace, Plane, Point3, Real, Vector3};
 use duck_engine_viewer::scene::{PositionedCamera, Projection};
 
 use crate::operators::ConstructionOptions;
@@ -97,7 +97,7 @@ fn camera_ui(
                 ui.label("Far clip");
                 changed |= ui
                     .add(
-                        egui::DragValue::new(zfar).speed(10.0).range(near + 0.001..=f32::MAX),
+                        egui::DragValue::new(zfar).speed(10.0).range(near + 0.001..=Real::MAX),
                     )
                     .changed();
                 ui.end_row();
@@ -106,7 +106,7 @@ fn camera_ui(
                 let mut height = *half_height * 2.0;
                 ui.label("View height");
                 if ui
-                    .add(egui::DragValue::new(&mut height).speed(1.0).range(1e-3..=f32::MAX))
+                    .add(egui::DragValue::new(&mut height).speed(1.0).range(1e-3..=Real::MAX))
                     .changed()
                 {
                     *half_height = height / 2.0;
@@ -117,7 +117,7 @@ fn camera_ui(
                 ui.label("Clip depth");
                 changed |= ui
                     .add(
-                        egui::DragValue::new(half_depth).speed(10.0).range(1e-3..=f32::MAX),
+                        egui::DragValue::new(half_depth).speed(10.0).range(1e-3..=Real::MAX),
                     )
                     .changed();
                 ui.end_row();
@@ -191,13 +191,13 @@ fn grid_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
     egui::Grid::new("grid_settings").num_columns(2).show(ui, |ui| {
         ui.label("Size");
         changed |= ui
-            .add(egui::DragValue::new(&mut grid.size).speed(10.0).range(1.0..=f32::MAX))
+            .add(egui::DragValue::new(&mut grid.size).speed(10.0).range(1.0..=Real::MAX))
             .changed();
         ui.end_row();
 
         ui.label("Minor spacing");
         changed |= ui
-            .add(egui::DragValue::new(&mut grid.minor_spacing).speed(0.5).range(0.01..=f32::MAX))
+            .add(egui::DragValue::new(&mut grid.minor_spacing).speed(0.5).range(0.01..=Real::MAX))
             .changed();
         ui.end_row();
 

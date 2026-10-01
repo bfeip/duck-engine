@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use duck_engine_common::{InnerSpace, MetricSpace, Point3, Quaternion, Vector3};
+use duck_engine_common::{InnerSpace, MetricSpace, Point3, Quaternion, Real, Vector3};
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     common::Transform,
@@ -11,11 +11,10 @@ use duck_engine_viewer::{
     operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator},
     selection::SelectionManager,
 };
-use glam::dvec3;
 use log::error;
 use opencascade::primitives::Shape;
 
-use crate::document::Document;
+use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
@@ -44,9 +43,6 @@ enum Phase {
     Tweak(SphereParams),
 }
 
-fn vec_to_dvec3(v: Vector3) -> glam::DVec3 {
-    dvec3(v.x as f64, v.y as f64, v.z as f64)
-}
 
 /// The dimensions of a placed sphere, adjustable before it is committed.
 /// `center` is the first point picked and never moves: the radius grows about it.
@@ -55,7 +51,7 @@ pub(super) struct SphereParams {
     center: Point3,
     /// Polar axis, chosen at placement (see [`SphereOperator::on_place_center`]).
     axis: Vector3,
-    radius: f32,
+    radius: Real,
 }
 
 impl PrimitiveParams for SphereParams {
@@ -67,9 +63,9 @@ impl PrimitiveParams for SphereParams {
 
     fn build(&self) -> Option<Shape> {
         Some(
-            Shape::sphere(self.radius as f64)
-                .at(dvec3(self.center.x as f64, self.center.y as f64, self.center.z as f64))
-                .axis(vec_to_dvec3(self.axis))
+            Shape::sphere(f64::from(self.radius))
+                .at(point3_to_dvec3(self.center))
+                .axis(vec3_to_dvec3(self.axis))
                 .build(),
         )
     }
@@ -149,7 +145,7 @@ impl SphereOperator {
     }
 
     /// Scales the unit reference sphere to `radius` about `center`.
-    fn preview_transform(center: Point3, radius: f32) -> Transform {
+    fn preview_transform(center: Point3, radius: Real) -> Transform {
         Transform {
             position: center,
             rotation: Quaternion::new(1.0, 0.0, 0.0, 0.0),
@@ -410,7 +406,7 @@ mod tests {
     use super::*;
     use crate::operators::tweak::MIN_DIMENSION;
 
-    const EPSILON: f32 = 1e-6;
+    const EPSILON: Real = 1e-6;
 
     /// A sphere whose polar axis is aligned with no world axis, so a mistaken
     /// direction shows up.

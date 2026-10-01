@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use duck_engine_common::{MetricSpace, Plane, Point3, Ray, Vector3};
+use duck_engine_common::{MetricSpace, Plane, Point3, Ray, Real, Vector3};
 use duck_engine_scene::resource::Visibility;
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
@@ -12,11 +12,11 @@ use duck_engine_viewer::{
     operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator},
     selection::SelectionManager,
 };
-use glam::{dvec3, DVec3};
+use glam::DVec3;
 use log::{error, warn};
 use opencascade::primitives::{Edge, Face, Shape, Wire};
 
-use crate::document::Document;
+use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
@@ -28,7 +28,7 @@ use super::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
-const EPSILON: f32 = 1e-6;
+const EPSILON: Real = 1e-6;
 
 /// The cylinder's dimension grips.
 const RADIUS_HANDLE: HandleId = HandleId(0);
@@ -47,7 +47,7 @@ enum Phase {
     /// `plane` is the placement plane through the center.
     Radius { center: Point3, plane: Plane },
     /// Radius fixed; the cursor drives the height. Preview is the 3D cylinder.
-    Height { center: Point3, radius: f32, plane: Plane },
+    Height { center: Point3, radius: Real, plane: Plane },
     /// Every point picked; the options panel drives the dimensions until the
     /// cylinder is applied or cancelled.
     Tweak(CylinderParams),
@@ -60,8 +60,8 @@ enum Phase {
 pub(super) struct CylinderParams {
     base: Point3,
     plane: Plane,
-    radius: f32,
-    height: f32,
+    radius: Real,
+    height: Real,
 }
 
 impl CylinderParams {
@@ -69,7 +69,7 @@ impl CylinderParams {
     /// grows away from `base`. A downward pick flips the plane normal rather
     /// than moving the base off the picked point, so later height edits move
     /// only the far cap.
-    fn from_pick(base: Point3, radius: f32, height: f32, plane: Plane) -> Self {
+    fn from_pick(base: Point3, radius: Real, height: Real, plane: Plane) -> Self {
         let (plane, height) = if height >= 0.0 {
             (plane, height)
         } else {
@@ -96,10 +96,10 @@ impl PrimitiveParams for CylinderParams {
 
     fn build(&self) -> Option<Shape> {
         Some(Shape::cylinder(
-            to_dvec3(self.base),
-            self.radius as f64,
-            vec_to_dvec3(self.plane.normal),
-            self.height as f64,
+            point3_to_dvec3(self.base),
+            f64::from(self.radius),
+            vec3_to_dvec3(self.plane.normal),
+            f64::from(self.height),
         ))
     }
 }
@@ -159,13 +159,7 @@ pub struct CylinderOperator {
     finished: bool,
 }
 
-fn to_dvec3(p: Point3) -> DVec3 {
-    dvec3(p.x as f64, p.y as f64, p.z as f64)
-}
 
-fn vec_to_dvec3(v: Vector3) -> DVec3 {
-    dvec3(v.x as f64, v.y as f64, v.z as f64)
-}
 
 impl CylinderOperator {
     pub fn new(
@@ -203,7 +197,7 @@ impl CylinderOperator {
 
     /// Lays the flat unit base disk (local XY, normal +Z) on `plane`, scaled to
     /// `radius`. [`Plane::rotation`] maps the local +Z axis to the plane normal.
-    fn disk_transform(center: Point3, radius: f32, plane: &Plane) -> Transform {
+    fn disk_transform(center: Point3, radius: Real, plane: &Plane) -> Transform {
         Transform {
             position: center,
             rotation: plane.rotation(),
@@ -236,17 +230,17 @@ impl CylinderOperator {
     }
 
     /// A radius is valid once it is non-degenerate.
-    fn radius_valid(radius: f32) -> bool {
+    fn radius_valid(radius: Real) -> bool {
         radius > EPSILON
     }
 
     /// A cylinder is valid once it has a non-degenerate radius and a non-zero height.
-    fn cylinder_valid(radius: f32, height: f32) -> bool {
+    fn cylinder_valid(radius: Real, height: Real) -> bool {
         Self::radius_valid(radius) && height.abs() > EPSILON
     }
 
     /// Signed height from projecting the cursor pick ray onto the plane normal through `center`.
-    fn height_from_cursor(center: Point3, plane: &Plane, position: (f32, f32), ctx: &mut EventContext) -> f32 {
+    fn height_from_cursor(center: Point3, plane: &Plane, position: (f32, f32), ctx: &mut EventContext) -> Real {
         let camera = ctx.camera.clone();
         let ray: Ray = camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
         ray.closest_param_on_axis(center, plane.normal).unwrap_or(0.0)
@@ -320,7 +314,7 @@ impl CylinderOperator {
     fn on_place_height(
         &mut self,
         center: Point3,
-        radius: f32,
+        radius: Real,
         plane: Plane,
         position: (f32, f32),
         ctx: &mut EventContext,

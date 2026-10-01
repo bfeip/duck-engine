@@ -230,7 +230,7 @@ impl<T: TransformTarget> TransformDriver<T> {
 
         let anchor = anchor.unwrap_or_else(|| {
             let projected = ctx.camera.project_point_screen(frame.pivot, ctx.size.0, ctx.size.1);
-            (projected.x, projected.y)
+            (projected.x as f32, projected.y as f32)
         });
         self.interaction.start(frame.pivot, frame.frame_rotation, anchor);
     }
@@ -482,7 +482,7 @@ mod tests {
     use crate::common::Axis;
     use crate::scene::{PositionedCamera, Scene, SceneData};
     use crate::selection::SelectionManager;
-    use duck_engine_common::{InnerSpace, Vector3};
+    use duck_engine_common::{InnerSpace, Real, Vector3};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -492,7 +492,7 @@ mod tests {
         context_parts_viewed_from((0.0, 0.0, 4.0))
     }
 
-    fn context_parts_viewed_from(eye: (f32, f32, f32)) -> ContextParts {
+    fn context_parts_viewed_from(eye: (Real, Real, Real)) -> ContextParts {
         let camera = PositionedCamera {
             eye: eye.into(),
             target: (0.0, 0.0, 0.0).into(),
@@ -661,7 +661,7 @@ mod tests {
         let anchor = {
             let mut ctx = make_context(&mut parts);
             let projected = ctx.camera.project_point_screen(pivot, ctx.size.0, ctx.size.1);
-            let anchor = (projected.x, projected.y);
+            let anchor = (projected.x as f32, projected.y as f32);
             driver.start_transform(Some(anchor), &mut ctx);
             driver.interaction.set_axis_constraint(AxisConstraint::Plane(
                 Axis::Y,
@@ -685,7 +685,7 @@ mod tests {
         let translation = *previews.borrow().last().unwrap();
         let landed = camera.project_point_screen(pivot + translation, ctx.size.0, ctx.size.1);
         assert!(
-            (landed.x - cursor.0).abs() < 0.05 && (landed.y - cursor.1).abs() < 0.05,
+            (landed.x as f32 - cursor.0).abs() < 0.05 && (landed.y as f32 - cursor.1).abs() < 0.05,
             "grabbed point at {:?} should be under the cursor {cursor:?}",
             (landed.x, landed.y)
         );

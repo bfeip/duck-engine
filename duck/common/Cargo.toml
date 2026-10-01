@@ -5,6 +5,8 @@ edition = "2024"
 
 [features]
 serde = ["dep:serde", "cgmath/serde"]
+# Use `f32` instead of `f64` for `Real`.
+single-precision = []
 
 [dependencies]
 bytemuck = { version = "1.16", features = ["derive"] }

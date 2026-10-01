@@ -10,7 +10,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use duck_engine_common::{
-    Deg, Matrix3, Matrix4, Point3, Quaternion, Rotation3, SquareMatrix, Vector3,
+    Deg, Matrix3, Matrix4, Point3, Quaternion, Real, Rotation3, SquareMatrix, Vector3,
 };
 
 use openusd::sdf::{self, AbstractData, Value};
@@ -549,10 +549,10 @@ fn get_matrix4_from_prop(data: &mut dyn AbstractData, prop_path: &sdf::Path) -> 
             // USD row-major → cgmath column-major (transpose)
             #[rustfmt::skip]
             let m = Matrix4::new(
-                v[0] as f32,  v[4] as f32,  v[8] as f32,  v[12] as f32,
-                v[1] as f32,  v[5] as f32,  v[9] as f32,  v[13] as f32,
-                v[2] as f32,  v[6] as f32,  v[10] as f32, v[14] as f32,
-                v[3] as f32,  v[7] as f32,  v[11] as f32, v[15] as f32,
+                v[0] as Real,  v[4] as Real,  v[8] as Real,  v[12] as Real,
+                v[1] as Real,  v[5] as Real,  v[9] as Real,  v[13] as Real,
+                v[2] as Real,  v[6] as Real,  v[10] as Real, v[14] as Real,
+                v[3] as Real,  v[7] as Real,  v[11] as Real, v[15] as Real,
             );
             Some(m)
         }
@@ -564,20 +564,22 @@ fn get_matrix4_from_prop(data: &mut dyn AbstractData, prop_path: &sdf::Path) -> 
 fn get_vec3_from_prop(data: &mut dyn AbstractData, prop_path: &sdf::Path) -> Option<Vector3> {
     let val = data.get(prop_path, "default").ok()?;
     match val.as_ref() {
-        Value::Vec3f(v) if v.len() >= 3 => Some(Vector3::new(v[0], v[1], v[2])),
+        Value::Vec3f(v) if v.len() >= 3 => {
+            Some(Vector3::new(v[0] as Real, v[1] as Real, v[2] as Real))
+        }
         Value::Vec3d(v) if v.len() >= 3 => {
-            Some(Vector3::new(v[0] as f32, v[1] as f32, v[2] as f32))
+            Some(Vector3::new(v[0] as Real, v[1] as Real, v[2] as Real))
         }
         _ => None,
     }
 }
 
 /// Get float from a property spec's default value.
-fn get_float_from_prop(data: &mut dyn AbstractData, prop_path: &sdf::Path) -> Option<f32> {
+fn get_float_from_prop(data: &mut dyn AbstractData, prop_path: &sdf::Path) -> Option<Real> {
     let val = data.get(prop_path, "default").ok()?;
     match val.as_ref() {
-        Value::Float(f) => Some(*f),
-        Value::Double(d) => Some(*d as f32),
+        Value::Float(f) => Some(*f as Real),
+        Value::Double(d) => Some(*d as Real),
         _ => None,
     }
 }
@@ -908,7 +910,7 @@ fn extract_camera(data: &mut dyn AbstractData, cam_path: &sdf::Path) -> Option<P
     let (znear, zfar) = get_float_array(data, &clipping_path, "default")
         .and_then(|v| {
             if v.len() >= 2 {
-                Some((v[0], v[1]))
+                Some((v[0] as Real, v[1] as Real))
             } else {
                 None
             }
@@ -939,7 +941,7 @@ fn extract_light(
 ) -> Option<PositionedLight> {
     let intensity =
         get_float_from_prop(data, &make_property_path(light_path, "inputs:intensity"))
-            .unwrap_or(1.0);
+            .map_or(1.0, |intensity| intensity as f32);
 
     let color_path = make_property_path(light_path, "inputs:color");
     let color = get_float_array(data, &color_path, "default")
@@ -955,7 +957,7 @@ fn extract_light(
     let (light, transform) = match type_name {
         "DistantLight" => {
             // Rotate so local -Z aligns with default downward direction (0, -1, 0)
-            let rotation = Quaternion::from_angle_x(Deg(-90.0_f32));
+            let rotation = Quaternion::from_angle_x(Deg(-90.0));
             let t = Transform::new(Point3::new(0.0, 0.0, 0.0), rotation, Vector3::new(1.0, 1.0, 1.0));
             (Light::directional(color, intensity), t)
         }

@@ -1,22 +1,24 @@
 use anyhow::{ensure, Context, Result};
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::common::{EuclideanSpace, InnerSpace, Point3, Vector3};
+use duck_engine_scene::common::{EuclideanSpace, InnerSpace, Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
-use glam::DVec3;
 use opencascade::history::ShapeHistory;
 use opencascade::primitives::{Face, JoinType, Shape, ShapeType};
 
-use crate::document::{interactive_fuzz, unify_same_domain, unwrap_single_solid, Document};
+use crate::document::{
+    dvec3_to_point3, dvec3_to_vec3, interactive_fuzz, unify_same_domain, unwrap_single_solid,
+    vec3_to_dvec3, Document,
+};
 
 /// A distance at or below this is degenerate: there is nothing to extrude.
-const MIN_DISTANCE: f32 = 1e-6;
+const MIN_DISTANCE: Real = 1e-6;
 
 /// A draft at or below this many radians leaves the walls straight; OCCT
 /// ignores anything smaller.
-const MIN_DRAFT: f32 = 1e-4;
+const MIN_DRAFT: Real = 1e-4;
 
 /// A wall thickness at or below this is no wall at all.
-const MIN_THICKNESS: f32 = 1e-6;
+const MIN_THICKNESS: Real = 1e-6;
 
 /// The sub-geometry being extruded, identified the way the selection system reports
 /// it: by tessellation order within a part's mesh.
@@ -82,14 +84,14 @@ impl ExtrudeFrame {
                 let normal = face
                     .normal_at_center()
                     .context("Selected face has no well-defined extrusion direction")?;
-                (to_point(face.center_of_mass()), to_vector(normal).normalize())
+                (dvec3_to_point3(face.center_of_mass()), dvec3_to_vec3(normal).normalize())
             }
             ExtrudeTarget::Edge { node, edge_index } => {
                 let edge = doc
                     .edge_subshape(node, edge_index)
                     .context("Selected edge is not part of a known CAD part")?;
                 let midpoint = (edge.start_point() + edge.end_point()) * 0.5;
-                (to_point(midpoint), sketch_normal.normalize())
+                (dvec3_to_point3(midpoint), sketch_normal.normalize())
             }
         };
 
@@ -114,14 +116,14 @@ pub struct ExtrudeParams {
     pub direction: Vector3,
     /// Signed length along `direction`, never below
     /// [`min_distance`](Self::min_distance).
-    pub distance: f32,
+    pub distance: Real,
     /// Taper of the side walls away from `direction`, in radians. Positive
     /// narrows the extrusion as it grows; negative flares it.
-    pub draft: f32,
+    pub draft: Real,
     /// Wall thickness, zero for none. A face's walls grow inside its outline
     /// when positive and outside it when negative; an edge's wall grows to one
     /// side of its sheet or the other.
-    pub thickness: f32,
+    pub thickness: Real,
 }
 
 impl ExtrudeParams {
@@ -137,15 +139,15 @@ impl ExtrudeParams {
 
     /// The shortest distance the target allows. A face of a solid only adds
     /// material, so its extrusion never runs back into the body.
-    pub fn min_distance(&self) -> f32 {
+    pub fn min_distance(&self) -> Real {
         match self.frame.fate {
             SourceFate::Fuse => 0.0,
-            SourceFate::Replace | SourceFate::Keep => f32::MIN,
+            SourceFate::Replace | SourceFate::Keep => Real::MIN,
         }
     }
 
     /// How far `direction` leans from the profile normal, in radians.
-    pub fn tilt(&self) -> f32 {
+    pub fn tilt(&self) -> Real {
         self.direction.dot(self.frame.normal).clamp(-1.0, 1.0).acos()
     }
 
@@ -171,7 +173,7 @@ impl ExtrudeParams {
 /// draft, then made into walls by the thickness.
 pub fn build_extrusion(doc: &Document, params: &ExtrudeParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to extrude at zero distance");
-    let sweep = to_dvec3(params.direction * params.distance);
+    let sweep = vec3_to_dvec3(params.direction * params.distance);
 
     match params.frame.target {
         ExtrudeTarget::Face { node, face_index } => {
@@ -235,10 +237,10 @@ fn draft(shape: &Shape, sides: &[Face], params: &ExtrudeParams) -> Result<(Shape
     shape
         .draft_faces_with_history(
             sides,
-            to_dvec3(pull),
+            vec3_to_dvec3(pull),
             f64::from(params.draft),
-            to_dvec3(params.frame.origin.to_vec()),
-            to_dvec3(params.frame.normal),
+            vec3_to_dvec3(params.frame.origin.to_vec()),
+            vec3_to_dvec3(params.frame.normal),
         )
         .context("Draft angle not supported for this profile")
 }
@@ -307,22 +309,14 @@ fn has_solid(shape: &Shape) -> bool {
     )
 }
 
-fn to_point(v: DVec3) -> Point3 {
-    Point3::new(v.x as f32, v.y as f32, v.z as f32)
-}
 
-fn to_vector(v: DVec3) -> Vector3 {
-    Vector3::new(v.x as f32, v.y as f32, v.z as f32)
-}
 
-fn to_dvec3(v: Vector3) -> DVec3 {
-    DVec3::new(v.x as f64, v.y as f64, v.z as f64)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use duck_engine_scene::common::consts;
     use duck_engine_scene::Scene;
     use opencascade::primitives::{Edge, Wire};
 
@@ -385,7 +379,7 @@ mod tests {
     }
 
     /// An extrusion of `target` by `distance` straight out of its profile.
-    fn params(doc: &Document, target: ExtrudeTarget, distance: f32) -> ExtrudeParams {
+    fn params(doc: &Document, target: ExtrudeTarget, distance: Real) -> ExtrudeParams {
         let frame = ExtrudeFrame::new(doc, target, SKETCH_NORMAL).expect("target resolves");
         ExtrudeParams { distance, ..ExtrudeParams::new(frame) }
     }
@@ -531,13 +525,13 @@ mod tests {
         let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 2.0);
         params.direction = (params.frame.normal + Vector3::unit_x()).normalize();
         let height = params.distance * params.direction.dot(params.frame.normal);
-        assert!((params.tilt() - std::f32::consts::FRAC_PI_4).abs() < 1e-5);
+        assert!((params.tilt() - consts::FRAC_PI_4).abs() < 1e-5);
 
         execute_extrude(&mut doc, &params, &CadTessellationOptions::default())
             .expect("a tilted extrude succeeds");
 
         let part = doc.parts().next().expect("one part remains");
-        let expected = 1.0 * height as f64;
+        let expected = 1.0 * f64::from(height);
         assert!(
             (part.shape.volume() - expected).abs() < 1e-5,
             "expected {expected}, got {}",
@@ -549,7 +543,7 @@ mod tests {
     /// frustum; a negative draft flares it instead.
     #[test]
     fn a_draft_tapers_a_region_into_a_frustum() {
-        let (height, angle) = (1.0, 10f32.to_radians());
+        let (height, angle) = (1.0, Real::to_radians(10.0));
         for sign in [1.0, -1.0] {
             let (mut doc, node) = doc_with_shape(polygon_region(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]));
             let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, height);
@@ -580,7 +574,7 @@ mod tests {
     /// leaning wall.
     #[test]
     fn drafted_walls_stay_parallel() {
-        let (height, angle, thickness) = (1.0, 10f32.to_radians(), 0.2);
+        let (height, angle, thickness) = (1.0, Real::to_radians(10.0), 0.2);
         let (mut doc, node) = doc_with_shape(polygon_region(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]));
         let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, height);
         params.draft = angle;
@@ -651,7 +645,7 @@ mod tests {
         .expect("spline builds");
         let (doc, node) = doc_with_shape(edge_region(spline));
         let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 1.0);
-        params.draft = 5f32.to_radians();
+        params.draft = Real::to_radians(5.0);
 
         let Err(error) = build_extrusion(&doc, &params) else {
             panic!("a spline side cannot take a draft");

@@ -13,7 +13,7 @@
 //! at render time and never pollute the node's cached world transform.
 
 use duck_engine_common::{
-    EuclideanSpace, InnerSpace, Matrix4, Point3, Vector3,
+    EuclideanSpace, InnerSpace, Matrix4, Point3, Real, Vector3,
 };
 
 use crate::PositionedCamera;
@@ -142,7 +142,7 @@ impl DisplayBehavior {
 
 /// Normalizes `v`, returning `fallback` if `v` is (near) zero-length.
 fn normalize_or(v: Vector3, fallback: Vector3) -> Vector3 {
-    if v.magnitude2() > f32::EPSILON {
+    if v.magnitude2() > Real::EPSILON {
         v.normalize()
     } else {
         fallback
@@ -156,13 +156,13 @@ fn screen_size_scale(
     target_px: f32,
     camera: &PositionedCamera,
     viewport: (u32, u32),
-) -> f32 {
+) -> Real {
     // Clamping to the near plane keeps perspective depths positive; orthographic
     // ignores the depth entirely.
     let near = camera.projection.depth_range().0;
     let depth = (p - camera.eye).dot(camera.forward()).max(near);
     let depth_size = camera.world_size_per_pixel(depth, viewport.1);
-    depth_size * target_px
+    depth_size * target_px as Real
 }
 
 #[cfg(test)]
@@ -170,7 +170,7 @@ mod tests {
     use super::*;
     use crate::Projection;
 
-    const EPSILON: f32 = 1e-6;
+    const EPSILON: Real = 1e-6;
 
     fn camera() -> PositionedCamera {
         PositionedCamera {

@@ -1,12 +1,13 @@
 use std::f32::consts::PI;
 
-use duck_engine_common::{InnerSpace, Matrix4, Point3, Vector3};
+use duck_engine_common::{point3_to_array, InnerSpace, Matrix4, Point3, Real, Vector3};
 
 use super::{Mesh, MeshIndex, MeshPrimitive, PrimitiveType, Vertex};
 
 impl Mesh {
     /// Creates a box (cuboid) mesh centered at the origin.
-    pub fn upright_box(width: f32, height: f32, depth: f32, primitive_type: PrimitiveType) -> Self {
+    pub fn upright_box(width: Real, height: Real, depth: Real, primitive_type: PrimitiveType) -> Self {
+        let (width, height, depth) = (width as f32, height as f32, depth as f32);
         struct Face {
             normal: [f32; 3],
             corners: [[f32; 3]; 4],
@@ -103,12 +104,13 @@ impl Mesh {
     /// Creates a cube mesh centered at the origin.
     ///
     /// Convenience method equivalent to `Mesh::box_mesh(size, size, size)`.
-    pub fn cube(size: f32, primitive_type: PrimitiveType) -> Self {
+    pub fn cube(size: Real, primitive_type: PrimitiveType) -> Self {
         Self::upright_box(size, size, size, primitive_type)
     }
 
     /// Creates a UV sphere mesh centered at the origin.
-    pub fn sphere(radius: f32, segments: u32, rings: u32, primitive_type: PrimitiveType) -> Self {
+    pub fn sphere(radius: Real, segments: u32, rings: u32, primitive_type: PrimitiveType) -> Self {
+        let radius = radius as f32;
         let segments = segments.max(3);
         let rings = rings.max(2);
 
@@ -199,12 +201,13 @@ impl Mesh {
 
     /// Creates a cylinder mesh centered at the origin, extending along the Y axis.
     pub fn cylinder(
-        radius: f32,
-        height: f32,
+        radius: Real,
+        height: Real,
         segments: u32,
         capped: bool,
         primitive_type: PrimitiveType,
     ) -> Self {
+        let (radius, height) = (radius as f32, height as f32);
         let segments = segments.max(3);
         let half_height = height / 2.0;
 
@@ -369,12 +372,13 @@ impl Mesh {
 
     /// Creates a cone mesh centered at the origin, with the apex pointing up (+Y).
     pub fn cone(
-        radius: f32,
-        height: f32,
+        radius: Real,
+        height: Real,
         segments: u32,
         capped: bool,
         primitive_type: PrimitiveType,
     ) -> Self {
+        let (radius, height) = (radius as f32, height as f32);
         let segments = segments.max(3);
         let half_height = height / 2.0;
 
@@ -503,8 +507,8 @@ impl Mesh {
     pub fn cone_directed(
         apex: Point3,
         direction: Vector3,
-        radius: f32,
-        height: f32,
+        radius: Real,
+        height: Real,
         segments: u32,
         capped: bool,
         primitive_type: PrimitiveType,
@@ -539,12 +543,13 @@ impl Mesh {
 
     /// Creates a torus mesh centered at the origin, lying in the XZ plane.
     pub fn torus(
-        major_radius: f32,
-        minor_radius: f32,
+        major_radius: Real,
+        minor_radius: Real,
         major_segments: u32,
         minor_segments: u32,
         primitive_type: PrimitiveType,
     ) -> Self {
+        let (major_radius, minor_radius) = (major_radius as f32, minor_radius as f32);
         let major_segments = major_segments.max(3);
         let minor_segments = minor_segments.max(3);
 
@@ -638,12 +643,13 @@ impl Mesh {
     /// Creates a flat plane mesh in the XZ plane, centered at the origin, and
     /// divided into segments with lines separating each segment
     pub fn plane(
-        width: f32,
-        depth: f32,
+        width: Real,
+        depth: Real,
         width_segments: u32,
         depth_segments: u32,
         primitive_type: PrimitiveType,
     ) -> Self {
+        let (width, depth) = (width as f32, depth as f32);
         let width_segments = width_segments.max(1);
         let depth_segments = depth_segments.max(1);
 
@@ -723,7 +729,8 @@ impl Mesh {
     }
 
     /// Creates a simple quad (two triangles) in the XY plane, facing +Z.
-    pub fn quad(width: f32, height: f32, primitive_type: PrimitiveType) -> Self {
+    pub fn quad(width: Real, height: Real, primitive_type: PrimitiveType) -> Self {
+        let (width, height) = (width as f32, height as f32);
         let hw = width / 2.0;
         let hh = height / 2.0;
 
@@ -769,12 +776,12 @@ impl Mesh {
     pub fn line(start: Point3, end: Point3) -> Self {
         let vertices = vec![
             Vertex {
-                position: start.into(),
+                position: point3_to_array(start),
                 tex_coords: [0.0; 3],
                 normal: [0.0, 1.0, 0.0],
             },
             Vertex {
-                position: end.into(),
+                position: point3_to_array(end),
                 tex_coords: [0.0; 3],
                 normal: [0.0, 1.0, 0.0],
             },
@@ -794,7 +801,7 @@ impl Mesh {
         let vertices: Vec<Vertex> = points
             .iter()
             .map(|&p| Vertex {
-                position: p.into(),
+                position: point3_to_array(p),
                 tex_coords: [0.0; 3],
                 normal: [0.0, 1.0, 0.0],
             })

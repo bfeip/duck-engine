@@ -1,4 +1,4 @@
-use duck_engine_common::{transform_point, InnerSpace, Matrix4, Point3};
+use duck_engine_common::{transform_point, InnerSpace, Matrix4, Point3, Real};
 
 use crate::common::{Aabb, Ray};
 use crate::Scene;
@@ -15,21 +15,21 @@ pub enum RayHit {
         /// Index of the triangle (0-based, into the mesh's triangle list)
         triangle_index: usize,
         /// Barycentric coordinates of the hit point (u, v, w) where w = 1 - u - v
-        barycentric: (f32, f32, f32),
+        barycentric: (Real, Real, Real),
     },
     /// A line segment was hit within the query's tolerance.
     Segment {
         /// Index of the segment (0-based pair index into the mesh's line index buffer)
         segment_index: usize,
         /// World-space perpendicular distance from the ray to the segment
-        distance_to_ray: f32,
+        distance_to_ray: Real,
     },
     /// A point was hit within the query's tolerance.
     Point {
         /// Index of the point (0-based index into the mesh's point list)
         point_index: usize,
         /// World-space distance from the ray to the point
-        distance_to_ray: f32,
+        distance_to_ray: Real,
     },
 }
 
@@ -65,7 +65,7 @@ pub struct RayPickResult {
     /// The instance that was hit
     pub instance_id: InstanceId,
     /// World-space distance from the ray origin to the hit (used for depth sorting)
-    pub distance: f32,
+    pub distance: Real,
     /// World-space hit location
     pub hit_point: Point3,
     /// Which primitive was hit and its geometry-specific data
@@ -89,9 +89,9 @@ pub struct RayPickQuery {
     pick_lines: bool,
     pick_points: bool,
     /// World-space tolerance for line and point picking
-    line_tolerance: f32,
+    line_tolerance: Real,
     /// Tolerance scaled to the current (possibly local) coordinate space
-    local_line_tolerance: f32,
+    local_line_tolerance: Real,
 }
 
 impl RayPickQuery {
@@ -101,7 +101,7 @@ impl RayPickQuery {
     /// segment/point for it to be considered a hit (ignored for faces).
     pub fn for_kinds(
         ray: Ray,
-        tolerance: f32,
+        tolerance: Real,
         pick_faces: bool,
         pick_lines: bool,
         pick_points: bool,
@@ -126,7 +126,7 @@ impl RayPickQuery {
     ///
     /// `tolerance` is the maximum world-space distance between the ray and a segment
     /// for the segment to be considered a hit.
-    pub fn lines(ray: Ray, tolerance: f32) -> Self {
+    pub fn lines(ray: Ray, tolerance: Real) -> Self {
         Self::for_kinds(ray, tolerance, false, true, false)
     }
 
@@ -134,14 +134,14 @@ impl RayPickQuery {
     ///
     /// `tolerance` is the maximum world-space distance between the ray and a point
     /// for the point to be considered a hit.
-    pub fn points(ray: Ray, tolerance: f32) -> Self {
+    pub fn points(ray: Ray, tolerance: Real) -> Self {
         Self::for_kinds(ray, tolerance, false, false, true)
     }
 
     /// Creates a query that picks triangle faces, line segments, and points.
     ///
     /// `tolerance` is the maximum world-space distance for segment and point hits.
-    pub fn all(ray: Ray, tolerance: f32) -> Self {
+    pub fn all(ray: Ray, tolerance: Real) -> Self {
         Self::for_kinds(ray, tolerance, true, true, true)
     }
 }
@@ -174,7 +174,7 @@ impl PickQuery for RayPickQuery {
         let scale = [matrix.x, matrix.y, matrix.z]
             .iter()
             .map(|col| col.truncate().magnitude())
-            .fold(0.0_f32, f32::max);
+            .fold(0.0, Real::max);
 
         Self {
             ray: self.ray.transform(matrix),

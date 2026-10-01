@@ -1,6 +1,6 @@
 use crate::{Matrix4, Point3};
 
-use crate::{EPSILON, ray::Ray};
+use crate::{EPSILON, Real, ray::Ray};
 
 /// An axis-aligned bounding box (AABB) in 3D space.
 #[derive(Debug, Copy, Clone)]
@@ -74,12 +74,12 @@ impl Aabb {
     /// Tests if a ray intersects this AABB using the slab method.
     /// Returns the t parameter of the intersection point if it hits, None otherwise.
     /// If the ray originates inside the box, returns Some(0.0).
-    pub fn intersects_ray(&self, ray: &Ray) -> Option<f32> {
+    pub fn intersects_ray(&self, ray: &Ray) -> Option<Real> {
         #[derive(Copy, Clone)]
         enum Axis { X, Y, Z }
 
-        let mut tmin = f32::NEG_INFINITY;
-        let mut tmax = f32::INFINITY;
+        let mut tmin = Real::NEG_INFINITY;
+        let mut tmax = Real::INFINITY;
 
         // Test intersection with each pair of parallel planes
         for axis in [Axis::X, Axis::Y, Axis::Z] {
@@ -165,7 +165,7 @@ impl Aabb {
     }
 
     /// Returns the size (extents) of the AABB along each axis.
-    pub fn size(&self) -> (f32, f32, f32) {
+    pub fn size(&self) -> (Real, Real, Real) {
         (
             self.max.x - self.min.x,
             self.max.y - self.min.y,
@@ -174,14 +174,14 @@ impl Aabb {
     }
 
     /// Returns the diagonal length of the AABB (distance from min to max corner).
-    pub fn diagonal(&self) -> f32 {
+    pub fn diagonal(&self) -> Real {
         let (sx, sy, sz) = self.size();
         (sx * sx + sy * sy + sz * sz).sqrt()
     }
 
     /// Returns the bounding sphere radius (half the diagonal).
     /// This represents the smallest sphere centered at the AABB center that contains the box.
-    pub fn bounding_sphere_radius(&self) -> f32 {
+    pub fn bounding_sphere_radius(&self) -> Real {
         self.diagonal() / 2.0
     }
 
@@ -515,7 +515,7 @@ mod tests {
         let aabb = Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5));
 
         // Rotate 45 degrees around Z
-        let rotation = Matrix4::from_angle_z(Rad(std::f32::consts::PI / 4.0));
+        let rotation = Matrix4::from_angle_z(Rad(crate::consts::PI / 4.0));
         let transformed = aabb.transform(&rotation);
 
         // Rotated AABB should be larger in X and Y (but same in Z)
@@ -536,7 +536,7 @@ mod tests {
 
         // Combine translation, rotation, and scale
         let transform = Matrix4::from_translation(Vector3::new(10.0, 0.0, 0.0))
-            * Matrix4::from_angle_z(Rad(std::f32::consts::PI / 4.0))
+            * Matrix4::from_angle_z(Rad(crate::consts::PI / 4.0))
             * Matrix4::from_scale(2.0);
 
         let transformed = aabb.transform(&transform);

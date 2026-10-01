@@ -42,11 +42,11 @@ mod tests {
     use super::*;
 
     use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::common::{Point3, SquareMatrix, Vector3};
+    use duck_engine_scene::common::{Point3, Real, SquareMatrix, Vector3};
     use duck_engine_scene::Scene;
     use opencascade::primitives::Shape;
 
-    const EPSILON: f32 = 1e-4;
+    const EPSILON: Real = 1e-4;
 
     /// A document holding one unit box named `Box-001`.
     fn doc_with_box() -> (Document, PartId) {
@@ -132,7 +132,7 @@ mod tests {
         // Source-major: the first source's three placements come first.
         let first_center = center(&doc, first);
         for (i, &copy) in copies[..3].iter().enumerate() {
-            assert_close(center(&doc, copy), first_center + Vector3::new(2.0 * (i as f32 + 1.0), 0.0, 0.0));
+            assert_close(center(&doc, copy), first_center + Vector3::new(2.0 * (i as Real + 1.0), 0.0, 0.0));
         }
     }
 

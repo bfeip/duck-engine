@@ -13,7 +13,7 @@
 //! Doubles as a smoke test — if any variant's shader or layout is wrong, the
 //! render fails. Run with `cargo run --example material_variants -p duck-engine-renderer`.
 
-use duck_engine_common::{Point3, Vector3};
+use duck_engine_common::{Point3, Real, Vector3};
 use duck_engine_renderer::{Gpu, GpuOptions, RenderContext, Renderer, SceneResources};
 use duck_engine_renderer::scene::{Light, PositionedCamera, PositionedLight, Projection, SceneData};
 use duck_engine_renderer::scene::resource::{
@@ -49,7 +49,7 @@ fn main() -> anyhow::Result<()> {
 
     // Each closure spawns one sphere of the given mesh at column `col` (centered).
     let place = |scene: &mut SceneData, mesh, col: i32, name: &str| -> anyhow::Result<()> {
-        let x = (col as f32 - 3.5) * 0.78;
+        let x = (col as Real - 3.5) * 0.78;
         scene.add_instance_node(
             None,
             mesh,
@@ -118,7 +118,7 @@ fn main() -> anyhow::Result<()> {
         eye: Point3::new(0.0, 0.0, 4.0),
         target: Point3::new(0.0, 0.0, 0.0),
         up: Vector3::new(0.0, 1.0, 0.0),
-        aspect: width as f32 / height as f32,
+        aspect: width as Real / height as Real,
         projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
     };
 

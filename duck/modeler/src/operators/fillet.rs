@@ -13,6 +13,7 @@ use duck_engine_viewer::{
     },
     selection::{SelectionItem, SelectionManager},
 };
+use duck_engine_viewer::common::Real;
 
 use crate::document::Document;
 use crate::fillet::{
@@ -70,7 +71,7 @@ impl TweakParams for FilletParams {
             BlendKind::Fillet => "Radius",
             BlendKind::Chamfer => "Distance",
         };
-        changed |= length_field(ui, label, &mut self.size, 0.0..=f32::MAX);
+        changed |= length_field(ui, label, &mut self.size, 0.0..=Real::MAX);
         changed
     }
 
@@ -487,7 +488,7 @@ mod tests {
     use duck_engine_viewer::input::PhysicalKey;
     use opencascade::primitives::Shape;
 
-    const EPSILON: f32 = 1e-5;
+    const EPSILON: Real = 1e-5;
 
     /// A document holding a 2×2×2 box centred on the origin, and a unit cube
     /// off to one side.
@@ -541,7 +542,7 @@ mod tests {
     }
 
     /// Grabs the grip and drags it `distance` out of the corner, then lets go.
-    fn drag_out(op: &mut FilletOperator, distance: f32) {
+    fn drag_out(op: &mut FilletOperator, distance: Real) {
         let grabbed = params(op);
         op.on_handle(&HandleEvent::Begin(SIZE_HANDLE));
         op.on_handle(&HandleEvent::Drag(drag(grabbed.grip(), grabbed.frame.outward * distance)));

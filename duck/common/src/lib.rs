@@ -1,7 +1,24 @@
 
 
+/// Scalar type of all engine math: positions, transforms, cameras, rays.
+///
+/// `f64` by default; the `single-precision` feature selects `f32`. GPU-facing
+/// data ([`RgbaColor`], vertex arrays, uniforms) is always `f32`.
+#[cfg(not(feature = "single-precision"))]
+pub type Real = f64;
+#[cfg(feature = "single-precision")]
+pub type Real = f32;
+
+/// Mathematical constants for [`Real`] (`std::f64::consts` or `std::f32::consts`).
+pub mod consts {
+    #[cfg(not(feature = "single-precision"))]
+    pub use std::f64::consts::*;
+    #[cfg(feature = "single-precision")]
+    pub use std::f32::consts::*;
+}
+
 /// Epsilon value for floating-point comparisons
-pub const EPSILON: f32 = 1e-6;
+pub const EPSILON: Real = 1e-6;
 
 mod ray;
 mod aabb;
@@ -25,16 +42,16 @@ pub use transform_ops::{
     transform_point,
 };
 
-// Math type aliases — all cgmath generics fixed to f32
-pub type Point3 = cgmath::Point3<f32>;
-pub type Vector2 = cgmath::Vector2<f32>;
-pub type Vector3 = cgmath::Vector3<f32>;
-pub type Vector4 = cgmath::Vector4<f32>;
-pub type Matrix3 = cgmath::Matrix3<f32>;
-pub type Matrix4 = cgmath::Matrix4<f32>;
-pub type Quaternion = cgmath::Quaternion<f32>;
-pub type PerspectiveFov = cgmath::PerspectiveFov<f32>;
-pub type Euler = cgmath::Euler<cgmath::Rad<f32>>;
+// Math type aliases — all cgmath generics fixed to Real
+pub type Point3 = cgmath::Point3<Real>;
+pub type Vector2 = cgmath::Vector2<Real>;
+pub type Vector3 = cgmath::Vector3<Real>;
+pub type Vector4 = cgmath::Vector4<Real>;
+pub type Matrix3 = cgmath::Matrix3<Real>;
+pub type Matrix4 = cgmath::Matrix4<Real>;
+pub type Quaternion = cgmath::Quaternion<Real>;
+pub type PerspectiveFov = cgmath::PerspectiveFov<Real>;
+pub type Euler = cgmath::Euler<cgmath::Rad<Real>>;
 
 // Math trait re-exports (must be in scope to call methods like .normalize(), .dot(), .invert())
 pub use cgmath::{InnerSpace, EuclideanSpace, MetricSpace, SquareMatrix, Matrix, Rotation, Rotation3, Angle, Zero, One};
@@ -165,7 +182,7 @@ pub fn decompose_matrix(matrix: &Matrix4) -> Transform {
     Transform::new(position, rotation, scale)
 }
 
-/// Converts a [`Matrix4`] (column-major `f32`, this crate's convention) into a
+/// Converts a [`Matrix4`] (column-major, this crate's convention) into a
 /// row-major `[[f64; 4]; 4]`, the layout expected by row-major `f64` matrix APIs.
 /// 
 /// This is transparently a convince function opencascade-rs functionality. It
@@ -174,7 +191,7 @@ pub fn matrix4_to_row_major_f64(matrix: &Matrix4) -> [[f64; 4]; 4] {
     let mut out = [[0.0f64; 4]; 4];
     for row in 0..4 {
         for col in 0..4 {
-            out[row][col] = matrix[col][row] as f64;
+            out[row][col] = f64::from(matrix[col][row]);
         }
     }
     out
@@ -193,20 +210,40 @@ pub fn array_to_rgba(a: [f32; 4]) -> RgbaColor {
     }
 }
 
+// `f32` array conversions: the vertex and GPU-buffer layout.
+
 pub fn point3_to_array(p: Point3) -> [f32; 3] {
-    [p.x, p.y, p.z]
+    [p.x as f32, p.y as f32, p.z as f32]
 }
 
 pub fn array_to_point3(a: [f32; 3]) -> Point3 {
-    Point3::new(a[0], a[1], a[2])
+    Point3::new(a[0] as Real, a[1] as Real, a[2] as Real)
 }
 
 pub fn vec3_to_array(v: Vector3) -> [f32; 3] {
-    [v.x, v.y, v.z]
+    [v.x as f32, v.y as f32, v.z as f32]
 }
 
 pub fn array_to_vec3(a: [f32; 3]) -> Vector3 {
-    Vector3::new(a[0], a[1], a[2])
+    Vector3::new(a[0] as Real, a[1] as Real, a[2] as Real)
+}
+
+/// Column-major, matching [`Matrix4`]'s indexing.
+pub fn matrix4_to_array(m: &Matrix4) -> [[f32; 4]; 4] {
+    let col = |c: usize| [m[c][0] as f32, m[c][1] as f32, m[c][2] as f32, m[c][3] as f32];
+    [col(0), col(1), col(2), col(3)]
+}
+
+/// Column-major, matching [`Matrix4`]'s indexing.
+pub fn array_to_matrix4(a: [[f32; 4]; 4]) -> Matrix4 {
+    let col = |c: usize| Vector4::new(a[c][0] as Real, a[c][1] as Real, a[c][2] as Real, a[c][3] as Real);
+    Matrix4::from_cols(col(0), col(1), col(2), col(3))
+}
+
+/// Column-major, matching [`Matrix3`]'s indexing.
+pub fn matrix3_to_array(m: &Matrix3) -> [[f32; 3]; 3] {
+    let col = |c: usize| [m[c][0] as f32, m[c][1] as f32, m[c][2] as f32];
+    [col(0), col(1), col(2)]
 }
 
 /// Computes an orthonormal basis from a direction vector.
@@ -318,7 +355,7 @@ mod tests {
         // Compare each element
         for i in 0..3 {
             for j in 0..3 {
-                let diff: f32 = normal_mat[i][j] - expected[i][j];
+                let diff: Real = normal_mat[i][j] - expected[i][j];
                 assert!(diff.abs() < EPSILON);
             }
         }
@@ -353,7 +390,7 @@ mod tests {
     #[test]
     fn test_normal_matrix_rotation() {
         // Rotation should preserve the rotation in normal matrix
-        let rotation = Matrix4::from_angle_z(Rad(std::f32::consts::PI / 4.0));
+        let rotation = Matrix4::from_angle_z(Rad(consts::PI / 4.0));
         let normal_mat = compute_normal_matrix(&rotation);
 
         // For pure rotation, normal matrix should equal rotation matrix (upper 3x3)
@@ -369,7 +406,7 @@ mod tests {
         // Translation doesn't affect normal matrix, but rotation and scale do
         // Transform: T(10,20,30) * R_y(90°) * S(2)
         let transform = Matrix4::from_translation(Vector3::new(10.0, 20.0, 30.0))
-            * Matrix4::from_angle_y(Rad(std::f32::consts::PI / 2.0))
+            * Matrix4::from_angle_y(Rad(consts::PI / 2.0))
             * Matrix4::from_scale(2.0);
 
         let normal_mat = compute_normal_matrix(&transform);
@@ -414,7 +451,7 @@ mod tests {
         let identity = Matrix3::identity();
         for i in 0..3 {
             for j in 0..3 {
-                let diff: f32 = normal_mat[i][j] - identity[i][j];
+                let diff: Real = normal_mat[i][j] - identity[i][j];
                 assert!(diff.abs() < EPSILON);
             }
         }
@@ -456,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_decompose_rotation_only() {
-        let matrix = Matrix4::from_angle_y(Rad(std::f32::consts::PI / 2.0));
+        let matrix = Matrix4::from_angle_y(Rad(consts::PI / 2.0));
         let t = decompose_matrix(&matrix);
 
         assert!((t.position.x - 0.0).abs() < EPSILON);
@@ -471,7 +508,7 @@ mod tests {
         // Rotation should be 90° around Y axis
         // Quaternion for rotation around Y by θ: (cos(θ/2), 0, sin(θ/2), 0)
         // For θ = π/2: (cos(π/4), 0, sin(π/4), 0) = (√2/2, 0, √2/2, 0)
-        let sqrt2_over_2 = std::f32::consts::SQRT_2 / 2.0;
+        let sqrt2_over_2 = consts::SQRT_2 / 2.0;
         assert!((t.rotation.s - sqrt2_over_2).abs() < 0.001);  // scalar part
         assert!((t.rotation.v.x - 0.0).abs() < EPSILON);        // x component
         assert!((t.rotation.v.y - sqrt2_over_2).abs() < 0.001); // y component
@@ -496,7 +533,7 @@ mod tests {
     fn test_decompose_trs_composition() {
         // Create a TRS matrix
         let t = Matrix4::from_translation(Vector3::new(1.0, 2.0, 3.0));
-        let r = Matrix4::from_angle_z(Rad(std::f32::consts::PI / 4.0));
+        let r = Matrix4::from_angle_z(Rad(consts::PI / 4.0));
         let s = Matrix4::from_scale(2.0);
         let trs = t * r * s;
 
@@ -513,7 +550,7 @@ mod tests {
         // Rotation should be 45° around Z axis
         // Quaternion for rotation around Z by θ: (cos(θ/2), 0, 0, sin(θ/2))
         // For θ = π/4: (cos(π/8), 0, 0, sin(π/8))
-        let half_angle = std::f32::consts::PI / 8.0;
+        let half_angle = consts::PI / 8.0;
         let expected_s = half_angle.cos();  // cos(π/8) ≈ 0.9239
         let expected_z = half_angle.sin();  // sin(π/8) ≈ 0.3827
 
@@ -601,7 +638,7 @@ mod tests {
         // Compare matrices (they should be very close)
         for i in 0..4 {
             for j in 0..4 {
-                let diff: f32 = original[i][j] - recomposed[i][j];
+                let diff: Real = original[i][j] - recomposed[i][j];
                 assert!(diff.abs() < 0.001);
             }
         }
@@ -609,12 +646,14 @@ mod tests {
 
     // ===== RgbaColor Tests =====
 
+    const COLOR_EPSILON: f32 = 1e-6;
+
     fn assert_color_eq(actual: RgbaColor, expected: RgbaColor) {
         assert!(
-            (actual.r - expected.r).abs() < EPSILON
-                && (actual.g - expected.g).abs() < EPSILON
-                && (actual.b - expected.b).abs() < EPSILON
-                && (actual.a - expected.a).abs() < EPSILON,
+            (actual.r - expected.r).abs() < COLOR_EPSILON
+                && (actual.g - expected.g).abs() < COLOR_EPSILON
+                && (actual.b - expected.b).abs() < COLOR_EPSILON
+                && (actual.a - expected.a).abs() < COLOR_EPSILON,
             "{actual:?} != {expected:?}"
         );
     }
@@ -676,7 +715,7 @@ mod tests {
             let base = axis.color();
             let hl = axis.highlight_color();
             assert!(hl.r > base.r && hl.g > base.g && hl.b > base.b, "{axis:?}: {hl:?} vs {base:?}");
-            assert!((hl.a - base.a).abs() < EPSILON);
+            assert!((hl.a - base.a).abs() < COLOR_EPSILON);
         }
     }
 }

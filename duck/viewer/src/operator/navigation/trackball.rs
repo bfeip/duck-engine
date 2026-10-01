@@ -1,4 +1,4 @@
-use duck_engine_common::{InnerSpace, Point3, Rotation};
+use duck_engine_common::{InnerSpace, Point3, Real, Rotation};
 
 use crate::scene::PositionedCamera;
 use crate::scene::common::quaternion_from_axis_angle_safe;
@@ -7,7 +7,7 @@ use super::ORBIT_SENSITIVITY;
 
 /// Internal state for trackball-style orbit (camera-local axes, unrestricted roll).
 pub(super) struct TrackballState {
-    pub radius: f32,
+    pub radius: Real,
     /// Custom orbit pivot point. When set, orbit rotates the camera around
     /// this point instead of `camera.target`.
     pub pivot: Option<Point3>,
@@ -30,8 +30,8 @@ impl TrackballState {
             return self.handle_pivot_orbit(dx, dy, camera);
         }
 
-        let dx = dx as f32 * ORBIT_SENSITIVITY;
-        let dy = dy as f32 * ORBIT_SENSITIVITY;
+        let dx = dx as Real * ORBIT_SENSITIVITY;
+        let dy = dy as Real * ORBIT_SENSITIVITY;
 
         let right = camera.right();
         let yaw_rot = quaternion_from_axis_angle_safe(camera.up, -dx);
@@ -50,8 +50,8 @@ impl TrackballState {
     fn handle_pivot_orbit(&mut self, dx: f64, dy: f64, camera: &mut PositionedCamera) {
         let pivot = self.pivot.unwrap();
 
-        let dx = dx as f32 * ORBIT_SENSITIVITY;
-        let dy = dy as f32 * ORBIT_SENSITIVITY;
+        let dx = dx as Real * ORBIT_SENSITIVITY;
+        let dy = dy as Real * ORBIT_SENSITIVITY;
 
         let right = camera.right();
         let yaw_rot = quaternion_from_axis_angle_safe(camera.up, -dx);
@@ -64,7 +64,7 @@ impl TrackballState {
     }
 
     /// Handle zoom via mouse wheel.
-    pub fn handle_zoom(&mut self, delta: f32, camera: &mut PositionedCamera, model_radius: f32) {
+    pub fn handle_zoom(&mut self, delta: f32, camera: &mut PositionedCamera, model_radius: Real) {
         self.radius = super::zoom(camera, delta, model_radius);
         let dir = (camera.eye - camera.target).normalize();
         camera.eye = camera.target + dir * self.radius;

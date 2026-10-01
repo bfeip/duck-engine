@@ -5,7 +5,7 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use duck_engine_scene::common::{Point3, Ray, Transform, Vector3};
+use duck_engine_scene::common::{Point3, Ray, Real, Transform, Vector3};
 use duck_engine_scene::geom_query::{
     intersect_ray, intersect_ray_nearest, intersect_ray_with_lines, pick_all_from_ray,
     MeshSpatialIndex, RayPickQuery,
@@ -14,7 +14,7 @@ use duck_engine_scene::resource::{Instance, Mesh, MeshPrimitive, NodeFlags, Prim
 use duck_engine_scene::{Scene, SceneData};
 
 /// World-space tolerance for line picks, roughly a few pixels at working distance.
-const LINE_TOLERANCE: f32 = 0.05;
+const LINE_TOLERANCE: Real = 0.05;
 
 /// An `n`×`n`-vertex displaced grid over `[0, size]²` in XZ: triangulated
 /// surface plus every grid row/column as line segments — the shape of a
@@ -77,12 +77,12 @@ fn grid_mesh(n: usize, size: f32) -> Mesh {
 
 /// A scene with `count`×`count` instances of one shared dense mesh, laid out on
 /// a grid with gaps so a ray hits at most one instance.
-fn instanced_scene(mesh: Mesh, count: usize, spacing: f32) -> Scene {
+fn instanced_scene(mesh: Mesh, count: usize, spacing: Real) -> Scene {
     let mut scene = SceneData::new();
     let mesh = scene.add_mesh(mesh);
     for j in 0..count {
         for i in 0..count {
-            let position = Point3::new(i as f32 * spacing, 0.0, j as f32 * spacing);
+            let position = Point3::new(i as Real * spacing, 0.0, j as Real * spacing);
             scene
                 .add_instance_node(
                     None,
@@ -98,7 +98,7 @@ fn instanced_scene(mesh: Mesh, count: usize, spacing: f32) -> Scene {
 }
 
 /// Straight-down ray through `(x, z)`.
-fn ray_down(x: f32, z: f32) -> Ray {
+fn ray_down(x: Real, z: Real) -> Ray {
     Ray::new(Point3::new(x, 10.0, z), Vector3::new(0.0, -1.0, 0.0))
 }
 

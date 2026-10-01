@@ -79,7 +79,7 @@ mod tests {
     use super::*;
     use duck_engine_scene::Projection;
 
-    const EPSILON: f32 = 1e-6;
+    const EPSILON: crate::common::Real = 1e-6;
 
     /// A camera looking down -Z from five units out, with a square viewport.
     fn camera() -> PositionedCamera {

@@ -1,6 +1,6 @@
 //! The scene resources backing a displayed set of handles.
 
-use duck_engine_common::{InnerSpace, Point3, Quaternion, Transform, Vector3};
+use duck_engine_common::{InnerSpace, Point3, Quaternion, Real, Transform, Vector3};
 use duck_engine_scene::resource::{
     DisplayBehavior, FaceMaterialHandle, Instance, LineMaterialHandle, NodeFlags, NodeHandle,
     NodeId, RenderLayer,
@@ -397,7 +397,7 @@ impl HandleSet {
 fn leader_placement(origin: Point3, anchor: Point3) -> Transform {
     let span = anchor - origin;
     let length = span.magnitude();
-    let rotation = if length < f32::EPSILON {
+    let rotation = if length < Real::EPSILON {
         Quaternion::from_sv(1.0, Vector3::new(0.0, 0.0, 0.0))
     } else {
         Quaternion::from_arc(Vector3::unit_y(), span / length, None)
@@ -408,7 +408,7 @@ fn leader_placement(origin: Point3, anchor: Point3) -> Transform {
 /// Where a handle's node sits: at its anchor, with `+Y` — the axis every shape
 /// is built along — turned onto its direction.
 fn placement(handle: &Handle) -> Transform {
-    let rotation = if handle.direction.magnitude2() < f32::EPSILON {
+    let rotation = if handle.direction.magnitude2() < Real::EPSILON {
         Quaternion::from_sv(1.0, Vector3::new(0.0, 0.0, 0.0))
     } else {
         // `from_arc` picks an arbitrary perpendicular for an exact reversal,
@@ -428,7 +428,7 @@ mod tests {
     use duck_engine_common::Rotation;
     use duck_engine_scene::Projection;
 
-    const EPSILON: f32 = 1e-5;
+    const EPSILON: crate::common::Real = 1e-5;
 
     fn camera() -> PositionedCamera {
         PositionedCamera {

@@ -3,22 +3,22 @@
 //! These functions help ensure consistent navigation behavior regardless of model size
 //! by computing scale factors from scene bounding boxes.
 
-use crate::common::Aabb;
+use crate::common::{Aabb, Real};
 
 /// Default model radius when scene is empty or has zero-sized bounds.
-const DEFAULT_MODEL_RADIUS: f32 = 1.0;
+const DEFAULT_MODEL_RADIUS: Real = 1.0;
 
 /// Minimum model radius to prevent issues with very small models.
-const MIN_MODEL_RADIUS: f32 = 1e-6;
+const MIN_MODEL_RADIUS: Real = 1e-6;
 
 /// Maximum model radius to prevent issues with very large models.
-const MAX_MODEL_RADIUS: f32 = 1e9;
+const MAX_MODEL_RADIUS: Real = 1e9;
 
 /// Computes the model radius from scene bounds.
 ///
 /// Returns the bounding sphere radius of the scene, clamped to reasonable limits.
 /// If bounds is None (empty scene), returns a default value.
-pub fn model_radius_from_bounds(bounds: Option<&Aabb>) -> f32 {
+pub fn model_radius_from_bounds(bounds: Option<&Aabb>) -> Real {
     match bounds {
         Some(aabb) => {
             let radius = aabb.bounding_sphere_radius();
@@ -34,13 +34,13 @@ pub fn model_radius_from_bounds(bounds: Option<&Aabb>) -> f32 {
 
 /// Returns the minimum camera radius (closest zoom distance) for a given model radius.
 /// Set to 1% of model radius to allow close inspection.
-pub fn min_camera_radius(model_radius: f32) -> f32 {
+pub fn min_camera_radius(model_radius: Real) -> Real {
     model_radius * 0.01
 }
 
 /// Returns the maximum camera radius (farthest zoom distance) for a given model radius.
 /// Set to 100x model radius for viewing entire scene with margin.
-pub fn max_camera_radius(model_radius: f32) -> f32 {
+pub fn max_camera_radius(model_radius: Real) -> Real {
     model_radius * 100.0
 }
 
@@ -49,25 +49,25 @@ pub fn max_camera_radius(model_radius: f32) -> f32 {
 /// 
 /// Tighter than [`min_camera_radius`]: an orthographic zoom leaves
 /// the eye where it is, so it can magnify past the point a dolly would collide.
-pub fn min_ortho_half_height(model_radius: f32) -> f32 {
+pub fn min_ortho_half_height(model_radius: Real) -> Real {
     model_radius * 0.001
 }
 
 /// Returns the largest orthographic view half-height (farthest zoom) for a given
 /// model radius.
-pub fn max_ortho_half_height(model_radius: f32) -> f32 {
+pub fn max_ortho_half_height(model_radius: Real) -> Real {
     model_radius * 100.0
 }
 
 /// Returns the zoom factor for exponential zoom.
 /// Each scroll step moves this fraction of the current distance.
-pub fn zoom_factor() -> f32 {
+pub fn zoom_factor() -> Real {
     0.1 // 10% per scroll step
 }
 
 /// Returns the walk movement speed (units per second) for a given model radius.
 /// Set to 10% of model radius per second for comfortable navigation.
-pub fn walk_speed(model_radius: f32) -> f32 {
+pub fn walk_speed(model_radius: Real) -> Real {
     model_radius * 0.1
 }
 

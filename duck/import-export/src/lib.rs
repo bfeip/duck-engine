@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
-use duck_engine_scene::common::WorldUnits;
+use duck_engine_scene::common::{Real, WorldUnits};
 use duck_engine_scene::{Light, PositionedCamera, PositionedLight, SceneData};
 
 // ============================================================================
@@ -91,7 +91,7 @@ pub enum UnitPolicy {
 pub struct LoadOptions {
     /// Aspect ratio for cameras embedded in glTF files. Ignored for other formats.
     /// Default: 16.0 / 9.0.
-    pub aspect: f32,
+    pub aspect: Real,
     /// How the file's units are reconciled with the scene's.
     /// Default: [`UnitPolicy::Preserve`].
     pub units: UnitPolicy,
@@ -134,8 +134,8 @@ pub fn apply_unit_policy(
     match policy {
         UnitPolicy::Preserve => scene.set_world_units(source),
         UnitPolicy::Normalize(target) => {
-            let factor = source.factor_to(target) as f32;
-            if (factor - 1.0).abs() > f32::EPSILON {
+            let factor = source.factor_to(target) as Real;
+            if (factor - 1.0).abs() > Real::EPSILON {
                 let roots: Vec<_> = scene.root_nodes().collect();
                 for id in roots {
                     if let Some(node) = scene.get_node(id) {
@@ -149,7 +149,9 @@ pub fn apply_unit_policy(
                     light.transform.position *= factor;
                     light.transform.scale *= factor;
                     match &mut light.light {
-                        Light::Point { range, .. } | Light::Spot { range, .. } => *range *= factor,
+                        Light::Point { range, .. } | Light::Spot { range, .. } => {
+                            *range *= factor as f32
+                        }
                         Light::Directional { .. } | Light::Hemisphere { .. } => {}
                     }
                 }
@@ -720,7 +722,7 @@ mod tests {
         scene
     }
 
-    fn root_x(scene: &SceneData) -> f32 {
+    fn root_x(scene: &SceneData) -> Real {
         let id = scene.root_nodes().next().unwrap();
         scene.get_node(id).unwrap().transform().position.x
     }

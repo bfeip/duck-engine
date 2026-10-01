@@ -2,8 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use duck_engine_common::{InnerSpace, Plane, Point3, Vector3};
-use glam::dvec3;
+use duck_engine_common::{InnerSpace, Plane, Point3, Real, Vector3};
 use duck_engine_scene::resource::Visibility;
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
@@ -15,7 +14,7 @@ use duck_engine_viewer::{
 use log::warn;
 use opencascade::primitives::{Face, Shape, Wire};
 
-use crate::document::Document;
+use crate::document::{point3_to_dvec3, Document};
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, ToolInfo};
 use crate::ui::icons;
@@ -23,7 +22,7 @@ use super::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
-const EPSILON: f32 = 1e-6;
+const EPSILON: Real = 1e-6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RectangleAction {
@@ -74,7 +73,7 @@ impl RectangleOperator {
 
     /// Lays the unit reference face (local XY, normal +Z) flat on `plane`, scaled to
     /// the footprint. [`Plane::rotation`] maps the local +Z axis to the plane normal.
-    fn footprint_transform(center: Point3, width: f32, depth: f32, plane: &Plane) -> Transform {
+    fn footprint_transform(center: Point3, width: Real, depth: Real, plane: &Plane) -> Transform {
         Transform {
             position: center,
             rotation: plane.rotation(),
@@ -83,7 +82,7 @@ impl RectangleOperator {
     }
 
     /// In-plane extents from the center→corner vector, as full (width, depth).
-    fn footprint_dims(center: Point3, corner: Point3, plane: &Plane) -> (f32, f32) {
+    fn footprint_dims(center: Point3, corner: Point3, plane: &Plane) -> (Real, Real) {
         let (u, v) = plane.basis();
         let d = corner - center;
         let width = 2.0 * d.dot(u).abs();
@@ -92,7 +91,7 @@ impl RectangleOperator {
     }
 
     /// A footprint is valid once both in-plane dimensions are non-degenerate.
-    fn footprint_valid(width: f32, depth: f32) -> bool {
+    fn footprint_valid(width: Real, depth: Real) -> bool {
         width > EPSILON && depth > EPSILON
     }
 
@@ -109,7 +108,7 @@ impl RectangleOperator {
     }
 
     /// World-space rectangle face with an analytic planar surface.
-    fn analytic_face(center: Point3, width: f32, depth: f32, plane: &Plane) -> Option<Shape> {
+    fn analytic_face(center: Point3, width: Real, depth: Real, plane: &Plane) -> Option<Shape> {
         let (u, v) = plane.basis();
         let half_w = u * (0.5 * width);
         let half_d = v * (0.5 * depth);
@@ -120,7 +119,7 @@ impl RectangleOperator {
             center - half_w + half_d,
         ];
         let wire = Wire::from_ordered_points(
-            corners.iter().map(|p| dvec3(p.x as f64, p.y as f64, p.z as f64)),
+            corners.iter().map(|&p| point3_to_dvec3(p)),
         )
         .map_err(|e| warn!("Failed to build rectangle wire: {e}"))
         .ok()?;

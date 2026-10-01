@@ -9,11 +9,10 @@ use duck_engine_viewer::{
     input::{Modifiers, MouseButton},
     operator::Operator,
 };
-use glam::{dvec3, DVec3};
 use log::warn;
 use opencascade::primitives::{Edge, Shape, Wire};
 
-use crate::document::Document;
+use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, ToolInfo};
 use crate::ui::icons;
@@ -41,19 +40,13 @@ pub struct CircleOperator {
     cursor_target: Option<Point3>,
 }
 
-fn to_dvec3(p: Point3) -> DVec3 {
-    dvec3(p.x as f64, p.y as f64, p.z as f64)
-}
 
-fn vec_to_dvec3(v: Vector3) -> DVec3 {
-    dvec3(v.x as f64, v.y as f64, v.z as f64)
-}
 
 /// Builds a filled planar disk bounded by a circle of `radius` centered at
 /// `center`, lying in the plane with the given `normal`. Falls back to the bare
 /// ring (wire) if the face can't be built. Returns `None` on construction error.
 fn circle_shape(center: Point3, normal: Vector3, radius: f64) -> Option<Shape> {
-    let edge = Edge::circle(to_dvec3(center), vec_to_dvec3(normal), radius)
+    let edge = Edge::circle(point3_to_dvec3(center), vec3_to_dvec3(normal), radius)
         .map_err(|e| warn!("Failed to build circle edge: {e}"))
         .ok()?;
     let wire = Wire::from_edges(&[edge])
@@ -133,7 +126,7 @@ impl CircleOperator {
             .construction_options
             .borrow()
             .resolve_snap(position, self.preview.preview_nodes(), &camera, ctx, &[])
-            .map(|s| center.distance(s.position).max(0.01) as f64)
+            .map(|s| f64::from(center.distance(s.position).max(0.01)))
             .unwrap_or(0.01);
 
         let shape = circle_shape(center, normal, radius);
@@ -181,7 +174,7 @@ impl CircleOperator {
         // rather than scaling a unit mesh.
         if let Phase::Defining { center, normal } = self.phase {
             if let Some(snap) = snap {
-                let radius = center.distance(snap.position).max(0.01) as f64;
+                let radius = f64::from(center.distance(snap.position).max(0.01));
                 if let Some(shape) = circle_shape(center, normal, radius) {
                     let preview_options = self.construction_options.borrow().preview_options();
                     self.preview.try_replace_preview(&shape, &preview_options, "circle");

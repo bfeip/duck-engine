@@ -1,5 +1,6 @@
 //! Resolving [`PositionedLight`]s to world space for upload.
 
+use crate::scene::common::vec3_to_array;
 use crate::scene::{Light, LightSpace, PositionedCamera, PositionedLight, SceneData};
 
 /// A light resolved to world space: photometric data paired with the position
@@ -46,8 +47,8 @@ pub(crate) fn resolve_light(
     let (position, direction) = Light::world_position_and_direction(&world);
     Some(ResolvedLight {
         light: light.light.clone(),
-        position: position.into(),
-        direction: direction.into(),
+        position: vec3_to_array(position),
+        direction: vec3_to_array(direction),
     })
 }
 

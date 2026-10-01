@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bindings::{InputBinding, InputMap};
 use crate::{common, scene_scale};
+use crate::common::Real;
 use crate::scene::{PositionedCamera, Projection};
 use crate::scene::geom_query::{pick_all_from_ray, RayPickQuery};
 use crate::event::{AppEvent, DeviceEvent, Event, EventContext};
@@ -16,14 +17,15 @@ use turntable::TurntableState;
 use trackball::TrackballState;
 use walk::WalkState;
 
-pub(super) const ORBIT_SENSITIVITY: f32 = 0.005;
+pub(super) const ORBIT_SENSITIVITY: Real = 0.005;
 
 pub(super) fn pan(dx: f32, dy: f32, camera: &mut PositionedCamera, viewport: (u32, u32)) {
     let (width, height) = viewport;
     let pivot = camera.target;
     let movement_plane = common::Plane::from_point(camera.forward(), pivot);
     let screen = camera.project_point_screen(pivot, width, height);
-    let diff_ray = camera.ray_from_screen_point(screen.x - dx, screen.y - dy, width, height);
+    let diff_ray =
+        camera.ray_from_screen_point(screen.x as f32 - dx, screen.y as f32 - dy, width, height);
     if let Some((_, new_pivot)) = diff_ray.intersect_plane(&movement_plane) {
         let offset = new_pivot - pivot;
         camera.eye += offset;
@@ -32,13 +34,13 @@ pub(super) fn pan(dx: f32, dy: f32, camera: &mut PositionedCamera, viewport: (u3
 }
 
 /// The exponential scale factor for one zoom step of `delta`.
-fn zoom_scale(delta: f32) -> f32 {
+fn zoom_scale(delta: f32) -> Real {
     let zoom_factor = scene_scale::zoom_factor();
     let factor = if delta > 0.0 { 1.0 - zoom_factor } else { 1.0 + zoom_factor };
-    factor.powf(delta.abs())
+    factor.powf(delta.abs() as Real)
 }
 
-pub(super) fn zoom_radius(radius: f32, delta: f32, model_radius: f32) -> f32 {
+pub(super) fn zoom_radius(radius: Real, delta: f32, model_radius: Real) -> Real {
     (radius * zoom_scale(delta)).clamp(
         scene_scale::min_camera_radius(model_radius),
         scene_scale::max_camera_radius(model_radius),
@@ -51,7 +53,7 @@ pub(super) fn zoom_radius(radius: f32, delta: f32, model_radius: f32) -> f32 {
 /// Perspective zoom is a dolly, so the radius changes. Orthographic zoom scales
 /// the view extent in place and returns the radius unchanged: the eye must stay
 /// clear of the geometry, since an orthographic near plane cannot save it.
-pub(super) fn zoom(camera: &mut PositionedCamera, delta: f32, model_radius: f32) -> f32 {
+pub(super) fn zoom(camera: &mut PositionedCamera, delta: f32, model_radius: Real) -> Real {
     match camera.projection {
         Projection::Perspective { .. } => zoom_radius(camera.length(), delta, model_radius),
         Projection::Orthographic { half_height, half_depth } => {
@@ -320,7 +322,7 @@ impl NavigationOperator {
         &mut self,
         scroll_amount: f32,
         camera: &mut PositionedCamera,
-        model_radius: f32,
+        model_radius: Real,
     ) -> bool {
         match self.mode {
             NavigationMode::Turntable => {
@@ -340,7 +342,7 @@ impl NavigationOperator {
         &mut self,
         delta_time: f32,
         camera: &mut PositionedCamera,
-        model_radius: f32,
+        model_radius: Real,
     ) -> bool {
         if self.mode != NavigationMode::Walk {
             self.walk.reset_keys();
@@ -439,7 +441,7 @@ mod tests {
     use super::*;
     use crate::common::{Point3, Vector3};
 
-    const MODEL_RADIUS: f32 = 10.0;
+    const MODEL_RADIUS: Real = 10.0;
 
     fn camera(projection: Projection) -> PositionedCamera {
         PositionedCamera {

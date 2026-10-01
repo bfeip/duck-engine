@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
-use duck_engine_common::Vector3;
+use duck_engine_common::{Real, Vector3};
 use duck_engine_scene::Scene;
 use web_time::Instant;
 
@@ -129,7 +129,7 @@ impl Viewer {
         );
 
         let mut camera = default_camera();
-        camera.aspect = rect.width as f32 / rect.height.max(1) as f32;
+        camera.aspect = rect.width as Real / rect.height.max(1) as Real;
 
         let id = ViewId(self.next_view_id);
         self.next_view_id += 1;
@@ -254,7 +254,7 @@ impl Viewer {
         let size_changed = (rect.width, rect.height) != (view.rect.width, view.rect.height);
         view.rect = rect;
         if size_changed {
-            view.camera.aspect = rect.width as f32 / rect.height.max(1) as f32;
+            view.camera.aspect = rect.width as Real / rect.height.max(1) as Real;
             view.renderer.resize((rect.width, rect.height));
             view.target = create_view_target(
                 self.ctx.device(),
@@ -662,7 +662,7 @@ impl Viewer {
             let size_changed = (rect.width, rect.height) != (view.rect.width, view.rect.height);
             view.rect = rect;
             if size_changed {
-                view.camera.aspect = rect.width as f32 / rect.height.max(1) as f32;
+                view.camera.aspect = rect.width as Real / rect.height.max(1) as Real;
                 view.renderer.resize((rect.width, rect.height));
                 view.target = create_view_target(
                     self.ctx.device(),
@@ -701,7 +701,7 @@ impl Viewer {
             let guard = view.scene.lock();
             // Defensive: the aspect is stamped on every rect change, but raw
             // camera mutation may have overwritten it.
-            view.camera.aspect = view.rect.width as f32 / view.rect.height.max(1) as f32;
+            view.camera.aspect = view.rect.width as Real / view.rect.height.max(1) as Real;
             let lights = view.effective_lights(&slot.lights, &guard);
             let highlight: Option<&dyn HighlightQuery> = if slot.selection.config().outline_enabled
             {
@@ -751,9 +751,9 @@ impl Viewer {
     }
 
     /// Target aspect ratio.
-    pub fn aspect(&self) -> f32 {
+    pub fn aspect(&self) -> Real {
         let (w, h) = self.size;
-        if h > 0 { w as f32 / h as f32 } else { 16.0 / 9.0 }
+        if h > 0 { w as Real / h as Real } else { 16.0 / 9.0 }
     }
 
     /// The render context every view draws through. Custom pipelines and user

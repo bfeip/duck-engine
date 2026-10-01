@@ -31,7 +31,7 @@ use duck_engine_viewer::event::Event;
 use duck_engine_viewer::input::ElementState;
 use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode};
 use duck_engine_viewer::common::{
-    InnerSpace, RgbaColor, Vector3
+    InnerSpace, Real, RgbaColor, Vector3
 };
 use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
@@ -203,8 +203,8 @@ impl ViewerState<'static> {
             eye,
             target,
             up,
-            aspect: size.0 as f32 / size.1 as f32,
-            projection: Projection::Perspective { fovy: 35.0, znear: 1.0, zfar: 5_000f32 },
+            aspect: size.0 as Real / size.1 as Real,
+            projection: Projection::Perspective { fovy: 35.0, znear: 1.0, zfar: 5_000.0 },
         };
 
         let coptions = self.construction_options.borrow();

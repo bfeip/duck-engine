@@ -12,7 +12,7 @@
 //! size — the one exception is [`HandleReach::Leader`], whose whole point is to
 //! span a real distance, and which gets its own node.
 
-use duck_engine_common::{Deg, Matrix4, Quaternion, RgbaColor, Rotation, Vector3};
+use duck_engine_common::{Deg, Matrix4, Quaternion, Real, RgbaColor, Rotation, Vector3};
 use duck_engine_scene::resource::{
     FaceMaterial, LineMaterial, MaterialFlags, Mesh, MeshPrimitive, PrimitiveType, Vertex,
 };
@@ -28,26 +28,26 @@ const HANDLE_FLAGS: MaterialFlags =
     MaterialFlags::DO_NOT_LIGHT.union(MaterialFlags::DOUBLE_SIDED);
 
 /// Edge of a cube grab.
-const CUBE_SIZE: f32 = 0.22;
+const CUBE_SIZE: Real = 0.22;
 /// Radius of a ball grab.
-const BALL_RADIUS: f32 = 0.12;
+const BALL_RADIUS: Real = 0.12;
 /// Base radius and length of a cone grab.
-const CONE_RADIUS: f32 = 0.11;
-const CONE_LENGTH: f32 = 0.28;
+const CONE_RADIUS: Real = 0.11;
+const CONE_LENGTH: Real = 0.28;
 /// Edge of a quad grab.
-const QUAD_SIZE: f32 = 0.35;
+const QUAD_SIZE: Real = 0.35;
 /// Radius of a ring grab, and of its tube.
-const RING_RADIUS: f32 = 0.5;
-const RING_TUBE: f32 = 0.03;
+const RING_RADIUS: Real = 0.5;
+const RING_TUBE: Real = 0.03;
 
 /// Radius and length of an arm's shaft.
-const SHAFT_RADIUS: f32 = 0.025;
-const SHAFT_LENGTH: f32 = 0.8;
+const SHAFT_RADIUS: Real = 0.025;
+const SHAFT_LENGTH: Real = 0.8;
 /// Where an arm's grab is centred along `+Y`, leaving it inside the unit extent.
-const ARM_TIP: f32 = 0.9;
+const ARM_TIP: Real = 0.9;
 /// A grab carried on an arm is scaled down: at full size it would dwarf the
 /// shaft under it.
-const ARM_TIP_SCALE: f32 = 0.72;
+const ARM_TIP_SCALE: Real = 0.72;
 
 /// The material a handle of `color` draws with.
 pub(super) fn material(color: RgbaColor) -> FaceMaterial {
@@ -130,7 +130,7 @@ pub(super) fn leader_material(color: RgbaColor) -> LineMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_common::{InnerSpace, One};
+    use duck_engine_common::{array_to_vec3, InnerSpace, One};
 
     const BUILTINS: [HandleShape; 5] = [
         HandleShape::Cone,
@@ -144,9 +144,9 @@ mod tests {
         Quaternion::one()
     }
 
-    fn extent_along_y(mesh: &Mesh) -> (f32, f32) {
-        let ys = mesh.vertices().iter().map(|v| v.position[1]);
-        ys.fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| (lo.min(y), hi.max(y)))
+    fn extent_along_y(mesh: &Mesh) -> (Real, Real) {
+        let ys = mesh.vertices().iter().map(|v| v.position[1] as Real);
+        ys.fold((Real::INFINITY, Real::NEG_INFINITY), |(lo, hi), y| (lo.min(y), hi.max(y)))
     }
 
     /// Every form has to produce pickable triangles — a handle with no faces
@@ -215,8 +215,8 @@ mod tests {
         let centre = mesh
             .vertices()
             .iter()
-            .fold(Vector3::new(0.0, 0.0, 0.0), |acc, v| acc + Vector3::from(v.position))
-            / mesh.vertices().len() as f32;
+            .fold(Vector3::new(0.0, 0.0, 0.0), |acc, v| acc + array_to_vec3(v.position))
+            / mesh.vertices().len() as Real;
         let world = rotation * centre;
         assert!((world - offset).magnitude() < 1e-5, "offset landed at {world:?}");
     }

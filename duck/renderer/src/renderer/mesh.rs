@@ -10,6 +10,7 @@
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::renderer::batching::InstanceTransform;
+use crate::scene::common::{matrix3_to_array, matrix4_to_array};
 use crate::scene::resource::{Mesh, MeshIndex, PrimitiveType, Vertex};
 
 /// GPU-ready instance data for instanced rendering.
@@ -110,8 +111,8 @@ impl MeshGpuResources {
             .map(|inst_transform| GpuInstance {
                 // Upload the effective (screen-space-adjusted) transform. For
                 // ordinary geometry this equals the world transform.
-                transform: inst_transform.effective_transform.into(),
-                normal_mat: inst_transform.effective_normal_matrix.into(),
+                transform: matrix4_to_array(&inst_transform.effective_transform),
+                normal_mat: matrix3_to_array(&inst_transform.effective_normal_matrix),
             })
             .collect();
 
@@ -148,8 +149,8 @@ impl MeshGpuResources {
         }
 
         let instance_raw = GpuInstance {
-            transform: instance_transform.world_transform.into(),
-            normal_mat: instance_transform.normal_matrix.into(),
+            transform: matrix4_to_array(&instance_transform.world_transform),
+            normal_mat: matrix3_to_array(&instance_transform.normal_matrix),
         };
 
         let instance_buffer = device.create_buffer_init(&BufferInitDescriptor {

@@ -1,5 +1,8 @@
 use super::*;
-use duck_engine_common::{InnerSpace, Point3, Quaternion, Vector3, Matrix4, SquareMatrix};
+use duck_engine_common::{
+    array_to_point3, array_to_vec3, InnerSpace, Matrix4, Point3, Quaternion, Real, SquareMatrix,
+    Vector3,
+};
 use crate::common::{EPSILON, Transform};
 use crate::resource::{MeshPrimitive, PrimitiveType, Vertex};
 
@@ -225,8 +228,8 @@ fn test_root_node_identity_transform() {
     let identity = Matrix4::identity();
 
     // Convert to arrays for comparison
-    let t: [[f32; 4]; 4] = transform.into();
-    let i: [[f32; 4]; 4] = identity.into();
+    let t: [[Real; 4]; 4] = transform.into();
+    let i: [[Real; 4]; 4] = identity.into();
 
     for row in 0..4 {
         for col in 0..4 {
@@ -745,7 +748,7 @@ fn test_mesh_translate() {
     assert!(mesh.generation() > gen_before);
     // All vertices should have x >= 4.0 (radius 1.0 + offset 5.0)
     for v in mesh.vertices() {
-        assert!(v.position[0] >= 4.0 - EPSILON);
+        assert!(array_to_point3(v.position).x >= 4.0 - EPSILON);
     }
 }
 
@@ -756,7 +759,7 @@ fn test_mesh_translated_chaining() {
 
     // All vertices should have y offset by 10
     for v in mesh.vertices() {
-        assert!(v.position[1] >= 9.0 - EPSILON);
+        assert!(array_to_point3(v.position).y >= 9.0 - EPSILON);
     }
 }
 
@@ -769,9 +772,7 @@ fn test_mesh_transform_identity() {
     transformed.transform(&Matrix4::identity());
 
     for (orig, trans) in original_positions.iter().zip(transformed.vertices()) {
-        assert!((orig[0] - trans.position[0]).abs() < EPSILON);
-        assert!((orig[1] - trans.position[1]).abs() < EPSILON);
-        assert!((orig[2] - trans.position[2]).abs() < EPSILON);
+        assert!((array_to_point3(*orig) - array_to_point3(trans.position)).magnitude() < EPSILON);
     }
 }
 
@@ -795,12 +796,8 @@ fn test_cone_directed_apex_position() {
     let mesh = Mesh::cone_directed(apex, direction, 0.5, 2.0, 8, false, PrimitiveType::LineList);
 
     // At least one vertex should be very close to the apex
-    let has_apex_vertex = mesh.vertices().iter().any(|v| {
-        let dx = v.position[0] - apex.x;
-        let dy = v.position[1] - apex.y;
-        let dz = v.position[2] - apex.z;
-        (dx * dx + dy * dy + dz * dz).sqrt() < 0.1
-    });
+    let has_apex_vertex =
+        mesh.vertices().iter().any(|v| (array_to_point3(v.position) - apex).magnitude() < 0.1);
     assert!(has_apex_vertex, "No vertex found near the apex");
 }
 
@@ -835,19 +832,15 @@ fn test_cone_directed_all_principal_axes() {
         let mesh =
             Mesh::cone_directed(apex, direction, 0.12, 0.3, 16, true, PrimitiveType::TriangleList);
 
-        let has_apex_vertex = mesh.vertices().iter().any(|v| {
-            let dx = v.position[0] - apex.x;
-            let dy = v.position[1] - apex.y;
-            let dz = v.position[2] - apex.z;
-            (dx * dx + dy * dy + dz * dz).sqrt() < 1e-4
-        });
+        let has_apex_vertex = mesh
+            .vertices()
+            .iter()
+            .any(|v| (array_to_point3(v.position) - apex).magnitude() < 1e-4);
         assert!(has_apex_vertex, "no vertex at the apex for direction {direction:?}");
 
         // Every vertex sits between the apex plane and the base plane.
         for v in mesh.vertices() {
-            let along = (v.position[0] - apex.x) * direction.x
-                + (v.position[1] - apex.y) * direction.y
-                + (v.position[2] - apex.z) * direction.z;
+            let along = (array_to_point3(v.position) - apex).dot(direction);
             assert!(
                 (-1e-4..=0.3 + 1e-4).contains(&along),
                 "vertex outside the cone extent for direction {direction:?}: {along}"
@@ -870,8 +863,8 @@ fn test_primitive_triangle_winding_matches_normals() {
                     &verts[tri[1] as usize],
                     &verts[tri[2] as usize],
                 ];
-                let p = |v: &Vertex| Vector3::new(v.position[0], v.position[1], v.position[2]);
-                let n = |v: &Vertex| Vector3::new(v.normal[0], v.normal[1], v.normal[2]);
+                let p = |v: &Vertex| array_to_vec3(v.position);
+                let n = |v: &Vertex| array_to_vec3(v.normal);
 
                 let geometric = (p(b) - p(a)).cross(p(c) - p(a));
                 if geometric.magnitude() < EPSILON {

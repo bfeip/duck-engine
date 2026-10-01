@@ -2,7 +2,7 @@
 //! segments. Obtain one via [`Mesh::spatial_index`](crate::resource::Mesh::spatial_index),
 //! which caches it keyed by the mesh generation.
 
-use duck_engine_common::Point3;
+use duck_engine_common::{array_to_point3, Point3, Real};
 
 use crate::common::{Aabb, Ray, SegmentApproach};
 use crate::resource::Mesh;
@@ -33,9 +33,9 @@ impl MeshSpatialIndex {
             .triangles()
             .map(|[v0, v1, v2]| {
                 Aabb::from_points(&[
-                    Point3::from(v0.position),
-                    Point3::from(v1.position),
-                    Point3::from(v2.position),
+                    array_to_point3(v0.position),
+                    array_to_point3(v1.position),
+                    array_to_point3(v2.position),
                 ])
                 .expect("three points")
             })
@@ -43,7 +43,7 @@ impl MeshSpatialIndex {
         let segment_bounds: Vec<Aabb> = mesh
             .segments()
             .map(|[v0, v1]| {
-                Aabb::from_points(&[Point3::from(v0.position), Point3::from(v1.position)])
+                Aabb::from_points(&[array_to_point3(v0.position), array_to_point3(v1.position)])
                     .expect("two points")
             })
             .collect();
@@ -61,7 +61,7 @@ impl MeshSpatialIndex {
         let mut best: Option<TriangleMeshHit> = None;
         // Shared with the descend closure (which prunes subtrees entirely
         // beyond the best hit) without aliasing the `best` borrow.
-        let best_distance = std::cell::Cell::new(f32::INFINITY);
+        let best_distance = std::cell::Cell::new(Real::INFINITY);
 
         self.triangles.traverse(
             ray,
@@ -71,9 +71,9 @@ impl MeshSpatialIndex {
                 let Some([v0, v1, v2]) = mesh.triangle(triangle_index) else {
                     return;
                 };
-                let p0 = Point3::from(v0.position);
-                let p1 = Point3::from(v1.position);
-                let p2 = Point3::from(v2.position);
+                let p0 = array_to_point3(v0.position);
+                let p1 = array_to_point3(v1.position);
+                let p2 = array_to_point3(v2.position);
                 if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2)
                     && t < best_distance.get() {
                         best_distance.set(t);
@@ -98,9 +98,9 @@ impl MeshSpatialIndex {
             let Some([v0, v1, v2]) = mesh.triangle(triangle_index) else {
                 return;
             };
-            let p0 = Point3::from(v0.position);
-            let p1 = Point3::from(v1.position);
-            let p2 = Point3::from(v2.position);
+            let p0 = array_to_point3(v0.position);
+            let p1 = array_to_point3(v1.position);
+            let p2 = array_to_point3(v2.position);
             if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2) {
                 out.push(TriangleMeshHit {
                     distance: t,
@@ -119,15 +119,15 @@ impl MeshSpatialIndex {
         &self,
         mesh: &Mesh,
         ray: &Ray,
-        tolerance: f32,
+        tolerance: Real,
         mut f: impl FnMut(usize, &SegmentApproach),
     ) {
         self.segments.traverse(ray, tolerance, |_| true, |segment_index| {
             let Some([v0, v1]) = mesh.segment(segment_index) else {
                 return;
             };
-            let p0 = Point3::from(v0.position);
-            let p1 = Point3::from(v1.position);
+            let p0 = array_to_point3(v0.position);
+            let p1 = array_to_point3(v1.position);
             if let Some(approach) = ray.closest_approach_to_segment(p0, p1)
                 && approach.distance <= tolerance {
                     f(segment_index, &approach);
@@ -172,8 +172,8 @@ impl FlatBvh {
     fn traverse(
         &self,
         ray: &Ray,
-        tolerance: f32,
-        mut descend: impl FnMut(f32) -> bool,
+        tolerance: Real,
+        mut descend: impl FnMut(Real) -> bool,
         mut visit: impl FnMut(usize),
     ) {
         if self.nodes.is_empty() {
@@ -247,7 +247,7 @@ fn build_node(bounds: &[Aabb], prims: &mut [u32], offset: u32, nodes: &mut Vec<B
     } else {
         2
     };
-    let centroid = |p: u32| -> f32 {
+    let centroid = |p: u32| -> Real {
         let c = bounds[p as usize].center();
         [c.x, c.y, c.z][axis]
     };
@@ -261,7 +261,7 @@ fn build_node(bounds: &[Aabb], prims: &mut [u32], offset: u32, nodes: &mut Vec<B
     build_node(bounds, right, offset + mid as u32, nodes);
 }
 
-fn inflate(aabb: &Aabb, amount: f32) -> Aabb {
+fn inflate(aabb: &Aabb, amount: Real) -> Aabb {
     if amount == 0.0 {
         return *aabb;
     }
@@ -273,7 +273,7 @@ fn inflate(aabb: &Aabb, amount: f32) -> Aabb {
 
 #[cfg(test)]
 mod tests {
-    use duck_engine_common::{InnerSpace, Point3, Vector3};
+    use duck_engine_common::{array_to_point3, InnerSpace, Point3, Real, Vector3};
 
     use crate::common::Ray;
     use crate::geom_query::mesh_intersection;
@@ -281,7 +281,7 @@ mod tests {
 
     use super::MeshSpatialIndex;
 
-    const EPSILON: f32 = 1e-6;
+    const EPSILON: Real = 1e-6;
 
     /// Deterministic xorshift PRNG so failures reproduce.
     struct Rng(u32);
@@ -309,11 +309,11 @@ mod tests {
 
         fn ray(&mut self) -> Ray {
             let origin = Point3::new(
-                self.coord() * 3.0,
-                self.coord() * 3.0,
-                self.coord() * 3.0,
+                self.coord() as Real * 3.0,
+                self.coord() as Real * 3.0,
+                self.coord() as Real * 3.0,
             );
-            let target = Point3::new(self.coord(), self.coord(), self.coord());
+            let target = array_to_point3([self.coord(), self.coord(), self.coord()]);
             let direction = (target - origin).normalize();
             Ray::new(origin, direction)
         }

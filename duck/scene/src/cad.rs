@@ -67,7 +67,7 @@ pub struct CadTessellationOptions {
     pub tessellation_tolerance: f64,
     /// Uniform scale applied to all vertex positions. Use `0.001` to convert
     /// from millimeters (STEP default) to metres.
-    pub scale_factor: f32,
+    pub scale_factor: f64,
     /// Material applied to triangle faces. Acts as a template: each tessellated
     /// part receives a clone with a fresh id.
     pub face_material: FaceMaterial,
@@ -141,8 +141,8 @@ pub fn tessellate_occ_shape(shape: &Shape, options: &CadTessellationOptions) -> 
             let norm = occt_mesh.normals.get(i).copied().unwrap_or_default();
             let uv = occt_mesh.uvs.get(i).copied().unwrap_or_default();
             Vertex {
-                position: [pos.x as f32 * s, pos.y as f32 * s, pos.z as f32 * s],
-                normal: [norm.x as f32, norm.y as f32, norm.z as f32],
+                position: (pos * s).as_vec3().to_array(),
+                normal: norm.as_vec3().to_array(),
                 tex_coords: [uv.x as f32, uv.y as f32, 0.0],
             }
         })
@@ -180,7 +180,7 @@ pub fn tessellate_occ_shape(shape: &Shape, options: &CadTessellationOptions) -> 
                 let base = vertices.len() as u32;
                 for p in window {
                     vertices.push(Vertex {
-                        position: [p.x as f32 * s, p.y as f32 * s, p.z as f32 * s],
+                        position: (*p * s).as_vec3().to_array(),
                         normal: [0.0, 0.0, 0.0],
                         tex_coords: [0.0, 0.0, 0.0],
                     });
@@ -206,7 +206,7 @@ pub fn tessellate_occ_shape(shape: &Shape, options: &CadTessellationOptions) -> 
         for p in shape.vertex_points() {
             let base = vertices.len() as u32;
             vertices.push(Vertex {
-                position: [p.x as f32 * s, p.y as f32 * s, p.z as f32 * s],
+                position: (p * s).as_vec3().to_array(),
                 normal: [0.0, 0.0, 0.0],
                 tex_coords: [0.0, 0.0, 0.0],
             });

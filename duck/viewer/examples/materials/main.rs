@@ -8,7 +8,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use duck_engine_viewer::common::{RgbaColor, Transform, Point3};
+use duck_engine_viewer::common::{RgbaColor, Transform, Point3, Real};
 use duck_engine_viewer::input::{ElementState, Key};
 use duck_engine_viewer::scene::{EnvironmentMapId, Scene};
 use duck_engine_viewer::scene::resource::{
@@ -20,17 +20,17 @@ use duck_engine_viewer::operator::{
     NavigationOperator, SelectionOperator, TransformMode, TransformOperator,
 };
 
-const SPHERE_RADIUS: f32 = 0.4;
+const SPHERE_RADIUS: Real = 0.4;
 const SPHERE_SEGMENTS: u32 = 32;
 const SPHERE_RINGS: u32 = 16;
 const COLS: usize = 5;
 const ROWS: usize = 7;
-const SPACING: f32 = 1.2;
+const SPACING: Real = 1.2;
 
 /// Compute the grid position for a (row, col) cell, centered at the origin.
 fn grid_position(row: usize, col: usize) -> Point3 {
-    let x = (col as f32 - (COLS as f32 - 1.0) / 2.0) * SPACING;
-    let z = (row as f32 - (ROWS as f32 - 1.0) / 2.0) * SPACING;
+    let x = (col as Real - (COLS as Real - 1.0) / 2.0) * SPACING;
+    let z = (row as Real - (ROWS as Real - 1.0) / 2.0) * SPACING;
     Point3::new(x, 0.0, z)
 }
 

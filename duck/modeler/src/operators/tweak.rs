@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
 use anyhow::bail;
-use duck_engine_viewer::common::Transform;
+use duck_engine_viewer::common::{Real, Transform};
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleEvent};
 use opencascade::primitives::Shape;
 
@@ -20,7 +20,7 @@ use crate::preview::PreviewSession;
 
 /// Smallest value a dimension field accepts. Anything at or below it is
 /// degenerate and can't be built.
-pub(super) const MIN_DIMENSION: f32 = 1e-6;
+pub(super) const MIN_DIMENSION: Real = 1e-6;
 
 /// Parameters a tool holds live, as preview geometry, until they are applied.
 ///
@@ -65,7 +65,7 @@ pub(super) trait PrimitiveParams: TweakParams {
 
 /// A dimension moved by `delta`, held at or above [`MIN_DIMENSION`] so a grip
 /// dragged past the opposite face flattens the shape rather than inverting it.
-pub(super) fn grip_dimension(from: f32, delta: f32) -> f32 {
+pub(super) fn grip_dimension(from: Real, delta: Real) -> Real {
     (from + delta).max(MIN_DIMENSION)
 }
 
@@ -107,8 +107,8 @@ pub(super) enum TweakAction {
 
 /// One labelled dimension row of the tweak panel's grid: a length that must
 /// stay above [`MIN_DIMENSION`]. Returns true when the value changed.
-pub(super) fn dimension_field(ui: &mut egui::Ui, label: &str, value: &mut f32) -> bool {
-    length_field(ui, label, value, MIN_DIMENSION..=f32::MAX)
+pub(super) fn dimension_field(ui: &mut egui::Ui, label: &str, value: &mut Real) -> bool {
+    length_field(ui, label, value, MIN_DIMENSION..=Real::MAX)
 }
 
 /// One labelled length row of the tweak panel's grid, held within `range`.
@@ -116,8 +116,8 @@ pub(super) fn dimension_field(ui: &mut egui::Ui, label: &str, value: &mut f32) -
 pub(super) fn length_field(
     ui: &mut egui::Ui,
     label: &str,
-    value: &mut f32,
-    range: RangeInclusive<f32>,
+    value: &mut Real,
+    range: RangeInclusive<Real>,
 ) -> bool {
     ui.label(label);
     let changed = ui.add(egui::DragValue::new(value).speed(0.5).range(range)).changed();
@@ -127,7 +127,7 @@ pub(super) fn length_field(
 
 /// One labelled angle row of the tweak panel's grid, shown in degrees and held
 /// within `±limit` radians. Returns true when the value changed.
-pub(super) fn angle_field(ui: &mut egui::Ui, label: &str, radians: &mut f32, limit: f32) -> bool {
+pub(super) fn angle_field(ui: &mut egui::Ui, label: &str, radians: &mut Real, limit: Real) -> bool {
     ui.label(label);
     let limit = limit.to_degrees();
     let mut degrees = radians.to_degrees();

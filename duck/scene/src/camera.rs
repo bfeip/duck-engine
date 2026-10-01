@@ -1,5 +1,5 @@
 use duck_engine_common::{
-    Deg, InnerSpace, Matrix3, Matrix4, MetricSpace, Point3, Quaternion, SquareMatrix, Vector3,
+    Deg, InnerSpace, Matrix3, Matrix4, MetricSpace, Point3, Quaternion, Real, SquareMatrix, Vector3,
     ortho, perspective,
 };
 
@@ -24,23 +24,23 @@ pub(crate) const OPENGL_TO_WGPU_MATRIX: Matrix4 = Matrix4::new(
 pub enum Projection {
     Perspective {
         /// Vertical field of view, in degrees.
-        fovy: f32,
+        fovy: Real,
         /// Distance from the eye to the near clipping plane.
-        znear: f32,
+        znear: Real,
         /// Distance from the eye to the far clipping plane.
-        zfar: f32,
+        zfar: Real,
     },
     Orthographic {
         /// World-space half-height of the view volume.
         /// 
         /// Independent of camera distance: zoom scales this, it does not move the eye.
-        half_height: f32,
+        half_height: Real,
         /// Half-depth of the view slab, which spans `[-half_depth, half_depth]`
         /// about the camera plane.
         /// 
         /// Straddling the eye is what keeps geometry in front of the camera
         /// from being clipped away.
-        half_depth: f32,
+        half_depth: Real,
     },
 }
 
@@ -52,7 +52,7 @@ impl Projection {
 
     /// The world-space half-height of the view volume `distance` in front of
     /// the eye. Orthographic views ignore `distance`.
-    pub fn half_height_at(&self, distance: f32) -> f32 {
+    pub fn half_height_at(&self, distance: Real) -> Real {
         match *self {
             Projection::Perspective { fovy, .. } => distance * (fovy.to_radians() / 2.0).tan(),
             Projection::Orthographic { half_height, .. } => half_height,
@@ -61,7 +61,7 @@ impl Projection {
 
     /// The near and far planes as view-space distances in front of the eye.
     /// The orthographic near plane is negative: the slab straddles the eye.
-    pub fn depth_range(&self) -> (f32, f32) {
+    pub fn depth_range(&self) -> (Real, Real) {
         match *self {
             Projection::Perspective { znear, zfar, .. } => (znear, zfar),
             Projection::Orthographic { half_depth, .. } => (-half_depth, half_depth),
@@ -70,8 +70,8 @@ impl Projection {
 
     /// Whether two projections are the same variant with near-equal parameters.
     pub fn approx_eq(&self, other: &Projection) -> bool {
-        const EPSILON: f32 = 1e-6;
-        let close = |a: f32, b: f32| (a - b).abs() <= EPSILON;
+        const EPSILON: Real = 1e-6;
+        let close = |a: Real, b: Real| (a - b).abs() <= EPSILON;
         match (*self, *other) {
             (
                 Projection::Perspective { fovy: a, znear: an, zfar: af },
@@ -87,8 +87,8 @@ impl Projection {
 
     /// Blends toward `other` at `t` in [0, 1]. Matching variants interpolate
     /// their parameters; mismatched variants hold `self` until `t >= 1`.
-    fn interpolated(self, other: Projection, t: f32) -> Projection {
-        let lerp = |a: f32, b: f32| a + (b - a) * t;
+    fn interpolated(self, other: Projection, t: Real) -> Projection {
+        let lerp = |a: Real, b: Real| a + (b - a) * t;
         match (self, other) {
             (
                 Projection::Perspective { fovy: a, znear: an, zfar: af },
@@ -137,7 +137,7 @@ pub struct PositionedCamera {
     /// The up direction vector.
     pub up: Vector3,
     /// The aspect ratio of the viewport (width / height).
-    pub aspect: f32,
+    pub aspect: Real,
     /// How view space maps to clip space.
     pub projection: Projection,
 }
@@ -177,7 +177,7 @@ impl PositionedCamera {
 
     /// Returns length of the camera's look vector
     /// (the distance from the camera eye to the target)
-    pub fn length(&self) -> f32 {
+    pub fn length(&self) -> Real {
         self.eye.distance(self.target)
     }
 
@@ -185,8 +185,8 @@ impl PositionedCamera {
     ///
     /// For perspective, pixel size grows with depth. For orthographic, depth is
     /// ignored: pixel size is constant across the view.
-    pub fn world_size_per_pixel(&self, depth: f32, viewport_height: u32) -> f32 {
-        2.0 * self.projection.half_height_at(depth) / viewport_height as f32
+    pub fn world_size_per_pixel(&self, depth: Real, viewport_height: u32) -> Real {
+        2.0 * self.projection.half_height_at(depth) / viewport_height as Real
     }
 
     /// Switches to orthographic projection, framing the same extent at the
@@ -202,7 +202,7 @@ impl PositionedCamera {
 
     /// Switches to perspective projection, dollying the eye so the framing at
     /// the target plane is unchanged.
-    pub fn make_perspective(&mut self, fovy: f32, znear: f32, zfar: f32) {
+    pub fn make_perspective(&mut self, fovy: Real, znear: Real, zfar: Real) {
         let Projection::Orthographic { half_height, .. } = self.projection else { return };
         let distance = half_height / (fovy.to_radians() / 2.0).tan();
         self.eye = self.target - self.forward() * distance;
@@ -308,8 +308,8 @@ impl PositionedCamera {
         // Convert NDC to screen coordinates
         // NDC: [-1, 1] × [-1, 1], Y-up
         // Screen: [0, width] × [0, height], Y-down
-        let screen_x = (ndc.x + 1.0) * 0.5 * screen_width as f32;
-        let screen_y = (1.0 - ndc.y) * 0.5 * screen_height as f32; // Flip Y
+        let screen_x = (ndc.x + 1.0) * 0.5 * screen_width as Real;
+        let screen_y = (1.0 - ndc.y) * 0.5 * screen_height as Real; // Flip Y
         let screen_z = ndc.z; // Keep depth as-is
 
         Point3::new(screen_x, screen_y, screen_z)
@@ -323,15 +323,15 @@ impl PositionedCamera {
         &self,
         screen_x: f32,
         screen_y: f32,
-        depth: f32,
+        depth: Real,
         screen_width: u32,
         screen_height: u32,
     ) -> Option<Point3> {
         // Convert screen coordinates to NDC
         // Screen: [0, width] × [0, height], Y-down
         // NDC: [-1, 1] × [-1, 1], Y-up
-        let ndc_x = (screen_x / screen_width as f32) * 2.0 - 1.0;
-        let ndc_y = 1.0 - (screen_y / screen_height as f32) * 2.0; // Flip Y
+        let ndc_x = (screen_x as Real / screen_width as Real) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (screen_y as Real / screen_height as Real) * 2.0; // Flip Y
         let ndc_z = depth;
 
         let ndc_point = Point3::new(ndc_x, ndc_y, ndc_z);
@@ -340,7 +340,7 @@ impl PositionedCamera {
 
     /// The world-space ray originating at the near plane and pointing through
     /// the given NDC position (X/Y in [-1, 1], Y-up).
-    pub fn ray_from_ndc_point(&self, ndc_x: f32, ndc_y: f32) -> crate::common::Ray {
+    pub fn ray_from_ndc_point(&self, ndc_x: Real, ndc_y: Real) -> crate::common::Ray {
         let world_near = self
             .unproject_point_ndc(Point3::new(ndc_x, ndc_y, 0.0))
             .expect("Camera view-projection matrix should be invertible");
@@ -393,7 +393,7 @@ impl PositionedCamera {
     /// projection parameters blend linearly, keeping the eye on an orbit arc rather than
     /// a straight chord. `aspect` and a change of projection kind are not
     /// interpolable and switch from `self`'s values to `other`'s at `t >= 1`.
-    pub fn interpolated(&self, other: &PositionedCamera, t: f32) -> PositionedCamera {
+    pub fn interpolated(&self, other: &PositionedCamera, t: Real) -> PositionedCamera {
         fn orientation(camera: &PositionedCamera) -> Quaternion {
             let forward = (camera.target - camera.eye).normalize();
             let right = forward.cross(camera.up).normalize();
@@ -445,7 +445,7 @@ mod tests {
     use super::*;
     use duck_engine_common::{Point3, Vector3, Vector4, InnerSpace, SquareMatrix};
 
-    const EPSILON: f32 = 1e-6;
+    const EPSILON: Real = 1e-6;
 
     fn create_test_camera() -> PositionedCamera {
         PositionedCamera {
@@ -709,7 +709,7 @@ mod tests {
         for original_point in test_points {
             let screen = camera.project_point_screen(original_point, screen_width, screen_height);
             let unprojected = camera.unproject_point_screen(
-                screen.x, screen.y, screen.z, screen_width, screen_height
+                screen.x as f32, screen.y as f32, screen.z, screen_width, screen_height
             ).expect("Failed to unproject screen point");
 
             assert!(
@@ -938,7 +938,7 @@ mod tests {
         let b = axis_view_camera(Point3::new(-5.0, 0.0, 0.0), Vector3::unit_y());
 
         for i in 0..=10 {
-            let t = i as f32 / 10.0;
+            let t = i as Real / 10.0;
             let cam = a.interpolated(&b, t);
             assert!(cam.eye.x.is_finite() && cam.eye.y.is_finite() && cam.eye.z.is_finite());
             assert!((cam.length() - 5.0).abs() < 1e-3, "distance held at t={t}");
@@ -952,7 +952,7 @@ mod tests {
         let b = axis_view_camera(Point3::new(4.0, 3.0, 4.0), Vector3::unit_y());
 
         for i in 1..10 {
-            let t = i as f32 / 10.0;
+            let t = i as Real / 10.0;
             let cam = a.interpolated(&b, t);
             assert!((cam.up.magnitude() - 1.0).abs() < 1e-4, "unit up at t={t}");
             assert!(cam.up.dot(cam.forward()).abs() < 1e-4, "up orthogonal to forward at t={t}");

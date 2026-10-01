@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use duck_engine_common::{Matrix3, Matrix4, Point3, SquareMatrix};
+use duck_engine_common::{Matrix3, Matrix4, Point3, Real, SquareMatrix};
 
 use crate::scene::{common, PositionedCamera, SceneData};
 use crate::scene::resource::{
@@ -345,12 +345,12 @@ fn is_transparent_batch(batch: &DrawBatch) -> bool {
     batch.material_props.alpha_mode == AlphaMode::Blend
 }
 
-fn batch_centroid_distance_sq(batch: &DrawBatch, camera_position: Point3) -> f32 {
+fn batch_centroid_distance_sq(batch: &DrawBatch, camera_position: Point3) -> Real {
     if batch.instances.is_empty() {
         return 0.0;
     }
-    let count = batch.instances.len() as f32;
-    let (sx, sy, sz) = batch.instances.iter().fold((0.0f32, 0.0f32, 0.0f32), |(x, y, z), i| {
+    let count = batch.instances.len() as Real;
+    let (sx, sy, sz) = batch.instances.iter().fold((0.0, 0.0, 0.0), |(x, y, z), i| {
         (
             x + i.world_transform[3][0],
             y + i.world_transform[3][1],

@@ -1,8 +1,9 @@
 //! Time-driven camera transitions, advanced by the viewer each update.
 
+use crate::common::Real;
 use crate::scene::PositionedCamera;
 
-const EPSILON: f32 = 1e-6;
+const EPSILON: Real = 1e-6;
 
 /// An in-flight animated camera move for one view. The viewer advances it with
 /// the frame delta time and drops it as soon as the view's camera is written
@@ -46,7 +47,7 @@ impl CameraTransition {
         let pose = if self.finished() {
             self.to.clone()
         } else {
-            let t = self.elapsed / self.duration;
+            let t = (self.elapsed / self.duration) as Real;
             self.from.interpolated(&self.to, smoothstep(t))
         };
         self.last_written = pose.clone();
@@ -58,7 +59,7 @@ impl CameraTransition {
     }
 }
 
-fn smoothstep(t: f32) -> f32 {
+fn smoothstep(t: Real) -> Real {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }

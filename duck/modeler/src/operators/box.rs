@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use duck_engine_common::{InnerSpace, Plane, Point3, Ray, Vector3};
+use duck_engine_common::{InnerSpace, Plane, Point3, Ray, Real, Vector3};
 use duck_engine_scene::resource::Visibility;
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
@@ -16,7 +16,7 @@ use glam::dvec3;
 use log::{error, warn};
 use opencascade::primitives::{Face, Shape, Wire};
 
-use crate::document::Document;
+use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
@@ -28,7 +28,7 @@ use super::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
-const EPSILON: f32 = 1e-6;
+const EPSILON: Real = 1e-6;
 
 /// The box's dimension grips, one per axis of [`BoxParams`].
 const WIDTH_HANDLE: HandleId = HandleId(0);
@@ -48,7 +48,7 @@ enum Phase {
     /// Base being defined. `plane` is the plane the base rectangle is being defined on.
     Base { center: Point3, plane: Plane },
     /// Footprint fixed; the cursor drives the height. Preview is the 3D box.
-    Height { center: Point3, width: f32, depth: f32, plane: Plane },
+    Height { center: Point3, width: Real, depth: Real, plane: Plane },
     /// Every point picked; the options panel drives the dimensions until the
     /// box is applied or cancelled.
     Tweak(BoxParams),
@@ -61,9 +61,9 @@ enum Phase {
 pub(super) struct BoxParams {
     base: Point3,
     plane: Plane,
-    width: f32,
-    depth: f32,
-    height: f32,
+    width: Real,
+    depth: Real,
+    height: Real,
 }
 
 impl BoxParams {
@@ -71,7 +71,7 @@ impl BoxParams {
     /// grows away from `base`. A downward pick flips the plane normal rather
     /// than moving the base off the picked point, so later height edits move
     /// only the far face.
-    fn from_pick(base: Point3, width: f32, depth: f32, height: f32, plane: Plane) -> Self {
+    fn from_pick(base: Point3, width: Real, depth: Real, height: Real, plane: Plane) -> Self {
         let (plane, height) = if height >= 0.0 {
             (plane, height)
         } else {
@@ -87,7 +87,7 @@ impl BoxParams {
     /// `u * width/2 + v * depth/2` as the offset here and needs no other change:
     /// both the preview transform and the committed shape read the rectangle
     /// from this one place.
-    fn local_rect(&self) -> (Vector3, f32, f32) {
+    fn local_rect(&self) -> (Vector3, Real, Real) {
         // As we only support center boxes at the moment, this is all that is needed
         (Vector3::new(0.0, 0.0, 0.0), 0.5 * self.width, 0.5 * self.depth)
     }
@@ -130,7 +130,7 @@ impl PrimitiveParams for BoxParams {
         let wire = Wire::from_ordered_points(
             self.footprint_corners()
                 .iter()
-                .map(|p| dvec3(p.x as f64, p.y as f64, p.z as f64)),
+                .map(|&p| point3_to_dvec3(p)),
         )
         .map_err(|e| warn!("Failed to build box footprint wire: {e}"))
         .ok()?;
@@ -138,7 +138,7 @@ impl PrimitiveParams for BoxParams {
             .map_err(|e| warn!("Failed to build box footprint face: {e}"))
             .ok()?;
         let dir = self.plane.normal * self.height;
-        Some(face.extrude(dvec3(dir.x as f64, dir.y as f64, dir.z as f64)).into())
+        Some(face.extrude(vec3_to_dvec3(dir)).into())
     }
 }
 
@@ -242,7 +242,7 @@ impl BoxOperator {
 
     /// Lays the flat unit footprint face (local XY, normal +Z) on `plane`, scaled to
     /// `width`×`depth`. [`Plane::rotation`] maps the local +Z axis to the plane normal.
-    fn footprint_transform(center: Point3, width: f32, depth: f32, plane: &Plane) -> Transform {
+    fn footprint_transform(center: Point3, width: Real, depth: Real, plane: &Plane) -> Transform {
         Transform {
             position: center,
             rotation: plane.rotation(),
@@ -258,7 +258,7 @@ impl BoxOperator {
     }
 
     /// In-plane extents from the center→corner vector, as full (width, depth).
-    fn footprint_dims(center: Point3, corner: Point3, plane: &Plane) -> (f32, f32) {
+    fn footprint_dims(center: Point3, corner: Point3, plane: &Plane) -> (Real, Real) {
         let (u, v) = plane.basis();
         let d = corner - center;
         let width = 2.0 * d.dot(u).abs();
@@ -267,17 +267,17 @@ impl BoxOperator {
     }
 
     /// A footprint is valid once both in-plane dimensions are non-degenerate.
-    fn footprint_valid(width: f32, depth: f32) -> bool {
+    fn footprint_valid(width: Real, depth: Real) -> bool {
         width > EPSILON && depth > EPSILON
     }
 
     /// A box is valid once it has a non-degenerate footprint and a non-zero height
-    fn box_valid(width: f32, depth: f32, height: f32) -> bool {
+    fn box_valid(width: Real, depth: Real, height: Real) -> bool {
         Self::footprint_valid(width, depth) && height.abs() > EPSILON
     }
 
     /// Signed height from projecting the cursor pick ray onto the plane normal through `center`.
-    fn height_from_cursor(center: Point3, plane: &Plane, position: (f32, f32), ctx: &EventContext) -> f32 {
+    fn height_from_cursor(center: Point3, plane: &Plane, position: (f32, f32), ctx: &EventContext) -> Real {
         let camera = ctx.camera.clone();
         let ray: Ray = camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
         ray.closest_param_on_axis(center, plane.normal).unwrap_or(0.0)
@@ -353,8 +353,8 @@ impl BoxOperator {
     fn on_place_height(
         &mut self,
         center: Point3,
-        width: f32,
-        depth: f32,
+        width: Real,
+        depth: Real,
         plane: Plane,
         position: (f32, f32),
         ctx: &mut EventContext,
@@ -620,7 +620,7 @@ mod tests {
         let params = BoxParams::from_pick(base, 4.0, 6.0, 2.0, skewed_plane(base));
         let corners = params.footprint_corners();
         let offset = corners.iter().fold(Vector3::new(0.0, 0.0, 0.0), |acc, c| acc + (c - base))
-            / corners.len() as f32;
+            / corners.len() as Real;
         assert!(offset.magnitude() < 1e-5);
     }
 

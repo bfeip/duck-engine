@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use duck_engine_scene::resource::{Id, NodeId, Visibility};
 use duck_engine_scene::Scene;
 use duck_engine_scene::cad::{CadTessellationOptions, retessellate_node, tessellate_into};
-use duck_engine_scene::common::{matrix4_to_row_major_f64, Matrix4, Transform};
+use duck_engine_scene::common::{matrix4_to_row_major_f64, Matrix4, Point3, Real, Transform, Vector3};
+use glam::DVec3;
 use opencascade::primitives::{Edge, Face, Shape, ShapeType, Wire};
 
 use crate::history::{Delta, History, PartSnapshot};
@@ -86,13 +87,34 @@ pub fn place(shape: &Shape, placement: &Matrix4) -> Shape {
     }
 }
 
+/// An engine point as an OCCT point.
+pub fn point3_to_dvec3(p: Point3) -> DVec3 {
+    DVec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z))
+}
+
+/// An engine vector as an OCCT vector.
+pub fn vec3_to_dvec3(v: Vector3) -> DVec3 {
+    DVec3::new(f64::from(v.x), f64::from(v.y), f64::from(v.z))
+}
+
+/// An OCCT point as an engine point.
+pub fn dvec3_to_point3(v: DVec3) -> Point3 {
+    Point3::new(v.x as Real, v.y as Real, v.z as Real)
+}
+
+/// An OCCT vector as an engine vector.
+pub fn dvec3_to_vec3(v: DVec3) -> Vector3 {
+    Vector3::new(v.x as Real, v.y as Real, v.z as Real)
+}
+
 /// Additional boolean intersection tolerance for interactively placed parts.
 ///
-/// Placement flows through f32 (snaps, tessellated pick positions), so inputs
-/// meant to coincide can sit a few f32 ulps of the coordinate magnitude apart
-/// — far beyond OCCT's 1e-7 default, in the near-coincidence band where the
-/// BOP misclassifies splits and a subtract silently removes nothing. Four
-/// ulps of the inputs' extent covers that placement error with margin.
+/// Snaps onto existing parts read positions from the tessellated `f32` vertex
+/// buffer, so inputs meant to coincide can sit a few f32 ulps of the coordinate
+/// magnitude apart — far beyond OCCT's 1e-7 default, in the near-coincidence
+/// band where the BOP misclassifies splits and a subtract silently removes
+/// nothing. Four ulps of the inputs' extent covers that placement error with
+/// margin.
 pub fn interactive_fuzz<'a>(shapes: impl Iterator<Item = &'a Shape>) -> f64 {
     let extent = shapes
         .map(|shape| {
@@ -100,7 +122,7 @@ pub fn interactive_fuzz<'a>(shapes: impl Iterator<Item = &'a Shape>) -> f64 {
             aabb.min().abs().max_element().max(aabb.max().abs().max_element())
         })
         .fold(0.0f64, f64::max);
-    4.0 * f32::EPSILON as f64 * extent
+    4.0 * f64::from(f32::EPSILON) * extent
 }
 
 pub struct CadPart {
@@ -592,7 +614,9 @@ impl Drop for UndoScope<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_scene::common::{RgbaColor, Vector3};
+    use duck_engine_scene::common::{
+        Deg, EuclideanSpace, InnerSpace, Quaternion, RgbaColor, Rotation3, Vector3,
+    };
     use duck_engine_scene::resource::FaceMaterial;
 
     fn doc_with_box() -> (Document, PartId, NodeId) {
@@ -639,6 +663,61 @@ mod tests {
         assert_eq!(doc.parts().count(), 1, "tweak edits the part in place");
         assert_eq!(doc.node_for_part(part), Some(node), "node id must be preserved");
         assert!((max_y(&doc, part) - 3.0).abs() < 1e-6, "top must land at y=3");
+    }
+
+    /// `steps` small turns about arbitrary axes, composed the way an
+    /// interactive rotate drag accumulates them.
+    fn dragged_rotation(seed: &mut u32, steps: usize) -> Quaternion {
+        let mut next = || {
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 17;
+            *seed ^= *seed << 5;
+            (*seed >> 8) as Real / (1u32 << 24) as Real
+        };
+        let mut rotation = Quaternion::new(1.0, 0.0, 0.0, 0.0);
+        for _ in 0..steps {
+            let axis = Vector3::new(next() - 0.5, next() - 0.5, next() - 0.5).normalize();
+            rotation = Quaternion::from_axis_angle(axis, Deg(next() * 20.0)) * rotation;
+        }
+        rotation
+    }
+
+    /// Engine-side rotations must reach OCCT as similarities, or `place` falls
+    /// back to the B-spline-converting general transform. (In `f32` most of
+    /// these fail OCCT's 1e-7 similarity check.)
+    #[test]
+    fn dragged_rotations_bake_as_similarities() {
+        let cube = Shape::cube(2.0);
+        let mut seed = 0x1234_5678;
+        for i in 0..200 {
+            let placement = Transform {
+                position: Point3::new(123.4, 56.7, 89.0),
+                ..Transform::from_rotation(dragged_rotation(&mut seed, 20))
+            };
+            let mat = matrix4_to_row_major_f64(&placement.to_matrix());
+            assert!(cube.transformed(mat).is_ok(), "rotation {i} is not a similarity");
+        }
+    }
+
+    #[test]
+    fn tweak_faces_accepts_a_dragged_tilt() {
+        let (mut doc, part, _) = doc_with_box();
+        let face = top_face_index(&doc, part);
+        let pivot = {
+            let shape = &doc.get_part(part).unwrap().shape;
+            dvec3_to_point3(shape.faces().nth(face as usize).unwrap().center_of_mass())
+        };
+        // Tilt the top face about a skewed in-plane axis, one drag step at a time.
+        let axis = Vector3::new(1.0, 0.0, 2.0).normalize();
+        let tilt = (0..20).fold(Quaternion::new(1.0, 0.0, 0.0, 0.0), |q, _| {
+            Quaternion::from_axis_angle(axis, Deg(1.3)) * q
+        });
+        let transform = Matrix4::from_translation(pivot.to_vec())
+            * Matrix4::from(tilt)
+            * Matrix4::from_translation(-pivot.to_vec());
+
+        doc.tweak_faces(part, &[face], transform).expect("a tilted top face re-solves");
+        assert!(max_y(&doc, part) > 2.0 + 1e-3, "one side of the top must rise");
     }
 
     #[test]

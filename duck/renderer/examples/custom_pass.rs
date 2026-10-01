@@ -26,7 +26,7 @@ use duck_engine_renderer::scene::{Light, PositionedCamera, PositionedLight, Proj
 use duck_engine_renderer::scene::resource::{FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType};
 use duck_engine_renderer::scene::common::{RgbaColor, Transform};
 
-use duck_engine_common::{Deg, Point3, Quaternion, Rotation3, Vector3};
+use duck_engine_common::{Deg, Point3, Quaternion, Real, Rotation3, Vector3};
 use duck_engine_scene::Scene;
 
 const GHOST_WESL: &str = include_str!("ghost.wesl");
@@ -165,7 +165,7 @@ fn main() -> anyhow::Result<()> {
         eye: Point3::new(2.6, 2.0, 4.2),
         target: Point3::new(0.0, 0.0, 0.0),
         up: Vector3::new(0.0, 1.0, 0.0),
-        aspect: width as f32 / height as f32,
+        aspect: width as Real / height as Real,
         projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
     };
 

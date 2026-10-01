@@ -9,7 +9,10 @@ use std::path::Path;
 use std::rc::Rc;
 
 use anyhow::{Result, anyhow};
-use duck_engine_common::{InnerSpace, Matrix4, Point3, Quaternion, Rad, Rotation3, Vector3};
+use duck_engine_common::{
+    array_to_matrix4, array_to_point3, array_to_vec3, consts, InnerSpace, Quaternion, Rad,
+    Real, Rotation3, Vector3,
+};
 use russimp::material::{Material as RMaterial, TextureType};
 use russimp::metadata::MetadataType;
 use russimp::node::Node as RNode;
@@ -402,13 +405,14 @@ fn build_node_tree(
 ) -> Result<()> {
     // Decompose the assimp 4x4 transform matrix
     let t = &node.transformation;
+    // Column-major: each inner array is one column.
     #[rustfmt::skip]
-    let matrix = Matrix4::new(
-        t.a1, t.b1, t.c1, t.d1,
-        t.a2, t.b2, t.c2, t.d2,
-        t.a3, t.b3, t.c3, t.d3,
-        t.a4, t.b4, t.c4, t.d4,
-    );
+    let matrix = array_to_matrix4([
+        [t.a1, t.b1, t.c1, t.d1],
+        [t.a2, t.b2, t.c2, t.d2],
+        [t.a3, t.b3, t.c3, t.d3],
+        [t.a4, t.b4, t.c4, t.d4],
+    ]);
 
     let transform = decompose_matrix(&matrix);
 
@@ -481,8 +485,8 @@ fn load_lights(assimp_lights: &[russimp::light::Light]) -> Vec<PositionedLight> 
         };
         let intensity = 1.0;
 
-        let pos = Point3::new(light.pos.x, light.pos.y, light.pos.z);
-        let dir = Vector3::new(light.direction.x, light.direction.y, light.direction.z);
+        let pos = array_to_point3([light.pos.x, light.pos.y, light.pos.z]);
+        let dir = array_to_vec3([light.direction.x, light.direction.y, light.direction.z]);
         let rotation = direction_to_rotation(dir);
 
         let engine_light = match light.light_source_type {
@@ -500,13 +504,13 @@ fn load_lights(assimp_lights: &[russimp::light::Light]) -> Vec<PositionedLight> 
 
 /// Computes the rotation quaternion that aligns the node's local -Z axis to the given direction.
 fn direction_to_rotation(direction: Vector3) -> Quaternion {
-    let from = Vector3::new(0.0_f32, 0.0, -1.0);
+    let from = Vector3::new(0.0, 0.0, -1.0);
     let to = direction.normalize();
     let dot = from.dot(to);
     if dot > 0.9999 {
         Quaternion::new(1.0, 0.0, 0.0, 0.0)
     } else if dot < -0.9999 {
-        Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), Rad(std::f32::consts::PI))
+        Quaternion::from_axis_angle(Vector3::new(0.0, 1.0, 0.0), Rad(consts::PI))
     } else {
         let cross = from.cross(to);
         Quaternion::new(dot + 1.0, cross.x, cross.y, cross.z).normalize()
@@ -521,27 +525,27 @@ fn direction_to_rotation(direction: Vector3) -> Quaternion {
 fn extract_camera(cameras: &[russimp::camera::Camera]) -> Option<PositionedCamera> {
     let cam = cameras.first()?;
 
-    let eye = Point3::new(cam.position.x, cam.position.y, cam.position.z);
-    let look_at = Vector3::new(cam.look_at.x, cam.look_at.y, cam.look_at.z);
-    let target = Point3::new(eye.x + look_at.x, eye.y + look_at.y, eye.z + look_at.z);
-    let up = Vector3::new(cam.up.x, cam.up.y, cam.up.z);
+    let eye = array_to_point3([cam.position.x, cam.position.y, cam.position.z]);
+    let look_at = array_to_vec3([cam.look_at.x, cam.look_at.y, cam.look_at.z]);
+    let target = eye + look_at;
+    let up = array_to_vec3([cam.up.x, cam.up.y, cam.up.z]);
 
     // Assimp provides horizontal FOV in radians; convert to vertical FOV in degrees
     let aspect = if cam.aspect > 0.0 {
-        cam.aspect
+        cam.aspect as Real
     } else {
         16.0 / 9.0
     };
-    let fovy_rad = 2.0 * ((cam.horizontal_fov / 2.0).tan() / aspect).atan();
+    let fovy_rad = 2.0 * ((cam.horizontal_fov as Real / 2.0).tan() / aspect).atan();
     let fovy = fovy_rad.to_degrees();
 
     let znear = if cam.clip_plane_near > 0.0 {
-        cam.clip_plane_near
+        cam.clip_plane_near as Real
     } else {
         0.1
     };
     let zfar = if cam.clip_plane_far > 0.0 {
-        cam.clip_plane_far
+        cam.clip_plane_far as Real
     } else {
         1000.0
     };

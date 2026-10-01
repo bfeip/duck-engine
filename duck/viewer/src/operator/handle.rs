@@ -23,7 +23,7 @@ mod shape;
 
 pub use set::HandleSet;
 
-use duck_engine_common::{InnerSpace, Point3, Vector3};
+use duck_engine_common::{InnerSpace, Point3, Real, Vector3};
 use duck_engine_scene::resource::MeshHandle;
 
 use crate::common::RgbaColor;
@@ -200,8 +200,8 @@ impl HandleDrag {
 
     /// The drag projected onto `axis`, in world units. Signed: negative when
     /// the drag ran against `axis`.
-    pub fn distance_along(&self, axis: Vector3) -> f32 {
-        if axis.magnitude2() < f32::EPSILON {
+    pub fn distance_along(&self, axis: Vector3) -> Real {
+        if axis.magnitude2() < Real::EPSILON {
             return 0.0;
         }
         self.delta().dot(axis.normalize())
@@ -213,8 +213,8 @@ impl HandleDrag {
     /// Zero when either end sits on the axis, where no angle is defined. The
     /// result is in `-π..=π`: a drag that sweeps further than half a turn in one
     /// event wraps, so an owner that must track full turns integrates its own.
-    pub fn angle_about(&self, pivot: Point3, axis: Vector3) -> f32 {
-        if axis.magnitude2() < f32::EPSILON {
+    pub fn angle_about(&self, pivot: Point3, axis: Vector3) -> Real {
+        if axis.magnitude2() < Real::EPSILON {
             return 0.0;
         }
         let axis = axis.normalize();
@@ -224,7 +224,7 @@ impl HandleDrag {
             v - axis * axis.dot(v)
         };
         let (from, to) = (flatten(self.grab), flatten(self.point));
-        if from.magnitude2() < f32::EPSILON || to.magnitude2() < f32::EPSILON {
+        if from.magnitude2() < Real::EPSILON || to.magnitude2() < Real::EPSILON {
             return 0.0;
         }
         // atan2 of the cross (signed about the axis) against the dot keeps the
@@ -430,7 +430,7 @@ mod tests {
     use super::*;
     use duck_engine_common::Zero;
 
-    const EPSILON: f32 = 1e-4;
+    const EPSILON: crate::common::Real = 1e-4;
 
     fn drag(grab: Point3, point: Point3) -> HandleDrag {
         HandleDrag { id: HandleId(0), grab, point, modifiers: Modifiers::default() }
@@ -462,8 +462,8 @@ mod tests {
         let pivot = Point3::new(0.0, 0.0, 0.0);
         // A quarter turn from +x to +y is positive about +z, negative about -z.
         let d = drag(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
-        assert!((d.angle_about(pivot, Vector3::unit_z()) - std::f32::consts::FRAC_PI_2).abs() < EPSILON);
-        assert!((d.angle_about(pivot, -Vector3::unit_z()) + std::f32::consts::FRAC_PI_2).abs() < EPSILON);
+        assert!((d.angle_about(pivot, Vector3::unit_z()) - duck_engine_common::consts::FRAC_PI_2).abs() < EPSILON);
+        assert!((d.angle_about(pivot, -Vector3::unit_z()) + duck_engine_common::consts::FRAC_PI_2).abs() < EPSILON);
     }
 
     #[test]
@@ -471,7 +471,7 @@ mod tests {
         let pivot = Point3::new(0.0, 0.0, 0.0);
         // Same quarter turn, but at a different radius and lifted along +z.
         let d = drag(Point3::new(5.0, 0.0, 2.0), Point3::new(0.0, 0.3, -7.0));
-        assert!((d.angle_about(pivot, Vector3::unit_z()) - std::f32::consts::FRAC_PI_2).abs() < EPSILON);
+        assert!((d.angle_about(pivot, Vector3::unit_z()) - duck_engine_common::consts::FRAC_PI_2).abs() < EPSILON);
     }
 
     #[test]
@@ -480,7 +480,7 @@ mod tests {
         let d = drag(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
         let origin = d.angle_about(Point3::new(0.0, 0.0, 0.0), Vector3::unit_z());
         let offset = d.angle_about(Point3::new(-1.0, -1.0, 0.0), Vector3::unit_z());
-        assert!((origin - std::f32::consts::FRAC_PI_2).abs() < EPSILON);
+        assert!((origin - duck_engine_common::consts::FRAC_PI_2).abs() < EPSILON);
         assert!((offset - origin).abs() > EPSILON);
     }
 
@@ -526,7 +526,7 @@ mod tests {
                 eye: Point3::new(0.0, 0.0, 5.0),
                 target: Point3::new(0.0, 0.0, 0.0),
                 up: Vector3::unit_y(),
-                aspect: VIEWPORT.0 as f32 / VIEWPORT.1 as f32,
+                aspect: VIEWPORT.0 as Real / VIEWPORT.1 as Real,
                 projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
             },
         }

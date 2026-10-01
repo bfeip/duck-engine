@@ -13,7 +13,7 @@
 //! A view over its own small scene with a transparent background acts as an
 //! overlay — e.g. an axis triad in a corner.
 
-use duck_engine_common::{Deg, Quaternion, Rotation3};
+use duck_engine_common::{Deg, Quaternion, Real, Rotation3};
 use duck_engine_scene::Scene;
 
 use crate::{
@@ -251,8 +251,8 @@ impl View {
     }
 
     /// View aspect ratio.
-    pub fn aspect(&self) -> f32 {
-        self.rect.width as f32 / self.rect.height.max(1) as f32
+    pub fn aspect(&self) -> Real {
+        self.rect.width as Real / self.rect.height.max(1) as Real
     }
 
     /// The camera this view renders from.

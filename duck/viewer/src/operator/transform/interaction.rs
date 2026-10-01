@@ -7,7 +7,7 @@
 //! to apply however they see fit.
 
 use duck_engine_common::{
-    EuclideanSpace, InnerSpace, Matrix4, Point3, Quaternion, Vector3, Zero, EPSILON,
+    consts, EuclideanSpace, InnerSpace, Matrix4, Point3, Quaternion, Real, Vector3, Zero, EPSILON,
 };
 use duck_engine_scene::common::Ray;
 use duck_engine_scene::PositionedCamera;
@@ -24,11 +24,11 @@ use super::gizmo::{GizmoHandleId, GizmoType};
 
 /// Rotation rate used only when the rotation plane is too edge-on to solve an
 /// angle against.
-const ROTATE_DEGREES_PER_PIXEL: f32 = 0.5;
+const ROTATE_DEGREES_PER_PIXEL: Real = 0.5;
 
 /// Scale rate used only when a drag cannot be resolved into a distance ratio
 /// (the drag was anchored on the pivot, or the geometry is degenerate).
-const SCALE_FRACTION_PER_PIXEL: f32 = 0.005;
+const SCALE_FRACTION_PER_PIXEL: Real = 0.005;
 
 /// Minimum anchor-to-pivot screen distance for scaling by distance ratio.
 /// Closer in, the ratio is hypersensitive — a few pixels would double the scale
@@ -37,8 +37,8 @@ const MIN_SCALE_ANCHOR_PIXELS: f32 = 24.0;
 
 /// Wraps an angle into `(-π, π]`, so an unwrapped difference between successive
 /// solved angles takes the short way round.
-fn wrap_to_pi(angle: f32) -> f32 {
-    use std::f32::consts::{PI, TAU};
+fn wrap_to_pi(angle: Real) -> Real {
+    use consts::{PI, TAU};
     let wrapped = (angle + PI).rem_euclid(TAU);
     wrapped - PI
 }
@@ -184,10 +184,10 @@ pub struct TransformInteraction {
 
     /// Total angle swept since the drag began, integrated across events so it
     /// can exceed a full turn. Rotate mode only.
-    swept_angle: f32,
+    swept_angle: Real,
 
     /// The last solved angle the sweep was unwrapped against. Rotate mode only.
-    last_solved_angle: f32,
+    last_solved_angle: Real,
 
     /// Input bindings consumed by the driver's dispatch loop.
     pub(in crate::operator::transform) bindings: InputMap<TransformAction>,
@@ -537,7 +537,7 @@ impl TransformInteraction {
     ///
     /// Measured from the anchor, so it is zero at drag start — which is what
     /// lets [`Self::start`] seed the winding without a camera.
-    fn solved_rotation_angle(&self, camera: &PositionedCamera, size: (u32, u32)) -> Option<f32> {
+    fn solved_rotation_angle(&self, camera: &PositionedCamera, size: (u32, u32)) -> Option<Real> {
         let axis = self.rotation_axis(camera);
         if axis.magnitude2() < EPSILON {
             return None;
@@ -570,7 +570,7 @@ impl TransformInteraction {
             // Rotation plane edge-on: no angle to solve, so fall back to a
             // pixel rate for this event only. Integrating makes that continuous
             // — the drag slows down rather than freezing or popping.
-            None => self.swept_angle += dx * ROTATE_DEGREES_PER_PIXEL.to_radians(),
+            None => self.swept_angle += dx as Real * ROTATE_DEGREES_PER_PIXEL.to_radians(),
         }
     }
 
@@ -597,11 +597,12 @@ impl TransformInteraction {
     /// degenerate, or the drag was anchored too close to the pivot, where a few
     /// pixels would double the scale. The anchor distance is fixed for the whole
     /// drag, so this decision never flips partway through.
-    fn solved_scale_factor(&self, camera: &PositionedCamera, size: (u32, u32)) -> Option<f32> {
+    fn solved_scale_factor(&self, camera: &PositionedCamera, size: (u32, u32)) -> Option<Real> {
         let (width, height) = size;
         let projected_pivot = camera.project_point_screen(self.pivot_world, width, height);
         let (ax, ay) = self.anchor_screen;
-        let anchor_pixels = ((ax - projected_pivot.x).hypot(ay - projected_pivot.y)).abs();
+        let (px, py) = (projected_pivot.x as f32, projected_pivot.y as f32);
+        let anchor_pixels = ((ax - px).hypot(ay - py)).abs();
         if anchor_pixels < MIN_SCALE_ANCHOR_PIXELS {
             return None;
         }
@@ -652,10 +653,10 @@ impl TransformInteraction {
             // from the pivot: dragging outward grows, inward shrinks.
             _ => {
                 let projected = camera.project_point_screen(self.pivot_world, size.0, size.1);
+                let (px, py) = (projected.x as f32, projected.y as f32);
                 let (ax, ay) = self.anchor_screen;
-                let anchor_distance = (ax - projected.x).hypot(ay - projected.y);
-                let cursor_distance =
-                    (ax + dx - projected.x).hypot(ay + dy - projected.y);
+                let anchor_distance = (ax - px).hypot(ay - py);
+                let cursor_distance = (ax + dx - px).hypot(ay + dy - py);
                 cursor_distance - anchor_distance
             }
         }
@@ -665,7 +666,7 @@ impl TransformInteraction {
     /// `size` is the viewport size in pixels.
     pub fn scale(&self, camera: &PositionedCamera, size: (u32, u32)) -> Vector3 {
         let factor = self.solved_scale_factor(camera, size).unwrap_or_else(|| {
-            1.0 + self.fallback_scale_magnitude(camera, size) * SCALE_FRACTION_PER_PIXEL
+            1.0 + self.fallback_scale_magnitude(camera, size) as Real * SCALE_FRACTION_PER_PIXEL
         });
         // Clamp to prevent negative or zero scale
         let factor = factor.max(0.01);
@@ -712,9 +713,9 @@ mod tests {
     use super::*;
     use crate::scene::Projection;
     use duck_engine_scene::common::Plane;
-    use std::f32::consts::PI;
+    use duck_engine_common::consts::PI;
 
-    const EPSILON: f32 = 1e-6;
+    const EPSILON: Real = 1e-6;
     /// Pixel round-trips project and unproject through separate f32 matrix
     /// inversions, so they hold to a small fraction of a pixel rather than to
     /// `EPSILON`. Still three orders of magnitude tighter than the errors these
@@ -722,11 +723,11 @@ mod tests {
     const PIXEL_EPSILON: f32 = 0.01;
     /// Tolerance for comparing world vectors computed by two different but
     /// mathematically equivalent routes; the magnitudes here are order 1.
-    const WORLD_EPSILON: f32 = 1e-4;
+    const WORLD_EPSILON: Real = 1e-4;
     const SIZE: (u32, u32) = (800, 800);
     const CENTER: (f32, f32) = (400.0, 400.0);
 
-    fn camera_at(eye: (f32, f32, f32), ortho: bool) -> PositionedCamera {
+    fn camera_at(eye: (Real, Real, Real), ortho: bool) -> PositionedCamera {
         let mut camera = PositionedCamera {
             eye: eye.into(),
             target: Point3::new(0.0, 0.0, 0.0),
@@ -754,7 +755,7 @@ mod tests {
 
     fn projected_pivot(camera: &PositionedCamera) -> (f32, f32) {
         let p = camera.project_point_screen(Point3::new(0.0, 0.0, 0.0), SIZE.0, SIZE.1);
-        (p.x, p.y)
+        (p.x as f32, p.y as f32)
     }
 
     /// Where the pivot ends up on screen after applying `translation`. Anchoring
@@ -766,7 +767,7 @@ mod tests {
     ) -> (f32, f32) {
         let moved = Point3::new(0.0, 0.0, 0.0) + interaction.translation(camera, SIZE);
         let p = camera.project_point_screen(moved, SIZE.0, SIZE.1);
-        (p.x, p.y)
+        (p.x as f32, p.y as f32)
     }
 
     fn assert_pixels_close(actual: (f32, f32), expected: (f32, f32), what: &str) {
@@ -781,7 +782,7 @@ mod tests {
     fn projected_axis_direction(camera: &PositionedCamera, axis: Vector3) -> (f32, f32) {
         let origin = camera.project_point_screen(Point3::new(0.0, 0.0, 0.0), SIZE.0, SIZE.1);
         let tip = camera.project_point_screen(Point3::new(0.0, 0.0, 0.0) + axis, SIZE.0, SIZE.1);
-        let (ex, ey) = (tip.x - origin.x, tip.y - origin.y);
+        let (ex, ey) = ((tip.x - origin.x) as f32, (tip.y - origin.y) as f32);
         let len = (ex * ex + ey * ey).sqrt();
         (ex / len, ey / len)
     }
@@ -1100,7 +1101,7 @@ mod tests {
         let mut previous = (CENTER.0 + radius, CENTER.1);
         let mut interaction = started(TransformMode::Rotate, previous, AxisConstraint::None);
 
-        let mut last = 0.0_f32;
+        let mut last = 0.0;
         let steps = 27;
         for step in 1..=steps {
             let theta = (step as f32) * 10.0_f32.to_radians();
@@ -1113,7 +1114,7 @@ mod tests {
             last = swept;
         }
 
-        let expected = (steps as f32) * 10.0_f32.to_radians();
+        let expected = (steps as Real * 10.0).to_radians();
         assert!(last > PI, "sweep wrapped at half a turn: {last}");
         assert!((last - expected).abs() < 0.02, "expected {expected}, got {last}");
     }
@@ -1197,7 +1198,7 @@ mod tests {
         // fallback path routinely. It must stay radial there: dragging away from
         // the pivot grows whichever way the cursor goes, and back in shrinks.
         let camera = camera_at((0.0, 0.0, 10.0), false);
-        let outward: Vec<f32> = [(90.0, 0.0), (0.0, 90.0), (-90.0, 0.0), (0.0, -90.0)]
+        let outward: Vec<Real> = [(90.0, 0.0), (0.0, 90.0), (-90.0, 0.0), (0.0, -90.0)]
             .into_iter()
             .map(|(dx, dy)| {
                 let mut interaction =

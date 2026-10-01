@@ -8,7 +8,7 @@ use duck_engine_renderer::scene::resource::{
 };
 use duck_engine_renderer::scene::common::{RgbaColor, Transform};
 
-use duck_engine_common::{Point3, Vector3};
+use duck_engine_common::{Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeFlags;
 use duck_engine_scene::Scene;
 
@@ -119,7 +119,7 @@ fn main() -> anyhow::Result<()> {
         eye: Point3::new(0.0, 0.0, 3.5),
         target: Point3::new(0.0, 0.0, 0.0),
         up: Vector3::new(0.0, 1.0, 0.0),
-        aspect: width as f32 / height as f32,
+        aspect: width as Real / height as Real,
         projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
     };
 

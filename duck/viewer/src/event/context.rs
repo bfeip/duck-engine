@@ -1,5 +1,6 @@
 
 use crate::input::Modifiers;
+use crate::scene::common::Real;
 use crate::scene::{PositionedCamera, Scene};
 use crate::selection::SelectionManager;
 
@@ -47,7 +48,7 @@ impl<'c> EventContext<'c> {
     }
 
     /// Viewport aspect ratio.
-    pub fn aspect(&self) -> f32 {
-        self.size.0 as f32 / self.size.1 as f32
+    pub fn aspect(&self) -> Real {
+        self.size.0 as Real / self.size.1 as Real
     }
 }

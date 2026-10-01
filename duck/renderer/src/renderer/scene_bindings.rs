@@ -1,4 +1,5 @@
 use bytemuck::bytes_of;
+use duck_engine_common::{matrix4_to_array, point3_to_array, vec3_to_array};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::scene::{Light, LightType, MAX_LIGHTS, PositionedCamera};
@@ -31,10 +32,10 @@ impl CameraUniform {
     pub fn from_positioned_camera(camera: &PositionedCamera) -> Self {
         let forward = camera.forward();
         Self {
-            view_proj: camera.build_view_projection_matrix().into(),
-            eye_position: [camera.eye.x, camera.eye.y, camera.eye.z],
+            view_proj: matrix4_to_array(&camera.build_view_projection_matrix()),
+            eye_position: point3_to_array(camera.eye),
             _padding: 0,
-            view_direction: [forward.x, forward.y, forward.z],
+            view_direction: vec3_to_array(forward),
             is_ortho: camera.projection.is_ortho() as u32,
         }
     }
@@ -43,7 +44,7 @@ impl CameraUniform {
     pub fn new() -> Self {
         use duck_engine_common::{Matrix4, SquareMatrix};
         Self {
-            view_proj: Matrix4::identity().into(),
+            view_proj: matrix4_to_array(&Matrix4::identity()),
             eye_position: [0.0, 0.0, 0.0],
             _padding: 0,
             view_direction: [0.0, 0.0, -1.0],
@@ -249,7 +250,10 @@ pub struct SceneBindingRefs<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::common::{RgbaColor, EPSILON};
+    use crate::scene::common::RgbaColor;
+
+    /// Uniform fields are `f32` GPU data.
+    const EPSILON: f32 = 1e-6;
 
     fn point_resolved(position: [f32; 3], color: RgbaColor, intensity: f32) -> ResolvedLight {
         ResolvedLight { light: Light::point(color, intensity), position, direction: [0.0, 0.0, -1.0] }

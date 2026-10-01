@@ -14,7 +14,7 @@ use duck_engine_viewer::operator::{
 use duck_engine_viewer::selection::SelectionItem;
 use opencascade::primitives::FaceOrientation;
 
-use crate::document::{Document, PartId};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartId};
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
 use crate::tool::{ModelingTool, ToolInfo};
@@ -293,9 +293,8 @@ impl FaceTweakTarget {
                     return None;
                 }
             };
-            let normal = (Vector3::new(n.x as f32, n.y as f32, n.z as f32) * sign).normalize();
-            let c = face.center_of_mass();
-            let pivot = Point3::new(c.x as f32, c.y as f32, c.z as f32);
+            let normal = (dvec3_to_vec3(n) * sign).normalize();
+            let pivot = dvec3_to_point3(face.center_of_mass());
             let frame = Quaternion::from_arc(Vector3::unit_z(), normal, None);
             Some((pivot, frame))
         })();

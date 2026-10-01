@@ -10,7 +10,7 @@ use crate::{
     SquareMatrix, Vector3,
 };
 
-use crate::EPSILON;
+use crate::{Real, EPSILON};
 
 // =============================================================================
 // Matrix Operations
@@ -208,7 +208,7 @@ pub fn local_axes(rotation: Quaternion) -> (Vector3, Vector3, Vector3) {
 ///
 /// # Returns
 /// A rotation quaternion, or identity if the axis is degenerate
-pub fn quaternion_from_axis_angle_safe(axis: Vector3, angle: f32) -> Quaternion {
+pub fn quaternion_from_axis_angle_safe(axis: Vector3, angle: Real) -> Quaternion {
     if axis.magnitude2() > EPSILON {
         Quaternion::from_axis_angle(axis.normalize(), Rad(angle))
     } else {
@@ -239,7 +239,7 @@ pub fn centroid<'a>(points: impl Iterator<Item = &'a Point3>) -> Option<Point3> 
     if count == 0 {
         None
     } else {
-        Some(Point3::from_vec(sum / count as f32))
+        Some(Point3::from_vec(sum / count as Real))
     }
 }
 
@@ -259,7 +259,7 @@ mod tests {
     use super::*;
     use crate::{Deg, Rotation3};
 
-    const TEST_EPSILON: f32 = 1e-5;
+    const TEST_EPSILON: Real = 1e-5;
 
     // ===== transform_normal Tests =====
 
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn test_quaternion_safe_normal_axis() {
         let axis = Vector3::new(0.0, 1.0, 0.0);
-        let angle = std::f32::consts::FRAC_PI_2;
+        let angle = crate::consts::FRAC_PI_2;
 
         let result = quaternion_from_axis_angle_safe(axis, angle);
         let expected = Quaternion::from_angle_y(Deg(90.0));
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn test_quaternion_safe_unnormalized_axis() {
         let axis = Vector3::new(0.0, 2.0, 0.0); // Not normalized
-        let angle = std::f32::consts::FRAC_PI_2;
+        let angle = crate::consts::FRAC_PI_2;
 
         let result = quaternion_from_axis_angle_safe(axis, angle);
         let expected = Quaternion::from_angle_y(Deg(90.0));

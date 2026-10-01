@@ -7,7 +7,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use duck_engine_common::{transform_point, InnerSpace, Matrix4, Point3, Vector3};
+use duck_engine_common::{
+    array_to_point3, array_to_vec3, point3_to_array, transform_point, vec3_to_array, InnerSpace,
+    Matrix4, Point3, Vector3,
+};
 
 mod primitives;
 
@@ -399,9 +402,7 @@ impl Mesh {
     /// Translates all vertex positions by the given offset.
     pub fn translate(&mut self, offset: Vector3) {
         for v in &mut self.vertices {
-            v.position[0] += offset.x;
-            v.position[1] += offset.y;
-            v.position[2] += offset.z;
+            v.position = point3_to_array(array_to_point3(v.position) + offset);
         }
         self.generation += 1;
         self.cached_bounding.set(None);
@@ -424,14 +425,12 @@ impl Mesh {
 
         for v in &mut self.vertices {
             // Transform position as a point
-            let pos = Point3::new(v.position[0], v.position[1], v.position[2]);
-            let transformed = transform_point(matrix, pos);
-            v.position = [transformed.x, transformed.y, transformed.z];
+            let transformed = transform_point(matrix, array_to_point3(v.position));
+            v.position = point3_to_array(transformed);
 
             // Transform normal by inverse-transpose
-            let normal = Vector3::new(v.normal[0], v.normal[1], v.normal[2]);
-            let transformed_normal = (normal_matrix * normal).normalize();
-            v.normal = [transformed_normal.x, transformed_normal.y, transformed_normal.z];
+            let transformed_normal = (normal_matrix * array_to_vec3(v.normal)).normalize();
+            v.normal = vec3_to_array(transformed_normal);
         }
         self.generation += 1;
         self.cached_bounding.set(None);
@@ -665,7 +664,7 @@ impl Mesh {
         let positions: Vec<Point3> = self
             .vertices
             .iter()
-            .map(|v| Point3::new(v.position[0], v.position[1], v.position[2]))
+            .map(|v| array_to_point3(v.position))
             .collect();
 
         let bounding = Aabb::from_points(&positions);

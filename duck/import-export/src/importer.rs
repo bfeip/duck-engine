@@ -350,8 +350,7 @@ impl Importer for CadImporter {
         let scene_units = match load_options.units {
             crate::UnitPolicy::Preserve => WorldUnits::MILLIMETER,
             crate::UnitPolicy::Normalize(target) => {
-                options.tessellation.scale_factor =
-                    WorldUnits::MILLIMETER.factor_to(target) as f32;
+                options.tessellation.scale_factor = WorldUnits::MILLIMETER.factor_to(target);
                 target
             }
         };

@@ -12,11 +12,10 @@ use duck_engine_viewer::{
     scene::PositionedCamera,
     selection::SelectionManager,
 };
-use glam::{dvec3, DVec3};
 use log::warn;
 use opencascade::primitives::{Edge, Shape, Wire};
 
-use crate::document::Document;
+use crate::document::{point3_to_dvec3, Document};
 use crate::preview::PreviewSession;
 use crate::snap::{Snap, SnapKind, SnapProvider, WireStartSnap};
 use crate::tool::{ModelingTool, ToolInfo};
@@ -54,9 +53,6 @@ pub struct CurveOperator {
     finished: bool,
 }
 
-fn to_dvec3(p: &Point3) -> DVec3 {
-    dvec3(p.x as f64, p.y as f64, p.z as f64)
-}
 
 /// Builds an open curve wire shape: a B-spline interpolated through `points`.
 /// Returns `None` if there are fewer than two points (two points are accepted so
@@ -65,7 +61,7 @@ fn open_curve_shape(points: &[Point3]) -> Option<Shape> {
     if points.len() < 2 {
         return None;
     }
-    let edge = Edge::spline_from_points(points.iter().map(to_dvec3), None, false)
+    let edge = Edge::spline_from_points(points.iter().copied().map(point3_to_dvec3), None, false)
         .map_err(|e| warn!("Failed to build curve edge: {e}"))
         .ok()?;
     let wire = Wire::from_edges(&[edge])
@@ -81,7 +77,7 @@ fn closed_curve(points: &[Point3]) -> Option<Wire> {
     if points.len() < 3 {
         return None;
     }
-    let edge = Edge::spline_from_points(points.iter().map(to_dvec3), None, true)
+    let edge = Edge::spline_from_points(points.iter().copied().map(point3_to_dvec3), None, true)
         .map_err(|e| warn!("Failed to build closed curve edge: {e}"))
         .ok()?;
     Wire::from_edges(&[edge])
@@ -371,8 +367,9 @@ impl Operator for CurveOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duck_engine_common::Real;
 
-    fn p(x: f32, y: f32, z: f32) -> Point3 {
+    fn p(x: Real, y: Real, z: Real) -> Point3 {
         Point3::new(x, y, z)
     }
 

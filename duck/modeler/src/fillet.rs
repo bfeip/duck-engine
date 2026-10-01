@@ -1,14 +1,13 @@
 use anyhow::{bail, ensure, Context, Result};
-use duck_engine_scene::common::{Point3, Vector3};
+use duck_engine_scene::common::{Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
-use glam::DVec3;
 use opencascade::primitives::Shape;
 use opencascade::FilletError;
 
-use crate::document::{unwrap_single_solid, Document};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, unwrap_single_solid, Document};
 
 /// A size at or below this is degenerate: there is nothing to round or bevel.
-const MIN_SIZE: f32 = 1e-6;
+const MIN_SIZE: Real = 1e-6;
 
 /// Two face normals summing to less than this fold back onto each other,
 /// leaving no corner to bisect.
@@ -76,7 +75,7 @@ impl FilletFrame {
         let sum = first.normal_at(apex)? + second.normal_at(apex)?;
         ensure!(sum.length() > MIN_NORMAL_SUM, "The faces at this edge fold back onto each other");
 
-        Ok(Self { apex: to_point(apex), outward: to_vector(sum.normalize()) })
+        Ok(Self { apex: dvec3_to_point3(apex), outward: dvec3_to_vec3(sum.normalize()) })
     }
 }
 
@@ -87,7 +86,7 @@ pub struct FilletParams {
     pub kind: BlendKind,
     /// A fillet's radius, or how far a chamfer cuts back along each face.
     /// Never negative.
-    pub size: f32,
+    pub size: Real,
 }
 
 impl FilletParams {
@@ -97,7 +96,7 @@ impl FilletParams {
     }
 
     /// The size, signed by kind: positive for a fillet, negative for a chamfer.
-    pub fn signed_size(&self) -> f32 {
+    pub fn signed_size(&self) -> Real {
         match self.kind {
             BlendKind::Fillet => self.size,
             BlendKind::Chamfer => -self.size,
@@ -106,7 +105,7 @@ impl FilletParams {
 
     /// Sets the size from a signed one: positive makes a fillet and negative a
     /// chamfer, while exactly zero keeps the kind.
-    pub fn set_signed_size(&mut self, signed: f32) {
+    pub fn set_signed_size(&mut self, signed: Real) {
         if signed > 0.0 {
             self.kind = BlendKind::Fillet;
         } else if signed < 0.0 {
@@ -186,26 +185,21 @@ pub fn execute_fillet(doc: &mut Document, target: &FilletTarget, params: &Fillet
     doc.reshape_part(part, shape, params.kind.name())
 }
 
-fn to_point(v: DVec3) -> Point3 {
-    Point3::new(v.x as f32, v.y as f32, v.z as f32)
-}
 
-fn to_vector(v: DVec3) -> Vector3 {
-    Vector3::new(v.x as f32, v.y as f32, v.z as f32)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use duck_engine_scene::cad::CadTessellationOptions;
+    use duck_engine_scene::common::consts;
     use duck_engine_scene::common::{EuclideanSpace, InnerSpace};
     use duck_engine_scene::Scene;
     use opencascade::primitives::{Face, Wire};
 
     use crate::document::PartKind;
 
-    const EPSILON: f32 = 1e-5;
+    const EPSILON: Real = 1e-5;
 
     fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
         let mut doc = Document::new(Scene::default());
@@ -232,7 +226,7 @@ mod tests {
     }
 
     /// The index of the first edge whose midpoint is `point`.
-    fn edge_at_point(doc: &Document, node: NodeId, point: DVec3) -> u32 {
+    fn edge_at_point(doc: &Document, node: NodeId, point: glam::DVec3) -> u32 {
         let part = doc.get_part(doc.part_for_node(node).unwrap()).unwrap();
         let index = part
             .shape
@@ -246,7 +240,7 @@ mod tests {
         FilletTarget { node, edges: edges.to_vec() }
     }
 
-    fn params(doc: &Document, node: NodeId, edge: u32, kind: BlendKind, size: f32) -> FilletParams {
+    fn params(doc: &Document, node: NodeId, edge: u32, kind: BlendKind, size: Real) -> FilletParams {
         let frame = FilletFrame::new(doc, node, edge).expect("edge resolves");
         FilletParams { kind, size, ..FilletParams::new(frame) }
     }
@@ -266,7 +260,7 @@ mod tests {
         for edge in 0..edge_count as u32 {
             let frame = FilletFrame::new(&doc, node, edge).expect("box edge resolves");
             let from_centre = frame.apex.to_vec();
-            assert!((from_centre.magnitude() - 2f32.sqrt()).abs() < EPSILON, "edge {edge}: apex off the edge");
+            assert!((from_centre.magnitude() - consts::SQRT_2).abs() < EPSILON, "edge {edge}: apex off the edge");
             assert!((frame.outward.magnitude() - 1.0).abs() < EPSILON, "edge {edge}: outward not unit");
             assert!(
                 (frame.outward - from_centre.normalize()).magnitude() < EPSILON,
@@ -343,7 +337,7 @@ mod tests {
             (BlendKind::Chamfer, 8.0 - size * size),
         ];
         for (kind, expected) in cases {
-            let params = params(&doc, node, 0, kind, size as f32);
+            let params = params(&doc, node, 0, kind, size as Real);
             let shape = build_fillet(&doc, &target(node, &[0]), &params).expect("the blend builds");
             assert_eq!(shape.shape_type(), opencascade::primitives::ShapeType::Solid, "{kind:?}");
             assert!((shape.volume() - expected).abs() < 1e-5, "{kind:?}: expected {expected}, got {}", shape.volume());

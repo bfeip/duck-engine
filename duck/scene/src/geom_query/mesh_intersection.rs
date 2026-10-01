@@ -1,4 +1,4 @@
-use duck_engine_common::{InnerSpace, Point3};
+use duck_engine_common::{array_to_point3, InnerSpace, Point3, Real};
 
 use crate::common::{ConvexPolyhedron, Ray};
 use crate::resource::Mesh;
@@ -7,24 +7,24 @@ use crate::resource::Mesh;
 #[derive(Debug, Clone)]
 pub struct TriangleMeshHit {
     /// Distance along the ray to the hit point (in local space)
-    pub distance: f32,
+    pub distance: Real,
     /// Hit location in local mesh space
     pub hit_point: Point3,
     /// Index of the triangle that was hit (0-based, into the mesh's triangle list)
     pub triangle_index: usize,
     /// Barycentric coordinates of the hit point on the triangle (u, v, w) where w = 1 - u - v
-    pub barycentric: (f32, f32, f32),
+    pub barycentric: (Real, Real, Real),
 }
 
 /// Result of a ray-segment closest-approach test in local mesh space.
 #[derive(Debug, Clone)]
 pub struct LineMeshHit {
     /// Parameter along the ray at the closest approach point (in local space)
-    pub t: f32,
+    pub t: Real,
     /// Closest point on the segment to the ray (in local mesh space)
     pub closest_point: Point3,
     /// Minimum distance between the ray and the segment
-    pub distance_to_ray: f32,
+    pub distance_to_ray: Real,
     /// Index of the segment (0-based pair index into the mesh's line index buffer)
     pub segment_index: usize,
 }
@@ -33,11 +33,11 @@ pub struct LineMeshHit {
 #[derive(Debug, Clone)]
 pub struct PointMeshHit {
     /// Parameter along the ray at the closest approach point (in local space)
-    pub t: f32,
+    pub t: Real,
     /// The point's position in local mesh space (the closest point on the point to the ray)
     pub closest_point: Point3,
     /// Minimum distance between the ray and the point
-    pub distance_to_ray: f32,
+    pub distance_to_ray: Real,
     /// Index of the point (0-based index into the mesh's point list)
     pub point_index: usize,
 }
@@ -61,9 +61,9 @@ pub fn intersect_ray(mesh: &Mesh, ray: &Ray) -> Vec<TriangleMeshHit> {
     let mut hits = Vec::new();
 
     for (triangle_index, [v0, v1, v2]) in mesh.triangles().enumerate() {
-        let p0 = Point3::from(v0.position);
-        let p1 = Point3::from(v1.position);
-        let p2 = Point3::from(v2.position);
+        let p0 = array_to_point3(v0.position);
+        let p1 = array_to_point3(v1.position);
+        let p2 = array_to_point3(v2.position);
 
         if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2) {
             let w = 1.0 - u - v;
@@ -87,9 +87,9 @@ pub fn intersect_ray_nearest(mesh: &Mesh, ray: &Ray) -> Option<TriangleMeshHit> 
     let mut nearest: Option<TriangleMeshHit> = None;
 
     for (triangle_index, [v0, v1, v2]) in mesh.triangles().enumerate() {
-        let p0 = Point3::from(v0.position);
-        let p1 = Point3::from(v1.position);
-        let p2 = Point3::from(v2.position);
+        let p0 = array_to_point3(v0.position);
+        let p1 = array_to_point3(v1.position);
+        let p2 = array_to_point3(v2.position);
 
         if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2)
             && nearest.as_ref().is_none_or(|n| t < n.distance) {
@@ -110,12 +110,12 @@ pub fn intersect_ray_nearest(mesh: &Mesh, ray: &Ray) -> Option<TriangleMeshHit> 
 ///
 /// The ray should be in local mesh space. Returns all segments whose closest approach
 /// to the ray is within `tolerance`. Results are unsorted (caller sorts if needed).
-pub fn intersect_ray_with_lines(mesh: &Mesh, ray: &Ray, tolerance: f32) -> Vec<LineMeshHit> {
+pub fn intersect_ray_with_lines(mesh: &Mesh, ray: &Ray, tolerance: Real) -> Vec<LineMeshHit> {
     let mut hits = Vec::new();
 
     for (segment_index, [v0, v1]) in mesh.segments().enumerate() {
-        let p0 = Point3::from(v0.position);
-        let p1 = Point3::from(v1.position);
+        let p0 = array_to_point3(v0.position);
+        let p1 = array_to_point3(v1.position);
 
         let Some(approach) = ray.closest_approach_to_segment(p0, p1) else {
             continue;
@@ -138,11 +138,11 @@ pub fn intersect_ray_with_lines(mesh: &Mesh, ray: &Ray, tolerance: f32) -> Vec<L
 ///
 /// The ray should be in local mesh space. Returns all points whose distance to
 /// the ray is within `tolerance`. Results are unsorted (caller sorts if needed).
-pub fn intersect_ray_with_points(mesh: &Mesh, ray: &Ray, tolerance: f32) -> Vec<PointMeshHit> {
+pub fn intersect_ray_with_points(mesh: &Mesh, ray: &Ray, tolerance: Real) -> Vec<PointMeshHit> {
     let mut hits = Vec::new();
 
     for (point_index, vertex) in mesh.points().enumerate() {
-        let p = Point3::from(vertex.position);
+        let p = array_to_point3(vertex.position);
 
         // Project the point onto the ray. `direction` is normalized, so `t` is the
         // signed distance along the ray to the projection.
@@ -181,9 +181,9 @@ pub fn intersect_volume(
     let mut all_fully_contained = true;
 
     for (triangle_index, [v0, v1, v2]) in mesh.triangles().enumerate() {
-        let p0 = Point3::from(v0.position);
-        let p1 = Point3::from(v1.position);
-        let p2 = Point3::from(v2.position);
+        let p0 = array_to_point3(v0.position);
+        let p1 = array_to_point3(v1.position);
+        let p2 = array_to_point3(v2.position);
 
         let fully_inside = volume.contains_triangle(p0, p1, p2);
 
@@ -200,8 +200,8 @@ pub fn intersect_volume(
     let mut segment_indices = Vec::new();
 
     for (segment_index, [v0, v1]) in mesh.segments().enumerate() {
-        let p0 = Point3::from(v0.position);
-        let p1 = Point3::from(v1.position);
+        let p0 = array_to_point3(v0.position);
+        let p1 = array_to_point3(v1.position);
 
         let p0_inside = volume.contains_point(p0);
         let p1_inside = volume.contains_point(p1);

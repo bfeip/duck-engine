@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use duck_engine_common::{InnerSpace, Plane, Point3, Vector3};
+use duck_engine_common::{consts, InnerSpace, Plane, Point3, Real, Vector3};
 use duck_engine_scene::resource::SubGeometryKind;
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
@@ -35,14 +35,14 @@ const THICKNESS_HANDLE: HandleId = HandleId(3);
 
 /// Steepest draft either way: short of the right angle at which the walls
 /// would lie flat.
-const MAX_DRAFT: f32 = 85.0 * std::f32::consts::PI / 180.0;
+const MAX_DRAFT: Real = 85.0 * consts::PI / 180.0;
 
 /// Furthest the direction may lean from the profile normal: short of the right
 /// angle at which the sweep would lie in the profile's own plane.
-const MAX_TILT: f32 = 85.0 * std::f32::consts::PI / 180.0;
+const MAX_TILT: Real = 85.0 * consts::PI / 180.0;
 
 /// A tilt below this reads as straight out of the profile.
-const TILT_EPSILON: f32 = 1e-4;
+const TILT_EPSILON: Real = 1e-4;
 
 enum Phase {
     /// No face or edge selected.
@@ -67,9 +67,9 @@ impl Phase {
 impl TweakParams for ExtrudeParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         let min_distance = self.min_distance();
-        let mut changed = length_field(ui, "Distance", &mut self.distance, min_distance..=f32::MAX);
+        let mut changed = length_field(ui, "Distance", &mut self.distance, min_distance..=Real::MAX);
         changed |= angle_field(ui, "Draft", &mut self.draft, MAX_DRAFT);
-        changed |= length_field(ui, "Thickness", &mut self.thickness, f32::MIN..=f32::MAX);
+        changed |= length_field(ui, "Thickness", &mut self.thickness, Real::MIN..=Real::MAX);
 
         ui.label("Direction");
         ui.horizontal(|ui| {
@@ -166,7 +166,7 @@ fn limit_tilt(direction: Vector3, normal: Vector3) -> Vector3 {
         return direction;
     }
     let across = direction - normal * along;
-    if across.magnitude2() < f32::EPSILON {
+    if across.magnitude2() < Real::EPSILON {
         // Straight back through the profile: there is no side to lean to.
         return normal;
     }
@@ -459,7 +459,7 @@ mod tests {
     use duck_engine_viewer::input::Modifiers;
     use opencascade::primitives::Shape;
 
-    const EPSILON: f32 = 1e-5;
+    const EPSILON: Real = 1e-5;
 
     /// A document holding a 2×2×2 box centred on the origin.
     fn document_with_box() -> (Arc<Mutex<Document>>, NodeId) {
@@ -484,7 +484,7 @@ mod tests {
     }
 
     /// A pad of `distance` on the first face of a box.
-    fn pad(distance: f32) -> ExtrudeParams {
+    fn pad(distance: Real) -> ExtrudeParams {
         let (document, node) = document_with_box();
         let doc = document.lock().unwrap();
         let target = ExtrudeTarget::Face { node, face_index: 0 };
@@ -555,11 +555,11 @@ mod tests {
         let grabbed = pad(2.0);
         let (tip, axis) = (grabbed.tip(), grabbed.direction);
         let from = thickness_axis(&grabbed);
-        let toward = |angle: f32| {
+        let toward = |angle: Real| {
             let sideways = axis.cross(from);
             tip + from * angle.cos() + sideways * angle.sin()
         };
-        let turn = |angle: f32| HandleDrag {
+        let turn = |angle: Real| HandleDrag {
             id: DRAFT_HANDLE,
             grab: tip + from,
             point: toward(angle),
@@ -567,10 +567,10 @@ mod tests {
         };
 
         let mut params = grabbed;
-        params.apply_handle(&turn(10f32.to_radians()), &grabbed);
-        assert!((params.draft - 10f32.to_radians()).abs() < 1e-4, "got {}", params.draft.to_degrees());
+        params.apply_handle(&turn(Real::to_radians(10.0)), &grabbed);
+        assert!((params.draft - Real::to_radians(10.0)).abs() < 1e-4, "got {}", params.draft.to_degrees());
 
-        params.apply_handle(&turn(-120f32.to_radians()), &grabbed);
+        params.apply_handle(&turn(Real::to_radians(-120.0)), &grabbed);
         assert_eq!(params.draft, -MAX_DRAFT, "the draft is held short of flat");
     }
 
@@ -617,7 +617,7 @@ mod tests {
         assert!((params.distance - grabbed.distance).abs() < EPSILON);
         assert!((params.direction.magnitude() - 1.0).abs() < EPSILON);
         // Midpoint one unit up the normal, dragged one unit across: 45°.
-        assert!((params.tilt() - std::f32::consts::FRAC_PI_4).abs() < 1e-4);
+        assert!((params.tilt() - consts::FRAC_PI_4).abs() < 1e-4);
         assert!(params.direction.dot(side) > 0.0, "leaned away from the drag");
         let expected = grabbed.frame.origin + (grabbed.frame.normal + side).normalize();
         assert!((midpoint(&params) - expected).magnitude() < 1e-4);
