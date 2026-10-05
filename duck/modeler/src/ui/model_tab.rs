@@ -1,17 +1,19 @@
 //! The model tab: a filter box over the list of parts in the CAD document,
-//! with double-click-to-rename on each row.
+//! with double-click-to-rename on each row, above a summary of the selection.
 
 use duck_engine_viewer::scene::resource::{NodeId, Visibility};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 
 use crate::document::{Document, PartId, PartKind};
 use crate::ui::icons;
+use crate::ui::selection_info::SelectionInfo;
 
 /// The model tab, owning the state local to it.
 #[derive(Default)]
 pub struct ModelTab {
     filter: String,
     rename: Option<Rename>,
+    selection_info: SelectionInfo,
 }
 
 /// The row being renamed inline and its in-progress text.
@@ -46,6 +48,12 @@ impl ModelTab {
         document: &mut Document,
         selection: &mut SelectionManager,
     ) {
+        // Claimed first so it stays pinned below however long the list grows.
+        egui::TopBottomPanel::bottom("selection_info")
+            .resizable(false)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 4)))
+            .show_inside(ui, |ui| self.selection_info.show(ui, document, selection));
+
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
@@ -80,18 +88,20 @@ impl ModelTab {
             self.rename = None;
         }
 
-        egui::CollapsingHeader::new(format!("Model  ({})", rows.len()))
-            .default_open(true)
-            .show(ui, |ui| {
-                if rows.is_empty() {
-                    ui.add_space(4.0);
-                    ui.weak("No objects yet");
-                    return;
-                }
-                for row in &rows {
-                    row_ui(ui, row, document, selection, &mut self.rename);
-                }
-            });
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::CollapsingHeader::new(format!("Model  ({})", rows.len()))
+                .default_open(true)
+                .show(ui, |ui| {
+                    if rows.is_empty() {
+                        ui.add_space(4.0);
+                        ui.weak("No objects yet");
+                        return;
+                    }
+                    for row in &rows {
+                        row_ui(ui, row, document, selection, &mut self.rename);
+                    }
+                });
+        });
     }
 }
 

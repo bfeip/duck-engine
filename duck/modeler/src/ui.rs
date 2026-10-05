@@ -5,6 +5,7 @@ mod menu_bar;
 mod right_panel;
 mod model_tab;
 mod scene_tab;
+mod selection_info;
 mod tool_palette;
 mod tool_panel;
 

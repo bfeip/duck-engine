@@ -171,6 +171,7 @@ pub struct Document {
     node_to_part: HashMap<NodeId, PartId>,
     scene: Scene,
     history: History,
+    generation: u64,
 }
 
 impl Document {
@@ -181,6 +182,7 @@ impl Document {
             node_to_part: HashMap::new(),
             scene,
             history: History::default(),
+            generation: 0,
         }
     }
 
@@ -191,6 +193,11 @@ impl Document {
 
     pub fn scene(&self) -> &Scene {
         &self.scene
+    }
+
+    /// Bumped whenever a part is added, removed, reshaped, or renamed.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Tessellate `shape`, add the resulting node to the scene, store the CAD part,
@@ -209,6 +216,7 @@ impl Document {
         self.parts.push(CadPart { id, name, shape, options: options.clone() });
         self.part_to_node.insert(id, node);
         self.node_to_part.insert(node, id);
+        self.generation += 1;
         if let Some(snapshot) = self.snapshot_part(id) {
             let label = format!("Add {}", self.get_part(id).unwrap().name);
             self.history.record(&label, Delta::Added(snapshot));
@@ -284,6 +292,7 @@ impl Document {
         if let Some(node) = self.node_for_part(id) {
             self.scene.set_node_name(node, Some(name.to_owned()));
         }
+        self.generation += 1;
     }
 
     /// Remove a part from the CAD store, the mapping, and the scene tree.
@@ -306,6 +315,7 @@ impl Document {
             self.node_to_part.remove(&node);
             self.scene.remove_node(node);
         }
+        self.generation += 1;
     }
 
     pub fn get_part(&self, id: PartId) -> Option<&CadPart> {
@@ -500,6 +510,7 @@ impl Document {
         });
         self.part_to_node.insert(snapshot.part, node);
         self.node_to_part.insert(node, snapshot.part);
+        self.generation += 1;
         // The node may carry a name from before a rename that this resurrection
         // predates; the snapshot is the authority.
         self.scene.set_node_name(node, Some(snapshot.name.clone()));
@@ -521,6 +532,7 @@ impl Document {
         let cad_part = self.get_part_mut(part).context("reshape: part not found")?;
         cad_part.shape = shape.clone();
         cad_part.options = options.clone();
+        self.generation += 1;
         Ok(())
     }
 
@@ -1061,6 +1073,26 @@ mod tests {
         doc.undo().expect("undo rename");
         assert_eq!(doc.get_part(part).unwrap().name, "box");
         assert_eq!(node_name(&doc, part).as_deref(), Some("box"));
+    }
+
+    #[test]
+    fn generation_rises_with_every_part_change() {
+        let (mut doc, part, _) = doc_with_box();
+        let up = Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0));
+        let mut seen = vec![doc.generation()];
+
+        doc.rename_part(part, "Bracket");
+        seen.push(doc.generation());
+        doc.bake_transform(part, up).expect("bake succeeds");
+        seen.push(doc.generation());
+        doc.undo().expect("undo bake");
+        seen.push(doc.generation());
+        doc.remove_part(part);
+        seen.push(doc.generation());
+        doc.undo().expect("undo remove");
+        seen.push(doc.generation());
+
+        assert!(seen.windows(2).all(|w| w[1] > w[0]), "generation must rise at every step: {seen:?}");
     }
 
     #[test]
