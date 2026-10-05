@@ -9,7 +9,8 @@
       #canvas { display: block; width: 100vw; height: 100vh; }
       #status {
         position: fixed; inset: 0; display: grid; place-items: center;
-        color: #ddd; font: 14px system-ui, sans-serif; pointer-events: none;
+        padding: 16px; color: #ddd; font: 14px/1.5 system-ui, sans-serif;
+        text-align: center; pointer-events: none;
       }
     </style>
   </head>
@@ -19,13 +20,27 @@
     <script>
       const canvas = document.getElementById("canvas");
 
-      canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+      // The modeler is driven by mouse and keyboard; touch-only devices get a
+      // notice instead of the (large) module download.
+      const touchOnly =
+        matchMedia("(any-pointer: coarse)").matches && !matchMedia("(any-pointer: fine)").matches;
 
-      var Module = {
-        canvas,
-        onRuntimeInitialized: () => document.getElementById("status").remove(),
-      };
+      if (touchOnly) {
+        canvas.remove();
+        document.getElementById("status").textContent =
+          "The modeler needs a mouse and keyboard. Open this page on a desktop or laptop computer.";
+      } else {
+        canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+        var Module = {
+          canvas,
+          onRuntimeInitialized: () => document.getElementById("status").remove(),
+        };
+
+        const script = document.createElement("script");
+        script.src = "modeler.js";
+        document.body.append(script);
+      }
     </script>
-    <script src="modeler.js"></script>
   </body>
 </html>
