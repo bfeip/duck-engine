@@ -1,60 +1,26 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-
-use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::resource::{NodeFlags, NodeId, SubGeometryKind};
+use anyhow::Result;
+use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
-    event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, KeyEvent, Modifiers, MouseButton, NamedKey},
-    operator::{
-        Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator,
-        SelectionKinds, SelectionMode,
-    },
-    selection::{SelectionItem, SelectionManager},
+    operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds, SelectionMode},
+    selection::SelectionManager,
 };
 use duck_engine_viewer::common::Real;
+use opencascade::primitives::Shape;
 
 use crate::document::Document;
 use crate::fillet::{
     build_fillet, execute_fillet, BlendKind, FilletFrame, FilletParams, FilletTarget,
 };
-use crate::notifications::Notifications;
-use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, PanelContext, ToolInfo};
+use crate::tool::ToolInfo;
 use crate::ui::icons;
-use super::tweak::{handle_tweak, length_field, tweak_panel, TweakAction, TweakParams};
+use super::targeted::{
+    count_summary, selected_on_part, EditLock, PreviewStyle, TargetedOp, TargetedTool,
+};
+use super::tweak::{length_field, TweakParams};
 use super::ConstructionOptions;
 
 /// The blend's grip.
 const SIZE_HANDLE: HandleId = HandleId(0);
-
-enum Phase {
-    /// No edge selected.
-    AwaitingSelection,
-    /// Edges are selected but nothing has been edited, so the target still
-    /// follows the selection.
-    Targeted(FilletTarget, FilletParams),
-    /// Editing has begun: the part is locked until the blend is applied or
-    /// cancelled, though its edges can still be shift-clicked in and out.
-    Editing(FilletTarget, FilletParams),
-}
-
-impl Phase {
-    fn target(&self) -> Option<&FilletTarget> {
-        match self {
-            Phase::AwaitingSelection => None,
-            Phase::Targeted(target, _) | Phase::Editing(target, _) => Some(target),
-        }
-    }
-
-    fn params(&self) -> Option<&FilletParams> {
-        match self {
-            Phase::AwaitingSelection => None,
-            Phase::Targeted(_, params) | Phase::Editing(_, params) => Some(params),
-        }
-    }
-}
 
 impl TweakParams for FilletParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
@@ -96,397 +62,121 @@ impl TweakParams for FilletParams {
     }
 }
 
-/// The selected edges on one part, primary first, and how many selected edges
-/// on other parts are left out.
-///
-/// The part is `locked` once editing has begun. Until then it is the primary
-/// edge's: the selection's primary if that is an edge, else the first edge
-/// selected.
-fn selected_target(
-    selection: &SelectionManager,
-    locked: Option<NodeId>,
-) -> (Option<FilletTarget>, usize) {
-    let as_edge = |item: &SelectionItem| match *item {
-        SelectionItem::SubGeometry { node_id, element } if element.kind == SubGeometryKind::Edge => {
-            Some((node_id, element.index))
-        }
-        _ => None,
-    };
-    let edges: Vec<_> = selection.iter().filter_map(as_edge).collect();
-    let primary = selection.primary().as_ref().and_then(as_edge).or_else(|| edges.first().copied());
-    let Some(node) = locked.or(primary.map(|(node, _)| node)) else {
-        return (None, 0);
-    };
-
-    let mut on_part: Vec<u32> =
-        edges.iter().filter(|(on, _)| *on == node).map(|&(_, index)| index).collect();
-    let ignored = edges.len() - on_part.len();
-    // The primary edge carries the grip, so it leads.
-    if let Some((_, index)) = primary.filter(|(on, _)| *on == node) {
-        on_part.retain(|&other| other != index);
-        on_part.insert(0, index);
-    }
-    let target = (!on_part.is_empty()).then_some(FilletTarget { node, edges: on_part });
-    (target, ignored)
-}
-
-/// "3 edges", noting any on other parts that are left out.
-fn edge_summary(edges: usize, ignored: usize) -> String {
-    let edges = match edges {
-        1 => "1 edge".to_owned(),
-        count => format!("{count} edges"),
-    };
-    match ignored {
-        0 => edges,
-        count => format!("{edges} ({count} on other parts ignored)"),
-    }
-}
-
 /// Rounds or bevels selected edges of a part: one tool, whose grip makes a
 /// fillet on one side of the edge and a chamfer on the other.
-pub struct FilletOperator {
-    phase: Phase,
-    /// The selected edges the tool last acted on, so it reacts only when the
-    /// selection changes.
-    followed: Option<FilletTarget>,
-    /// Selected edges on parts other than the target's, which the blend leaves
-    /// out.
-    ignored_edges: usize,
-    /// Parameters as they were when the grip was grabbed; `None` when it is not
-    /// held. A drag reports its total offset, so it is applied to this rather
-    /// than to the live parameters.
-    grabbed: Option<FilletParams>,
-    /// The edges and parameters the preview was last built for.
-    built: Option<(FilletTarget, FilletParams)>,
-    /// Why the target or the parameters could not be built, shown in the panel.
-    error: Option<String>,
-    /// The previewed blend, shown in place of its part.
-    preview: PreviewSession,
-    /// Set once the blend is applied or cancelled, so the tool cedes back to
-    /// selection. Cleared on [`ModelingTool::deactivate`].
-    finished: bool,
+pub type FilletOperator = TargetedTool<Fillet>;
 
-    document: Arc<Mutex<Document>>,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    notifications: Notifications,
-}
+/// The fillet/chamfer operation, on the selected edges of one part. Editing
+/// locks the part, though its edges can still be shift-clicked in and out.
+#[derive(Default)]
+pub struct Fillet;
 
-impl FilletOperator {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-        notifications: Notifications,
-    ) -> Self {
-        let preview = PreviewSession::new(Arc::clone(&document));
-        Self {
-            phase: Phase::AwaitingSelection,
-            followed: None,
-            ignored_edges: 0,
-            grabbed: None,
-            built: None,
-            error: None,
-            preview,
-            finished: false,
-            document,
-            construction_options,
-            notifications,
-        }
-    }
+impl TargetedOp for Fillet {
+    type Target = FilletTarget;
+    type Params = FilletParams;
 
-    fn is_editing(&self) -> bool {
-        matches!(self.phase, Phase::Editing(..))
-    }
+    const LOCK: EditLock = EditLock::Part;
 
-    /// Points the blend at the selected edges once they change. Editing locks
-    /// the part but keeps following its edges, holding the kind and size.
-    fn follow_selection(&mut self, selection: &SelectionManager) {
-        let edited = match &self.phase {
-            Phase::Editing(target, params) => Some((target.node, *params)),
-            _ => None,
-        };
-        let (target, ignored) = selected_target(selection, edited.map(|(node, _)| node));
-        self.ignored_edges = ignored;
-        if target == self.followed {
-            return;
-        }
-        self.followed = target.clone();
-
-        let Some(target) = target else {
-            // The last edge went: there is nothing left to blend.
-            self.abandon();
-            return;
-        };
-        let frame = FilletFrame::new(&self.document.lock().unwrap(), target.node, target.edges[0]);
-        let frame = match frame {
-            Ok(frame) => frame,
-            Err(e) => {
-                self.abandon();
-                self.error = Some(format!("{e:#}"));
-                return;
-            }
-        };
-        self.error = None;
-        self.phase = match edited {
-            Some((_, params)) => Phase::Editing(target, FilletParams { frame, ..params }),
-            None => Phase::Targeted(target, FilletParams::new(frame)),
-        };
-    }
-
-    /// Takes `params` as the blend's, which begins the edit and so locks the
-    /// part.
-    fn edit(&mut self, params: FilletParams) {
-        if let Some(target) = self.phase.target() {
-            self.phase = Phase::Editing(target.clone(), params);
-        }
-    }
-
-    /// Tessellation options for the preview, which stands in for the part: the
-    /// part's own, at the coarser preview tolerance.
-    fn preview_options(&self, doc: &Document, node: NodeId) -> CadTessellationOptions {
-        let construction = self.construction_options.borrow();
-        let mut options = match doc.part_for_node(node).and_then(|part| doc.get_part(part)) {
-            Some(part) => part.options().clone(),
-            None => construction.geometry_options.clone(),
-        };
-        options.tessellation_tolerance = construction.preview_tolerance;
-        options
-    }
-
-    /// Rebuilds the preview when the edges or parameters have moved on since it
-    /// was last built. A build that fails keeps the last good preview and says
-    /// why.
-    fn refresh_preview(&mut self) {
-        let Phase::Editing(target, params) = &self.phase else { return };
-        if self.built.as_ref().is_some_and(|(built, with)| built == target && with == params) {
-            return;
-        }
-        self.built = Some((target.clone(), *params));
-
-        if params.is_degenerate() {
-            // Nothing to show, and the hidden part comes back.
-            self.preview.clear_previews();
-            self.error = None;
-            return;
-        }
-
-        let (shape, options) = {
-            let doc = self.document.lock().unwrap();
-            (build_fillet(&doc, target, params), self.preview_options(&doc, target.node))
-        };
-        let shape = match shape {
-            Ok(shape) => shape,
-            Err(e) => {
-                self.error = Some(format!("{e:#}"));
-                return;
-            }
-        };
-        if self.preview.try_replace_preview(&shape, &options, "Fillet preview").is_none() {
-            self.error = Some("The blend could not be tessellated".to_owned());
-            return;
-        }
-        self.error = None;
-        self.preview.hide_source_node(target.node);
-        // Clicks reach the hidden part beneath, whose edges shift-clicks toggle.
-        self.preview.set_preview_flags(NodeFlags::DO_NOT_SELECT);
-    }
-
-    /// Commit the blend and finish the tool. A failure keeps the preview and
-    /// panel so the parameters can be corrected.
-    fn apply(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
-        let (Some(target), Some(params)) = (self.phase.target(), self.phase.params()) else {
-            return Ok(());
-        };
-        execute_fillet(&mut self.document.lock().unwrap(), target, params)?;
-
-        // The part the preview hid was reshaped where it stands: it comes back
-        // rather than being handed over for deletion.
-        self.preview.cancel();
-        // The reshape renumbered its edges.
-        selection.clear();
-        self.reset();
-        self.finished = true;
-        Ok(())
-    }
-
-    /// Apply, reporting a failure. For the gestures that keep the tool active and
-    /// so must report for themselves: the panel's Apply button, Enter, right-click.
-    fn apply_and_report(&mut self, selection: &mut SelectionManager) {
-        let name = self.phase.params().map_or(BlendKind::Fillet, |params| params.kind).name();
-        if let Err(e) = self.apply(selection) {
-            log::error!("{name} failed: {e:#}");
-            self.notifications.error(format!("{name} failed: {e:#}"));
-        }
-    }
-
-    /// Abandon the blend and finish the tool, bringing back the part the
-    /// preview hid.
-    fn cancel(&mut self) {
-        self.preview.cancel();
-        self.reset();
-        self.finished = true;
-    }
-
-    /// Drop the blend in progress without finishing the tool: the preview goes
-    /// and its part comes back.
-    fn abandon(&mut self) {
-        self.preview.clear_previews();
-        self.reset();
-    }
-
-    /// Forget the blend in progress.
-    fn reset(&mut self) {
-        self.phase = Phase::AwaitingSelection;
-        self.grabbed = None;
-        self.built = None;
-        self.error = None;
-    }
-
-    /// Whether a left click stops here. Once editing, the grip and panel own the
-    /// blend and a stray pick must not reselect anything, but shift-clicks still
-    /// pass, to add or drop edges.
-    fn swallows_click(&self, modifiers: Modifiers) -> bool {
-        self.is_editing() && !modifiers.shift
-    }
-
-    /// Enter applies a blend being edited and Escape abandons the tool; F and C
-    /// switch between fillet and chamfer.
-    fn on_key(
-        &mut self,
-        event: &KeyEvent,
-        modifiers: Modifiers,
-        selection: &mut SelectionManager,
-    ) -> bool {
-        if event.state != ElementState::Pressed || event.repeat {
-            return false;
-        }
-        match event.logical_key {
-            Key::Named(NamedKey::Enter) if self.is_editing() => self.apply_and_report(selection),
-            Key::Named(NamedKey::Escape) if self.phase.params().is_some() => self.cancel(),
-            Key::Character(c) if modifiers == Modifiers::default() => {
-                let kind = match c.to_ascii_lowercase() {
-                    'f' => BlendKind::Fillet,
-                    'c' => BlendKind::Chamfer,
-                    _ => return false,
-                };
-                let Some(params) = self.phase.params().copied() else { return false };
-                self.edit(FilletParams { kind, ..params });
-            }
-            _ => return false,
-        }
-        true
-    }
-}
-
-impl ModelingTool for FilletOperator {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "fillet", icon: icons::FILLET, shortcut: Some('f') }
-    }
-
-    fn deactivate(&mut self) {
-        self.preview.cancel();
-        self.reset();
-        self.followed = None;
-        self.ignored_edges = 0;
-        self.finished = false;
     }
 
     fn selection_mode(&self) -> SelectionMode {
         SelectionMode::SubGeometry(SelectionKinds::EDGE)
     }
 
-    /// A blend being edited is a finished one, so leaving the tool commits it.
-    /// A zero-size one is nothing to commit.
-    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
-        match &self.phase {
-            Phase::Editing(_, params) if !params.is_degenerate() => self.apply(selection),
-            _ => Ok(()),
-        }
+    fn title(&self, params: Option<&FilletParams>) -> &'static str {
+        params.map_or(BlendKind::Fillet, |params| params.kind).name()
     }
 
-    fn is_finished(&self) -> bool {
-        self.finished
+    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
+        "Select edges to fillet or chamfer."
     }
 
-    fn handles(&self) -> Vec<Handle> {
-        self.phase.params().map(TweakParams::handles).unwrap_or_default()
+    fn node(&self, target: &FilletTarget) -> NodeId {
+        target.node
     }
 
-    /// Grabbing the grip begins the edit, which locks the part.
-    fn on_handle(&mut self, event: &HandleEvent) {
-        let Some(params) = self.phase.params().copied() else { return };
-        if let HandleEvent::Begin(_) = event {
-            self.edit(params);
-        }
-        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
-            self.edit(edited);
-        }
+    fn select(
+        &self,
+        selection: &SelectionManager,
+        locked: Option<&FilletTarget>,
+    ) -> (Option<FilletTarget>, usize) {
+        let locked = locked.map(|target| target.node);
+        let (selected, ignored) = selected_on_part(selection, SubGeometryKind::Edge, locked);
+        (selected.map(|(node, edges)| FilletTarget { node, edges }), ignored)
     }
 
-    fn panel_title(&self) -> Option<&str> {
-        let kind = self.phase.params().map_or(BlendKind::Fillet, |params| params.kind);
-        Some(kind.name())
+    fn summary(&self, target: &FilletTarget, ignored: usize) -> Option<String> {
+        Some(count_summary("edge", target.edges.len(), ignored))
     }
 
-    fn panel_ui(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
-        if let Some(error) = &self.error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-        let (Some(target), Some(mut params)) = (self.phase.target(), self.phase.params().copied())
-        else {
-            if self.error.is_none() {
-                ui.label("Select edges to fillet or chamfer.");
-            }
-            return;
+    /// The grip rides on the primary edge; an edit keeps its kind and size.
+    fn resolve(
+        &self,
+        doc: &Document,
+        target: &FilletTarget,
+        _construction: &ConstructionOptions,
+        edited: Option<&FilletParams>,
+    ) -> Result<FilletParams> {
+        let frame = FilletFrame::new(doc, target.node, target.edges[0])?;
+        Ok(match edited {
+            Some(params) => FilletParams { frame, ..*params },
+            None => FilletParams::new(frame),
+        })
+    }
+
+    fn is_degenerate(&self, params: &FilletParams) -> bool {
+        params.is_degenerate()
+    }
+
+    fn preview_style(&self, _params: &FilletParams) -> PreviewStyle {
+        PreviewStyle::InPlace
+    }
+
+    fn build(&self, doc: &Document, target: &FilletTarget, params: &FilletParams) -> Result<Shape> {
+        build_fillet(doc, target, params)
+    }
+
+    fn apply(
+        &self,
+        doc: &mut Document,
+        target: &FilletTarget,
+        params: &FilletParams,
+        _construction: &ConstructionOptions,
+    ) -> Result<()> {
+        execute_fillet(doc, target, params)
+    }
+
+    /// F and C switch between fillet and chamfer.
+    fn on_char(&self, c: char, params: &FilletParams) -> Option<FilletParams> {
+        let kind = match c {
+            'f' => BlendKind::Fillet,
+            'c' => BlendKind::Chamfer,
+            _ => return None,
         };
-        ui.label(edge_summary(target.edges.len(), self.ignored_edges));
-
-        match tweak_panel(ui, &mut params) {
-            // An edit begins the operation, which locks the part.
-            TweakAction::Changed => self.edit(params),
-            TweakAction::Apply => self.apply_and_report(panel.selection),
-            TweakAction::Cancel => self.cancel(),
-            TweakAction::None => {}
-        }
-    }
-}
-
-impl Operator for FilletOperator {
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::Update { .. } => {
-                self.follow_selection(ctx.selection);
-                self.refresh_preview();
-                false
-            }
-            DeviceEvent::MouseClick { button: MouseButton::Left, .. } => {
-                self.swallows_click(ctx.modifiers)
-            }
-            // Right-click finalizes, matching the Boolean/Line convention.
-            DeviceEvent::MouseClick { button: MouseButton::Right, .. } if self.is_editing() => {
-                self.apply_and_report(ctx.selection);
-                true
-            }
-            DeviceEvent::KeyboardInput { event, .. } => {
-                self.on_key(event, ctx.modifiers, ctx.selection)
-            }
-            _ => false,
-        }
-    }
-
-    fn name(&self) -> &str {
-        "Fillet"
+        Some(FilletParams { kind, ..*params })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
+
+    use duck_engine_scene::cad::CadTessellationOptions;
     use duck_engine_scene::common::{InnerSpace, Point3, Vector3};
     use duck_engine_scene::resource::{SubGeometryElement, Visibility};
     use duck_engine_scene::Scene;
-    use duck_engine_viewer::input::PhysicalKey;
-    use opencascade::primitives::Shape;
+    use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, PhysicalKey};
+    use duck_engine_viewer::operator::HandleEvent;
+    use duck_engine_viewer::selection::SelectionItem;
+
+    use crate::notifications::Notifications;
+    use crate::operators::targeted::Phase;
+    use crate::tool::ModelingTool;
 
     const EPSILON: Real = 1e-5;
 
@@ -663,8 +353,8 @@ mod tests {
         op.follow_selection(&selection);
         assert_eq!(op.phase.target().unwrap().node, main);
         assert_eq!(edges(&op), [0]);
-        assert_eq!(op.ignored_edges, 1);
-        assert_eq!(edge_summary(1, op.ignored_edges), "1 edge (1 on other parts ignored)");
+        assert_eq!(op.ignored, 1);
+        assert_eq!(count_summary("edge", 1, op.ignored), "1 edge (1 on other parts ignored)");
     }
 
     /// Grabbing the grip locks the part: a plain click stops at the tool, but a

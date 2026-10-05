@@ -29,7 +29,7 @@ pub(super) const MIN_DIMENSION: Real = 1e-6;
 /// [`handles`](TweakParams::handles) / [`apply_handle`](TweakParams::apply_handle).
 ///
 /// `Copy` because a grip drag edits from a snapshot taken when it was grabbed.
-pub(super) trait TweakParams: Copy {
+pub trait TweakParams: Copy {
     /// The fields, one row each of a two-column grid. Returns true when a
     /// value changed.
     fn ui(&mut self, ui: &mut egui::Ui) -> bool;

@@ -1,30 +1,23 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-
+use anyhow::Result;
 use duck_engine_common::{consts, InnerSpace, Plane, Point3, Real, Vector3};
-use duck_engine_scene::resource::SubGeometryKind;
+use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
-    event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, KeyEvent, MouseButton, NamedKey},
     operator::{
-        DragKind, Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator,
-        SelectionKinds, SelectionMode,
+        DragKind, Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds,
+        SelectionMode,
     },
     selection::{SelectionItem, SelectionManager},
 };
+use opencascade::primitives::Shape;
 
 use crate::document::Document;
 use crate::extrude::{
     build_extrusion, execute_extrude, ExtrudeFrame, ExtrudeParams, ExtrudeTarget, SourceFate,
 };
-use crate::notifications::Notifications;
-use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, PanelContext, ToolInfo};
+use crate::tool::ToolInfo;
 use crate::ui::icons;
-use super::tweak::{
-    angle_field, handle_tweak, length_field, tweak_panel, TweakAction, TweakParams,
-};
+use super::targeted::{EditLock, PreviewStyle, TargetedOp, TargetedTool};
+use super::tweak::{angle_field, length_field, TweakParams};
 use super::ConstructionOptions;
 
 /// The extrusion's grips.
@@ -43,26 +36,6 @@ const MAX_TILT: Real = 85.0 * consts::PI / 180.0;
 
 /// A tilt below this reads as straight out of the profile.
 const TILT_EPSILON: Real = 1e-4;
-
-enum Phase {
-    /// No face or edge selected.
-    AwaitingSelection,
-    /// A face or edge is selected but nothing has been edited, so the target
-    /// still follows the selection.
-    Targeted(ExtrudeParams),
-    /// Editing has begun: the target is locked until the extrusion is applied
-    /// or cancelled.
-    Editing(ExtrudeParams),
-}
-
-impl Phase {
-    fn params(&self) -> Option<&ExtrudeParams> {
-        match self {
-            Phase::AwaitingSelection => None,
-            Phase::Targeted(params) | Phase::Editing(params) => Some(params),
-        }
-    }
-}
 
 impl TweakParams for ExtrudeParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
@@ -173,59 +146,49 @@ fn limit_tilt(direction: Vector3, normal: Vector3) -> Vector3 {
     normal * MAX_TILT.cos() + across.normalize() * MAX_TILT.sin()
 }
 
-pub struct ExtrudeOperator {
-    phase: Phase,
-    /// The primary selection the tool last acted on, so it reacts only when
-    /// the selection changes.
-    followed: Option<ExtrudeTarget>,
-    /// Parameters as they were when the held grip was grabbed; `None` when no
-    /// grip is held. A drag reports its total offset, so it is applied to this
-    /// rather than to the live parameters.
-    grabbed: Option<ExtrudeParams>,
-    /// The parameters the preview was last built for.
-    built: Option<ExtrudeParams>,
-    /// Why the current parameters could not be built, shown in the panel.
-    error: Option<String>,
-    /// The previewed extrusion, and the bare sketch it stands in for.
-    preview: PreviewSession,
-    /// Set once the extrusion is applied or cancelled, so the tool cedes back to
-    /// selection. Cleared on [`ModelingTool::deactivate`].
-    finished: bool,
+/// Extrudes the selected face into a solid or edge into a face, with a draft
+/// and a wall thickness.
+pub type ExtrudeOperator = TargetedTool<Extrude>;
 
-    document: Arc<Mutex<Document>>,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    notifications: Notifications,
-}
+/// The extrude operation, on the primary selection. Editing locks it outright.
+#[derive(Default)]
+pub struct Extrude;
 
-impl ExtrudeOperator {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-        notifications: Notifications,
-    ) -> Self {
-        let preview = PreviewSession::new(Arc::clone(&document));
-        Self {
-            phase: Phase::AwaitingSelection,
-            followed: None,
-            grabbed: None,
-            built: None,
-            error: None,
-            preview,
-            finished: false,
-            document,
-            construction_options,
-            notifications,
-        }
+impl TargetedOp for Extrude {
+    type Target = ExtrudeTarget;
+    type Params = ExtrudeParams;
+
+    const LOCK: EditLock = EditLock::Target;
+
+    fn info(&self) -> ToolInfo {
+        ToolInfo { id: "extrude", icon: icons::EXTRUDE, shortcut: None }
     }
 
-    fn is_editing(&self) -> bool {
-        matches!(self.phase, Phase::Editing(_))
+    fn selection_mode(&self) -> SelectionMode {
+        // Extrude operates on a face (→ solid) or an edge (→ face).
+        SelectionMode::SubGeometry(SelectionKinds::FACE | SelectionKinds::EDGE)
     }
 
-    /// The face/edge currently chosen as the primary selection, if any.
-    fn selected_target(selection: &SelectionManager) -> Option<ExtrudeTarget> {
-        match selection.primary()? {
-            SelectionItem::SubGeometry { node_id, element } => match element.kind {
+    fn title(&self, _params: Option<&ExtrudeParams>) -> &'static str {
+        "Extrude"
+    }
+
+    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
+        "Select a face or edge to extrude."
+    }
+
+    fn node(&self, target: &ExtrudeTarget) -> NodeId {
+        target.node()
+    }
+
+    /// The face or edge chosen as the primary selection, if any.
+    fn select(
+        &self,
+        selection: &SelectionManager,
+        _locked: Option<&ExtrudeTarget>,
+    ) -> (Option<ExtrudeTarget>, usize) {
+        let target = match selection.primary() {
+            Some(SelectionItem::SubGeometry { node_id, element }) => match element.kind {
                 SubGeometryKind::Face => {
                     Some(ExtrudeTarget::Face { node: node_id, face_index: element.index })
                 }
@@ -234,230 +197,66 @@ impl ExtrudeOperator {
                 }
                 SubGeometryKind::Pointset => None,
             },
-            SelectionItem::Node(_) => None,
-        }
+            _ => None,
+        };
+        (target, 0)
     }
 
-    /// Points an unedited extrusion at the primary selection, once it changes.
-    /// Editing locks the target, so while editing this does nothing.
-    fn follow_selection(&mut self, selection: &SelectionManager) {
-        let target = Self::selected_target(selection);
-        if self.is_editing() || target == self.followed {
-            return;
-        }
-        self.followed = target;
-
-        let Some(target) = target else {
-            self.phase = Phase::AwaitingSelection;
-            return;
-        };
+    /// A locked target is never re-resolved, so there is no edit to carry over.
+    fn resolve(
+        &self,
+        doc: &Document,
+        target: &ExtrudeTarget,
+        construction: &ConstructionOptions,
+        _edited: Option<&ExtrudeParams>,
+    ) -> Result<ExtrudeParams> {
         // Edges extrude out of the sketch (construction) plane; faces ignore this
         // and use their own normal.
-        let sketch_normal = self.construction_options.borrow().construction_plane.normal;
-        let frame = ExtrudeFrame::new(&self.document.lock().unwrap(), target, sketch_normal);
-        self.phase = match frame {
-            Ok(frame) => Phase::Targeted(ExtrudeParams::new(frame)),
-            Err(e) => {
-                log::warn!("Extrude target could not be resolved: {e:#}");
-                Phase::AwaitingSelection
-            }
-        };
+        let sketch_normal = construction.construction_plane.normal;
+        Ok(ExtrudeParams::new(ExtrudeFrame::new(doc, *target, sketch_normal)?))
     }
 
-    /// Rebuilds the preview when the parameters have moved on since it was last
-    /// built. A build that fails keeps the last good preview and says why.
-    fn refresh_preview(&mut self) {
-        let Phase::Editing(params) = self.phase else { return };
-        if self.built == Some(params) {
-            return;
-        }
-        self.built = Some(params);
-
-        if params.is_degenerate() {
-            // Nothing to show, and a hidden sketch comes back.
-            self.preview.clear_previews();
-            self.error = None;
-            return;
-        }
-
-        let shape = match build_extrusion(&self.document.lock().unwrap(), &params) {
-            Ok(shape) => shape,
-            Err(e) => {
-                self.error = Some(format!("{e:#}"));
-                return;
-            }
-        };
-        let options = self.construction_options.borrow().preview_options();
-        if self.preview.try_replace_preview(&shape, &options, "Extrude preview").is_none() {
-            self.error = Some("The extrusion could not be tessellated".to_owned());
-            return;
-        }
-        self.error = None;
-        // The extrusion stands in for a bare sketch. A solid source stays in
-        // view: the pad overlapping it already looks like the fused result.
-        if params.frame.fate == SourceFate::Replace {
-            self.preview.hide_source_node(params.frame.target.node());
-        }
+    fn is_degenerate(&self, params: &ExtrudeParams) -> bool {
+        params.is_degenerate()
     }
 
-    /// Commit the extrusion and finish the tool. A failure keeps the preview
-    /// and panel so the parameters can be corrected.
-    fn apply(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
-        let Some(params) = self.phase.params().copied() else { return Ok(()) };
-        let options = self.construction_options.borrow().geometry_options.clone();
-        execute_extrude(&mut self.document.lock().unwrap(), &params, &options)?;
-
-        // The only source the preview hid was the sketch the extrusion just
-        // replaced, and that part is already gone.
-        let _ = self.preview.commit();
-        // The selected face or edge belonged to a part the extrusion replaced.
-        selection.clear();
-        self.reset();
-        self.finished = true;
-        Ok(())
+    /// The extrusion stands in for a bare sketch. A solid source stays in view:
+    /// the pad overlapping it already looks like the fused result.
+    fn preview_style(&self, params: &ExtrudeParams) -> PreviewStyle {
+        PreviewStyle::Alongside { hide_source: params.frame.fate == SourceFate::Replace }
     }
 
-    /// Apply, reporting a failure. For the gestures that keep the tool active and
-    /// so must report for themselves: the panel's Apply button, Enter, right-click.
-    fn apply_and_report(&mut self, selection: &mut SelectionManager) {
-        if let Err(e) = self.apply(selection) {
-            log::error!("Extrude failed: {e:#}");
-            self.notifications.error(format!("Extrude failed: {e:#}"));
-        }
+    fn build(&self, doc: &Document, _target: &ExtrudeTarget, params: &ExtrudeParams) -> Result<Shape> {
+        build_extrusion(doc, params)
     }
 
-    /// Abandon the extrusion and finish the tool, restoring anything the
-    /// preview hid.
-    fn cancel(&mut self) {
-        self.preview.cancel();
-        self.reset();
-        self.finished = true;
-    }
-
-    /// Forget the extrusion in progress.
-    fn reset(&mut self) {
-        self.phase = Phase::AwaitingSelection;
-        self.grabbed = None;
-        self.built = None;
-        self.error = None;
-    }
-
-    /// Enter applies an extrusion being edited; Escape abandons the tool.
-    fn on_key(&mut self, event: &KeyEvent, selection: &mut SelectionManager) -> bool {
-        if event.state != ElementState::Pressed || event.repeat {
-            return false;
-        }
-        match event.logical_key {
-            Key::Named(NamedKey::Enter) if self.is_editing() => self.apply_and_report(selection),
-            Key::Named(NamedKey::Escape) if self.phase.params().is_some() => self.cancel(),
-            _ => return false,
-        }
-        true
-    }
-}
-
-impl ModelingTool for ExtrudeOperator {
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "extrude", icon: icons::EXTRUDE, shortcut: None }
-    }
-
-    fn deactivate(&mut self) {
-        self.preview.cancel();
-        self.reset();
-        self.followed = None;
-        self.finished = false;
-    }
-
-    fn selection_mode(&self) -> SelectionMode {
-        // Extrude operates on a face (→ solid) or an edge (→ face).
-        SelectionMode::SubGeometry(SelectionKinds::FACE | SelectionKinds::EDGE)
-    }
-
-    /// An extrusion being edited is a finished one, so leaving the tool commits
-    /// it. A zero-length one is nothing to commit.
-    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
-        match self.phase {
-            Phase::Editing(params) if !params.is_degenerate() => self.apply(selection),
-            _ => Ok(()),
-        }
-    }
-
-    fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    fn handles(&self) -> Vec<Handle> {
-        self.phase.params().map(TweakParams::handles).unwrap_or_default()
-    }
-
-    /// Grabbing a grip begins the edit, which locks the target.
-    fn on_handle(&mut self, event: &HandleEvent) {
-        if let (HandleEvent::Begin(_), Phase::Targeted(params)) = (event, &self.phase) {
-            self.phase = Phase::Editing(*params);
-        }
-        let Phase::Editing(params) = self.phase else { return };
-        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
-            self.phase = Phase::Editing(edited);
-        }
-    }
-
-    fn panel_title(&self) -> Option<&str> {
-        Some("Extrude")
-    }
-
-    fn panel_ui(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
-        let Some(mut params) = self.phase.params().copied() else {
-            ui.label("Select a face or edge to extrude.");
-            return;
-        };
-        if let Some(error) = &self.error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-        match tweak_panel(ui, &mut params) {
-            // An edit begins the operation, which locks the target.
-            TweakAction::Changed => self.phase = Phase::Editing(params),
-            TweakAction::Apply => self.apply_and_report(panel.selection),
-            TweakAction::Cancel => self.cancel(),
-            TweakAction::None => {}
-        }
-    }
-}
-
-impl Operator for ExtrudeOperator {
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::Update { .. } => {
-                self.follow_selection(ctx.selection);
-                self.refresh_preview();
-                false
-            }
-            // Once editing, the grips and panel own the extrusion: a stray pick
-            // must not reselect anything.
-            DeviceEvent::MouseClick { button: MouseButton::Left, .. } => self.is_editing(),
-            // Right-click finalizes, matching the Boolean/Line convention.
-            DeviceEvent::MouseClick { button: MouseButton::Right, .. } if self.is_editing() => {
-                self.apply_and_report(ctx.selection);
-                true
-            }
-            DeviceEvent::KeyboardInput { event, .. } => self.on_key(event, ctx.selection),
-            _ => false,
-        }
-    }
-
-    fn name(&self) -> &str {
-        "Extrude"
+    fn apply(
+        &self,
+        doc: &mut Document,
+        _target: &ExtrudeTarget,
+        params: &ExtrudeParams,
+        construction: &ConstructionOptions,
+    ) -> Result<()> {
+        execute_extrude(doc, params, &construction.geometry_options)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
+
     use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::resource::{NodeId, SubGeometryElement};
+    use duck_engine_scene::resource::SubGeometryElement;
     use duck_engine_scene::Scene;
     use duck_engine_viewer::input::Modifiers;
-    use opencascade::primitives::Shape;
+    use duck_engine_viewer::operator::HandleEvent;
+
+    use crate::notifications::Notifications;
+    use crate::operators::targeted::Phase;
+    use crate::tool::ModelingTool;
 
     const EPSILON: Real = 1e-5;
 
@@ -710,5 +509,36 @@ mod tests {
         assert!((op.phase.params().expect("editing").distance - 2.0).abs() < EPSILON);
         assert!(op.error.is_none(), "{:?}", op.error);
         assert_eq!(op.preview.preview_nodes().len(), 1);
+    }
+
+    /// An extrusion has one target, so once editing there is nothing for a
+    /// shift-click to refine: it stops at the tool like any other click.
+    #[test]
+    fn editing_swallows_shift_clicks_too() {
+        let (document, node) = document_with_box();
+        let mut op = operator(&document);
+        let mut selection = SelectionManager::new();
+        select_face(&mut selection, node, 0);
+        op.follow_selection(&selection);
+        let shift = Modifiers { shift: true, ..Default::default() };
+        assert!(!op.swallows_click(shift));
+
+        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
+        assert!(op.swallows_click(Modifiers::default()));
+        assert!(op.swallows_click(shift));
+    }
+
+    /// A target that can't be resolved says why in the panel.
+    #[test]
+    fn an_unresolvable_target_is_reported() {
+        let (document, node) = document_with_box();
+        let mut op = operator(&document);
+        let mut selection = SelectionManager::new();
+        select_face(&mut selection, node, 99);
+        op.follow_selection(&selection);
+
+        assert!(matches!(op.phase, Phase::AwaitingSelection));
+        let error = op.error.as_deref().expect("the failure is reported");
+        assert!(error.contains("not part of a known CAD part"), "got {error}");
     }
 }
