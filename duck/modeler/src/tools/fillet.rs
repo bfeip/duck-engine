@@ -8,16 +8,16 @@ use duck_engine_viewer::common::Real;
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
-use crate::fillet::{
+use crate::ops::fillet::{
     build_fillet, execute_fillet, BlendKind, FilletFrame, FilletParams, FilletTarget,
 };
-use crate::tool::ToolInfo;
+use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{
     count_summary, selected_on_part, EditLock, PreviewStyle, TargetedOp, TargetedTool,
 };
 use super::tweak::{length_field, TweakParams};
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// The blend's grip.
 const SIZE_HANDLE: HandleId = HandleId(0);
@@ -64,7 +64,7 @@ impl TweakParams for FilletParams {
 
 /// Rounds or bevels selected edges of a part: one tool, whose grip makes a
 /// fillet on one side of the edge and a chamfer on the other.
-pub type FilletOperator = TargetedTool<Fillet>;
+pub type FilletTool = TargetedTool<Fillet>;
 
 /// The fillet/chamfer operation, on the selected edges of one part. Editing
 /// locks the part, though its edges can still be shift-clicked in and out.
@@ -175,8 +175,8 @@ mod tests {
     use duck_engine_viewer::selection::SelectionItem;
 
     use crate::notifications::Notifications;
-    use crate::operators::targeted::Phase;
-    use crate::tool::ModelingTool;
+    use crate::tools::targeted::Phase;
+    use crate::tools::ModelingTool;
 
     const EPSILON: Real = 1e-5;
 
@@ -197,9 +197,9 @@ mod tests {
         (Arc::new(Mutex::new(doc)), main, other)
     }
 
-    fn operator(document: &Arc<Mutex<Document>>) -> FilletOperator {
+    fn operator(document: &Arc<Mutex<Document>>) -> FilletTool {
         let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        FilletOperator::new(construction, Arc::clone(document), Notifications::default())
+        FilletTool::new(construction, Arc::clone(document), Notifications::default())
     }
 
     fn edge(node: NodeId, index: u32) -> SelectionItem {
@@ -210,7 +210,7 @@ mod tests {
     }
 
     /// An operator targeting edge 0 of the main box alone.
-    fn targeting_edge(document: &Arc<Mutex<Document>>, node: NodeId) -> (FilletOperator, SelectionManager) {
+    fn targeting_edge(document: &Arc<Mutex<Document>>, node: NodeId) -> (FilletTool, SelectionManager) {
         let mut op = operator(document);
         let mut selection = SelectionManager::new();
         selection.set(edge(node, 0));
@@ -218,11 +218,11 @@ mod tests {
         (op, selection)
     }
 
-    fn params(op: &FilletOperator) -> FilletParams {
+    fn params(op: &FilletTool) -> FilletParams {
         *op.phase.params().expect("a blend is targeted")
     }
 
-    fn edges(op: &FilletOperator) -> Vec<u32> {
+    fn edges(op: &FilletTool) -> Vec<u32> {
         op.phase.target().expect("a blend is targeted").edges.clone()
     }
 
@@ -232,7 +232,7 @@ mod tests {
     }
 
     /// Grabs the grip and drags it `distance` out of the corner, then lets go.
-    fn drag_out(op: &mut FilletOperator, distance: Real) {
+    fn drag_out(op: &mut FilletTool, distance: Real) {
         let grabbed = params(op);
         op.on_handle(&HandleEvent::Begin(SIZE_HANDLE));
         op.on_handle(&HandleEvent::Drag(drag(grabbed.grip(), grabbed.frame.outward * distance)));

@@ -4,7 +4,7 @@
 use duck_engine_viewer::common::{EuclideanSpace, InnerSpace, Plane, Point3, Real, Vector3};
 use duck_engine_viewer::scene::{PositionedCamera, Projection};
 
-use crate::operators::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 use crate::snap::SnapFlags;
 use crate::ui::UiAction;
 

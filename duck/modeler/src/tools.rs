@@ -1,3 +1,45 @@
+//! Modeling tools: the palette entries that build and edit parts, the
+//! [`ToolManager`] that drives them, and the [`ModelingTool`] interface between
+//! the two.
+
+mod boolean;
+mod r#box;
+mod circle;
+mod curve;
+mod cylinder;
+mod draft;
+mod duplicate;
+mod extrude;
+mod fillet;
+mod hollow;
+mod line;
+mod loft;
+mod manager;
+mod rectangle;
+mod sphere;
+mod targeted;
+mod thicken;
+mod transform;
+mod tweak;
+
+pub use boolean::BooleanTool;
+pub use r#box::BoxTool;
+pub use circle::CircleTool;
+pub use curve::CurveTool;
+pub use cylinder::CylinderTool;
+pub use draft::DraftTool;
+pub use duplicate::DuplicateTool;
+pub use extrude::ExtrudeTool;
+pub use fillet::FilletTool;
+pub use hollow::HollowTool;
+pub use line::LineTool;
+pub use loft::LoftTool;
+pub use manager::{ToolId, ToolManager};
+pub use rectangle::RectangleTool;
+pub use sphere::SphereTool;
+pub use thicken::ThickenTool;
+pub use transform::TransformTool;
+
 use duck_engine_viewer::common::Point3;
 use duck_engine_viewer::operator::{Handle, HandleEvent, Operator, SelectionMode};
 use duck_engine_viewer::selection::SelectionManager;

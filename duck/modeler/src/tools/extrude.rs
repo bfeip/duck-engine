@@ -11,12 +11,12 @@ use duck_engine_viewer::{
 use opencascade::primitives::Shape;
 
 use crate::document::{Document, SourceFate};
-use crate::extrude::{build_extrusion, execute_extrude, ExtrudeFrame, ExtrudeParams, ExtrudeTarget};
-use crate::tool::ToolInfo;
+use crate::ops::extrude::{build_extrusion, execute_extrude, ExtrudeFrame, ExtrudeParams, ExtrudeTarget};
+use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{EditLock, PreviewStyle, TargetedOp, TargetedTool};
 use super::tweak::{angle_field, length_field, TweakParams};
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// The extrusion's grips.
 const DISTANCE_HANDLE: HandleId = HandleId(0);
@@ -146,7 +146,7 @@ fn limit_tilt(direction: Vector3, normal: Vector3) -> Vector3 {
 
 /// Extrudes the selected face into a solid or edge into a face, with a draft
 /// and a wall thickness.
-pub type ExtrudeOperator = TargetedTool<Extrude>;
+pub type ExtrudeTool = TargetedTool<Extrude>;
 
 /// The extrude operation, on the primary selection. Editing locks it outright.
 #[derive(Default)]
@@ -253,8 +253,8 @@ mod tests {
     use duck_engine_viewer::operator::HandleEvent;
 
     use crate::notifications::Notifications;
-    use crate::operators::targeted::Phase;
-    use crate::tool::ModelingTool;
+    use crate::tools::targeted::Phase;
+    use crate::tools::ModelingTool;
 
     const EPSILON: Real = 1e-5;
 
@@ -268,9 +268,9 @@ mod tests {
         (Arc::new(Mutex::new(doc)), node)
     }
 
-    fn operator(document: &Arc<Mutex<Document>>) -> ExtrudeOperator {
+    fn operator(document: &Arc<Mutex<Document>>) -> ExtrudeTool {
         let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        ExtrudeOperator::new(construction, Arc::clone(document), Notifications::default())
+        ExtrudeTool::new(construction, Arc::clone(document), Notifications::default())
     }
 
     fn select_face(selection: &mut SelectionManager, node: NodeId, index: u32) {
@@ -511,7 +511,7 @@ mod tests {
 
     /// Drags the arrow of an operator targeting face 0 out to `distance` and
     /// rebuilds the preview.
-    fn drag_out(op: &mut ExtrudeOperator, distance: Real) {
+    fn drag_out(op: &mut ExtrudeTool, distance: Real) {
         let (tip, direction) = {
             let params = op.phase.params().expect("targeted");
             (params.tip(), params.direction)

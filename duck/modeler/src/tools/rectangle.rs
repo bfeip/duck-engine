@@ -16,9 +16,9 @@ use opencascade::primitives::{Face, Shape, Wire};
 
 use crate::document::{point3_to_dvec3, Document};
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo};
 use crate::ui::icons;
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
@@ -37,7 +37,7 @@ enum Phase {
     Defining { center: Point3, plane: Plane },
 }
 
-pub struct RectangleOperator {
+pub struct RectangleTool {
     phase: Phase,
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
@@ -46,7 +46,7 @@ pub struct RectangleOperator {
     cursor_target: Option<Point3>,
 }
 
-impl RectangleOperator {
+impl RectangleTool {
     pub fn new(
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
@@ -241,7 +241,7 @@ impl RectangleOperator {
     }
 }
 
-impl ModelingTool for RectangleOperator {
+impl ModelingTool for RectangleTool {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "rectangle", icon: icons::RECTANGLE, shortcut: None }
     }
@@ -258,7 +258,7 @@ impl ModelingTool for RectangleOperator {
     }
 }
 
-impl Operator for RectangleOperator {
+impl Operator for RectangleTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn reference_face_builds() {
-        assert!(RectangleOperator::reference_face().is_some());
+        assert!(RectangleTool::reference_face().is_some());
     }
 
     #[test]
@@ -312,8 +312,8 @@ mod tests {
         let plane = Plane::xz();
         let center = Point3::new(0.0, 0.0, 0.0);
         let corner = Point3::new(1.5, 0.0, 2.0);
-        let (width, depth) = RectangleOperator::footprint_dims(center, corner, &plane);
-        assert!(RectangleOperator::footprint_valid(width, depth));
+        let (width, depth) = RectangleTool::footprint_dims(center, corner, &plane);
+        assert!(RectangleTool::footprint_valid(width, depth));
         assert!((width - 3.0).abs() < EPSILON);
         assert!((depth - 4.0).abs() < EPSILON);
     }
@@ -322,7 +322,7 @@ mod tests {
     fn footprint_invalid_when_corner_on_center() {
         let plane = Plane::xz();
         let center = Point3::new(0.0, 0.0, 0.0);
-        let (width, depth) = RectangleOperator::footprint_dims(center, center, &plane);
-        assert!(!RectangleOperator::footprint_valid(width, depth));
+        let (width, depth) = RectangleTool::footprint_dims(center, center, &plane);
+        assert!(!RectangleTool::footprint_valid(width, depth));
     }
 }

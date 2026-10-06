@@ -13,13 +13,13 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
-use crate::boolean::{execute_boolean, preview_boolean, BooleanKind};
+use crate::ops::boolean::{execute_boolean, preview_boolean, BooleanKind};
 use crate::document::Document;
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum BooleanPhase {
@@ -29,7 +29,7 @@ enum BooleanPhase {
     Cancelled,
 }
 
-pub struct BooleanOperator {
+pub struct BooleanTool {
     pub kind: BooleanKind,
     phase: BooleanPhase,
 
@@ -44,7 +44,7 @@ pub struct BooleanOperator {
     notifications: Notifications,
 }
 
-impl BooleanOperator {
+impl BooleanTool {
     pub fn new(
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
@@ -299,7 +299,7 @@ fn removed_line_material() -> LineMaterial {
     LineMaterial::new(RgbaColor { r: 0.6, g: 0.05, b: 0.08, a: 1.0 })
 }
 
-impl ModelingTool for BooleanOperator {
+impl ModelingTool for BooleanTool {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "boolean", icon: icons::BOOLEAN, shortcut: None }
     }
@@ -339,7 +339,7 @@ impl ModelingTool for BooleanOperator {
     }
 }
 
-impl Operator for BooleanOperator {
+impl Operator for BooleanTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -409,7 +409,7 @@ mod tests {
         let mut selection = SelectionManager::new();
         selection.add(SelectionItem::Node(target));
         selection.add(SelectionItem::Node(tool));
-        let mut op = BooleanOperator::new(construction, document.clone(), Notifications::default());
+        let mut op = BooleanTool::new(construction, document.clone(), Notifications::default());
 
         for (kind, removed_nodes) in
             [(BooleanKind::Subtract, 1), (BooleanKind::Intersect, 2), (BooleanKind::Union, 0)]

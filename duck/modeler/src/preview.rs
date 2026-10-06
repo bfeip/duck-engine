@@ -30,9 +30,10 @@ pub struct PreviewSession {
 }
 
 /// The material pair a session hands to its preview tessellations, along with
-/// the [`GeometryClass`] it was instantiated for. Reused across rebuilds — e.g.
-/// per cursor move during a drag — so only a class change (a sketch becoming a
-/// solid) mints a fresh pair.
+/// the [`GeometryClass`] it was instantiated for.
+/// 
+/// Reused across rebuilds — e.g. per cursor move during a drag — so
+/// only a class change (a sketch becoming a solid) mints a fresh pair.
 struct PreviewMaterials {
     class: GeometryClass,
     face: FaceMaterialHandle,

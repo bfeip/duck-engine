@@ -1,25 +1,17 @@
-mod boolean;
+mod construction;
 mod cursor;
 mod delete;
 mod document;
-mod draft;
-mod duplicate;
-mod extrude;
-mod fillet;
 mod grid;
 mod history;
-mod hollow;
 #[cfg(not(target_arch = "wasm32"))]
 mod io;
-mod loft;
 mod notifications;
-mod operators;
+mod ops;
 mod platform;
 mod preview;
 mod snap;
-mod thicken;
-mod tool;
-mod tool_manager;
+mod tools;
 mod ui;
 mod undo;
 
@@ -38,16 +30,16 @@ use duck_engine_viewer::common::{
 };
 use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
-use crate::operators::{
-    BooleanOperator, BoxOperator, CircleOperator, ConstructionOptions, CurveOperator,
-    CylinderOperator, DraftOperator, DuplicateTool, ExtrudeOperator, FilletOperator, HollowOperator,
-    LineOperator, LoftOperator, RectangleOperator, SphereOperator, ThickenOperator, TransformTool,
+use crate::construction::ConstructionOptions;
+use crate::tools::{
+    BooleanTool, BoxTool, CircleTool, CurveTool, CylinderTool, DraftTool, DuplicateTool,
+    ExtrudeTool, FilletTool, HollowTool, LineTool, LoftTool, RectangleTool, SphereTool,
+    ThickenTool, ToolManager, TransformTool,
 };
 use crate::delete::DeleteOperator;
 use crate::notifications::Notifications;
 use crate::undo::{UndoAction, UndoRedoOperator};
 use crate::platform::Host;
-use crate::tool_manager::ToolManager;
 use crate::ui::{ModelerUi, UiAction};
 
 use document::Document;
@@ -156,20 +148,20 @@ impl ViewerState<'static> {
         tools.register(TransformTool::new(TransformMode::Rotate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(TransformTool::new(TransformMode::Scale, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(DuplicateTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(SphereOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(BoxOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(CylinderOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(RectangleOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(LineOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(CurveOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(CircleOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(BooleanOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(ExtrudeOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(FilletOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(DraftOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(ThickenOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(HollowOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(LoftOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(SphereTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(BoxTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(CylinderTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(RectangleTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(LineTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(CurveTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(CircleTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        tools.register(BooleanTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(ExtrudeTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(FilletTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(DraftTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(ThickenTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(HollowTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(LoftTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
 
         Self {
             egui_renderer,

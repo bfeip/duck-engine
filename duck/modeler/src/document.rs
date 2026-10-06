@@ -815,7 +815,7 @@ mod tests {
 
     #[test]
     fn tweak_after_boolean_direct_path() {
-        use crate::boolean::{execute_boolean, BooleanKind};
+        use crate::ops::boolean::{execute_boolean, BooleanKind};
 
         let (mut doc, box_part, _) = doc_with_box();
         let sphere = doc

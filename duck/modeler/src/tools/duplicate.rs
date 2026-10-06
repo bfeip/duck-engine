@@ -16,12 +16,12 @@ use duck_engine_viewer::{
 };
 
 use crate::document::{Document, PartId};
-use crate::duplicate::duplicate_parts;
+use crate::ops::duplicate::duplicate_parts;
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo};
 use crate::ui::icons;
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// Copies the selected parts and places the copies with the translate gizmo.
 ///

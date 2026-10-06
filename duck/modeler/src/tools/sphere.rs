@@ -16,13 +16,13 @@ use opencascade::primitives::Shape;
 
 use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
 use super::tweak::{
     commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
     TweakAction, TweakParams,
 };
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// The sphere's one grip, on the pole.
 const RADIUS_HANDLE: HandleId = HandleId(0);
@@ -49,7 +49,7 @@ enum Phase {
 #[derive(Clone, Copy)]
 pub(super) struct SphereParams {
     center: Point3,
-    /// Polar axis, chosen at placement (see [`SphereOperator::on_place_center`]).
+    /// Polar axis, chosen at placement (see [`SphereTool::on_place_center`]).
     axis: Vector3,
     radius: Real,
 }
@@ -58,7 +58,7 @@ impl PrimitiveParams for SphereParams {
     const NAME: &'static str = "Sphere";
 
     fn preview_transform(&self) -> Transform {
-        SphereOperator::preview_transform(self.center, self.radius)
+        SphereTool::preview_transform(self.center, self.radius)
     }
 
     fn build(&self) -> Option<Shape> {
@@ -94,7 +94,7 @@ impl TweakParams for SphereParams {
     }
 }
 
-pub struct SphereOperator {
+pub struct SphereTool {
     phase: Phase,
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
@@ -111,7 +111,7 @@ pub struct SphereOperator {
     finished: bool,
 }
 
-impl SphereOperator {
+impl SphereTool {
     pub fn new(
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
@@ -267,7 +267,7 @@ impl SphereOperator {
     }
 }
 
-impl ModelingTool for SphereOperator {
+impl ModelingTool for SphereTool {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "sphere", icon: icons::SPHERE, shortcut: None }
     }
@@ -333,7 +333,7 @@ impl ModelingTool for SphereOperator {
     }
 }
 
-impl Operator for SphereOperator {
+impl Operator for SphereTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -404,7 +404,7 @@ impl Operator for SphereOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operators::tweak::MIN_DIMENSION;
+    use crate::tools::tweak::MIN_DIMENSION;
 
     const EPSILON: Real = 1e-6;
 

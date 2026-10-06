@@ -18,89 +18,86 @@ use opencascade::primitives::{Edge, Shape, Wire};
 use crate::document::{point3_to_dvec3, Document};
 use crate::preview::PreviewSession;
 use crate::snap::{Snap, SnapKind, SnapProvider, WireStartSnap};
-use crate::tool::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo};
 use crate::ui::icons;
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum CurveAction {
-    /// Place a point (or close the curve when hovering the start point).
+enum LineAction {
+    /// Place a point (or close the wire when hovering the start point).
     AddPoint,
-    /// Finalize the current open curve.
+    /// Finalize the current open polyline.
     Finish,
 }
 
 enum Phase {
     Idle,
-    /// Building a curve: `points` are the placed interpolation points and `closing`
-    /// records whether the cursor is currently snapped onto the start point.
+    /// Building a polyline: `points` are the placed vertices and `closing` records
+    /// whether the cursor is currently snapped onto the start point.
     Building {
         points: Vec<Point3>,
         closing: bool,
     },
 }
 
-pub struct CurveOperator {
+pub struct LineTool {
     phase: Phase,
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
     preview: PreviewSession,
-    bindings: InputMap<CurveAction>,
+    bindings: InputMap<LineAction>,
     /// Where the modeler's 3D cursor should sit (the latest snap point), or `None`
     /// to hide it. Read by the modeler via [`ModelingTool::cursor_target`].
     cursor_target: Option<Point3>,
-    /// Set when a curve has been committed so the modeler cedes back to selection.
+    /// Set when a line has been committed so the modeler cedes back to selection.
     finished: bool,
 }
 
 
-/// Builds an open curve wire shape: a B-spline interpolated through `points`.
-/// Returns `None` if there are fewer than two points (two points are accepted so
-/// the rubber-band preview works, but a committed curve needs three).
-fn open_curve_shape(points: &[Point3]) -> Option<Shape> {
+/// Builds an open polyline wire shape from `points` (one segment per consecutive
+/// pair). Returns `None` if there are fewer than two points.
+fn open_wire_shape(points: &[Point3]) -> Option<Shape> {
     if points.len() < 2 {
         return None;
     }
-    let edge = Edge::spline_from_points(points.iter().copied().map(point3_to_dvec3), None, false)
-        .map_err(|e| warn!("Failed to build curve edge: {e}"))
+    let edges: Vec<Edge> = points
+        .windows(2)
+        .map(|w| Edge::segment(point3_to_dvec3(w[0]), point3_to_dvec3(w[1])))
+        .collect::<Result<_, _>>()
+        .map_err(|e| warn!("Failed to build polyline edge: {e}"))
         .ok()?;
-    let wire = Wire::from_edges(&[edge])
-        .map_err(|e| warn!("Failed to build curve wire: {e}"))
+    let wire = Wire::from_edges(&edges)
+        .map_err(|e| warn!("Failed to build polyline wire: {e}"))
         .ok()?;
     Some(Shape::from(&wire))
 }
 
-/// Builds a closed wire from a smooth periodic B-spline through `points` (the
-/// start point is not repeated; the interpolation closes the loop). Returns
-/// `None` with fewer than three points.
-fn closed_curve(points: &[Point3]) -> Option<Wire> {
+/// Builds a closed wire from `points`. Returns `None` with fewer than three points.
+/// `Wire::from_ordered_points` closes the loop automatically.
+fn closed_wire(points: &[Point3]) -> Option<Wire> {
     if points.len() < 3 {
         return None;
     }
-    let edge = Edge::spline_from_points(points.iter().copied().map(point3_to_dvec3), None, true)
-        .map_err(|e| warn!("Failed to build closed curve edge: {e}"))
-        .ok()?;
-    Wire::from_edges(&[edge])
-        .map_err(|e| warn!("Failed to build closed curve wire: {e}"))
+    Wire::from_ordered_points(points.iter().copied().map(point3_to_dvec3))
+        .map_err(|e| warn!("Failed to build closed wire: {e}"))
         .ok()
 }
 
-/// Builds a closed curve shape (the loop, with no fill) from `points`. Used as a
+/// Builds a closed wire shape (the loop, with no fill) from `points`. Used as a
 /// fallback when the points are not co-planar and a face cannot be built.
-fn closed_curve_shape(points: &[Point3]) -> Option<Shape> {
-    Some(Shape::from(&closed_curve(points)?))
+fn closed_wire_shape(points: &[Point3]) -> Option<Shape> {
+    Some(Shape::from(&closed_wire(points)?))
 }
 
-/// Builds a closed planar face shape bounded by the periodic curve. Returns `None`
-/// with fewer than three points, or when the points are not co-planar (no face can
-/// be built).
+/// Builds a closed planar face shape from `points`. Returns `None` with fewer than
+/// three points, or when the points are not co-planar (no face can be built).
 fn closed_face_shape(points: &[Point3]) -> Option<Shape> {
-    let wire = closed_curve(points)?;
-    let face = wire.to_face().map_err(|e| warn!("Failed to build face from curve: {e}")).ok()?;
+    let wire = closed_wire(points)?;
+    let face = wire.to_face().map_err(|e| warn!("Failed to build face from wire: {e}")).ok()?;
     Some(Shape::from(&face))
 }
 
-impl CurveOperator {
+impl LineTool {
     pub fn new(
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
@@ -108,11 +105,11 @@ impl CurveOperator {
         let bindings = InputMap::new()
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
-                CurveAction::AddPoint,
+                LineAction::AddPoint,
             )
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
-                CurveAction::Finish,
+                LineAction::Finish,
             );
         let preview = PreviewSession::new(Arc::clone(&document));
         Self {
@@ -126,10 +123,10 @@ impl CurveOperator {
         }
     }
 
-    /// Resolves a snapped point. While building (≥3 points), offers the curve's
-    /// start point as a [`SnapKind::WireStart`] candidate so the snap engine can
-    /// close the loop; callers read `snap.kind == WireStart` to learn whether the
-    /// cursor is closing the curve.
+    /// Resolves a snapped point. While building a face (≥3 points), offers the
+    /// wire's start point as a [`SnapKind::WireStart`] candidate so the snap
+    /// engine can close the path; callers read `snap.kind == WireStart` to learn
+    /// whether the cursor is closing the wire.
     fn snapped_point(
         &self,
         cursor: (f32, f32),
@@ -137,7 +134,7 @@ impl CurveOperator {
         camera: &PositionedCamera,
         ctx: &EventContext,
     ) -> Option<Snap> {
-        // A periodic curve needs at least three interpolation points.
+        // A face needs at least three vertices to enclose an area.
         let wire_start = match &self.phase {
             Phase::Building { points, .. } if points.len() >= 3 => {
                 Some(WireStartSnap { start: points[0] })
@@ -153,7 +150,7 @@ impl CurveOperator {
     }
 
     /// Rebuilds the preview geometry. `cursor_point` is the live (snapped) cursor
-    /// position to draw a rubber-band curve to, or `None` to show only the placed
+    /// position to draw a rubber-band segment to, or `None` to show only the placed
     /// points. When `closing` is set, shows a filled face preview instead.
     fn rebuild_preview(&mut self, cursor_point: Option<Point3>, closing: bool) {
         let points = match &self.phase {
@@ -162,28 +159,28 @@ impl CurveOperator {
         };
 
         let shape = if closing {
-            // Non-coplanar points can't form a face; fall back to the closed curve.
-            closed_face_shape(&points).or_else(|| closed_curve_shape(&points))
+            // Non-coplanar points can't form a face; fall back to the closed wire.
+            closed_face_shape(&points).or_else(|| closed_wire_shape(&points))
         } else {
             let mut all = points;
             if let Some(c) = cursor_point {
                 all.push(c);
             }
-            open_curve_shape(&all)
+            open_wire_shape(&all)
         };
 
         // `rebuild` keeps the last valid preview if construction fails (e.g. a snap
-        // produced a degenerate point), so the curve doesn't momentarily disappear.
+        // produced a degenerate point), so the line doesn't momentarily disappear.
         let Some(shape) = shape else { return };
         let preview_options = self.construction_options.borrow().preview_options();
-        if self.preview.try_replace_preview(&shape, &preview_options, "curve").is_some()
+        if self.preview.try_replace_preview(&shape, &preview_options, "line").is_some()
             && let Phase::Building { closing: c, .. } = &mut self.phase
         {
             *c = closing;
         }
     }
 
-    /// Adds a point to the curve or starts building a curve if there were no previous points.
+    /// Adds a point to the wire or starts building a wire if there were no previous points.
     /// Returns true if a point was successfully added.
     fn on_add_point(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
         let camera = ctx.camera.clone();
@@ -204,7 +201,7 @@ impl CurveOperator {
                     if let Phase::Building { points, .. } = &mut self.phase {
                         points.push(point);
                     }
-                    // Show the placed curve; the next cursor move adds the rubber band.
+                    // Show the placed polyline; the next cursor move adds the rubber band.
                     self.rebuild_preview(None, false);
                 }
             }
@@ -213,8 +210,7 @@ impl CurveOperator {
         true
     }
 
-    /// Commits the placed points as a closed planar region bounded by a smooth
-    /// periodic curve, and ends the tool.
+    /// Commits the placed points as a closed planar region and ends the tool.
     fn commit_closed(&mut self) {
         let points = match &self.phase {
             Phase::Building { points, .. } => points.clone(),
@@ -222,7 +218,7 @@ impl CurveOperator {
         };
         let _ = self.preview.commit();
 
-        if let Some(shape) = closed_face_shape(&points).or_else(|| closed_curve_shape(&points)) {
+        if let Some(shape) = closed_face_shape(&points).or_else(|| closed_wire_shape(&points)) {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
             if doc
@@ -237,27 +233,27 @@ impl CurveOperator {
             }
         }
         else {
-            warn!("Failed to build closed face shape for curve.")
+            warn!("Failed to build closed face shape for polyline.")
         }
         self.phase = Phase::Idle;
     }
 
-    /// Commits the placed points as an open curve and ends the tool. Does nothing
-    /// with fewer than three placed points (the curve tool's minimum).
+    /// Commits the placed points as an open polyline wire and ends the tool. Does
+    /// nothing if fewer than one segment has been defined.
     fn finish(&mut self) -> bool {
         let points = match &self.phase {
-            Phase::Building { points, .. } if points.len() >= 3 => points.clone(),
-            _ => return false,
+            Phase::Building { points, .. } => points.clone(),
+            Phase::Idle => return false,
         };
         let _ = self.preview.commit();
 
         let mut committed = false;
-        if let Some(shape) = open_curve_shape(&points) {
+        if let Some(shape) = open_wire_shape(&points) {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
             committed = doc
                 .add_numbered_part(
-                    "Curve",
+                    "Line",
                     shape,
                     &coptions.geometry_options,
                 )
@@ -270,7 +266,7 @@ impl CurveOperator {
         committed
     }
 
-    /// Discards the in-progress curve, removing its preview.
+    /// Discards the in-progress line, removing its preview.
     pub fn cancel(&mut self) {
         self.preview.cancel();
         self.phase = Phase::Idle;
@@ -293,9 +289,9 @@ impl CurveOperator {
     }
 }
 
-impl ModelingTool for CurveOperator {
+impl ModelingTool for LineTool {
     fn info(&self) -> ToolInfo {
-        ToolInfo { id: "curve", icon: icons::CURVE, shortcut: None }
+        ToolInfo { id: "line", icon: icons::LINE, shortcut: None }
     }
 
     fn deactivate(&mut self) {
@@ -304,7 +300,7 @@ impl ModelingTool for CurveOperator {
         self.finished = false;
     }
 
-    /// Leaving the tool ends the curve where it stands, as right-click and
+    /// Leaving the tool ends the polyline where it stands, as right-click and
     /// Enter do; too few points is no result, and `deactivate` then drops it.
     fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
         self.finish();
@@ -320,7 +316,7 @@ impl ModelingTool for CurveOperator {
     }
 }
 
-impl Operator for CurveOperator {
+impl Operator for LineTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -329,8 +325,8 @@ impl Operator for CurveOperator {
                 let mut handled = false;
                 for action in actions {
                     handled |= match action {
-                        CurveAction::AddPoint => self.on_add_point(*position, ctx),
-                        CurveAction::Finish => self.finish(),
+                        LineAction::AddPoint => self.on_add_point(*position, ctx),
+                        LineAction::Finish => self.finish(),
                     };
                 }
                 handled
@@ -360,41 +356,6 @@ impl Operator for CurveOperator {
     }
 
     fn name(&self) -> &str {
-        "Curve"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use duck_engine_common::Real;
-
-    fn p(x: Real, y: Real, z: Real) -> Point3 {
-        Point3::new(x, y, z)
-    }
-
-    #[test]
-    fn open_curve_needs_two_points() {
-        assert!(open_curve_shape(&[p(0.0, 0.0, 0.0)]).is_none());
-        assert!(open_curve_shape(&[p(0.0, 0.0, 0.0), p(1.0, 0.0, 1.0)]).is_some());
-    }
-
-    #[test]
-    fn open_curve_through_three_points() {
-        let pts = [p(0.0, 0.0, 0.0), p(1.0, 0.0, 2.0), p(3.0, 0.0, 1.0)];
-        assert!(open_curve_shape(&pts).is_some());
-    }
-
-    #[test]
-    fn closed_curve_needs_three_points() {
-        assert!(closed_curve(&[p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0)]).is_none());
-        let pts = [p(0.0, 0.0, 0.0), p(2.0, 0.0, 0.0), p(1.0, 0.0, 2.0)];
-        assert!(closed_curve(&pts).is_some());
-    }
-
-    #[test]
-    fn closed_face_from_planar_points() {
-        let pts = [p(0.0, 0.0, 0.0), p(2.0, 0.0, 0.0), p(2.0, 0.0, 2.0), p(0.0, 0.0, 2.0)];
-        assert!(closed_face_shape(&pts).is_some());
+        "Line"
     }
 }

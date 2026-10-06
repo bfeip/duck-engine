@@ -14,9 +14,9 @@ use opencascade::primitives::{Edge, Shape, Wire};
 
 use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo};
 use crate::ui::icons;
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum CircleAction {
@@ -31,7 +31,7 @@ enum Phase {
     Defining { center: Point3, normal: Vector3 },
 }
 
-pub struct CircleOperator {
+pub struct CircleTool {
     phase: Phase,
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
@@ -61,7 +61,7 @@ fn circle_shape(center: Point3, normal: Vector3, radius: f64) -> Option<Shape> {
     }
 }
 
-impl CircleOperator {
+impl CircleTool {
     pub fn new(
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
@@ -184,7 +184,7 @@ impl CircleOperator {
     }
 }
 
-impl ModelingTool for CircleOperator {
+impl ModelingTool for CircleTool {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "circle", icon: icons::CIRCLE, shortcut: None }
     }
@@ -201,7 +201,7 @@ impl ModelingTool for CircleOperator {
     }
 }
 
-impl Operator for CircleOperator {
+impl Operator for CircleTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {

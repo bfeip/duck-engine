@@ -22,9 +22,9 @@ use opencascade::primitives::Shape;
 use crate::document::Document;
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use super::tweak::{handle_tweak, tweak_panel, TweakAction, TweakParams};
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// How much of its target an operation holds once editing has begun.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

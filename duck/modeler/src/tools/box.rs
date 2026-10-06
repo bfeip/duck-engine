@@ -18,13 +18,13 @@ use opencascade::primitives::{Face, Shape, Wire};
 
 use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
 use super::tweak::{
     commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
     TweakAction, TweakParams,
 };
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
@@ -190,7 +190,7 @@ impl TweakParams for BoxParams {
     }
 }
 
-pub struct BoxOperator {
+pub struct BoxTool {
     phase: Phase,
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
@@ -206,7 +206,7 @@ pub struct BoxOperator {
     finished: bool,
 }
 
-impl BoxOperator {
+impl BoxTool {
     pub fn new(
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
@@ -491,7 +491,7 @@ impl BoxOperator {
     }
 }
 
-impl ModelingTool for BoxOperator {
+impl ModelingTool for BoxTool {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "box", icon: icons::BOX, shortcut: None }
     }
@@ -558,7 +558,7 @@ impl ModelingTool for BoxOperator {
     }
 }
 
-impl Operator for BoxOperator {
+impl Operator for BoxTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -590,7 +590,7 @@ impl Operator for BoxOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operators::tweak::MIN_DIMENSION;
+    use crate::tools::tweak::MIN_DIMENSION;
 
     /// A plane aligned with no world axis, so a mistaken basis shows up.
     fn skewed_plane(origin: Point3) -> Plane {

@@ -17,9 +17,9 @@ use opencascade::primitives::FaceOrientation;
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartId};
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo};
 use crate::ui::icons;
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// CAD-aware transform tool for one operation (move, rotate, *or* scale). Each
 /// [`TransformMode`] is registered as its own palette tool.

@@ -18,8 +18,8 @@ use duck_engine_viewer::selection::SelectionManager;
 
 use crate::document::Document;
 use crate::notifications::{Notifications, Severity};
-use crate::operators::ConstructionOptions;
-use crate::tool_manager::ToolManager;
+use crate::construction::ConstructionOptions;
+use crate::tools::ToolManager;
 
 use menu_bar::MenuBar;
 use right_panel::RightPanel;

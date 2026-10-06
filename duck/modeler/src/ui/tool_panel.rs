@@ -3,8 +3,8 @@
 
 use duck_engine_viewer::selection::SelectionManager;
 
-use crate::tool::PanelContext;
-use crate::tool_manager::ToolManager;
+use crate::tools::PanelContext;
+use crate::tools::ToolManager;
 
 /// The stateless host for the active tool's options window.
 #[derive(Default)]

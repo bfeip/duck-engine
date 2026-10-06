@@ -18,13 +18,13 @@ use opencascade::primitives::{Edge, Face, Shape, Wire};
 
 use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
 use super::tweak::{
     commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
     TweakAction, TweakParams,
 };
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
@@ -143,7 +143,7 @@ impl TweakParams for CylinderParams {
     }
 }
 
-pub struct CylinderOperator {
+pub struct CylinderTool {
     phase: Phase,
     construction_options: Rc<RefCell<ConstructionOptions>>,
     document: Arc<Mutex<Document>>,
@@ -161,7 +161,7 @@ pub struct CylinderOperator {
 
 
 
-impl CylinderOperator {
+impl CylinderTool {
     pub fn new(
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
@@ -421,7 +421,7 @@ impl CylinderOperator {
     }
 }
 
-impl ModelingTool for CylinderOperator {
+impl ModelingTool for CylinderTool {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "cylinder", icon: icons::CYLINDER, shortcut: None }
     }
@@ -488,7 +488,7 @@ impl ModelingTool for CylinderOperator {
     }
 }
 
-impl Operator for CylinderOperator {
+impl Operator for CylinderTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -563,18 +563,18 @@ impl Operator for CylinderOperator {
 mod tests {
     use super::*;
     use duck_engine_common::InnerSpace;
-    use crate::operators::tweak::MIN_DIMENSION;
+    use crate::tools::tweak::MIN_DIMENSION;
 
     #[test]
     fn cylinder_valid_accepts_nondegenerate() {
-        assert!(CylinderOperator::cylinder_valid(1.0, 2.0));
-        assert!(CylinderOperator::cylinder_valid(1.0, -2.0));
+        assert!(CylinderTool::cylinder_valid(1.0, 2.0));
+        assert!(CylinderTool::cylinder_valid(1.0, -2.0));
     }
 
     #[test]
     fn cylinder_valid_rejects_degenerate() {
-        assert!(!CylinderOperator::cylinder_valid(0.0, 2.0));
-        assert!(!CylinderOperator::cylinder_valid(1.0, 0.0));
+        assert!(!CylinderTool::cylinder_valid(0.0, 2.0));
+        assert!(!CylinderTool::cylinder_valid(1.0, 0.0));
     }
 
     #[test]

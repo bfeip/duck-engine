@@ -11,14 +11,14 @@ use duck_engine_viewer::{
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
-use crate::draft::{build_draft, execute_draft, DraftFrame, DraftParams, DraftTarget};
-use crate::tool::ToolInfo;
+use crate::ops::draft::{build_draft, execute_draft, DraftFrame, DraftParams, DraftTarget};
+use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{
     count_summary, selected_on_part, EditLock, PreviewStyle, TargetedOp, TargetedTool,
 };
 use super::tweak::{angle_field, TweakParams};
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// The draft's grip.
 const ANGLE_HANDLE: HandleId = HandleId(0);
@@ -53,7 +53,7 @@ impl TweakParams for DraftParams {
 }
 
 /// Tilts selected faces of a part about where they cross a neutral face.
-pub type DraftOperator = TargetedTool<Draft>;
+pub type DraftTool = TargetedTool<Draft>;
 
 /// The draft operation. The primary selection is the neutral face and the
 /// other selected faces on its part are drafted. Editing locks the part,
@@ -166,8 +166,8 @@ mod tests {
     use glam::DVec3;
 
     use crate::notifications::Notifications;
-    use crate::operators::targeted::Phase;
-    use crate::tool::ModelingTool;
+    use crate::tools::targeted::Phase;
+    use crate::tools::ModelingTool;
 
     const EPSILON: Real = 1e-5;
 
@@ -181,9 +181,9 @@ mod tests {
         (Arc::new(Mutex::new(doc)), node)
     }
 
-    fn operator(document: &Arc<Mutex<Document>>) -> DraftOperator {
+    fn operator(document: &Arc<Mutex<Document>>) -> DraftTool {
         let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        DraftOperator::new(construction, Arc::clone(document), Notifications::default())
+        DraftTool::new(construction, Arc::clone(document), Notifications::default())
     }
 
     /// The box face whose outward normal is `normal`, as a selection item.
@@ -209,7 +209,7 @@ mod tests {
     }
 
     /// An operator drafting the box's +X wall off its floor.
-    fn targeting_wall(document: &Arc<Mutex<Document>>, node: NodeId) -> (DraftOperator, SelectionManager) {
+    fn targeting_wall(document: &Arc<Mutex<Document>>, node: NodeId) -> (DraftTool, SelectionManager) {
         let mut op = operator(document);
         let mut selection = SelectionManager::new();
         selection.set(face(document, node, DVec3::NEG_Y));
@@ -218,7 +218,7 @@ mod tests {
         (op, selection)
     }
 
-    fn params(op: &DraftOperator) -> DraftParams {
+    fn params(op: &DraftTool) -> DraftParams {
         *op.phase.params().expect("a draft is targeted")
     }
 
@@ -230,7 +230,7 @@ mod tests {
     }
 
     /// Grabs the grip and swings it by `angle`, then lets go.
-    fn drag_by(op: &mut DraftOperator, angle: Real) {
+    fn drag_by(op: &mut DraftTool, angle: Real) {
         let grabbed = params(op);
         op.on_handle(&HandleEvent::Begin(ANGLE_HANDLE));
         op.on_handle(&HandleEvent::Drag(swing(&grabbed, angle)));

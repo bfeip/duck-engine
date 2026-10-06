@@ -1,38 +1,5 @@
-mod boolean;
-mod r#box;
-mod circle;
-mod curve;
-mod cylinder;
-mod draft;
-mod duplicate;
-mod extrude;
-mod fillet;
-mod hollow;
-mod line;
-mod loft;
-mod rectangle;
-mod sphere;
-mod targeted;
-mod thicken;
-mod transform;
-mod tweak;
-
-pub use boolean::BooleanOperator;
-pub use r#box::BoxOperator;
-pub use circle::CircleOperator;
-pub use curve::CurveOperator;
-pub use cylinder::CylinderOperator;
-pub use draft::DraftOperator;
-pub use duplicate::DuplicateTool;
-pub use extrude::ExtrudeOperator;
-pub use fillet::FilletOperator;
-pub use hollow::HollowOperator;
-pub use line::LineOperator;
-pub use loft::LoftOperator;
-pub use rectangle::RectangleOperator;
-pub use sphere::SphereOperator;
-pub use thicken::ThickenOperator;
-pub use transform::TransformTool;
+//! The settings every construction tool builds with: tessellation, the
+//! construction plane and grid, and snapping.
 
 use duck_engine_common::{Plane, RgbaColor};
 use duck_engine_scene::cad::CadTessellationOptions;

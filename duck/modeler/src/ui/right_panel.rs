@@ -5,7 +5,7 @@ use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::document::Document;
-use crate::operators::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 use crate::ui::model_tab::ModelTab;
 use crate::ui::scene_tab::SceneTab;
 use crate::ui::UiAction;

@@ -10,14 +10,14 @@ use duck_engine_viewer::{
 use opencascade::primitives::Shape;
 
 use crate::document::{Document, SourceFate};
-use crate::thicken::{build_thicken, execute_thicken, ThickenFrame, ThickenParams, ThickenTarget};
-use crate::tool::ToolInfo;
+use crate::ops::thicken::{build_thicken, execute_thicken, ThickenFrame, ThickenParams, ThickenTarget};
+use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{
     count_summary, selected_faces_or_part, EditLock, PreviewStyle, TargetedOp, TargetedTool,
 };
 use super::tweak::{length_field, TweakParams};
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// The thickness grips.
 const FRONT_HANDLE: HandleId = HandleId(0);
@@ -91,7 +91,7 @@ impl TweakParams for ThickenParams {
 }
 
 /// Grows selected faces, or a whole sheet, into a solid slab.
-pub type ThickenOperator = TargetedTool<Thicken>;
+pub type ThickenTool = TargetedTool<Thicken>;
 
 /// The thicken operation, on faces of one part or a sheet selected whole. A
 /// face of a solid joins its slab to the solid unless it makes a new body.
@@ -218,8 +218,8 @@ mod tests {
     use opencascade::primitives::{Shell, Wire};
 
     use crate::notifications::Notifications;
-    use crate::operators::targeted::Phase;
-    use crate::tool::ModelingTool;
+    use crate::tools::targeted::Phase;
+    use crate::tools::ModelingTool;
 
     const EPSILON: Real = 1e-5;
 
@@ -250,9 +250,9 @@ mod tests {
         Shell::loft([square(0.0), square(2.0)]).into()
     }
 
-    fn operator(document: &Arc<Mutex<Document>>) -> ThickenOperator {
+    fn operator(document: &Arc<Mutex<Document>>) -> ThickenTool {
         let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        ThickenOperator::new(construction, Arc::clone(document), Notifications::default())
+        ThickenTool::new(construction, Arc::clone(document), Notifications::default())
     }
 
     fn face(node: NodeId, index: u32) -> SelectionItem {
@@ -274,7 +274,7 @@ mod tests {
         face(node, index as u32)
     }
 
-    fn targeting(document: &Arc<Mutex<Document>>, items: &[SelectionItem]) -> (ThickenOperator, SelectionManager) {
+    fn targeting(document: &Arc<Mutex<Document>>, items: &[SelectionItem]) -> (ThickenTool, SelectionManager) {
         let mut op = operator(document);
         let mut selection = SelectionManager::new();
         selection.extend(items.iter().copied());
@@ -282,12 +282,12 @@ mod tests {
         (op, selection)
     }
 
-    fn params(op: &ThickenOperator) -> ThickenParams {
+    fn params(op: &ThickenTool) -> ThickenParams {
         *op.phase.params().expect("a thickening is targeted")
     }
 
     /// Grabs grip `id` and drags it `distance` the way it points, then lets go.
-    fn drag_out(op: &mut ThickenOperator, id: HandleId, distance: Real) {
+    fn drag_out(op: &mut ThickenTool, id: HandleId, distance: Real) {
         let grabbed = params(op);
         let (grab, outward) = match id {
             FRONT_HANDLE => (grabbed.front_grip(), grabbed.frame.normal),

@@ -2,7 +2,7 @@
 
 use duck_engine_viewer::selection::SelectionManager;
 
-use crate::tool_manager::{ToolId, ToolManager};
+use crate::tools::{ToolId, ToolManager};
 use crate::ui::icons;
 
 /// The left icon strip. Stateless, tied to [`ToolManager`]

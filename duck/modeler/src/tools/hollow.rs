@@ -10,14 +10,14 @@ use duck_engine_viewer::{
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
-use crate::hollow::{build_hollow, execute_hollow, HollowFrame, HollowParams, HollowTarget};
-use crate::tool::ToolInfo;
+use crate::ops::hollow::{build_hollow, execute_hollow, HollowFrame, HollowParams, HollowTarget};
+use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{
     count_summary, selected_faces_or_part, EditLock, PreviewStyle, TargetedOp, TargetedTool,
 };
 use super::tweak::{length_field, TweakParams};
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 /// The wall's grip.
 const THICKNESS_HANDLE: HandleId = HandleId(0);
@@ -49,7 +49,7 @@ impl TweakParams for HollowParams {
 }
 
 /// Shells a solid into walls, opening any of its faces selected.
-pub type HollowOperator = TargetedTool<Hollow>;
+pub type HollowTool = TargetedTool<Hollow>;
 
 /// The hollow operation, on a solid selected whole, which closes around a
 /// void, or on faces of one to open. Editing locks the part, though its faces
@@ -159,8 +159,8 @@ mod tests {
     use glam::DVec3;
 
     use crate::notifications::Notifications;
-    use crate::operators::targeted::Phase;
-    use crate::tool::ModelingTool;
+    use crate::tools::targeted::Phase;
+    use crate::tools::ModelingTool;
 
     const EPSILON: Real = 1e-5;
 
@@ -178,9 +178,9 @@ mod tests {
         (Arc::new(Mutex::new(doc)), main, other)
     }
 
-    fn operator(document: &Arc<Mutex<Document>>) -> HollowOperator {
+    fn operator(document: &Arc<Mutex<Document>>) -> HollowTool {
         let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        HollowOperator::new(construction, Arc::clone(document), Notifications::default())
+        HollowTool::new(construction, Arc::clone(document), Notifications::default())
     }
 
     /// The box face whose outward normal is `normal`, as a selection item.
@@ -199,7 +199,7 @@ mod tests {
     }
 
     /// An operator targeting the selection `items`.
-    fn targeting(document: &Arc<Mutex<Document>>, items: &[SelectionItem]) -> (HollowOperator, SelectionManager) {
+    fn targeting(document: &Arc<Mutex<Document>>, items: &[SelectionItem]) -> (HollowTool, SelectionManager) {
         let mut op = operator(document);
         let mut selection = SelectionManager::new();
         selection.extend(items.iter().copied());
@@ -207,12 +207,12 @@ mod tests {
         (op, selection)
     }
 
-    fn params(op: &HollowOperator) -> HollowParams {
+    fn params(op: &HollowTool) -> HollowParams {
         *op.phase.params().expect("a hollow is targeted")
     }
 
     /// Grabs the grip and drags it `distance` into the part, then lets go.
-    fn drag_in(op: &mut HollowOperator, distance: Real) {
+    fn drag_in(op: &mut HollowTool, distance: Real) {
         let grabbed = params(op);
         let grab = grabbed.grip();
         let drag = HandleDrag {

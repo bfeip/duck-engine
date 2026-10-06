@@ -11,7 +11,7 @@ use duck_engine_viewer::selection::SelectionManager;
 
 use crate::cursor::Cursor3d;
 use crate::notifications::Notifications;
-use crate::tool::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo};
 
 /// Opaque handle to a registered tool. Minted only by [`ToolManager::register`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -318,9 +318,9 @@ mod tests {
         }
     }
 
-    impl crate::tool::ModelingTool for MockTool {
-        fn info(&self) -> crate::tool::ToolInfo {
-            crate::tool::ToolInfo { id: self.id, icon: ("mock", &[]), shortcut: self.shortcut }
+    impl crate::tools::ModelingTool for MockTool {
+        fn info(&self) -> crate::tools::ToolInfo {
+            crate::tools::ToolInfo { id: self.id, icon: ("mock", &[]), shortcut: self.shortcut }
         }
 
         fn activate(&mut self) {

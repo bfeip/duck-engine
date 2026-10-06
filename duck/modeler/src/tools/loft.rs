@@ -11,11 +11,11 @@ use duck_engine_viewer::{
 };
 
 use crate::document::Document;
-use crate::loft::{execute_loft, preview_loft, LoftProfile};
+use crate::ops::loft::{execute_loft, preview_loft, LoftProfile};
 use crate::preview::PreviewSession;
-use crate::tool::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
-use super::ConstructionOptions;
+use crate::construction::ConstructionOptions;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum LoftPhase {
@@ -25,7 +25,7 @@ enum LoftPhase {
     Cancelled,
 }
 
-pub struct LoftOperator {
+pub struct LoftTool {
     phase: LoftPhase,
 
     preview: PreviewSession,
@@ -36,7 +36,7 @@ pub struct LoftOperator {
     construction_options: Rc<RefCell<ConstructionOptions>>,
 }
 
-impl LoftOperator {
+impl LoftTool {
     pub fn new(
         construction_options: Rc<RefCell<ConstructionOptions>>,
         document: Arc<Mutex<Document>>,
@@ -184,7 +184,7 @@ impl LoftOperator {
     }
 }
 
-impl ModelingTool for LoftOperator {
+impl ModelingTool for LoftTool {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "loft", icon: icons::LOFT, shortcut: None }
     }
@@ -222,7 +222,7 @@ impl ModelingTool for LoftOperator {
     }
 }
 
-impl Operator for LoftOperator {
+impl Operator for LoftTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
