@@ -1,25 +1,18 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-
 use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions};
 use duck_engine_scene::common::RgbaColor;
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, NodeFlags, NodeId};
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, MouseButton, NamedKey},
-    operator::{Operator, SelectionMode},
+    operator::{SelectionMode},
     selection::{SelectionItem, SelectionManager},
 };
 use opencascade::primitives::Shape;
 
 use crate::ops::boolean::{build_boolean, commit_boolean, preview_boolean, BooleanKind, BooleanTarget};
-use crate::document::Document;
-use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
-use crate::construction::ConstructionOptions;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum BooleanPhase {
@@ -39,27 +32,19 @@ pub struct BooleanTool {
     target: Option<BooleanTarget>,
     last_kind: BooleanKind,
 
-    document: Arc<Mutex<Document>>,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    notifications: Notifications,
+    workspace: Workspace,
 }
 
 impl BooleanTool {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-        notifications: Notifications,
-    ) -> Self {
-        let preview = PreviewSession::new(Arc::clone(&document));
+    pub fn new(workspace: &Workspace) -> Self {
+        let preview = workspace.preview_session();
         Self {
             kind: BooleanKind::default(),
             phase: BooleanPhase::default(),
             preview,
             target: None,
             last_kind: BooleanKind::default(),
-            document,
-            construction_options,
-            notifications,
+            workspace: workspace.clone(),
         }
     }
 
@@ -70,9 +55,9 @@ impl BooleanTool {
         let Some(target) = self.target.clone() else {
             return Ok(());
         };
-        let options = self.construction_options.borrow().geometry_options.clone();
+        let options = self.workspace.geometry_options();
         {
-            let mut doc = self.document.lock().unwrap();
+            let mut doc = self.workspace.document.lock().unwrap();
             let result = build_boolean(&doc, &target, self.kind)?;
             commit_boolean(&mut doc, &target, result, &options)?;
         }
@@ -91,8 +76,7 @@ impl BooleanTool {
     /// handler and the panel's Apply button.
     pub fn apply_and_clear(&mut self, selection: &mut SelectionManager) {
         if let Err(e) = self.apply() {
-            log::error!("Boolean failed: {e}");
-            self.notifications.error(format!("Boolean failed: {e}"));
+            self.workspace.notifications.failure("Boolean", &e);
         } else {
             selection.clear();
         }
@@ -130,7 +114,7 @@ impl BooleanTool {
         let Some(target) = self.target.clone() else { return };
 
         let result = {
-            let doc = self.document.lock().unwrap();
+            let doc = self.workspace.document.lock().unwrap();
             preview_boolean(&doc, &target, self.kind)
         };
         let preview = match result {
@@ -140,7 +124,7 @@ impl BooleanTool {
                 return;
             }
         };
-        let options = self.construction_options.borrow().preview_options();
+        let options = self.workspace.preview_options();
         if self.preview.add_preview_from_shape(&preview.shape, &options, "Boolean preview").is_none() {
             log::warn!("Boolean preview could not be tessellated");
             return;
@@ -168,7 +152,7 @@ impl BooleanTool {
             return;
         }
 
-        let scene = self.document.lock().unwrap().scene().clone();
+        let scene = self.workspace.document.lock().unwrap().scene().clone();
         let (face, line) = {
             let mut scene = scene.lock();
             (
@@ -212,7 +196,7 @@ impl BooleanTool {
             .collect();
 
         let (target_name, tool_entries) = {
-            let doc = self.document.lock().unwrap();
+            let doc = self.workspace.document.lock().unwrap();
             let name_for = |node: NodeId| doc.part_at(node).map(|part| part.name.clone());
             let target_name = target_node
                 .and_then(name_for)
@@ -298,42 +282,6 @@ impl ModelingTool for BooleanTool {
         ToolInfo { id: "boolean", icon: icons::BOOLEAN, shortcut: None }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.phase = BooleanPhase::Configuring;
-    }
-
-    /// A picked target (with or without tools) is a configured operation, so
-    /// leaving the tool runs it rather than dropping the configuration.
-    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if self.target.is_some() {
-            self.apply()?;
-            // The sources the boolean consumed must not stay selected.
-            selection.clear();
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        matches!(self.phase, BooleanPhase::Done | BooleanPhase::Cancelled)
-    }
-
-    // Boolean operates on whole parts, so drop the always-on selection
-    // operator to node granularity while active.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::Node
-    }
-
-    fn panel_title(&self) -> Option<&str> {
-        Some("Boolean Operation")
-    }
-
-    fn panel_ui(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
-        self.render_panel(ui, panel);
-    }
-}
-
-impl Operator for BooleanTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -373,8 +321,38 @@ impl Operator for BooleanTool {
         }
     }
 
-    fn name(&self) -> &str {
-        "Boolean"
+    fn deactivate(&mut self) {
+        self.cancel();
+        self.phase = BooleanPhase::Configuring;
+    }
+
+    /// A picked target (with or without tools) is a configured operation, so
+    /// leaving the tool runs it rather than dropping the configuration.
+    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
+        if self.target.is_some() {
+            self.apply()?;
+            // The sources the boolean consumed must not stay selected.
+            selection.clear();
+        }
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        matches!(self.phase, BooleanPhase::Done | BooleanPhase::Cancelled)
+    }
+
+    // Boolean operates on whole parts, so drop the always-on selection
+    // operator to node granularity while active.
+    fn selection_mode(&self) -> SelectionMode {
+        SelectionMode::Node
+    }
+
+    fn panel_title(&self) -> Option<&str> {
+        Some("Boolean Operation")
+    }
+
+    fn panel_ui(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
+        self.render_panel(ui, panel);
     }
 }
 
@@ -384,15 +362,17 @@ mod tests {
     use duck_engine_scene::Scene;
     use glam::dvec3;
 
+    use crate::document::Document;
+    use crate::testing::workspace;
+
     /// Each kind shows what it removes exactly once: a subtract as a ghost of
     /// its tool, an intersect as the two removed pieces, a union not at all.
     #[test]
     fn preview_shows_each_kinds_removed_material_once() {
-        let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        let document = Arc::new(Mutex::new(Document::new(Scene::default())));
+        let ws = workspace(Document::new(Scene::default()));
         let (target, tool) = {
-            let options = construction.borrow().geometry_options.clone();
-            let mut doc = document.lock().unwrap();
+            let options = ws.geometry_options();
+            let mut doc = ws.document.lock().unwrap();
             let target = doc.add_part("box", Shape::cube(2.0), &options).unwrap();
             let sphere = Shape::sphere(1.0).at(dvec3(2.0, 2.0, 2.0)).build();
             let tool = doc.add_part("sphere", sphere, &options).unwrap();
@@ -401,7 +381,7 @@ mod tests {
         let mut selection = SelectionManager::new();
         selection.add(SelectionItem::Node(target));
         selection.add(SelectionItem::Node(tool));
-        let mut op = BooleanTool::new(construction, document.clone(), Notifications::default());
+        let mut op = BooleanTool::new(&ws);
 
         for (kind, removed_nodes) in
             [(BooleanKind::Subtract, 1), (BooleanKind::Intersect, 2), (BooleanKind::Union, 0)]
@@ -412,7 +392,7 @@ mod tests {
             // The result node plus the removed material.
             let previews = op.preview.preview_nodes();
             assert_eq!(previews.len(), 1 + removed_nodes);
-            let scene = document.lock().unwrap().scene().clone();
+            let scene = ws.document.lock().unwrap().scene().clone();
             let scene = scene.lock();
             for &node in previews {
                 assert!(scene.get_node(node).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));

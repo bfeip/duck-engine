@@ -1,7 +1,3 @@
-use std::sync::{Arc, Mutex};
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use duck_engine_common::{InnerSpace, Plane, Point3, Ray, Real, Vector3};
 use duck_engine_scene::resource::Visibility;
 use duck_engine_viewer::{
@@ -9,23 +5,20 @@ use duck_engine_viewer::{
     common::Transform,
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, KeyEvent, Modifiers, MouseButton, NamedKey},
-    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator},
+    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape},
     selection::SelectionManager,
 };
 use glam::dvec3;
-use log::error;
 use opencascade::primitives::{Face, Shape, Wire};
 
-use crate::document::Document;
 use crate::ops::primitives::{prism, rectangle_corners};
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
 use super::tweak::{
     commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
     TweakAction, TweakParams,
 };
-use crate::construction::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
@@ -173,8 +166,7 @@ impl TweakParams for BoxParams {
 
 pub struct BoxTool {
     phase: Phase,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    document: Arc<Mutex<Document>>,
+    workspace: Workspace,
     preview: PreviewSession,
     bindings: InputMap<BoxAction>,
     cursor_target: Option<Point3>,
@@ -188,10 +180,7 @@ pub struct BoxTool {
 }
 
 impl BoxTool {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-    ) -> Self {
+    pub fn new(workspace: &Workspace) -> Self {
         let bindings = InputMap::new()
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
@@ -201,11 +190,10 @@ impl BoxTool {
                 InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
                 BoxAction::Finish,
             );
-        let preview = PreviewSession::new(Arc::clone(&document));
+        let preview = workspace.preview_session();
         Self {
             phase: Phase::Idle,
-            construction_options,
-            document,
+            workspace: workspace.clone(),
             preview,
             bindings,
             cursor_target: None,
@@ -259,18 +247,13 @@ impl BoxTool {
 
     /// Signed height from projecting the cursor pick ray onto the plane normal through `center`.
     fn height_from_cursor(center: Point3, plane: &Plane, position: (f32, f32), ctx: &EventContext) -> Real {
-        let camera = ctx.camera.clone();
-        let ray: Ray = camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
+        let ray: Ray = ctx.camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
         ray.closest_param_on_axis(center, plane.normal).unwrap_or(0.0)
     }
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &EventContext) -> bool {
-        let camera = ctx.camera.clone();
-        let cplane = self.construction_options.borrow().construction_plane;
-        let Some(snap) = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, &[], &camera, ctx, &[])
+        let cplane = self.workspace.construction.borrow().construction_plane;
+        let Some(snap) = self.workspace.snap(position, &[], ctx)
         else {
             return false;
         };
@@ -286,7 +269,7 @@ impl BoxTool {
         };
 
         // A single unit face, scaled each move; preview detail is irrelevant for a flat quad.
-        let options = self.construction_options.borrow().geometry_options.clone();
+        let options = self.workspace.geometry_options();
         if self.preview.add_preview_from_shape(&preview_shape, &options, "box plane preview").is_none() {
             return false;
         }
@@ -303,12 +286,8 @@ impl BoxTool {
         position: (f32, f32),
         ctx: &mut EventContext
     ) -> bool {
-        let camera = ctx.camera.clone();
         // Exclude the preview so the footprint can snap through it.
-        let Some(corner) = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, self.preview.preview_nodes(), &camera, ctx, &[])
+        let Some(corner) = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
             .map(|s| s.position)
         else {
             return false;
@@ -321,7 +300,7 @@ impl BoxTool {
 
         // Swap the flat footprint preview for the 3D box preview.
         let preview_shape = Self::reference_box();
-        let options = self.construction_options.borrow().geometry_options.clone();
+        let options = self.workspace.geometry_options();
         if self.preview.try_replace_preview(&preview_shape, &options, "box preview").is_none() {
             return false;
         }
@@ -358,8 +337,7 @@ impl BoxTool {
     /// panel open so the dimensions can be corrected.
     fn apply(&mut self) -> anyhow::Result<()> {
         let Phase::Tweak(params) = self.phase else { return Ok(()) };
-        let options = self.construction_options.borrow().geometry_options.clone();
-        commit_tweak(&params, &mut self.preview, &self.document, &options)?;
+        commit_tweak(&params, &mut self.preview, &self.workspace)?;
         self.phase = Phase::Idle;
         self.finished = true;
         Ok(())
@@ -369,7 +347,7 @@ impl BoxTool {
     /// so must report for themselves: the panel's Apply button, Enter, right-click.
     fn apply_and_report(&mut self) {
         if let Err(e) = self.apply() {
-            error!("Box failed: {e:#}");
+            self.workspace.notifications.failure(BoxParams::NAME, &e);
         }
     }
 
@@ -423,15 +401,8 @@ impl BoxTool {
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
 
-        let camera = ctx.camera.clone();
         // While defining, exclude our own preview so snapping doesn't lock onto it.
-        let snap = self.construction_options.borrow().resolve_snap(
-            cursor,
-            self.preview.preview_nodes(),
-            &camera,
-            ctx,
-            &[],
-        );
+        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
 
         match self.phase {
             Phase::Idle => {
@@ -475,6 +446,29 @@ impl BoxTool {
 impl ModelingTool for BoxTool {
     fn info(&self) -> ToolInfo {
         ToolInfo { id: "box", icon: icons::BOX, shortcut: None }
+    }
+
+    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
+        let Event::Device(event) = event else { return false };
+        match event {
+            DeviceEvent::MouseClick { button, position, .. } => {
+                let actions = self.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
+                let mut handled = false;
+                for action in actions {
+                    handled |= match action {
+                        BoxAction::Place => self.on_place(*position, ctx),
+                        BoxAction::Finish => self.on_finish(),
+                    };
+                }
+                handled
+            }
+            DeviceEvent::CursorMoved { position } => {
+                self.on_cursor_moved(*position, ctx);
+                false
+            }
+            DeviceEvent::KeyboardInput { event, .. } => self.on_key(event),
+            _ => false,
+        }
     }
 
     fn deactivate(&mut self) {
@@ -536,35 +530,6 @@ impl ModelingTool for BoxTool {
             TweakAction::Cancel => self.cancel(),
             TweakAction::None => {}
         }
-    }
-}
-
-impl Operator for BoxTool {
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::MouseClick { button, position, .. } => {
-                let actions = self.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
-                let mut handled = false;
-                for action in actions {
-                    handled |= match action {
-                        BoxAction::Place => self.on_place(*position, ctx),
-                        BoxAction::Finish => self.on_finish(),
-                    };
-                }
-                handled
-            }
-            DeviceEvent::CursorMoved { position } => {
-                self.on_cursor_moved(*position, ctx);
-                false
-            }
-            DeviceEvent::KeyboardInput { event, .. } => self.on_key(event),
-            _ => false,
-        }
-    }
-
-    fn name(&self) -> &str {
-        "Box"
     }
 }
 

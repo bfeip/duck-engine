@@ -163,58 +163,23 @@ impl TargetedOp for Fillet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::sync::{Arc, Mutex};
 
-    use duck_engine_scene::cad::CadTessellationOptions;
     use duck_engine_scene::common::{InnerSpace, Point3, Vector3};
-    use duck_engine_scene::resource::{SubGeometryElement, Visibility};
-    use duck_engine_scene::Scene;
-    use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, PhysicalKey};
+    use duck_engine_scene::resource::Visibility;
+    use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
-    use duck_engine_viewer::selection::SelectionItem;
 
-    use crate::notifications::Notifications;
+    use crate::testing::{edge_item, key, visibility, volume, workspace_with_box_and_cube};
     use crate::tools::targeted::Phase;
-    use crate::tools::ModelingTool;
+    use crate::tools::{ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
 
-    /// A document holding a 2×2×2 box centred on the origin, and a unit cube
-    /// off to one side.
-    fn document_with_boxes() -> (Arc<Mutex<Document>>, NodeId, NodeId) {
-        let mut doc = Document::new(Scene::default());
-        let options = CadTessellationOptions::default();
-        let mut add = |name: &str, shape: Shape| {
-            let part = doc.add_part(name, shape, &options).expect("box tessellates");
-            doc.node_for_part(part).expect("part has a node")
-        };
-        let main = add("box", Shape::box_centered(2.0, 2.0, 2.0));
-        let other = add(
-            "other",
-            Shape::box_from_corners(glam::dvec3(3.0, 3.0, 3.0), glam::dvec3(4.0, 4.0, 4.0)),
-        );
-        (Arc::new(Mutex::new(doc)), main, other)
-    }
-
-    fn operator(document: &Arc<Mutex<Document>>) -> FilletTool {
-        let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        FilletTool::new(construction, Arc::clone(document), Notifications::default())
-    }
-
-    fn edge(node: NodeId, index: u32) -> SelectionItem {
-        SelectionItem::SubGeometry {
-            node_id: node,
-            element: SubGeometryElement::new(SubGeometryKind::Edge, index),
-        }
-    }
-
-    /// An operator targeting edge 0 of the main box alone.
-    fn targeting_edge(document: &Arc<Mutex<Document>>, node: NodeId) -> (FilletTool, SelectionManager) {
-        let mut op = operator(document);
+    /// A tool targeting edge 0 of the box alone.
+    fn targeting_edge(ws: &Workspace, node: NodeId) -> (FilletTool, SelectionManager) {
+        let mut op = FilletTool::new(ws);
         let mut selection = SelectionManager::new();
-        selection.set(edge(node, 0));
+        selection.set(edge_item(node, 0));
         op.follow_selection(&selection);
         (op, selection)
     }
@@ -229,7 +194,7 @@ mod tests {
 
     /// A drag of `offset` on the grip, as the handle machinery reports it.
     fn drag(grab: Point3, offset: Vector3) -> HandleDrag {
-        HandleDrag { id: SIZE_HANDLE, grab, point: grab + offset, modifiers: Modifiers::default() }
+        crate::testing::drag(SIZE_HANDLE, grab, offset)
     }
 
     /// Grabs the grip and drags it `distance` out of the corner, then lets go.
@@ -240,30 +205,10 @@ mod tests {
         op.on_handle(&HandleEvent::End(SIZE_HANDLE));
     }
 
-    fn key(c: char) -> KeyEvent {
-        KeyEvent {
-            physical_key: PhysicalKey::Unidentified,
-            logical_key: Key::Character(c),
-            state: ElementState::Pressed,
-            repeat: false,
-        }
-    }
-
-    fn visibility(document: &Arc<Mutex<Document>>, node: NodeId) -> Visibility {
-        let scene = document.lock().unwrap().scene().clone();
-        let scene = scene.lock();
-        scene.get_node(node).expect("node exists").visibility()
-    }
-
-    fn volume(document: &Arc<Mutex<Document>>, node: NodeId) -> f64 {
-        let doc = document.lock().unwrap();
-        doc.get_part(doc.part_for_node(node).expect("node is a part")).unwrap().shape.volume()
-    }
-
     #[test]
     fn the_grip_sits_out_of_the_corner_by_the_signed_size() {
-        let (document, node, _) = document_with_boxes();
-        let (op, _) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (op, _) = targeting_edge(&ws, node);
         let fillet = FilletParams { size: 0.5, ..params(&op) };
         let (apex, outward) = (fillet.frame.apex, fillet.frame.outward);
 
@@ -281,8 +226,8 @@ mod tests {
 
     #[test]
     fn dragging_out_of_the_corner_grows_a_fillet_one_for_one() {
-        let (document, node, _) = document_with_boxes();
-        let (op, _) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (op, _) = targeting_edge(&ws, node);
         let grabbed = FilletParams { size: 0.2, ..params(&op) };
 
         let mut edited = grabbed;
@@ -293,8 +238,8 @@ mod tests {
 
     #[test]
     fn dragging_back_past_the_edge_turns_a_fillet_into_a_chamfer() {
-        let (document, node, _) = document_with_boxes();
-        let (op, _) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (op, _) = targeting_edge(&ws, node);
         let grabbed = FilletParams { size: 0.2, ..params(&op) };
         let outward = grabbed.frame.outward;
 
@@ -313,8 +258,8 @@ mod tests {
     /// reports to the same snapshot must not compound them.
     #[test]
     fn successive_drags_from_one_grab_do_not_compound() {
-        let (document, node, _) = document_with_boxes();
-        let (op, _) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (op, _) = targeting_edge(&ws, node);
         let grabbed = FilletParams { size: 0.2, ..params(&op) };
         let step = drag(grabbed.grip(), grabbed.frame.outward * 0.1);
 
@@ -327,15 +272,15 @@ mod tests {
     /// Until something is edited, the blend follows the selected edges.
     #[test]
     fn an_unedited_blend_follows_the_selection() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, mut selection) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, mut selection) = targeting_edge(&ws, node);
         assert_eq!(edges(&op), [0]);
 
-        selection.add(edge(node, 5));
+        selection.add(edge_item(node, 5));
         op.follow_selection(&selection);
         assert_eq!(edges(&op), [0, 5], "the primary edge leads");
 
-        selection.set(edge(node, 3));
+        selection.set(edge_item(node, 3));
         op.follow_selection(&selection);
         assert_eq!(edges(&op), [3]);
 
@@ -347,10 +292,10 @@ mod tests {
     /// One blend works on one part: edges on others are counted, not blended.
     #[test]
     fn edges_on_other_parts_are_left_out() {
-        let (document, main, other) = document_with_boxes();
-        let (mut op, mut selection) = targeting_edge(&document, main);
+        let (ws, main, other) = workspace_with_box_and_cube();
+        let (mut op, mut selection) = targeting_edge(&ws, main);
 
-        selection.add(edge(other, 0));
+        selection.add(edge_item(other, 0));
         op.follow_selection(&selection);
         assert_eq!(op.phase.target().unwrap().node, main);
         assert_eq!(edges(&op), [0]);
@@ -363,8 +308,8 @@ mod tests {
     /// part are blended at the size already set.
     #[test]
     fn grabbing_the_grip_locks_the_part_but_shift_clicks_still_edit_its_edges() {
-        let (document, main, other) = document_with_boxes();
-        let (mut op, mut selection) = targeting_edge(&document, main);
+        let (ws, main, other) = workspace_with_box_and_cube();
+        let (mut op, mut selection) = targeting_edge(&ws, main);
         assert!(!op.swallows_click(Modifiers::default()));
 
         drag_out(&mut op, 0.3);
@@ -372,13 +317,13 @@ mod tests {
         assert!(op.swallows_click(Modifiers::default()));
         assert!(!op.swallows_click(Modifiers { shift: true, ..Default::default() }));
 
-        selection.add(edge(main, 5));
+        selection.add(edge_item(main, 5));
         op.follow_selection(&selection);
         assert_eq!(edges(&op), [0, 5]);
         assert!((params(&op).size - 0.3).abs() < EPSILON, "the edit keeps its size");
         assert!(op.is_editing());
 
-        selection.add(edge(other, 0));
+        selection.add(edge_item(other, 0));
         op.follow_selection(&selection);
         assert_eq!(op.phase.target().unwrap().node, main, "the part stays locked");
         assert_eq!(edges(&op), [0, 5]);
@@ -386,36 +331,36 @@ mod tests {
 
     #[test]
     fn dropping_the_last_edge_drops_the_blend_and_restores_the_part() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, mut selection) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, mut selection) = targeting_edge(&ws, node);
         drag_out(&mut op, 0.3);
         op.refresh_preview();
-        assert_eq!(visibility(&document, node), Visibility::Invisible);
+        assert_eq!(visibility(&ws, node), Visibility::Invisible);
 
         selection.clear();
         op.follow_selection(&selection);
         assert!(matches!(op.phase, Phase::AwaitingSelection));
         assert!(op.preview.is_empty());
-        assert_eq!(visibility(&document, node), Visibility::Visible);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
     }
 
     /// A grip drag builds the blend and shows it in place of its part.
     #[test]
     fn a_grip_drag_previews_the_blend_in_place_of_its_part() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, _) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, _) = targeting_edge(&ws, node);
 
         drag_out(&mut op, 0.3);
         op.refresh_preview();
         assert!(op.error.is_none(), "{:?}", op.error);
         assert_eq!(op.preview.preview_nodes().len(), 1);
-        assert_eq!(visibility(&document, node), Visibility::Invisible);
+        assert_eq!(visibility(&ws, node), Visibility::Invisible);
     }
 
     #[test]
     fn an_oversized_blend_keeps_the_last_preview_and_says_why() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, _) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, _) = targeting_edge(&ws, node);
         drag_out(&mut op, 0.3);
         op.refresh_preview();
         let shown = op.preview.preview_nodes().to_vec();
@@ -429,8 +374,8 @@ mod tests {
 
     #[test]
     fn apply_reshapes_the_part_in_place_and_finishes() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, mut selection) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, mut selection) = targeting_edge(&ws, node);
         drag_out(&mut op, 0.3);
         op.refresh_preview();
 
@@ -438,56 +383,56 @@ mod tests {
         assert!(op.is_finished());
         assert!(selection.is_empty(), "the part's edges were renumbered");
         assert!(op.preview.is_empty());
-        assert_eq!(visibility(&document, node), Visibility::Visible);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
         let expected = 8.0 - 2.0 * 0.09 * (1.0 - std::f64::consts::FRAC_PI_4);
-        assert!((volume(&document, node) - expected).abs() < 1e-5, "got {}", volume(&document, node));
-        assert_eq!(document.lock().unwrap().undo_label(), Some("Fillet"));
+        assert!((volume(&ws, node) - expected).abs() < 1e-5, "got {}", volume(&ws, node));
+        assert_eq!(ws.document.lock().unwrap().undo_label(), Some("Fillet"));
     }
 
     #[test]
     fn a_chamfer_applies_under_its_own_name() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, mut selection) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, mut selection) = targeting_edge(&ws, node);
         assert!(op.on_key(&key('c'), Modifiers::default(), &mut selection));
         drag_out(&mut op, -0.3);
 
         op.apply(&mut selection).expect("the chamfer applies");
-        assert!((volume(&document, node) - (8.0 - 0.09)).abs() < 1e-5, "got {}", volume(&document, node));
-        assert_eq!(document.lock().unwrap().undo_label(), Some("Chamfer"));
+        assert!((volume(&ws, node) - (8.0 - 0.09)).abs() < 1e-5, "got {}", volume(&ws, node));
+        assert_eq!(ws.document.lock().unwrap().undo_label(), Some("Chamfer"));
     }
 
     #[test]
     fn cancel_restores_the_part() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, _) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, _) = targeting_edge(&ws, node);
         drag_out(&mut op, 0.3);
         op.refresh_preview();
 
         op.cancel();
         assert!(op.is_finished());
         assert!(op.preview.is_empty());
-        assert_eq!(visibility(&document, node), Visibility::Visible);
-        assert!((volume(&document, node) - 8.0).abs() < 1e-9);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
+        assert!((volume(&ws, node) - 8.0).abs() < 1e-9);
     }
 
     /// Leaving the tool commits an edit, but a zero-size one is nothing to commit.
     #[test]
     fn finalize_commits_only_a_blend_with_size() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, mut selection) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, mut selection) = targeting_edge(&ws, node);
         op.on_handle(&HandleEvent::Begin(SIZE_HANDLE));
         op.finalize(&mut selection).expect("nothing to commit");
-        assert!((volume(&document, node) - 8.0).abs() < 1e-9);
+        assert!((volume(&ws, node) - 8.0).abs() < 1e-9);
 
         drag_out(&mut op, 0.3);
         op.finalize(&mut selection).expect("the edit commits");
-        assert!(volume(&document, node) < 8.0);
+        assert!(volume(&ws, node) < 8.0);
     }
 
     #[test]
     fn the_f_and_c_keys_switch_the_kind() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, mut selection) = targeting_edge(&document, node);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, mut selection) = targeting_edge(&ws, node);
 
         assert!(op.on_key(&key('c'), Modifiers::default(), &mut selection));
         assert_eq!(params(&op).kind, BlendKind::Chamfer);

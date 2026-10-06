@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::resource::{NodeFlags, NodeId};
@@ -17,11 +15,9 @@ use duck_engine_viewer::{
 
 use crate::document::{Document, PartId};
 use crate::ops::duplicate::duplicate_parts;
-use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo, Workspace};
 use crate::ui::icons;
-use crate::construction::ConstructionOptions;
 
 /// Copies the selected parts and places the copies with the translate gizmo.
 ///
@@ -43,24 +39,18 @@ pub struct DuplicateTool {
 }
 
 impl DuplicateTool {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-        notifications: Notifications,
-    ) -> Self {
+    pub fn new(workspace: &Workspace) -> Self {
         let target = DuplicateTarget {
             nodes: NodeTransformTarget::new(),
-            preview: PreviewSession::new(Arc::clone(&document)),
+            preview: workspace.preview_session(),
             sources: Vec::new(),
             pending_spawn: false,
             done: false,
-            construction_options,
-            document: Arc::clone(&document),
-            notifications,
+            workspace: workspace.clone(),
         };
         Self {
             driver: TransformDriver::with_target(TransformMode::Translate, target),
-            document,
+            document: Arc::clone(&workspace.document),
         }
     }
 
@@ -110,7 +100,11 @@ impl DuplicateTool {
     }
 }
 
-impl Operator for DuplicateTool {
+impl ModelingTool for DuplicateTool {
+    fn info(&self) -> ToolInfo {
+        ToolInfo { id: "duplicate", icon: icons::DUPLICATE, shortcut: Some('d') }
+    }
+
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         // The copies are built from the selection, which `activate` cannot see;
         // the frame tick is the first point with an event context.
@@ -119,16 +113,6 @@ impl Operator for DuplicateTool {
         }
 
         self.driver.dispatch(event, ctx) || self.dispatch_idle(event, ctx)
-    }
-
-    fn name(&self) -> &str {
-        "DuplicateTool"
-    }
-}
-
-impl ModelingTool for DuplicateTool {
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "duplicate", icon: icons::DUPLICATE, shortcut: Some('d') }
     }
 
     fn activate(&mut self) {
@@ -177,9 +161,7 @@ struct DuplicateTarget {
     /// back to selection, and no further copies are spawned in the frames
     /// before that happens.
     done: bool,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    document: Arc<Mutex<Document>>,
-    notifications: Notifications,
+    workspace: Workspace,
 }
 
 impl DuplicateTarget {
@@ -199,7 +181,7 @@ impl DuplicateTarget {
 
     /// The selected nodes that are CAD parts, in selection order.
     fn selected_part_nodes(&self, selection: &SelectionManager) -> Vec<NodeId> {
-        let document = self.document.lock().unwrap();
+        let document = self.workspace.document.lock().unwrap();
         selection
             .iter()
             .filter_map(|item| match item {
@@ -216,9 +198,9 @@ impl DuplicateTarget {
 
         // The preview session locks the document itself, so read everything the
         // copies need before building them.
-        let options = self.construction_options.borrow().preview_options();
+        let options = self.workspace.preview_options();
         let (shapes, scene) = {
-            let document = self.document.lock().unwrap();
+            let document = self.workspace.document.lock().unwrap();
             let shapes = self
                 .sources
                 .iter()
@@ -249,7 +231,7 @@ impl DuplicateTarget {
         self.done = true;
 
         let copies = {
-            let mut document = self.document.lock().unwrap();
+            let mut document = self.workspace.document.lock().unwrap();
             let parts: Vec<PartId> =
                 sources.iter().filter_map(|&node| document.part_for_node(node)).collect();
             duplicate_parts(&mut document, &parts, &[placement])
@@ -258,17 +240,14 @@ impl DuplicateTarget {
         match copies {
             Ok(copies) => {
                 let nodes: Vec<NodeId> = {
-                    let document = self.document.lock().unwrap();
+                    let document = self.workspace.document.lock().unwrap();
                     copies.iter().filter_map(|&part| document.node_for_part(part)).collect()
                 };
                 // The copies are what the user is now working with.
                 ctx.selection.clear();
                 ctx.selection.extend(nodes.into_iter().map(SelectionItem::Node));
             }
-            Err(e) => {
-                log::error!("duplicate failed: {e:#}");
-                self.notifications.error(format!("Duplicate failed: {e}"));
-            }
+            Err(e) => self.workspace.notifications.failure("Duplicate", &e),
         }
     }
 
@@ -290,16 +269,14 @@ impl TransformTarget for DuplicateTarget {
     }
 
     fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
-        let camera = ctx.camera.clone();
-        let delta = interaction.delta_matrix(&camera, ctx.size);
+        let delta = interaction.delta_matrix(ctx.camera, ctx.size);
         // One delta for every copy: the whole selection moves as a rigid group,
         // and each copy was tessellated at its source's world position.
         self.preview.set_preview_transform(decompose_matrix(&delta));
     }
 
     fn commit(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
-        let camera = ctx.camera.clone();
-        let delta = interaction.delta_matrix(&camera, ctx.size);
+        let delta = interaction.delta_matrix(ctx.camera, ctx.size);
         self.apply(delta, ctx);
     }
 

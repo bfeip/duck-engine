@@ -1,22 +1,15 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-
 use duck_engine_common::{MetricSpace, Point3, Vector3};
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     event::{DeviceEvent, Event, EventContext},
     input::{Modifiers, MouseButton},
-    operator::Operator,
 };
 use log::warn;
 
-use crate::document::Document;
 use crate::ops::primitives::{circle, region};
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo, Workspace};
 use crate::ui::icons;
-use crate::construction::ConstructionOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum CircleAction {
@@ -33,8 +26,7 @@ enum Phase {
 
 pub struct CircleTool {
     phase: Phase,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    document: Arc<Mutex<Document>>,
+    workspace: Workspace,
     preview: PreviewSession,
     bindings: InputMap<CircleAction>,
     cursor_target: Option<Point3>,
@@ -42,10 +34,7 @@ pub struct CircleTool {
 
 
 impl CircleTool {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-    ) -> Self {
+    pub fn new(workspace: &Workspace) -> Self {
         let bindings = InputMap::new()
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
@@ -55,11 +44,10 @@ impl CircleTool {
                 InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
                 CircleAction::Cancel,
             );
-        let preview = PreviewSession::new(Arc::clone(&document));
+        let preview = workspace.preview_session();
         Self {
             phase: Phase::Idle,
-            construction_options,
-            document,
+            workspace: workspace.clone(),
             preview,
             bindings,
             cursor_target: None,
@@ -67,12 +55,8 @@ impl CircleTool {
     }
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let camera = ctx.camera.clone();
-        let cplane_normal = self.construction_options.borrow().construction_plane.normal;
-        let Some(snap) = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, &[], &camera, ctx, &[])
+        let cplane_normal = self.workspace.construction.borrow().construction_plane.normal;
+        let Some(snap) = self.workspace.snap(position, &[], ctx)
         else {
             return false;
         };
@@ -88,7 +72,7 @@ impl CircleTool {
             }
         };
         // Coarser preview tolerance since the preview is rebuilt on every move.
-        let preview_options = self.construction_options.borrow().preview_options();
+        let preview_options = self.workspace.preview_options();
         if self.preview.add_preview_from_shape(&shape, &preview_options, "circle").is_none() {
             return false;
         }
@@ -103,13 +87,9 @@ impl CircleTool {
         position: (f32, f32),
         ctx: &mut EventContext
     ) -> bool {
-        let camera = ctx.camera.clone();
         // Exclude the preview so the radius can snap through a corner, not to the
         // preview's own geometry.
-        let radius = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, self.preview.preview_nodes(), &camera, ctx, &[])
+        let radius = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
             .map(|s| center.distance(s.position).max(0.01))
             .unwrap_or(0.01);
 
@@ -117,22 +97,14 @@ impl CircleTool {
 
         // Discard the preview node, then commit the world-space shape as a part.
         let _ = self.preview.commit();
-
-        let committed = match shape {
-            Ok(shape) => {
-                let coptions = self.construction_options.borrow();
-                let mut doc = self.document.lock().unwrap();
-                doc.add_numbered_part("Circle", shape, &coptions.geometry_options)
-                    .is_ok()
-            }
+        self.phase = Phase::Idle;
+        match shape.and_then(|shape| self.workspace.add_numbered_part("Circle", shape)) {
+            Ok(_) => true,
             Err(e) => {
-                warn!("Failed to build the circle: {e:#}");
+                self.workspace.notifications.failure("Circle", &e);
                 false
             }
-        };
-
-        self.phase = Phase::Idle;
-        committed
+        }
     }
 
     pub fn cancel(&mut self) {
@@ -143,15 +115,8 @@ impl CircleTool {
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
 
-        let camera = ctx.camera.clone();
         // While defining, exclude our own preview so the radius doesn't snap to it.
-        let snap = self.construction_options.borrow().resolve_snap(
-            cursor,
-            self.preview.preview_nodes(),
-            &camera,
-            ctx,
-            &[],
-        );
+        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
 
         // Record where the modeler should draw the 3D cursor.
         self.cursor_target = snap.map(|s| s.position);
@@ -163,7 +128,7 @@ impl CircleTool {
             if let Some(snap) = snap {
                 let radius = center.distance(snap.position).max(0.01);
                 if let Ok(shape) = circle(center, normal, radius).map(region) {
-                    let preview_options = self.construction_options.borrow().preview_options();
+                    let preview_options = self.workspace.preview_options();
                     self.preview.try_replace_preview(&shape, &preview_options, "circle");
                 }
             }
@@ -176,19 +141,6 @@ impl ModelingTool for CircleTool {
         ToolInfo { id: "circle", icon: icons::CIRCLE, shortcut: None }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        // The modeler hides the cursor for the (now inactive) tool, but clear our
-        // target so a stale point can't flash if we're reactivated before a move.
-        self.cursor_target = None;
-    }
-
-    fn cursor_target(&self) -> Option<Point3> {
-        self.cursor_target
-    }
-}
-
-impl Operator for CircleTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -223,7 +175,14 @@ impl Operator for CircleTool {
         }
     }
 
-    fn name(&self) -> &str {
-        "Circle"
+    fn deactivate(&mut self) {
+        self.cancel();
+        // The modeler hides the cursor for the (now inactive) tool, but clear our
+        // target so a stale point can't flash if we're reactivated before a move.
+        self.cursor_target = None;
+    }
+
+    fn cursor_target(&self) -> Option<Point3> {
+        self.cursor_target
     }
 }

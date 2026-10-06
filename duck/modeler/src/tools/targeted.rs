@@ -4,25 +4,20 @@
 //! The selection picks the target until the first edit, which locks it so a
 //! stray click can't retarget the operation in progress.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-
 use anyhow::Result;
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{NodeFlags, NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, KeyEvent, Modifiers, MouseButton, NamedKey},
-    operator::{Handle, HandleEvent, Operator, SelectionMode},
+    operator::{Handle, HandleEvent, SelectionMode},
     selection::{SelectionItem, SelectionManager},
 };
 use opencascade::primitives::Shape;
 
 use crate::document::Document;
-use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
 use super::tweak::{handle_tweak, tweak_panel, TweakAction, TweakParams};
 use crate::construction::ConstructionOptions;
 
@@ -162,19 +157,11 @@ pub struct TargetedTool<O: TargetedOp> {
     /// Set once the result is applied or cancelled, so the tool cedes back to
     /// selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
-
-    document: Arc<Mutex<Document>>,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    notifications: Notifications,
+    workspace: Workspace,
 }
 
 impl<O: TargetedOp + Default> TargetedTool<O> {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-        notifications: Notifications,
-    ) -> Self {
-        let preview = PreviewSession::new(Arc::clone(&document));
+    pub fn new(workspace: &Workspace) -> Self {
         Self {
             op: O::default(),
             phase: Phase::AwaitingSelection,
@@ -183,11 +170,9 @@ impl<O: TargetedOp + Default> TargetedTool<O> {
             grabbed: None,
             built: None,
             error: None,
-            preview,
+            preview: workspace.preview_session(),
             finished: false,
-            document,
-            construction_options,
-            notifications,
+            workspace: workspace.clone(),
         }
     }
 }
@@ -219,9 +204,9 @@ impl<O: TargetedOp> TargetedTool<O> {
             return;
         };
         let params = self.op.resolve(
-            &self.document.lock().unwrap(),
+            &self.workspace.document.lock().unwrap(),
             &target,
-            &self.construction_options.borrow(),
+            &self.workspace.construction.borrow(),
             edited.as_ref().map(|(_, params)| params),
         );
         let params = match params {
@@ -251,7 +236,7 @@ impl<O: TargetedOp> TargetedTool<O> {
     /// for the part, the construction ones otherwise, both at the coarser
     /// preview tolerance.
     fn preview_options(&self, doc: &Document, node: NodeId, style: PreviewStyle) -> CadTessellationOptions {
-        let construction = self.construction_options.borrow();
+        let construction = self.workspace.construction.borrow();
         let part = doc.part_at(node);
         let mut options = match (style, part) {
             (PreviewStyle::InPlace, Some(part)) => part.options().clone(),
@@ -281,7 +266,7 @@ impl<O: TargetedOp> TargetedTool<O> {
         let node = self.op.node(target);
         let style = self.op.preview_style(params);
         let (shape, options) = {
-            let doc = self.document.lock().unwrap();
+            let doc = self.workspace.document.lock().unwrap();
             (self.op.build(&doc, target, params), self.preview_options(&doc, node, style))
         };
         let shape = match shape {
@@ -318,10 +303,10 @@ impl<O: TargetedOp> TargetedTool<O> {
         };
         let style = self.op.preview_style(params);
         self.op.apply(
-            &mut self.document.lock().unwrap(),
+            &mut self.workspace.document.lock().unwrap(),
             target,
             params,
-            &self.construction_options.borrow(),
+            &self.workspace.construction.borrow(),
         )?;
 
         match style {
@@ -347,8 +332,7 @@ impl<O: TargetedOp> TargetedTool<O> {
     fn apply_and_report(&mut self, selection: &mut SelectionManager) {
         let title = self.op.title(self.phase.params());
         if let Err(e) = self.apply(selection) {
-            log::error!("{title} failed: {e:#}");
-            self.notifications.error(format!("{title} failed: {e:#}"));
+            self.workspace.notifications.failure(title, &e);
         }
     }
 
@@ -412,6 +396,29 @@ impl<O: TargetedOp> TargetedTool<O> {
 impl<O: TargetedOp> ModelingTool for TargetedTool<O> {
     fn info(&self) -> ToolInfo {
         self.op.info()
+    }
+
+    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
+        let Event::Device(event) = event else { return false };
+        match event {
+            DeviceEvent::Update { .. } => {
+                self.follow_selection(ctx.selection);
+                self.refresh_preview();
+                false
+            }
+            DeviceEvent::MouseClick { button: MouseButton::Left, .. } => {
+                self.swallows_click(ctx.modifiers)
+            }
+            // Right-click finalizes, matching the Boolean/Line convention.
+            DeviceEvent::MouseClick { button: MouseButton::Right, .. } if self.is_editing() => {
+                self.apply_and_report(ctx.selection);
+                true
+            }
+            DeviceEvent::KeyboardInput { event, .. } => {
+                self.on_key(event, ctx.modifiers, ctx.selection)
+            }
+            _ => false,
+        }
     }
 
     fn deactivate(&mut self) {
@@ -480,35 +487,6 @@ impl<O: TargetedOp> ModelingTool for TargetedTool<O> {
             TweakAction::Cancel => self.cancel(),
             TweakAction::None => {}
         }
-    }
-}
-
-impl<O: TargetedOp> Operator for TargetedTool<O> {
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::Update { .. } => {
-                self.follow_selection(ctx.selection);
-                self.refresh_preview();
-                false
-            }
-            DeviceEvent::MouseClick { button: MouseButton::Left, .. } => {
-                self.swallows_click(ctx.modifiers)
-            }
-            // Right-click finalizes, matching the Boolean/Line convention.
-            DeviceEvent::MouseClick { button: MouseButton::Right, .. } if self.is_editing() => {
-                self.apply_and_report(ctx.selection);
-                true
-            }
-            DeviceEvent::KeyboardInput { event, .. } => {
-                self.on_key(event, ctx.modifiers, ctx.selection)
-            }
-            _ => false,
-        }
-    }
-
-    fn name(&self) -> &str {
-        self.op.title(None)
     }
 }
 

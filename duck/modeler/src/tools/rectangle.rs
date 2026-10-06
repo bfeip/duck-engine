@@ -1,7 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-
 use duck_engine_common::{InnerSpace, Plane, Point3, Real, Vector3};
 use duck_engine_scene::resource::Visibility;
 use duck_engine_viewer::{
@@ -9,17 +5,14 @@ use duck_engine_viewer::{
     common::Transform,
     event::{DeviceEvent, Event, EventContext},
     input::{Modifiers, MouseButton},
-    operator::Operator,
 };
 use log::warn;
 use opencascade::primitives::{Face, Shape, Wire};
 
-use crate::document::Document;
 use crate::ops::primitives::{closed_polyline, rectangle_corners, region};
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo, Workspace};
 use crate::ui::icons;
-use crate::construction::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
@@ -40,18 +33,14 @@ enum Phase {
 
 pub struct RectangleTool {
     phase: Phase,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    document: Arc<Mutex<Document>>,
+    workspace: Workspace,
     preview: PreviewSession,
     bindings: InputMap<RectangleAction>,
     cursor_target: Option<Point3>,
 }
 
 impl RectangleTool {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-    ) -> Self {
+    pub fn new(workspace: &Workspace) -> Self {
         let bindings = InputMap::new()
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
@@ -61,11 +50,10 @@ impl RectangleTool {
                 InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
                 RectangleAction::Cancel,
             );
-        let preview = PreviewSession::new(Arc::clone(&document));
+        let preview = workspace.preview_session();
         Self {
             phase: Phase::Idle,
-            construction_options,
-            document,
+            workspace: workspace.clone(),
             preview,
             bindings,
             cursor_target: None,
@@ -114,12 +102,8 @@ impl RectangleTool {
     }
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let camera = ctx.camera.clone();
-        let cplane = self.construction_options.borrow().construction_plane;
-        let Some(snap) = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, &[], &camera, ctx, &[])
+        let cplane = self.workspace.construction.borrow().construction_plane;
+        let Some(snap) = self.workspace.snap(position, &[], ctx)
         else {
             return false;
         };
@@ -133,7 +117,7 @@ impl RectangleTool {
         };
 
         // A single unit face, scaled each move; preview detail is irrelevant for a flat quad.
-        let options = self.construction_options.borrow().geometry_options.clone();
+        let options = self.workspace.geometry_options();
         if self.preview.add_preview_from_shape(&preview_shape, &options, "rectangle preview").is_none() {
             return false;
         }
@@ -150,12 +134,8 @@ impl RectangleTool {
         position: (f32, f32),
         ctx: &mut EventContext
     ) -> bool {
-        let camera = ctx.camera.clone();
         // Exclude the preview so the footprint can snap through it.
-        let Some(corner) = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, self.preview.preview_nodes(), &camera, ctx, &[])
+        let Some(corner) = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
             .map(|s| s.position)
         else {
             return false;
@@ -170,23 +150,21 @@ impl RectangleTool {
         let world_shape = match Self::analytic_face(center, width, depth, &plane) {
             Ok(shape) => shape,
             Err(e) => {
-                warn!("Failed to build the rectangle: {e:#}");
+                self.workspace.notifications.failure("Rectangle", &e);
                 return false;
             }
         };
 
         // Discard the preview, then commit the world-space shape as a registered part.
         let _ = self.preview.commit();
-
-        let committed = {
-            let coptions = self.construction_options.borrow();
-            let mut doc = self.document.lock().unwrap();
-            doc.add_numbered_part("Rectangle", world_shape, &coptions.geometry_options)
-                .is_ok()
-        };
-
         self.phase = Phase::Idle;
-        committed
+        match self.workspace.add_numbered_part("Rectangle", world_shape) {
+            Ok(_) => true,
+            Err(e) => {
+                self.workspace.notifications.failure("Rectangle", &e);
+                false
+            }
+        }
     }
 
     pub fn cancel(&mut self) {
@@ -197,15 +175,8 @@ impl RectangleTool {
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
 
-        let camera = ctx.camera.clone();
         // While defining, exclude our own preview so snapping doesn't lock onto it.
-        let snap = self.construction_options.borrow().resolve_snap(
-            cursor,
-            self.preview.preview_nodes(),
-            &camera,
-            ctx,
-            &[],
-        );
+        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
 
         self.cursor_target = snap.map(|s| s.position);
 
@@ -234,19 +205,6 @@ impl ModelingTool for RectangleTool {
         ToolInfo { id: "rectangle", icon: icons::RECTANGLE, shortcut: None }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        // The modeler hides the cursor for the (now inactive) tool, but clear our
-        // target so a stale point can't flash if we're reactivated before a move.
-        self.cursor_target = None;
-    }
-
-    fn cursor_target(&self) -> Option<Point3> {
-        self.cursor_target
-    }
-}
-
-impl Operator for RectangleTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -280,8 +238,15 @@ impl Operator for RectangleTool {
         }
     }
 
-    fn name(&self) -> &str {
-        "Rectangle"
+    fn deactivate(&mut self) {
+        self.cancel();
+        // The modeler hides the cursor for the (now inactive) tool, but clear our
+        // target so a stale point can't flash if we're reactivated before a move.
+        self.cursor_target = None;
+    }
+
+    fn cursor_target(&self) -> Option<Point3> {
+        self.cursor_target
     }
 }
 

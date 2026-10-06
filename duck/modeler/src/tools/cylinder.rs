@@ -1,7 +1,3 @@
-use std::sync::{Arc, Mutex};
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use duck_engine_common::{MetricSpace, Plane, Point3, Ray, Real, Vector3};
 use duck_engine_scene::resource::Visibility;
 use duck_engine_viewer::{
@@ -9,22 +5,20 @@ use duck_engine_viewer::{
     common::Transform,
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
-    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator},
+    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape},
     selection::SelectionManager,
 };
-use log::{error, warn};
+use log::warn;
 use opencascade::primitives::Shape;
 
-use crate::document::Document;
 use crate::ops::primitives::{circle, cylinder, region};
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
 use super::tweak::{
     commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
     TweakAction, TweakParams,
 };
-use crate::construction::ConstructionOptions;
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
 /// can't be committed.
@@ -140,8 +134,7 @@ impl TweakParams for CylinderParams {
 
 pub struct CylinderTool {
     phase: Phase,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    document: Arc<Mutex<Document>>,
+    workspace: Workspace,
     preview: PreviewSession,
     bindings: InputMap<CylinderAction>,
     cursor_target: Option<Point3>,
@@ -157,10 +150,7 @@ pub struct CylinderTool {
 
 
 impl CylinderTool {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-    ) -> Self {
+    pub fn new(workspace: &Workspace) -> Self {
         let bindings = InputMap::new()
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
@@ -170,11 +160,10 @@ impl CylinderTool {
                 InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
                 CylinderAction::Finish,
             );
-        let preview = PreviewSession::new(Arc::clone(&document));
+        let preview = workspace.preview_session();
         Self {
             phase: Phase::Idle,
-            construction_options,
-            document,
+            workspace: workspace.clone(),
             preview,
             bindings,
             cursor_target: None,
@@ -227,18 +216,13 @@ impl CylinderTool {
 
     /// Signed height from projecting the cursor pick ray onto the plane normal through `center`.
     fn height_from_cursor(center: Point3, plane: &Plane, position: (f32, f32), ctx: &mut EventContext) -> Real {
-        let camera = ctx.camera.clone();
-        let ray: Ray = camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
+        let ray: Ray = ctx.camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
         ray.closest_param_on_axis(center, plane.normal).unwrap_or(0.0)
     }
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let camera = ctx.camera.clone();
-        let cplane = self.construction_options.borrow().construction_plane;
-        let Some(snap) = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, &[], &camera, ctx, &[])
+        let cplane = self.workspace.construction.borrow().construction_plane;
+        let Some(snap) = self.workspace.snap(position, &[], ctx)
         else {
             return false;
         };
@@ -255,7 +239,7 @@ impl CylinderTool {
                 return false;
             }
         };
-        let options = self.construction_options.borrow().geometry_options.clone();
+        let options = self.workspace.geometry_options();
         if self.preview.add_preview_from_shape(&preview_shape, &options, "cylinder base preview").is_none() {
             return false;
         }
@@ -272,13 +256,9 @@ impl CylinderTool {
         position: (f32, f32),
         ctx: &mut EventContext
     ) -> bool {
-        let camera = ctx.camera.clone();
         // Exclude the preview so the radius can snap through a corner, not to the
         // preview's own geometry.
-        let radius = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, self.preview.preview_nodes(), &camera, ctx, &[])
+        let radius = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
             .map(|s| center.distance(s.position))
             .unwrap_or(0.0);
         // A degenerate radius can't be committed; stay in the radius stage.
@@ -287,7 +267,7 @@ impl CylinderTool {
         }
 
         // Swap the flat base preview for the 3D cylinder preview.
-        let options = self.construction_options.borrow().geometry_options.clone();
+        let options = self.workspace.geometry_options();
         if self
             .preview
             .try_replace_preview(&Self::reference_cylinder(), &options, "cylinder preview")
@@ -327,8 +307,7 @@ impl CylinderTool {
     /// panel open so the dimensions can be corrected.
     fn apply(&mut self) -> anyhow::Result<()> {
         let Phase::Tweak(params) = self.phase else { return Ok(()) };
-        let options = self.construction_options.borrow().geometry_options.clone();
-        commit_tweak(&params, &mut self.preview, &self.document, &options)?;
+        commit_tweak(&params, &mut self.preview, &self.workspace)?;
         self.phase = Phase::Idle;
         self.finished = true;
         Ok(())
@@ -338,7 +317,7 @@ impl CylinderTool {
     /// so must report for themselves: the panel's Apply button, Enter, right-click.
     fn apply_and_report(&mut self) {
         if let Err(e) = self.apply() {
-            error!("Cylinder failed: {e:#}");
+            self.workspace.notifications.failure(CylinderParams::NAME, &e);
         }
     }
 
@@ -355,15 +334,8 @@ impl CylinderTool {
         }
         let cursor = (position.0 as f32, position.1 as f32);
 
-        let camera = ctx.camera.clone();
         // While defining, exclude our own preview so snapping doesn't lock onto it.
-        let snap = self.construction_options.borrow().resolve_snap(
-            cursor,
-            self.preview.preview_nodes(),
-            &camera,
-            ctx,
-            &[],
-        );
+        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
 
         match self.phase {
             Phase::Idle => {
@@ -416,69 +388,6 @@ impl ModelingTool for CylinderTool {
         ToolInfo { id: "cylinder", icon: icons::CYLINDER, shortcut: None }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.finished = false;
-        self.grabbed = None;
-        // The modeler hides the cursor for the (now inactive) tool, but clear our
-        // target so a stale point can't flash if we're reactivated before a move.
-        self.cursor_target = None;
-    }
-
-    /// A cylinder waiting on the panel is fully defined, so leaving the tool commits it.
-    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if matches!(self.phase, Phase::Tweak(_)) {
-            self.apply()?;
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    fn cursor_target(&self) -> Option<Point3> {
-        // Nothing left to pick while the panel is open.
-        match self.phase {
-            Phase::Tweak(_) => None,
-            _ => self.cursor_target,
-        }
-    }
-
-    /// Grips only once the cylinder is placed — until then the cursor is still
-    /// defining it, and a grip would be something to fight with.
-    fn handles(&self) -> Vec<Handle> {
-        match &self.phase {
-            Phase::Tweak(params) => params.handles(),
-            _ => Vec::new(),
-        }
-    }
-
-    fn on_handle(&mut self, event: &HandleEvent) {
-        let Phase::Tweak(params) = self.phase else { return };
-        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
-            self.set_tweak(edited);
-        }
-    }
-
-    fn panel_title(&self) -> Option<&str> {
-        matches!(self.phase, Phase::Tweak(_)).then_some(CylinderParams::NAME)
-    }
-
-    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let Phase::Tweak(params) = &mut self.phase else { return };
-        let action = tweak_panel(ui, params);
-        let transform = params.preview_transform();
-        match action {
-            TweakAction::Changed => self.preview.set_preview_transform(transform),
-            TweakAction::Apply => self.apply_and_report(),
-            TweakAction::Cancel => self.cancel(),
-            TweakAction::None => {}
-        }
-    }
-}
-
-impl Operator for CylinderTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -544,8 +453,65 @@ impl Operator for CylinderTool {
         }
     }
 
-    fn name(&self) -> &str {
-        "Cylinder"
+    fn deactivate(&mut self) {
+        self.cancel();
+        self.finished = false;
+        self.grabbed = None;
+        // The modeler hides the cursor for the (now inactive) tool, but clear our
+        // target so a stale point can't flash if we're reactivated before a move.
+        self.cursor_target = None;
+    }
+
+    /// A cylinder waiting on the panel is fully defined, so leaving the tool commits it.
+    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
+        if matches!(self.phase, Phase::Tweak(_)) {
+            self.apply()?;
+        }
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn cursor_target(&self) -> Option<Point3> {
+        // Nothing left to pick while the panel is open.
+        match self.phase {
+            Phase::Tweak(_) => None,
+            _ => self.cursor_target,
+        }
+    }
+
+    /// Grips only once the cylinder is placed — until then the cursor is still
+    /// defining it, and a grip would be something to fight with.
+    fn handles(&self) -> Vec<Handle> {
+        match &self.phase {
+            Phase::Tweak(params) => params.handles(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn on_handle(&mut self, event: &HandleEvent) {
+        let Phase::Tweak(params) = self.phase else { return };
+        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
+            self.set_tweak(edited);
+        }
+    }
+
+    fn panel_title(&self) -> Option<&str> {
+        matches!(self.phase, Phase::Tweak(_)).then_some(CylinderParams::NAME)
+    }
+
+    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
+        let Phase::Tweak(params) = &mut self.phase else { return };
+        let action = tweak_panel(ui, params);
+        let transform = params.preview_transform();
+        match action {
+            TweakAction::Changed => self.preview.set_preview_transform(transform),
+            TweakAction::Apply => self.apply_and_report(),
+            TweakAction::Cancel => self.cancel(),
+            TweakAction::None => {}
+        }
     }
 }
 

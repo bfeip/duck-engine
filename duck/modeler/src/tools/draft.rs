@@ -154,54 +154,19 @@ impl TargetedOp for Draft {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::sync::{Arc, Mutex};
 
     use duck_engine_common::{InnerSpace, Matrix3, Point3, Rad, Vector3};
-    use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::resource::{SubGeometryElement, Visibility};
-    use duck_engine_scene::Scene;
+    use duck_engine_scene::resource::Visibility;
     use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
     use duck_engine_viewer::selection::SelectionItem;
     use glam::DVec3;
 
-    use crate::notifications::Notifications;
+    use crate::testing::{face_item_along, visibility, volume, workspace_with_box};
     use crate::tools::targeted::Phase;
-    use crate::tools::ModelingTool;
+    use crate::tools::{ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
-
-    /// A document holding a 2×2×2 box centred on the origin.
-    fn document_with_box() -> (Arc<Mutex<Document>>, NodeId) {
-        let mut doc = Document::new(Scene::default());
-        let part = doc
-            .add_part("box", Shape::box_centered(2.0, 2.0, 2.0), &CadTessellationOptions::default())
-            .expect("box tessellates");
-        let node = doc.node_for_part(part).expect("part has a node");
-        (Arc::new(Mutex::new(doc)), node)
-    }
-
-    fn operator(document: &Arc<Mutex<Document>>) -> DraftTool {
-        let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        DraftTool::new(construction, Arc::clone(document), Notifications::default())
-    }
-
-    /// The box face whose outward normal is `normal`, as a selection item.
-    fn face(document: &Arc<Mutex<Document>>, node: NodeId, normal: DVec3) -> SelectionItem {
-        let doc = document.lock().unwrap();
-        let part = doc.get_part(doc.part_for_node(node).unwrap()).unwrap();
-        let index = part
-            .shape
-            .faces()
-            .position(|face| face.normal_at_center().is_ok_and(|n| n.distance(normal) < 1e-6))
-            .expect("a face matches");
-        SelectionItem::SubGeometry {
-            node_id: node,
-            element: SubGeometryElement::new(SubGeometryKind::Face, index as u32),
-        }
-    }
 
     fn index(item: SelectionItem) -> u32 {
         match item {
@@ -210,12 +175,12 @@ mod tests {
         }
     }
 
-    /// An operator drafting the box's +X wall off its floor.
-    fn targeting_wall(document: &Arc<Mutex<Document>>, node: NodeId) -> (DraftTool, SelectionManager) {
-        let mut op = operator(document);
+    /// A tool drafting the box's +X wall off its floor.
+    fn targeting_wall(ws: &Workspace, node: NodeId) -> (DraftTool, SelectionManager) {
+        let mut op = DraftTool::new(ws);
         let mut selection = SelectionManager::new();
-        selection.set(face(document, node, DVec3::NEG_Y));
-        selection.add(face(document, node, DVec3::X));
+        selection.set(face_item_along(ws, node, DVec3::NEG_Y));
+        selection.add(face_item_along(ws, node, DVec3::X));
         op.follow_selection(&selection);
         (op, selection)
     }
@@ -239,21 +204,10 @@ mod tests {
         op.on_handle(&HandleEvent::End(ANGLE_HANDLE));
     }
 
-    fn visibility(document: &Arc<Mutex<Document>>, node: NodeId) -> Visibility {
-        let scene = document.lock().unwrap().scene().clone();
-        let scene = scene.lock();
-        scene.get_node(node).expect("node exists").visibility()
-    }
-
-    fn volume(document: &Arc<Mutex<Document>>, node: NodeId) -> f64 {
-        let doc = document.lock().unwrap();
-        doc.get_part(doc.part_for_node(node).expect("node is a part")).unwrap().shape.volume()
-    }
-
     #[test]
     fn the_grip_sits_on_the_face_with_a_leader_to_its_hinge() {
-        let (document, node) = document_with_box();
-        let (op, _) = targeting_wall(&document, node);
+        let (ws, node) = workspace_with_box();
+        let (op, _) = targeting_wall(&ws, node);
 
         let [grip] = <[Handle; 1]>::try_from(params(&op).handles()).expect("one grip");
         assert!((grip.anchor - Point3::new(1.0, 0.0, 0.0)).magnitude() < EPSILON);
@@ -267,8 +221,8 @@ mod tests {
     /// by the angle swept.
     #[test]
     fn swinging_the_grip_in_over_the_part_drafts_by_the_angle_swept() {
-        let (document, node) = document_with_box();
-        let (op, _) = targeting_wall(&document, node);
+        let (ws, node) = workspace_with_box();
+        let (op, _) = targeting_wall(&ws, node);
         let grabbed = params(&op);
 
         let drag = swing(&grabbed, Real::to_radians(10.0));
@@ -283,8 +237,8 @@ mod tests {
     /// reports to the same snapshot must not compound them.
     #[test]
     fn successive_drags_from_one_grab_do_not_compound() {
-        let (document, node) = document_with_box();
-        let (op, _) = targeting_wall(&document, node);
+        let (ws, node) = workspace_with_box();
+        let (op, _) = targeting_wall(&ws, node);
         let grabbed = params(&op);
         let step = swing(&grabbed, Real::to_radians(5.0));
 
@@ -296,8 +250,8 @@ mod tests {
 
     #[test]
     fn the_draft_is_held_short_of_flat() {
-        let (document, node) = document_with_box();
-        let (op, _) = targeting_wall(&document, node);
+        let (ws, node) = workspace_with_box();
+        let (op, _) = targeting_wall(&ws, node);
         let grabbed = params(&op);
 
         let mut edited = grabbed;
@@ -309,18 +263,18 @@ mod tests {
     /// is nothing to draft.
     #[test]
     fn the_primary_face_is_neutral_and_the_rest_are_drafted() {
-        let (document, node) = document_with_box();
-        let mut op = operator(&document);
+        let (ws, node) = workspace_with_box();
+        let mut op = DraftTool::new(&ws);
         let mut selection = SelectionManager::new();
         assert_eq!(Draft.prompt(&selection), "Select the neutral face, then shift-click faces to draft.");
 
-        let floor = face(&document, node, DVec3::NEG_Y);
+        let floor = face_item_along(&ws, node, DVec3::NEG_Y);
         selection.set(floor);
         op.follow_selection(&selection);
         assert!(matches!(op.phase, Phase::AwaitingSelection));
         assert_eq!(Draft.prompt(&selection), "Shift-click faces to draft.");
 
-        let walls = [face(&document, node, DVec3::X), face(&document, node, DVec3::Z)];
+        let walls = [face_item_along(&ws, node, DVec3::X), face_item_along(&ws, node, DVec3::Z)];
         selection.extend(walls);
         op.follow_selection(&selection);
         let target = op.phase.target().expect("a draft is targeted");
@@ -331,13 +285,13 @@ mod tests {
     /// Faces shift-clicked in mid-edit are drafted at the angle already set.
     #[test]
     fn a_face_added_mid_edit_takes_the_angle_already_set() {
-        let (document, node) = document_with_box();
-        let (mut op, mut selection) = targeting_wall(&document, node);
+        let (ws, node) = workspace_with_box();
+        let (mut op, mut selection) = targeting_wall(&ws, node);
         drag_by(&mut op, Real::to_radians(5.0));
         assert!(op.is_editing());
         assert!(!op.swallows_click(Modifiers { shift: true, ..Default::default() }));
 
-        selection.add(face(&document, node, DVec3::NEG_X));
+        selection.add(face_item_along(&ws, node, DVec3::NEG_X));
         op.follow_selection(&selection);
         assert!(op.is_editing());
         assert_eq!(op.phase.target().expect("still targeted").faces.len(), 2);
@@ -346,37 +300,37 @@ mod tests {
 
     #[test]
     fn a_grip_drag_previews_the_draft_in_place_and_apply_reshapes_the_part() {
-        let (document, node) = document_with_box();
-        let (mut op, mut selection) = targeting_wall(&document, node);
+        let (ws, node) = workspace_with_box();
+        let (mut op, mut selection) = targeting_wall(&ws, node);
         let angle = Real::to_radians(10.0);
 
         drag_by(&mut op, angle);
         op.refresh_preview();
         assert!(op.error.is_none(), "{:?}", op.error);
         assert_eq!(op.preview.preview_nodes().len(), 1);
-        assert_eq!(visibility(&document, node), Visibility::Invisible);
+        assert_eq!(visibility(&ws, node), Visibility::Invisible);
 
         op.apply(&mut selection).expect("the draft applies");
         assert!(op.is_finished());
         assert!(selection.is_empty(), "the part's faces were renumbered");
         assert!(op.preview.is_empty());
-        assert_eq!(visibility(&document, node), Visibility::Visible);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
         let expected = 8.0 - 4.0 * f64::from(angle).tan();
-        assert!((volume(&document, node) - expected).abs() < 1e-6, "got {}", volume(&document, node));
-        assert_eq!(document.lock().unwrap().undo_label(), Some("Draft"));
+        assert!((volume(&ws, node) - expected).abs() < 1e-6, "got {}", volume(&ws, node));
+        assert_eq!(ws.document.lock().unwrap().undo_label(), Some("Draft"));
     }
 
     #[test]
     fn cancel_restores_the_part() {
-        let (document, node) = document_with_box();
-        let (mut op, _) = targeting_wall(&document, node);
+        let (ws, node) = workspace_with_box();
+        let (mut op, _) = targeting_wall(&ws, node);
         drag_by(&mut op, Real::to_radians(10.0));
         op.refresh_preview();
 
         op.cancel();
         assert!(op.is_finished());
         assert!(op.preview.is_empty());
-        assert_eq!(visibility(&document, node), Visibility::Visible);
-        assert!((volume(&document, node) - 8.0).abs() < 1e-9);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
+        assert!((volume(&ws, node) - 8.0).abs() < 1e-9);
     }
 }

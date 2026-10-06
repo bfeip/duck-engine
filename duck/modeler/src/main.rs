@@ -36,7 +36,7 @@ use crate::construction::ConstructionOptions;
 use crate::tools::{
     BooleanTool, BoxTool, CircleTool, CurveTool, CylinderTool, DraftTool, DuplicateTool,
     ExtrudeTool, FilletTool, HollowTool, LineTool, LoftTool, RectangleTool, SphereTool,
-    ThickenTool, ToolManager, TransformTool,
+    ThickenTool, ToolManager, TransformTool, Workspace,
 };
 use crate::delete::DeleteOperator;
 use crate::notifications::Notifications;
@@ -146,24 +146,29 @@ impl ViewerState<'static> {
 
         viewer.add_axis_triad(view_id, AxisTriadConfig::default());
 
-        tools.register(TransformTool::new(TransformMode::Translate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(TransformTool::new(TransformMode::Rotate, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(TransformTool::new(TransformMode::Scale, Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(DuplicateTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(SphereTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(BoxTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(CylinderTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(RectangleTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(LineTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(CurveTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(CircleTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
-        tools.register(BooleanTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(ExtrudeTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(FilletTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(DraftTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(ThickenTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(HollowTool::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
-        tools.register(LoftTool::new(Rc::clone(&construction_options), Arc::clone(&document)));
+        let workspace = Workspace {
+            document: Arc::clone(&document),
+            construction: Rc::clone(&construction_options),
+            notifications: notifications.clone(),
+        };
+        tools.register(TransformTool::new(TransformMode::Translate, &workspace));
+        tools.register(TransformTool::new(TransformMode::Rotate, &workspace));
+        tools.register(TransformTool::new(TransformMode::Scale, &workspace));
+        tools.register(DuplicateTool::new(&workspace));
+        tools.register(SphereTool::new(&workspace));
+        tools.register(BoxTool::new(&workspace));
+        tools.register(CylinderTool::new(&workspace));
+        tools.register(RectangleTool::new(&workspace));
+        tools.register(LineTool::new(&workspace));
+        tools.register(CurveTool::new(&workspace));
+        tools.register(CircleTool::new(&workspace));
+        tools.register(BooleanTool::new(&workspace));
+        tools.register(ExtrudeTool::new(&workspace));
+        tools.register(FilletTool::new(&workspace));
+        tools.register(DraftTool::new(&workspace));
+        tools.register(ThickenTool::new(&workspace));
+        tools.register(HollowTool::new(&workspace));
+        tools.register(LoftTool::new(&workspace));
 
         Self {
             egui_renderer,
@@ -343,10 +348,7 @@ impl<'a> ViewerState<'a> {
                 let noun = if action == UndoAction::Undo { "undo" } else { "redo" };
                 self.notifications.info(format!("Nothing to {noun}"));
             }
-            Err(e) => {
-                log::error!("{verb} failed: {e:#}");
-                self.notifications.error(format!("{verb} failed: {e}"));
-            }
+            Err(e) => self.notifications.failure(verb, &e),
         }
     }
 
@@ -419,13 +421,13 @@ impl<'a> ViewerState<'a> {
                 UiAction::ImportCad => {
                     let options = self.construction_options.borrow().geometry_options.clone();
                     if let Err(e) = io::import_cad_dialog(&self.document, &options) {
-                        log::error!("CAD import failed: {e:#}");
+                        self.notifications.failure("CAD import", &e);
                     }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 UiAction::ExportCad => {
                     if let Err(e) = io::export_cad_dialog(&self.document) {
-                        log::error!("CAD export failed: {e:#}");
+                        self.notifications.failure("CAD export", &e);
                     }
                 }
                 // STEP/IGES needs OCCT's TKDESTEP, which is excluded from the

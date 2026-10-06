@@ -205,79 +205,24 @@ impl TargetedOp for Thicken {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::sync::{Arc, Mutex};
 
     use duck_engine_common::InnerSpace;
-    use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::resource::{NodeFlags, SubGeometryElement, SubGeometryKind, Visibility};
-    use duck_engine_scene::Scene;
-    use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, PhysicalKey};
+    use duck_engine_scene::resource::{NodeFlags, Visibility};
+    use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
     use duck_engine_viewer::selection::SelectionItem;
     use glam::DVec3;
-    use opencascade::primitives::{Shell, Wire};
 
-    use crate::notifications::Notifications;
+    use crate::testing::{
+        face_item, face_item_along, key, tube, visibility, volumes, workspace_with, workspace_with_box,
+    };
     use crate::tools::targeted::Phase;
-    use crate::tools::ModelingTool;
+    use crate::tools::{ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
 
-    fn document_with(shape: Shape) -> (Arc<Mutex<Document>>, NodeId) {
-        let mut doc = Document::new(Scene::default());
-        let part = doc.add_part("part", shape, &CadTessellationOptions::default()).expect("shape tessellates");
-        let node = doc.node_for_part(part).expect("part has a node");
-        (Arc::new(Mutex::new(doc)), node)
-    }
-
-    /// A document holding a 2×2×2 box centred on the origin.
-    fn document_with_box() -> (Arc<Mutex<Document>>, NodeId) {
-        document_with(Shape::box_centered(2.0, 2.0, 2.0))
-    }
-
-    /// An open square tube lofted between unit squares two apart: four faces
-    /// of one sheet.
-    fn tube() -> Shape {
-        let square = |y: f64| {
-            Wire::from_ordered_points([
-                DVec3::new(-0.5, y, -0.5),
-                DVec3::new(0.5, y, -0.5),
-                DVec3::new(0.5, y, 0.5),
-                DVec3::new(-0.5, y, 0.5),
-            ])
-            .expect("square builds")
-        };
-        Shell::loft([square(0.0), square(2.0)]).into()
-    }
-
-    fn operator(document: &Arc<Mutex<Document>>) -> ThickenTool {
-        let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        ThickenTool::new(construction, Arc::clone(document), Notifications::default())
-    }
-
-    fn face(node: NodeId, index: u32) -> SelectionItem {
-        SelectionItem::SubGeometry {
-            node_id: node,
-            element: SubGeometryElement::new(SubGeometryKind::Face, index),
-        }
-    }
-
-    /// The box face whose outward normal is `normal`, as a selection item.
-    fn face_along(document: &Arc<Mutex<Document>>, node: NodeId, normal: DVec3) -> SelectionItem {
-        let doc = document.lock().unwrap();
-        let part = doc.get_part(doc.part_for_node(node).unwrap()).unwrap();
-        let index = part
-            .shape
-            .faces()
-            .position(|face| face.normal_at_center().is_ok_and(|n| n.normalize().distance(normal) < 1e-6))
-            .expect("a face matches");
-        face(node, index as u32)
-    }
-
-    fn targeting(document: &Arc<Mutex<Document>>, items: &[SelectionItem]) -> (ThickenTool, SelectionManager) {
-        let mut op = operator(document);
+    fn targeting(ws: &Workspace, items: &[SelectionItem]) -> (ThickenTool, SelectionManager) {
+        let mut op = ThickenTool::new(ws);
         let mut selection = SelectionManager::new();
         selection.extend(items.iter().copied());
         op.follow_selection(&selection);
@@ -295,37 +240,17 @@ mod tests {
             FRONT_HANDLE => (grabbed.front_grip(), grabbed.frame.normal),
             _ => (grabbed.back_grip(), -grabbed.frame.normal),
         };
-        let drag = HandleDrag { id, grab, point: grab + outward * distance, modifiers: Modifiers::default() };
         op.on_handle(&HandleEvent::Begin(id));
-        op.on_handle(&HandleEvent::Drag(drag));
+        op.on_handle(&HandleEvent::Drag(crate::testing::drag(id, grab, outward * distance)));
         op.on_handle(&HandleEvent::End(id));
-    }
-
-    fn key(c: char) -> KeyEvent {
-        KeyEvent {
-            physical_key: PhysicalKey::Unidentified,
-            logical_key: Key::Character(c),
-            state: ElementState::Pressed,
-            repeat: false,
-        }
-    }
-
-    fn visibility(document: &Arc<Mutex<Document>>, node: NodeId) -> Visibility {
-        let scene = document.lock().unwrap().scene().clone();
-        let scene = scene.lock();
-        scene.get_node(node).expect("node exists").visibility()
-    }
-
-    fn volumes(document: &Arc<Mutex<Document>>) -> Vec<f64> {
-        document.lock().unwrap().parts().map(|part| part.shape.volume()).collect()
     }
 
     /// Joining shows one arrow; a new body adds one against the normal, the
     /// two on arms pointing apart.
     #[test]
     fn the_back_grip_shows_only_where_the_back_counts() {
-        let (document, node) = document_with_box();
-        let (op, _) = targeting(&document, &[face_along(&document, node, DVec3::Y)]);
+        let (ws, node) = workspace_with_box();
+        let (op, _) = targeting(&ws, &[face_item_along(&ws, node, DVec3::Y)]);
         let joined = params(&op);
         assert_eq!(joined.fate(), SourceFate::Fuse);
         let [front] = <[Handle; 1]>::try_from(joined.handles()).expect("one grip");
@@ -342,8 +267,8 @@ mod tests {
 
     #[test]
     fn the_grips_set_each_side_one_for_one_and_stop_at_the_faces() {
-        let (document, node) = document_with(tube());
-        let (mut op, _) = targeting(&document, &[face(node, 0)]);
+        let (ws, node) = workspace_with(tube());
+        let (mut op, _) = targeting(&ws, &[face_item(node, 0)]);
         drag_out(&mut op, FRONT_HANDLE, 0.3);
         drag_out(&mut op, BACK_HANDLE, 0.2);
         assert!((params(&op).front - 0.3).abs() < EPSILON);
@@ -357,8 +282,8 @@ mod tests {
     /// that it never reaches the Scale shortcut.
     #[test]
     fn s_locks_the_sides_together_and_is_always_taken() {
-        let (document, node) = document_with_box();
-        let (mut op, mut selection) = targeting(&document, &[face_along(&document, node, DVec3::Y)]);
+        let (ws, node) = workspace_with_box();
+        let (mut op, mut selection) = targeting(&ws, &[face_item_along(&ws, node, DVec3::Y)]);
         assert!(op.on_key(&key('s'), Modifiers::default(), &mut selection), "taken while joining");
         assert!(params(&op).lock);
         assert!(op.is_editing());
@@ -372,22 +297,22 @@ mod tests {
     /// changes nothing on a sheet.
     #[test]
     fn n_switches_a_solids_faces_to_a_new_body() {
-        let (document, node) = document_with_box();
-        let (mut op, mut selection) = targeting(&document, &[face_along(&document, node, DVec3::Y)]);
+        let (ws, node) = workspace_with_box();
+        let (mut op, mut selection) = targeting(&ws, &[face_item_along(&ws, node, DVec3::Y)]);
         assert!(op.on_key(&key('n'), Modifiers::default(), &mut selection));
         assert_eq!(params(&op).fate(), SourceFate::Keep);
         assert!(op.on_key(&key('n'), Modifiers::default(), &mut selection));
         assert_eq!(params(&op).fate(), SourceFate::Fuse);
 
-        let (document, node) = document_with(tube());
-        let (mut op, mut selection) = targeting(&document, &[face(node, 0)]);
+        let (ws, node) = workspace_with(tube());
+        let (mut op, mut selection) = targeting(&ws, &[face_item(node, 0)]);
         assert!(!op.on_key(&key('n'), Modifiers::default(), &mut selection), "a sheet has no solid to join");
     }
 
     #[test]
     fn a_whole_solid_says_to_pick_its_faces() {
-        let (document, node) = document_with_box();
-        let (op, _) = targeting(&document, &[SelectionItem::Node(node)]);
+        let (ws, node) = workspace_with_box();
+        let (op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
         assert!(matches!(op.phase, Phase::AwaitingSelection));
         let error = op.error.as_deref().expect("the refusal is reported");
         assert!(error.contains("faces of the solid"), "got {error}");
@@ -397,20 +322,20 @@ mod tests {
     /// grows the solid in place.
     #[test]
     fn a_joined_slab_previews_beside_its_solid_and_applies_in_place() {
-        let (document, node) = document_with_box();
-        let (mut op, mut selection) = targeting(&document, &[face_along(&document, node, DVec3::Y)]);
+        let (ws, node) = workspace_with_box();
+        let (mut op, mut selection) = targeting(&ws, &[face_item_along(&ws, node, DVec3::Y)]);
         drag_out(&mut op, FRONT_HANDLE, 0.5);
         op.refresh_preview();
         assert!(op.error.is_none(), "{:?}", op.error);
-        assert_eq!(visibility(&document, node), Visibility::Visible);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
         let [preview] = <[NodeId; 1]>::try_from(op.preview.preview_nodes()).expect("one preview");
-        let scene = document.lock().unwrap().scene().clone();
+        let scene = ws.document.lock().unwrap().scene().clone();
         assert!(scene.lock().get_node(preview).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));
 
         op.apply(&mut selection).expect("the slab joins");
         assert!(op.is_finished());
         assert!(op.preview.is_empty());
-        let doc = document.lock().unwrap();
+        let doc = ws.document.lock().unwrap();
         let part = doc.part_for_node(node).expect("the solid keeps its node");
         assert!((doc.get_part(part).unwrap().shape.volume() - 10.0).abs() < 1e-6);
         assert_eq!(doc.undo_label(), Some("Thicken"));
@@ -418,20 +343,20 @@ mod tests {
 
     #[test]
     fn a_new_body_applies_beside_its_solid() {
-        let (document, node) = document_with_box();
-        let (mut op, mut selection) = targeting(&document, &[face_along(&document, node, DVec3::Y)]);
+        let (ws, node) = workspace_with_box();
+        let (mut op, mut selection) = targeting(&ws, &[face_item_along(&ws, node, DVec3::Y)]);
         assert!(op.on_key(&key('n'), Modifiers::default(), &mut selection));
         drag_out(&mut op, FRONT_HANDLE, 0.5);
         drag_out(&mut op, BACK_HANDLE, 0.25);
         op.refresh_preview();
 
         op.apply(&mut selection).expect("the slab is added");
-        let volumes = volumes(&document);
+        let volumes = volumes(&ws.document.lock().unwrap());
         assert_eq!(volumes.len(), 2);
         assert!((volumes[0] - 8.0).abs() < 1e-9);
         assert!((volumes[1] - 3.0).abs() < 1e-6, "got {}", volumes[1]);
-        assert_eq!(visibility(&document, node), Visibility::Visible);
-        let doc = document.lock().unwrap();
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
+        let doc = ws.document.lock().unwrap();
         let names: Vec<_> = doc.parts().map(|part| part.name.as_str()).collect();
         assert_eq!(names, ["part", "Thickened-001"]);
     }
@@ -441,42 +366,42 @@ mod tests {
     /// view.
     #[test]
     fn a_sheet_shows_again_once_it_would_be_kept() {
-        let (document, node) = document_with(tube());
-        let all: Vec<_> = (0..4).map(|index| face(node, index)).collect();
-        let (mut op, mut selection) = targeting(&document, &all);
+        let (ws, node) = workspace_with(tube());
+        let all: Vec<_> = (0..4).map(|index| face_item(node, index)).collect();
+        let (mut op, mut selection) = targeting(&ws, &all);
         drag_out(&mut op, FRONT_HANDLE, 0.1);
         op.refresh_preview();
         assert_eq!(params(&op).fate(), SourceFate::Replace);
-        assert_eq!(visibility(&document, node), Visibility::Invisible);
+        assert_eq!(visibility(&ws, node), Visibility::Invisible);
 
-        selection.toggle(face(node, 3));
+        selection.toggle(face_item(node, 3));
         op.follow_selection(&selection);
         op.refresh_preview();
         assert_eq!(params(&op).fate(), SourceFate::Keep);
         assert!((params(&op).front - 0.1).abs() < EPSILON, "the edit keeps its thickness");
-        assert_eq!(visibility(&document, node), Visibility::Visible);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
 
         op.apply(&mut selection).expect("the slab is added");
-        assert_eq!(volumes(&document).len(), 2, "the tube stays");
-        assert_eq!(visibility(&document, node), Visibility::Visible);
+        assert_eq!(volumes(&ws.document.lock().unwrap()).len(), 2, "the tube stays");
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
     }
 
     #[test]
     fn a_replacing_slab_consumes_its_sheet_and_cancel_brings_it_back() {
-        let (document, node) = document_with(tube());
-        let all: Vec<_> = (0..4).map(|index| face(node, index)).collect();
-        let (mut op, mut selection) = targeting(&document, &all);
+        let (ws, node) = workspace_with(tube());
+        let all: Vec<_> = (0..4).map(|index| face_item(node, index)).collect();
+        let (mut op, mut selection) = targeting(&ws, &all);
         drag_out(&mut op, FRONT_HANDLE, 0.1);
         op.refresh_preview();
 
         op.cancel();
-        assert_eq!(visibility(&document, node), Visibility::Visible);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
 
-        let (mut op, _) = targeting(&document, &all);
+        let (mut op, _) = targeting(&ws, &all);
         drag_out(&mut op, FRONT_HANDLE, 0.1);
         op.refresh_preview();
         op.apply(&mut selection).expect("the walls replace the tube");
-        let doc = document.lock().unwrap();
+        let doc = ws.document.lock().unwrap();
         assert_eq!(doc.parts().count(), 1);
         assert!(doc.part_for_node(node).is_none(), "the tube was consumed");
     }

@@ -147,62 +147,24 @@ impl TargetedOp for Hollow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::sync::{Arc, Mutex};
 
     use duck_engine_common::InnerSpace;
-    use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::resource::{NodeFlags, SubGeometryElement, SubGeometryKind, Visibility};
-    use duck_engine_scene::Scene;
+    use duck_engine_scene::resource::{NodeFlags, Visibility};
     use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
     use duck_engine_viewer::selection::SelectionItem;
     use glam::DVec3;
+    use opencascade::primitives::{Face, Wire};
 
-    use crate::notifications::Notifications;
+    use crate::testing::{face_item_along, visibility, volume, workspace_with, workspace_with_box_and_cube};
     use crate::tools::targeted::Phase;
-    use crate::tools::ModelingTool;
+    use crate::tools::{ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
 
-    /// A document holding a 2×2×2 box centred on the origin, and a unit cube
-    /// off to one side.
-    fn document_with_boxes() -> (Arc<Mutex<Document>>, NodeId, NodeId) {
-        let mut doc = Document::new(Scene::default());
-        let options = CadTessellationOptions::default();
-        let mut add = |name: &str, shape: Shape| {
-            let part = doc.add_part(name, shape, &options).expect("box tessellates");
-            doc.node_for_part(part).expect("part has a node")
-        };
-        let main = add("box", Shape::box_centered(2.0, 2.0, 2.0));
-        let other = add("other", Shape::box_from_corners(DVec3::splat(3.0), DVec3::splat(4.0)));
-        (Arc::new(Mutex::new(doc)), main, other)
-    }
-
-    fn operator(document: &Arc<Mutex<Document>>) -> HollowTool {
-        let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        HollowTool::new(construction, Arc::clone(document), Notifications::default())
-    }
-
-    /// The box face whose outward normal is `normal`, as a selection item.
-    fn face(document: &Arc<Mutex<Document>>, node: NodeId, normal: DVec3) -> SelectionItem {
-        let doc = document.lock().unwrap();
-        let part = doc.get_part(doc.part_for_node(node).unwrap()).unwrap();
-        let index = part
-            .shape
-            .faces()
-            .position(|face| face.normal_at_center().is_ok_and(|n| n.normalize().distance(normal) < 1e-6))
-            .expect("a face matches");
-        SelectionItem::SubGeometry {
-            node_id: node,
-            element: SubGeometryElement::new(SubGeometryKind::Face, index as u32),
-        }
-    }
-
-    /// An operator targeting the selection `items`.
-    fn targeting(document: &Arc<Mutex<Document>>, items: &[SelectionItem]) -> (HollowTool, SelectionManager) {
-        let mut op = operator(document);
+    /// A tool targeting the selection `items`.
+    fn targeting(ws: &Workspace, items: &[SelectionItem]) -> (HollowTool, SelectionManager) {
+        let mut op = HollowTool::new(ws);
         let mut selection = SelectionManager::new();
         selection.extend(items.iter().copied());
         op.follow_selection(&selection);
@@ -217,32 +179,16 @@ mod tests {
     fn drag_in(op: &mut HollowTool, distance: Real) {
         let grabbed = params(op);
         let grab = grabbed.grip();
-        let drag = HandleDrag {
-            id: THICKNESS_HANDLE,
-            grab,
-            point: grab - grabbed.frame.normal * distance,
-            modifiers: Modifiers::default(),
-        };
+        let drag = crate::testing::drag(THICKNESS_HANDLE, grab, -grabbed.frame.normal * distance);
         op.on_handle(&HandleEvent::Begin(THICKNESS_HANDLE));
         op.on_handle(&HandleEvent::Drag(drag));
         op.on_handle(&HandleEvent::End(THICKNESS_HANDLE));
     }
 
-    fn visibility(document: &Arc<Mutex<Document>>, node: NodeId) -> Visibility {
-        let scene = document.lock().unwrap().scene().clone();
-        let scene = scene.lock();
-        scene.get_node(node).expect("node exists").visibility()
-    }
-
-    fn volume(document: &Arc<Mutex<Document>>, node: NodeId) -> f64 {
-        let doc = document.lock().unwrap();
-        doc.get_part(doc.part_for_node(node).expect("node is a part")).unwrap().shape.volume()
-    }
-
     #[test]
     fn a_part_selected_whole_is_hollowed_closed() {
-        let (document, node, _) = document_with_boxes();
-        let (op, _) = targeting(&document, &[SelectionItem::Node(node)]);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
         let target = op.phase.target().expect("the part is targeted");
         assert!(target.is_closed());
         assert_eq!(Hollow.summary(target, 0).as_deref(), Some("Closed around a void"));
@@ -250,9 +196,9 @@ mod tests {
 
     #[test]
     fn a_face_selected_is_opened() {
-        let (document, node, _) = document_with_boxes();
-        let top = face(&document, node, DVec3::Y);
-        let (op, _) = targeting(&document, &[top]);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let top = face_item_along(&ws, node, DVec3::Y);
+        let (op, _) = targeting(&ws, &[top]);
         let target = op.phase.target().expect("the face is targeted");
         assert_eq!(target.faces.len(), 1);
         assert_eq!(Hollow.summary(target, 1).as_deref(), Some("Opening 1 face (1 on other parts ignored)"));
@@ -262,8 +208,8 @@ mod tests {
     /// has moved: inward for walls inside the surface, outward otherwise.
     #[test]
     fn the_grip_points_the_way_the_wall_grows() {
-        let (document, node, _) = document_with_boxes();
-        let (op, _) = targeting(&document, &[SelectionItem::Node(node)]);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
         let inward = HollowParams { thickness: 0.25, ..params(&op) };
         let normal = inward.frame.normal;
 
@@ -281,8 +227,8 @@ mod tests {
 
     #[test]
     fn the_wall_follows_its_grip_one_for_one() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, _) = targeting(&document, &[SelectionItem::Node(node)]);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
         drag_in(&mut op, 0.3);
         assert!(op.is_editing());
         assert!((params(&op).thickness - 0.3).abs() < EPSILON);
@@ -296,12 +242,12 @@ mod tests {
     /// thickness already set, and shift-clicking it back closes the walls.
     #[test]
     fn shift_clicked_faces_open_and_close_the_part_mid_edit() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, mut selection) = targeting(&document, &[SelectionItem::Node(node)]);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, mut selection) = targeting(&ws, &[SelectionItem::Node(node)]);
         drag_in(&mut op, 0.25);
         assert!(!op.swallows_click(Modifiers { shift: true, ..Default::default() }));
 
-        let top = face(&document, node, DVec3::Y);
+        let top = face_item_along(&ws, node, DVec3::Y);
         selection.toggle(top);
         op.follow_selection(&selection);
         assert!(op.is_editing());
@@ -318,31 +264,31 @@ mod tests {
 
     #[test]
     fn a_grip_drag_previews_in_place_and_apply_hollows_the_part() {
-        let (document, node, _) = document_with_boxes();
-        let top = face(&document, node, DVec3::Y);
-        let (mut op, mut selection) = targeting(&document, &[top]);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let top = face_item_along(&ws, node, DVec3::Y);
+        let (mut op, mut selection) = targeting(&ws, &[top]);
         drag_in(&mut op, 0.2);
         op.refresh_preview();
         assert!(op.error.is_none(), "{:?}", op.error);
-        assert_eq!(visibility(&document, node), Visibility::Invisible);
+        assert_eq!(visibility(&ws, node), Visibility::Invisible);
         let [preview] = <[NodeId; 1]>::try_from(op.preview.preview_nodes()).expect("one preview");
-        let scene = document.lock().unwrap().scene().clone();
+        let scene = ws.document.lock().unwrap().scene().clone();
         assert!(scene.lock().get_node(preview).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));
 
         op.apply(&mut selection).expect("the hollow applies");
         assert!(op.is_finished());
         assert!(selection.is_empty());
-        assert_eq!(visibility(&document, node), Visibility::Visible);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
         let expected = 8.0 - 1.6 * 1.8 * 1.6;
-        assert!((volume(&document, node) - expected).abs() < 1e-6, "got {}", volume(&document, node));
-        assert_eq!(document.lock().unwrap().undo_label(), Some("Hollow"));
+        assert!((volume(&ws, node) - expected).abs() < 1e-6, "got {}", volume(&ws, node));
+        assert_eq!(ws.document.lock().unwrap().undo_label(), Some("Hollow"));
     }
 
     /// A wall too thick to build keeps the last good preview and says why.
     #[test]
     fn a_wall_too_thick_keeps_the_last_preview_and_says_why() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, _) = targeting(&document, &[SelectionItem::Node(node)]);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
         drag_in(&mut op, 0.2);
         op.refresh_preview();
         let shown = op.preview.preview_nodes().to_vec();
@@ -356,29 +302,23 @@ mod tests {
 
     #[test]
     fn cancel_restores_the_part() {
-        let (document, node, _) = document_with_boxes();
-        let (mut op, _) = targeting(&document, &[SelectionItem::Node(node)]);
+        let (ws, node, _) = workspace_with_box_and_cube();
+        let (mut op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
         drag_in(&mut op, 0.2);
         op.refresh_preview();
 
         op.cancel();
         assert!(op.preview.is_empty());
-        assert_eq!(visibility(&document, node), Visibility::Visible);
-        assert!((volume(&document, node) - 8.0).abs() < 1e-9);
+        assert_eq!(visibility(&ws, node), Visibility::Visible);
+        assert!((volume(&ws, node) - 8.0).abs() < 1e-9);
     }
 
     #[test]
     fn a_sheet_is_refused_in_the_panel() {
-        let mut doc = Document::new(Scene::default());
-        let region = opencascade::primitives::Face::from_wire(
-            &opencascade::primitives::Wire::rect(2.0, 2.0).unwrap(),
-        )
-        .unwrap();
-        let part = doc.add_part("sketch", region.into(), &CadTessellationOptions::default()).unwrap();
-        let node = doc.node_for_part(part).unwrap();
-        let document = Arc::new(Mutex::new(doc));
+        let region = Face::from_wire(&Wire::rect(2.0, 2.0).unwrap()).unwrap();
+        let (ws, node) = workspace_with(region.into());
 
-        let (op, _) = targeting(&document, &[SelectionItem::Node(node)]);
+        let (op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
         assert!(matches!(op.phase, Phase::AwaitingSelection));
         assert!(op.error.as_deref().is_some_and(|error| error.contains("Only a solid")), "{:?}", op.error);
     }

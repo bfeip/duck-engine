@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
@@ -17,9 +15,8 @@ use opencascade::primitives::FaceOrientation;
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartId};
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo, Workspace};
 use crate::ui::icons;
-use crate::construction::ConstructionOptions;
 
 /// CAD-aware transform tool for one operation (move, rotate, *or* scale). Each
 /// [`TransformMode`] is registered as its own palette tool.
@@ -50,35 +47,18 @@ pub struct TransformTool {
 }
 
 impl TransformTool {
-    pub fn new(
-        mode: TransformMode,
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-        notifications: Notifications,
-    ) -> Self {
+    pub fn new(mode: TransformMode, workspace: &Workspace) -> Self {
         let target = ModelerTarget {
             nodes: NodeTransformTarget::new(),
-            face: FaceTweakTarget::new(Arc::clone(&document)),
+            face: FaceTweakTarget::new(Arc::clone(&workspace.document)),
             active: None,
-            construction_options,
-            document: Arc::clone(&document),
-            notifications,
+            workspace: workspace.clone(),
         };
         Self {
             mode,
             driver: TransformDriver::with_target(mode, target),
-            document,
+            document: Arc::clone(&workspace.document),
         }
-    }
-}
-
-impl Operator for TransformTool {
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        self.driver.dispatch(event, ctx)
-    }
-
-    fn name(&self) -> &str {
-        "TransformTool"
     }
 }
 
@@ -89,6 +69,10 @@ impl ModelingTool for TransformTool {
             TransformMode::Rotate => ToolInfo { id: "rotate", icon: icons::ROTATE, shortcut: Some('r') },
             TransformMode::Scale => ToolInfo { id: "scale", icon: icons::SCALE, shortcut: Some('s') },
         }
+    }
+
+    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
+        self.driver.dispatch(event, ctx)
     }
 
     fn activate(&mut self) {
@@ -136,9 +120,7 @@ struct ModelerTarget {
     nodes: NodeTransformTarget,
     face: FaceTweakTarget,
     active: Option<ActiveRoute>,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    document: Arc<Mutex<Document>>,
-    notifications: Notifications,
+    workspace: Workspace,
 }
 
 impl ModelerTarget {
@@ -151,18 +133,13 @@ impl ModelerTarget {
         if element.kind != SubGeometryKind::Face {
             return None;
         }
-        let part = self.document.lock().unwrap().part_for_node(node_id)?;
+        let part = self.workspace.document.lock().unwrap().part_for_node(node_id)?;
         Some(FaceTarget { node: node_id, part, face_index: element.index })
-    }
-
-    /// Snapshot of the tessellation options, for the face ghost.
-    fn geometry_options(&self) -> CadTessellationOptions {
-        self.construction_options.borrow().geometry_options.clone()
     }
 
     /// Bake every committed node's transform into its CAD part.
     fn bake_nodes(&mut self, nodes: &[NodeId], ctx: &mut EventContext) {
-        let mut doc = self.document.lock().unwrap();
+        let mut doc = self.workspace.document.lock().unwrap();
         // One undo step covers a multi-select bake.
         let mut doc = doc.undo_scope("Transform");
         for &node in nodes {
@@ -176,8 +153,7 @@ impl ModelerTarget {
                 .map(|n| n.transform().to_matrix());
             if let Some(delta) = delta
                 && let Err(e) = doc.bake_transform(part, delta) {
-                    log::error!("transform bake failed for node {node:?}: {e}");
-                    self.notifications.error(format!("Transform failed: {e}"));
+                    self.workspace.notifications.failure("Transform", &e);
                 }
         }
     }
@@ -202,7 +178,7 @@ impl TransformTarget for ModelerTarget {
     fn begin(&mut self, ctx: &mut EventContext) -> bool {
         self.active = match self.selected_face(ctx) {
             Some(target) => {
-                let options = self.geometry_options();
+                let options = self.workspace.geometry_options();
                 self.face.begin(target, &options).then_some(ActiveRoute::Face(target))
             }
             None => self.nodes.begin(ctx).then_some(ActiveRoute::Nodes),
@@ -226,7 +202,7 @@ impl TransformTarget for ModelerTarget {
                 self.bake_nodes(&nodes, ctx);
             }
             Some(ActiveRoute::Face(target)) => {
-                self.face.commit(target, interaction, ctx, &self.notifications);
+                self.face.commit(target, interaction, ctx, &self.workspace.notifications);
             }
             None => {}
         }
@@ -332,8 +308,7 @@ impl FaceTweakTarget {
     /// Move the ghost to the interaction's current delta.
     fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
         let Some(ghost) = self.preview.preview_node() else { return };
-        let camera = ctx.camera.clone();
-        let delta = interaction.delta_matrix(&camera, ctx.size);
+        let delta = interaction.delta_matrix(ctx.camera, ctx.size);
         let transform = decompose_matrix(&delta);
         ctx.scene.set_node_transform(ghost, transform);
     }
@@ -348,8 +323,7 @@ impl FaceTweakTarget {
         ctx: &mut EventContext,
         notifications: &Notifications,
     ) {
-        let camera = ctx.camera.clone();
-        let delta = interaction.delta_matrix(&camera, ctx.size);
+        let delta = interaction.delta_matrix(ctx.camera, ctx.size);
 
         self.preview.cancel();
         self.resolved = None;
@@ -358,10 +332,7 @@ impl FaceTweakTarget {
             self.document.lock().unwrap().tweak_faces(target.part, &[target.face_index], delta);
         match result {
             Ok(()) => ctx.selection.clear(),
-            Err(e) => {
-                log::error!("face tweak failed: {e}");
-                notifications.error(format!("Face tweak failed: {e}"));
-            }
+            Err(e) => notifications.failure("Face tweak", &e),
         }
     }
 

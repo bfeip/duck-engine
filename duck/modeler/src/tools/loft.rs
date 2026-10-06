@@ -1,22 +1,16 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-
 use anyhow::Context;
 use duck_engine_scene::resource::SubGeometryKind;
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, MouseButton, NamedKey},
-    operator::{Operator, SelectionKinds, SelectionMode},
+    operator::{SelectionKinds, SelectionMode},
     selection::{SelectionItem, SelectionManager},
 };
 
-use crate::document::Document;
 use crate::ops::loft::{build_loft, LoftProfile};
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
-use crate::construction::ConstructionOptions;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum LoftPhase {
@@ -33,22 +27,17 @@ pub struct LoftTool {
     /// Profiles the current preview was built from, so we only rebuild on change.
     preview_profiles: Vec<LoftProfile>,
 
-    document: Arc<Mutex<Document>>,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
+    workspace: Workspace,
 }
 
 impl LoftTool {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-    ) -> Self {
-        let preview = PreviewSession::new(Arc::clone(&document));
+    pub fn new(workspace: &Workspace) -> Self {
+        let preview = workspace.preview_session();
         Self {
             phase: LoftPhase::default(),
             preview,
             preview_profiles: Vec::new(),
-            document,
-            construction_options,
+            workspace: workspace.clone(),
         }
     }
 
@@ -77,8 +66,8 @@ impl LoftTool {
             return;
         }
 
-        let result = build_loft(&self.document.lock().unwrap(), &profiles);
-        let options = self.construction_options.borrow().preview_options();
+        let result = build_loft(&self.workspace.document.lock().unwrap(), &profiles);
+        let options = self.workspace.preview_options();
         match result {
             Ok(loft) => {
                 if self.preview.add_preview_from_shape(&loft, &options, "Loft preview").is_none() {
@@ -93,9 +82,9 @@ impl LoftTool {
     /// sets phase = Done; on failure stays in Configuring, preview and all, so
     /// the user can retry with different profiles.
     fn apply(&mut self) -> anyhow::Result<()> {
-        let options = self.construction_options.borrow().geometry_options.clone();
+        let options = self.workspace.geometry_options();
         {
-            let mut doc = self.document.lock().unwrap();
+            let mut doc = self.workspace.document.lock().unwrap();
             let loft = build_loft(&doc, &self.preview_profiles)?;
             // Tessellates atomically — if this fails, nothing changes.
             doc.undo_scope("Loft").add_numbered_part("Loft", loft, &options).context("Failed to tessellate loft")?;
@@ -111,7 +100,7 @@ impl LoftTool {
     /// and the panel's Apply button.
     pub fn apply_and_clear(&mut self, selection: &mut SelectionManager) {
         if let Err(e) = self.apply() {
-            log::error!("Loft failed: {e}");
+            self.workspace.notifications.failure("Loft", &e);
         } else {
             selection.clear();
         }
@@ -132,7 +121,7 @@ impl LoftTool {
         // Snapshot profile names under the document lock so the body holds none.
         let profiles = Self::selection_snapshot(panel.selection);
         let entries: Vec<(SelectionItem, String)> = {
-            let doc = self.document.lock().unwrap();
+            let doc = self.workspace.document.lock().unwrap();
             profiles
                 .iter()
                 .map(|p| {
@@ -190,40 +179,6 @@ impl ModelingTool for LoftTool {
         ToolInfo { id: "loft", icon: icons::LOFT, shortcut: None }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.phase = LoftPhase::Configuring;
-    }
-
-    /// Two or more profiles are a complete loft, so leaving the tool skins them
-    /// rather than dropping the picks.
-    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if self.preview_profiles.len() >= 2 {
-            self.apply()?;
-            selection.clear();
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        matches!(self.phase, LoftPhase::Done | LoftPhase::Cancelled)
-    }
-
-    // Loft skins through profile edges, so select at edge granularity.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::SubGeometry(SelectionKinds::EDGE)
-    }
-
-    fn panel_title(&self) -> Option<&str> {
-        Some("Loft")
-    }
-
-    fn panel_ui(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
-        self.render_panel(ui, panel);
-    }
-}
-
-impl Operator for LoftTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -262,7 +217,35 @@ impl Operator for LoftTool {
         }
     }
 
-    fn name(&self) -> &str {
-        "Loft"
+    fn deactivate(&mut self) {
+        self.cancel();
+        self.phase = LoftPhase::Configuring;
+    }
+
+    /// Two or more profiles are a complete loft, so leaving the tool skins them
+    /// rather than dropping the picks.
+    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
+        if self.preview_profiles.len() >= 2 {
+            self.apply()?;
+            selection.clear();
+        }
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        matches!(self.phase, LoftPhase::Done | LoftPhase::Cancelled)
+    }
+
+    // Loft skins through profile edges, so select at edge granularity.
+    fn selection_mode(&self) -> SelectionMode {
+        SelectionMode::SubGeometry(SelectionKinds::EDGE)
+    }
+
+    fn panel_title(&self) -> Option<&str> {
+        Some("Loft")
+    }
+
+    fn panel_ui(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
+        self.render_panel(ui, panel);
     }
 }

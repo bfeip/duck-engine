@@ -40,10 +40,23 @@ pub use sphere::SphereTool;
 pub use thicken::ThickenTool;
 pub use transform::TransformTool;
 
-use duck_engine_viewer::common::Point3;
-use duck_engine_viewer::operator::{Handle, HandleEvent, Operator, SelectionMode};
-use duck_engine_viewer::selection::SelectionManager;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
+use duck_engine_scene::cad::CadTessellationOptions;
+use duck_engine_scene::resource::NodeId;
+use duck_engine_viewer::common::Point3;
+use duck_engine_viewer::event::{Event, EventContext};
+use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionMode};
+use duck_engine_viewer::selection::SelectionManager;
+use opencascade::primitives::Shape;
+
+use crate::construction::ConstructionOptions;
+use crate::document::{Document, PartId};
+use crate::notifications::Notifications;
+use crate::preview::PreviewSession;
+use crate::snap::{Snap, SnapFlags, SnapInput, SnapProvider};
 use crate::ui::icons::Icon;
 
 /// Static palette identity for a tool. All fields are `'static` so the
@@ -59,57 +72,91 @@ pub struct ToolInfo {
     pub shortcut: Option<char>,
 }
 
-/// External state a tool panel may need beyond what the tool already owns
-/// (tools own the `Document` and `ConstructionOptions` themselves).
+/// External state a tool panel may need beyond the tool's own [`Workspace`].
 pub struct PanelContext<'a> {
     pub selection: &'a mut SelectionManager,
 }
 
-pub trait ModelingTool: Operator {
-    /// Palette identity (id + icon). Each tool file owns its own SVG.
+/// What every tool works with: the document it edits, the construction
+/// settings it builds with, and the notices it reports failures to.
+#[derive(Clone)]
+pub struct Workspace {
+    pub document: Arc<Mutex<Document>>,
+    pub construction: Rc<RefCell<ConstructionOptions>>,
+    pub notifications: Notifications,
+}
+
+impl Workspace {
+    /// A preview session on the document.
+    pub fn preview_session(&self) -> PreviewSession {
+        PreviewSession::new(Arc::clone(&self.document))
+    }
+
+    /// Tessellation options for committed geometry.
+    pub fn geometry_options(&self) -> CadTessellationOptions {
+        self.construction.borrow().geometry_options.clone()
+    }
+
+    /// Coarser tessellation options for previews.
+    pub fn preview_options(&self) -> CadTessellationOptions {
+        self.construction.borrow().preview_options()
+    }
+
+    /// Adds `shape` as a new part numbered in `base`'s series, tessellated for
+    /// committed geometry.
+    pub fn add_numbered_part(&self, base: &str, shape: Shape) -> anyhow::Result<PartId> {
+        let options = self.geometry_options();
+        self.document.lock().unwrap().add_numbered_part(base, shape, &options)
+    }
+
+    /// The snapped world point under `cursor`, ignoring the `exclude` nodes,
+    /// such as the tool's own preview.
+    pub fn snap(&self, cursor: (f32, f32), exclude: &[NodeId], ctx: &EventContext) -> Option<Snap> {
+        self.snap_with(cursor, exclude, ctx, &[])
+    }
+
+    /// [`snap`](Self::snap), with `extra` candidates competing alongside the
+    /// registered providers, such as an in-progress wire's start point.
+    pub fn snap_with(
+        &self,
+        cursor: (f32, f32),
+        exclude: &[NodeId],
+        ctx: &EventContext,
+        extra: &[&dyn SnapProvider],
+    ) -> Option<Snap> {
+        let construction = self.construction.borrow();
+        let input = SnapInput {
+            ray: ctx.camera.ray_from_screen_point(cursor.0, cursor.1, ctx.size.0, ctx.size.1),
+            cursor,
+            viewport: ctx.size,
+            camera: &*ctx.camera,
+            plane: &construction.construction_plane,
+            grid: &construction.grid,
+            requested: SnapFlags::all(),
+            exclude_nodes: exclude,
+        };
+        construction.snap.snap(&input, &ctx.scene, extra)
+    }
+}
+
+/// A palette tool, as the [`ToolManager`] drives it.
+pub trait ModelingTool: 'static {
+    // Identity
+
+    /// Palette identity: id, icon and shortcut.
     fn info(&self) -> ToolInfo;
-
-    /// Clean up in-progress state (preview nodes, hidden geometry).
-    /// 
-    /// Called automatically before any tool switch and on auto-return;
-    /// must also reset any `is_finished()` latch.
-    fn deactivate(&mut self);
-
-    /// Commit whatever fully defined result the tool is holding, as if Apply had
-    /// been pressed; a tool with nothing pending should do nothing.
-    /// 
-    /// Called before [`ModelingTool::deactivate`] when the user leaves the
-    /// tool by a gesture that isn't an explicit discard, so that switching
-    /// tools completes the operation instead of throwing it away.
-    ///
-    /// The error is reported for the tool by the caller — log or notify nothing
-    /// here. `deactivate` follows either way, so a failed commit is discarded.
-    /// 
-    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    /// Called when the tool becomes the active tool.
-    fn activate(&mut self) {}
-
-    /// True when the tool completed or was cancelled and should cede back to selection.
-    fn is_finished(&self) -> bool {
-        false
-    }
-
-    /// The world-space point this tool wants the modeler's 3D cursor to mark
-    /// (e.g. the current snap location), or `None` to hide it.
-    /// 
-    ///  Polled each frame while the tool is active.
-    fn cursor_target(&self) -> Option<Point3> {
-        None
-    }
 
     /// Selection granularity the always-on `SelectionOperator` should use
     /// while this tool is active.
     fn selection_mode(&self) -> SelectionMode {
         SelectionMode::default()
     }
+
+    // Input
+
+    /// Handles one viewport event. Returns `true` to consume it, so that it
+    /// reaches neither the selection nor the camera.
+    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool;
 
     /// The draggable handles this tool wants shown, or empty for none.
     ///
@@ -128,15 +175,54 @@ pub trait ModelingTool: Operator {
     /// grab point, not a per-event increment.
     fn on_handle(&mut self, _event: &HandleEvent) {}
 
+    // Display
+
+    /// The world-space point this tool wants the modeler's 3D cursor to mark
+    /// (e.g. the current snap location), or `None` to hide it.
+    ///
+    /// Polled each frame while the tool is active.
+    fn cursor_target(&self) -> Option<Point3> {
+        None
+    }
+
     /// Title of the tool's options window, or `None` if the tool has no panel.
     fn panel_title(&self) -> Option<&str> {
         None
     }
 
     /// Fill the body of the tool's options window.
-    /// 
+    ///
     /// Called only when `panel_title()` is `Some`; the `ui` module owns the window chrome.
     /// The tool's mutex is typically held for the duration of this call — do not
     /// trigger anything that re-dispatches events back into the tool.
     fn panel_ui(&mut self, _ui: &mut egui::Ui, _panel: &mut PanelContext) {}
+
+    // Lifecycle
+
+    /// Called when the tool becomes the active tool.
+    fn activate(&mut self) {}
+
+    /// Commit whatever fully defined result the tool is holding, as if Apply had
+    /// been pressed; a tool with nothing pending should do nothing.
+    ///
+    /// Called before [`ModelingTool::deactivate`] when the user leaves the
+    /// tool by a gesture that isn't an explicit discard, so that switching
+    /// tools completes the operation instead of throwing it away.
+    ///
+    /// The error is reported for the tool by the caller — log or notify nothing
+    /// here. `deactivate` follows either way, so a failed commit is discarded.
+    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Clean up in-progress state (preview nodes, hidden geometry).
+    ///
+    /// Called automatically before any tool switch and on auto-return;
+    /// must also reset any `is_finished()` latch.
+    fn deactivate(&mut self);
+
+    /// True when the tool completed or was cancelled and should cede back to selection.
+    fn is_finished(&self) -> bool {
+        false
+    }
 }

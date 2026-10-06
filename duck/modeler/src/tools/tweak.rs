@@ -7,16 +7,14 @@
 //! shape once, on apply.
 
 use std::ops::RangeInclusive;
-use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_viewer::common::{Real, Transform};
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleEvent};
 use opencascade::primitives::Shape;
 
-use crate::document::Document;
 use crate::preview::PreviewSession;
+use crate::tools::Workspace;
 
 /// Smallest value a dimension field accepts. Anything at or below it is
 /// degenerate and can't be built.
@@ -180,14 +178,11 @@ pub(super) fn tweak_panel<P: TweakParams>(ui: &mut egui::Ui, params: &mut P) -> 
 pub(super) fn commit_tweak<P: PrimitiveParams>(
     params: &P,
     preview: &mut PreviewSession,
-    document: &Arc<Mutex<Document>>,
-    options: &CadTessellationOptions,
+    workspace: &Workspace,
 ) -> anyhow::Result<()> {
     let shape = params.build().with_context(|| format!("Failed to build {}", P::NAME))?;
 
     let _ = preview.commit();
-
-    let mut doc = document.lock().unwrap();
-    doc.add_numbered_part(P::NAME, shape, options)?;
+    workspace.add_numbered_part(P::NAME, shape)?;
     Ok(())
 }

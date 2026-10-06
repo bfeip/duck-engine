@@ -3,12 +3,10 @@
 
 use duck_engine_common::{Plane, RgbaColor};
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::resource::{FaceMaterial, LineMaterial, MaterialFlags, NodeId};
-use duck_engine_viewer::event::EventContext;
-use duck_engine_viewer::scene::PositionedCamera;
+use duck_engine_scene::resource::{FaceMaterial, LineMaterial, MaterialFlags};
 
 use crate::grid::GridConfig;
-use crate::snap::{Snap, SnapEngine, SnapFlags, SnapInput, SnapProvider};
+use crate::snap::SnapEngine;
 
 pub struct ConstructionOptions {
     /// Canonical (fine) tessellation options for committed geometry. Previews
@@ -21,7 +19,7 @@ pub struct ConstructionOptions {
     pub preview_tolerance: f64,
     pub construction_plane: Plane,
     pub grid: GridConfig,
-    /// Shared snap engine (providers + user settings) consulted by every operator.
+    /// Shared snap engine (providers + user settings) consulted by every tool.
     pub snap: SnapEngine,
 }
 
@@ -70,32 +68,5 @@ impl ConstructionOptions {
         let mut o = self.geometry_options.clone();
         o.tessellation_tolerance = self.preview_tolerance;
         o
-    }
-
-    /// Resolves a cursor position to a snapped world location via the shared snap
-    /// engine, using this context's construction plane, grid, and snap settings.
-    /// `exclude` lists nodes the snap should ignore — e.g. an operator's own
-    /// in-progress preview geometry. `additional_providers` lets the
-    /// caller inject per-call snaps (e.g. an in-progress wire's start point)
-    /// that compete in the normal ranking alongside the registered providers.
-    pub fn resolve_snap(
-        &self,
-        cursor: (f32, f32),
-        exclude: &[NodeId],
-        camera: &PositionedCamera,
-        ctx: &EventContext,
-        additional_providers: &[&dyn SnapProvider],
-    ) -> Option<Snap> {
-        let input = SnapInput {
-            ray: camera.ray_from_screen_point(cursor.0, cursor.1, ctx.size.0, ctx.size.1),
-            cursor,
-            viewport: ctx.size,
-            camera,
-            plane: &self.construction_plane,
-            grid: &self.grid,
-            requested: SnapFlags::all(),
-            exclude_nodes: exclude,
-        };
-        self.snap.snap(&input, &ctx.scene, additional_providers)
     }
 }

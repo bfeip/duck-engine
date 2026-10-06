@@ -1,29 +1,22 @@
-use std::sync::{Arc, Mutex};
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use duck_engine_common::{InnerSpace, MetricSpace, Point3, Quaternion, Real, Vector3};
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     common::Transform,
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
-    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator},
+    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape},
     selection::SelectionManager,
 };
-use log::error;
 use opencascade::primitives::Shape;
 
-use crate::document::Document;
 use crate::ops::primitives::sphere;
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo};
+use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
 use super::tweak::{
     commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
     TweakAction, TweakParams,
 };
-use crate::construction::ConstructionOptions;
 
 /// The sphere's one grip, on the pole.
 const RADIUS_HANDLE: HandleId = HandleId(0);
@@ -92,8 +85,7 @@ impl TweakParams for SphereParams {
 
 pub struct SphereTool {
     phase: Phase,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    document: Arc<Mutex<Document>>,
+    workspace: Workspace,
     preview: PreviewSession,
     bindings: InputMap<SphereAction>,
     /// Where the modeler's 3D cursor should sit (the latest snap point), or
@@ -108,10 +100,7 @@ pub struct SphereTool {
 }
 
 impl SphereTool {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-    ) -> Self {
+    pub fn new(workspace: &Workspace) -> Self {
         let bindings = InputMap::new()
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
@@ -121,11 +110,10 @@ impl SphereTool {
                 InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
                 SphereAction::Finish,
             );
-        let preview = PreviewSession::new(Arc::clone(&document));
+        let preview = workspace.preview_session();
         Self {
             phase: Phase::Idle,
-            construction_options,
-            document,
+            workspace: workspace.clone(),
             preview,
             bindings,
             cursor_target: None,
@@ -150,11 +138,7 @@ impl SphereTool {
     }
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let camera = ctx.camera.clone();
-        let Some(snap) = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, &[], &camera, ctx, &[])
+        let Some(snap) = self.workspace.snap(position, &[], ctx)
         else {
             return false;
         };
@@ -169,7 +153,7 @@ impl SphereTool {
         // Does not need preview tessellation detail because we only make the
         // sphere once, and then scale it.
         let preview_shape = Shape::sphere(1.0).build();
-        let options = self.construction_options.borrow().geometry_options.clone();
+        let options = self.workspace.geometry_options();
         let Some(node) = self.preview.add_preview_from_shape(&preview_shape, &options, "sphere") else {
             return false;
         };
@@ -187,13 +171,9 @@ impl SphereTool {
         position: (f32, f32),
         ctx: &mut EventContext
     ) -> bool {
-        let camera = ctx.camera.clone();
         // Exclude the preview so the radius can snap through a corner, not to the
         // preview's own geometry.
-        let radius = self
-            .construction_options
-            .borrow()
-            .resolve_snap(position, self.preview.preview_nodes(), &camera, ctx, &[])
+        let radius = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
             .map(|s| center.distance(s.position).max(0.01))
             .unwrap_or(0.01);
 
@@ -210,8 +190,7 @@ impl SphereTool {
     /// panel open so the radius can be corrected.
     fn apply(&mut self) -> anyhow::Result<()> {
         let Phase::Tweak(params) = self.phase else { return Ok(()) };
-        let options = self.construction_options.borrow().geometry_options.clone();
-        commit_tweak(&params, &mut self.preview, &self.document, &options)?;
+        commit_tweak(&params, &mut self.preview, &self.workspace)?;
         self.phase = Phase::Idle;
         self.finished = true;
         Ok(())
@@ -221,7 +200,7 @@ impl SphereTool {
     /// so must report for themselves: the panel's Apply button, Enter, right-click.
     fn apply_and_report(&mut self) {
         if let Err(e) = self.apply() {
-            error!("Sphere failed: {e:#}");
+            self.workspace.notifications.failure(SphereParams::NAME, &e);
         }
     }
 
@@ -238,15 +217,8 @@ impl SphereTool {
         }
         let cursor = (position.0 as f32, position.1 as f32);
 
-        let camera = ctx.camera.clone();
         // While defining, exclude our own preview so the radius doesn't snap to it.
-        let snap = self.construction_options.borrow().resolve_snap(
-            cursor,
-            self.preview.preview_nodes(),
-            &camera,
-            ctx,
-            &[],
-        );
+        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
 
         // Record where the modeler should draw the 3D cursor
         self.cursor_target = snap.map(|s| s.position);
@@ -268,68 +240,6 @@ impl ModelingTool for SphereTool {
         ToolInfo { id: "sphere", icon: icons::SPHERE, shortcut: None }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.finished = false;
-        self.grabbed = None;
-        // The modeler hides the cursor for the (now inactive) tool, but clear our
-        // target so a stale point can't flash if we're reactivated before a move.
-        self.cursor_target = None;
-    }
-
-    /// A sphere waiting on the panel is fully defined, so leaving the tool commits it.
-    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if matches!(self.phase, Phase::Tweak(_)) {
-            self.apply()?;
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    fn cursor_target(&self) -> Option<Point3> {
-        // Nothing left to pick while the panel is open.
-        match self.phase {
-            Phase::Tweak(_) => None,
-            _ => self.cursor_target,
-        }
-    }
-
-    /// The grip appears only once the radius is picked.
-    fn handles(&self) -> Vec<Handle> {
-        match &self.phase {
-            Phase::Tweak(params) => params.handles(),
-            _ => Vec::new(),
-        }
-    }
-
-    fn on_handle(&mut self, event: &HandleEvent) {
-        let Phase::Tweak(params) = self.phase else { return };
-        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
-            self.set_tweak(edited);
-        }
-    }
-
-    fn panel_title(&self) -> Option<&str> {
-        matches!(self.phase, Phase::Tweak(_)).then_some(SphereParams::NAME)
-    }
-
-    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let Phase::Tweak(params) = &mut self.phase else { return };
-        let action = tweak_panel(ui, params);
-        let transform = params.preview_transform();
-        match action {
-            TweakAction::Changed => self.preview.set_preview_transform(transform),
-            TweakAction::Apply => self.apply_and_report(),
-            TweakAction::Cancel => self.cancel(),
-            TweakAction::None => {}
-        }
-    }
-}
-
-impl Operator for SphereTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -392,8 +302,64 @@ impl Operator for SphereTool {
         }
     }
 
-    fn name(&self) -> &str {
-        "Sphere"
+    fn deactivate(&mut self) {
+        self.cancel();
+        self.finished = false;
+        self.grabbed = None;
+        // The modeler hides the cursor for the (now inactive) tool, but clear our
+        // target so a stale point can't flash if we're reactivated before a move.
+        self.cursor_target = None;
+    }
+
+    /// A sphere waiting on the panel is fully defined, so leaving the tool commits it.
+    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
+        if matches!(self.phase, Phase::Tweak(_)) {
+            self.apply()?;
+        }
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn cursor_target(&self) -> Option<Point3> {
+        // Nothing left to pick while the panel is open.
+        match self.phase {
+            Phase::Tweak(_) => None,
+            _ => self.cursor_target,
+        }
+    }
+
+    /// The grip appears only once the radius is picked.
+    fn handles(&self) -> Vec<Handle> {
+        match &self.phase {
+            Phase::Tweak(params) => params.handles(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn on_handle(&mut self, event: &HandleEvent) {
+        let Phase::Tweak(params) = self.phase else { return };
+        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
+            self.set_tweak(edited);
+        }
+    }
+
+    fn panel_title(&self) -> Option<&str> {
+        matches!(self.phase, Phase::Tweak(_)).then_some(SphereParams::NAME)
+    }
+
+    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
+        let Phase::Tweak(params) = &mut self.phase else { return };
+        let action = tweak_panel(ui, params);
+        let transform = params.preview_transform();
+        match action {
+            TweakAction::Changed => self.preview.set_preview_transform(transform),
+            TweakAction::Apply => self.apply_and_report(),
+            TweakAction::Cancel => self.cancel(),
+            TweakAction::None => {}
+        }
     }
 }
 

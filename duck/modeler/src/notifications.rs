@@ -38,6 +38,12 @@ impl Notifications {
         self.push(text.into(), Severity::Info);
     }
 
+    /// Logs that `what` failed, and why, and shows it as an error.
+    pub fn failure(&self, what: &str, error: &anyhow::Error) {
+        log::error!("{what} failed: {error:#}");
+        self.error(format!("{what} failed: {error:#}"));
+    }
+
     fn push(&self, text: String, severity: Severity) {
         let mut queue = self.queue.lock().unwrap();
         queue.push_back(Notice { text, severity, created: Instant::now() });

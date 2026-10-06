@@ -222,9 +222,7 @@ impl ToolManager {
     fn finalize_tool(&self, id: ToolId, selection: &mut SelectionManager) {
         let mut tool = self.tools[id.0].lock().unwrap();
         if let Err(e) = tool.finalize(selection) {
-            let name = tool.info().id;
-            log::error!("Could not finish {name}: {e:#}");
-            self.notifications.error(format!("Could not finish {name}: {e}"));
+            self.notifications.failure(tool.info().id, &e);
         }
     }
 
@@ -308,19 +306,13 @@ mod tests {
         }
     }
 
-    impl Operator for MockTool {
-        fn dispatch(&mut self, _event: &Event, _ctx: &mut EventContext) -> bool {
-            false
-        }
-
-        fn name(&self) -> &str {
-            self.id
-        }
-    }
-
     impl crate::tools::ModelingTool for MockTool {
         fn info(&self) -> crate::tools::ToolInfo {
             crate::tools::ToolInfo { id: self.id, icon: ("mock", &[]), shortcut: self.shortcut }
+        }
+
+        fn dispatch(&mut self, _event: &Event, _ctx: &mut EventContext) -> bool {
+            false
         }
 
         fn activate(&mut self) {

@@ -245,56 +245,23 @@ impl TargetedOp for Extrude {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::sync::{Arc, Mutex};
 
-    use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::resource::{NodeFlags, SubGeometryElement, Visibility};
-    use duck_engine_scene::Scene;
+    use duck_engine_scene::resource::{NodeFlags, Visibility};
     use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
 
-    use crate::notifications::Notifications;
+    use crate::testing::{doc_with_box, drag, edge_item, face_item, workspace_with_box};
     use crate::tools::targeted::Phase;
     use crate::tools::ModelingTool;
 
     const EPSILON: Real = 1e-5;
 
-    /// A document holding a 2×2×2 box centred on the origin.
-    fn document_with_box() -> (Arc<Mutex<Document>>, NodeId) {
-        let mut doc = Document::new(Scene::default());
-        let part = doc
-            .add_part("box", Shape::box_centered(2.0, 2.0, 2.0), &CadTessellationOptions::default())
-            .expect("box tessellates");
-        let node = doc.node_for_part(part).expect("part has a node");
-        (Arc::new(Mutex::new(doc)), node)
-    }
-
-    fn operator(document: &Arc<Mutex<Document>>) -> ExtrudeTool {
-        let construction = Rc::new(RefCell::new(ConstructionOptions::new()));
-        ExtrudeTool::new(construction, Arc::clone(document), Notifications::default())
-    }
-
-    fn select_face(selection: &mut SelectionManager, node: NodeId, index: u32) {
-        selection.set(SelectionItem::SubGeometry {
-            node_id: node,
-            element: SubGeometryElement::new(SubGeometryKind::Face, index),
-        });
-    }
-
     /// A pad of `distance` on the first face of a box.
     fn pad(distance: Real) -> ExtrudeParams {
-        let (document, node) = document_with_box();
-        let doc = document.lock().unwrap();
+        let (doc, node) = doc_with_box();
         let target = ExtrudeTarget::Face { node, face_index: 0 };
         let frame = ExtrudeFrame::new(&doc, &target, Vector3::unit_y()).expect("face resolves");
         ExtrudeParams { distance, ..ExtrudeParams::new(frame) }
-    }
-
-    /// A drag of `offset` on the grip `id`, as the handle machinery reports it.
-    fn drag(id: HandleId, grab: Point3, offset: Vector3) -> HandleDrag {
-        HandleDrag { id, grab, point: grab + offset, modifiers: Modifiers::default() }
     }
 
     /// Some direction square to the pad's axis.
@@ -453,15 +420,15 @@ mod tests {
     /// Until something is edited, the extrusion follows the selection.
     #[test]
     fn an_unedited_extrusion_follows_the_selection() {
-        let (document, node) = document_with_box();
-        let mut op = operator(&document);
+        let (ws, node) = workspace_with_box();
+        let mut op = ExtrudeTool::new(&ws);
         let mut selection = SelectionManager::new();
 
-        select_face(&mut selection, node, 0);
+        selection.set(face_item(node, 0));
         op.follow_selection(&selection);
         let first = *op.phase.target().expect("targeted");
 
-        select_face(&mut selection, node, 1);
+        selection.set(face_item(node, 1));
         op.follow_selection(&selection);
         let second = *op.phase.target().expect("still targeted");
         assert_ne!(first, second, "the target did not follow the selection");
@@ -475,10 +442,10 @@ mod tests {
     /// the target.
     #[test]
     fn grabbing_a_grip_locks_the_target() {
-        let (document, node) = document_with_box();
-        let mut op = operator(&document);
+        let (ws, node) = workspace_with_box();
+        let mut op = ExtrudeTool::new(&ws);
         let mut selection = SelectionManager::new();
-        select_face(&mut selection, node, 0);
+        selection.set(face_item(node, 0));
         op.follow_selection(&selection);
         assert!(!op.is_editing());
 
@@ -486,7 +453,7 @@ mod tests {
         assert!(op.is_editing());
         let locked = *op.phase.target().expect("editing");
 
-        select_face(&mut selection, node, 1);
+        selection.set(face_item(node, 1));
         op.follow_selection(&selection);
         assert_eq!(*op.phase.target().expect("still editing"), locked);
     }
@@ -494,10 +461,10 @@ mod tests {
     /// An arrow dragged and released drives the preview through one rebuild.
     #[test]
     fn a_grip_drag_rebuilds_the_preview() {
-        let (document, node) = document_with_box();
-        let mut op = operator(&document);
+        let (ws, node) = workspace_with_box();
+        let mut op = ExtrudeTool::new(&ws);
         let mut selection = SelectionManager::new();
-        select_face(&mut selection, node, 0);
+        selection.set(face_item(node, 0));
         op.follow_selection(&selection);
 
         let tip = op.phase.params().expect("targeted").tip();
@@ -528,15 +495,15 @@ mod tests {
     /// Clicks pass through the preview to the parts beneath it.
     #[test]
     fn the_preview_is_not_selectable() {
-        let (document, node) = document_with_box();
-        let mut op = operator(&document);
+        let (ws, node) = workspace_with_box();
+        let mut op = ExtrudeTool::new(&ws);
         let mut selection = SelectionManager::new();
-        select_face(&mut selection, node, 0);
+        selection.set(face_item(node, 0));
         op.follow_selection(&selection);
         drag_out(&mut op, 1.0);
 
         let [preview] = <[NodeId; 1]>::try_from(op.preview.preview_nodes()).expect("one preview");
-        let scene = document.lock().unwrap().scene().clone();
+        let scene = ws.document.lock().unwrap().scene().clone();
         let flags = scene.lock().get_node(preview).expect("preview exists").flags();
         assert!(flags.contains(NodeFlags::DO_NOT_SELECT));
     }
@@ -544,15 +511,15 @@ mod tests {
     /// A pad fuses into its part where it stands, keeping the part's node.
     #[test]
     fn applying_a_pad_reshapes_its_part_in_place() {
-        let (document, node) = document_with_box();
-        let mut op = operator(&document);
+        let (ws, node) = workspace_with_box();
+        let mut op = ExtrudeTool::new(&ws);
         let mut selection = SelectionManager::new();
-        select_face(&mut selection, node, 0);
+        selection.set(face_item(node, 0));
         op.follow_selection(&selection);
         drag_out(&mut op, 1.0);
 
         op.apply(&mut selection).expect("the pad applies");
-        let doc = document.lock().unwrap();
+        let doc = ws.document.lock().unwrap();
         assert_eq!(doc.parts().count(), 1);
         let part = doc.part_for_node(node).expect("the part keeps its node");
         assert!((doc.get_part(part).unwrap().shape.volume() - 12.0).abs() < 1e-6);
@@ -564,30 +531,27 @@ mod tests {
     /// An edge of a solid grows a wall of its own, numbered as an extrusion.
     #[test]
     fn applying_an_edge_of_a_solid_adds_a_new_part() {
-        let (document, node) = document_with_box();
-        let mut op = operator(&document);
+        let (ws, node) = workspace_with_box();
+        let mut op = ExtrudeTool::new(&ws);
         let mut selection = SelectionManager::new();
-        selection.set(SelectionItem::SubGeometry {
-            node_id: node,
-            element: SubGeometryElement::new(SubGeometryKind::Edge, 0),
-        });
+        selection.set(edge_item(node, 0));
         op.follow_selection(&selection);
         drag_out(&mut op, 1.0);
 
         op.apply(&mut selection).expect("the wall applies");
-        let doc = document.lock().unwrap();
+        let doc = ws.document.lock().unwrap();
         let names: Vec<_> = doc.parts().map(|part| part.name.as_str()).collect();
-        assert_eq!(names, ["box", "Extrusion-001"]);
+        assert_eq!(names, ["part", "Extrusion-001"]);
     }
 
     /// An extrusion has one target, so once editing there is nothing for a
     /// shift-click to refine: it stops at the tool like any other click.
     #[test]
     fn editing_swallows_shift_clicks_too() {
-        let (document, node) = document_with_box();
-        let mut op = operator(&document);
+        let (ws, node) = workspace_with_box();
+        let mut op = ExtrudeTool::new(&ws);
         let mut selection = SelectionManager::new();
-        select_face(&mut selection, node, 0);
+        selection.set(face_item(node, 0));
         op.follow_selection(&selection);
         let shift = Modifiers { shift: true, ..Default::default() };
         assert!(!op.swallows_click(shift));
@@ -600,10 +564,10 @@ mod tests {
     /// A target that can't be resolved says why in the panel.
     #[test]
     fn an_unresolvable_target_is_reported() {
-        let (document, node) = document_with_box();
-        let mut op = operator(&document);
+        let (ws, node) = workspace_with_box();
+        let mut op = ExtrudeTool::new(&ws);
         let mut selection = SelectionManager::new();
-        select_face(&mut selection, node, 99);
+        selection.set(face_item(node, 99));
         op.follow_selection(&selection);
 
         assert!(matches!(op.phase, Phase::AwaitingSelection));

@@ -1,27 +1,18 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-
 use duck_engine_common::Point3;
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
     bindings::{InputBinding, InputMap},
     event::{DeviceEvent, Event, EventContext},
     input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
-    operator::Operator,
-    scene::PositionedCamera,
     selection::SelectionManager,
 };
-use log::warn;
 use opencascade::primitives::Shape;
 
-use crate::document::Document;
 use crate::ops::primitives::{closed_spline, region, spline};
 use crate::preview::PreviewSession;
 use crate::snap::{Snap, SnapKind, SnapProvider, WireStartSnap};
-use crate::tools::{ModelingTool, ToolInfo};
+use crate::tools::{ModelingTool, ToolInfo, Workspace};
 use crate::ui::icons;
-use crate::construction::ConstructionOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum CurveAction {
@@ -43,8 +34,7 @@ enum Phase {
 
 pub struct CurveTool {
     phase: Phase,
-    construction_options: Rc<RefCell<ConstructionOptions>>,
-    document: Arc<Mutex<Document>>,
+    workspace: Workspace,
     preview: PreviewSession,
     bindings: InputMap<CurveAction>,
     /// Where the modeler's 3D cursor should sit (the latest snap point), or `None`
@@ -56,10 +46,7 @@ pub struct CurveTool {
 
 
 impl CurveTool {
-    pub fn new(
-        construction_options: Rc<RefCell<ConstructionOptions>>,
-        document: Arc<Mutex<Document>>,
-    ) -> Self {
+    pub fn new(workspace: &Workspace) -> Self {
         let bindings = InputMap::new()
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
@@ -69,11 +56,10 @@ impl CurveTool {
                 InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
                 CurveAction::Finish,
             );
-        let preview = PreviewSession::new(Arc::clone(&document));
+        let preview = workspace.preview_session();
         Self {
             phase: Phase::Idle,
-            construction_options,
-            document,
+            workspace: workspace.clone(),
             preview,
             bindings,
             cursor_target: None,
@@ -89,7 +75,6 @@ impl CurveTool {
         &self,
         cursor: (f32, f32),
         exclude: &[NodeId],
-        camera: &PositionedCamera,
         ctx: &EventContext,
     ) -> Option<Snap> {
         // A periodic curve needs at least three interpolation points.
@@ -102,9 +87,7 @@ impl CurveTool {
         let extra: Vec<&dyn SnapProvider> =
             wire_start.iter().map(|p| p as &dyn SnapProvider).collect();
 
-        self.construction_options
-            .borrow()
-            .resolve_snap(cursor, exclude, camera, ctx, &extra)
+        self.workspace.snap_with(cursor, exclude, ctx, &extra)
     }
 
     /// Rebuilds the preview geometry. `cursor_point` is the live (snapped) cursor
@@ -128,7 +111,7 @@ impl CurveTool {
         // `rebuild` keeps the last valid preview if construction fails (e.g. a snap
         // produced a degenerate point), so the curve doesn't momentarily disappear.
         let Ok(shape) = shape else { return };
-        let preview_options = self.construction_options.borrow().preview_options();
+        let preview_options = self.workspace.preview_options();
         if self.preview.try_replace_preview(&shape, &preview_options, "curve").is_some()
             && let Phase::Building { closing: c, .. } = &mut self.phase
         {
@@ -139,8 +122,7 @@ impl CurveTool {
     /// Adds a point to the curve or starts building a curve if there were no previous points.
     /// Returns true if a point was successfully added.
     fn on_add_point(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let camera = ctx.camera.clone();
-        let Some(snap) = self.snapped_point(position, self.preview.preview_nodes(), &camera, ctx) else {
+        let Some(snap) = self.snapped_point(position, self.preview.preview_nodes(), ctx) else {
             return false;
         };
         let point = snap.position;
@@ -175,15 +157,12 @@ impl CurveTool {
         };
         let _ = self.preview.commit();
 
-        match closed_spline(&points).map(region) {
-            Ok(shape) => {
-                let coptions = self.construction_options.borrow();
-                let mut doc = self.document.lock().unwrap();
-                if doc.add_numbered_part("Region", shape, &coptions.geometry_options).is_ok() {
-                    self.finished = true;
-                }
-            }
-            Err(e) => warn!("Failed to close the curve: {e:#}"),
+        let committed = closed_spline(&points)
+            .map(region)
+            .and_then(|shape| self.workspace.add_numbered_part("Region", shape));
+        match committed {
+            Ok(_) => self.finished = true,
+            Err(e) => self.workspace.notifications.failure("Curve", &e),
         }
         self.phase = Phase::Idle;
     }
@@ -196,18 +175,19 @@ impl CurveTool {
             _ => return false,
         };
         let _ = self.preview.commit();
-
-        let mut committed = false;
-        if let Ok(wire) = spline(&points) {
-            let coptions = self.construction_options.borrow();
-            let mut doc = self.document.lock().unwrap();
-            committed = doc.add_numbered_part("Curve", Shape::from(&wire), &coptions.geometry_options).is_ok();
-        }
         self.phase = Phase::Idle;
-        if committed {
-            self.finished = true;
+
+        let committed = spline(&points).and_then(|wire| self.workspace.add_numbered_part("Curve", Shape::from(&wire)));
+        match committed {
+            Ok(_) => {
+                self.finished = true;
+                true
+            }
+            Err(e) => {
+                self.workspace.notifications.failure("Curve", &e);
+                false
+            }
         }
-        committed
     }
 
     /// Discards the in-progress curve, removing its preview.
@@ -218,8 +198,7 @@ impl CurveTool {
 
     fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
         let cursor = (position.0 as f32, position.1 as f32);
-        let camera = ctx.camera.clone();
-        let snapped = self.snapped_point(cursor, self.preview.preview_nodes(), &camera, ctx);
+        let snapped = self.snapped_point(cursor, self.preview.preview_nodes(), ctx);
 
         // Record where the 3D cursor should sit
         self.cursor_target = snapped.map(|s| s.position);
@@ -238,29 +217,6 @@ impl ModelingTool for CurveTool {
         ToolInfo { id: "curve", icon: icons::CURVE, shortcut: None }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.cursor_target = None;
-        self.finished = false;
-    }
-
-    /// Leaving the tool ends the curve where it stands, as right-click and
-    /// Enter do; too few points is no result, and `deactivate` then drops it.
-    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
-        self.finish();
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    fn cursor_target(&self) -> Option<Point3> {
-        self.cursor_target
-    }
-}
-
-impl Operator for CurveTool {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Event::Device(event) = event else { return false };
         match event {
@@ -299,7 +255,24 @@ impl Operator for CurveTool {
         }
     }
 
-    fn name(&self) -> &str {
-        "Curve"
+    fn deactivate(&mut self) {
+        self.cancel();
+        self.cursor_target = None;
+        self.finished = false;
+    }
+
+    /// Leaving the tool ends the curve where it stands, as right-click and
+    /// Enter do; too few points is no result, and `deactivate` then drops it.
+    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
+        self.finish();
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn cursor_target(&self) -> Option<Point3> {
+        self.cursor_target
     }
 }
