@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use duck_engine_common::{consts, InnerSpace, Plane, Point3, Real, Vector3};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
@@ -10,13 +10,14 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
+use crate::construction::ConstructionOptions;
 use crate::document::{Document, SourceFate};
 use crate::ops::extrude::{build_extrusion, ExtrudeFrame, ExtrudeParams, ExtrudeTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
-use super::targeted::{EditLock, PreviewStyle, TargetedOp, TargetedTool};
-use super::tweak::{angle_field, length_field, TweakParams};
-use crate::construction::ConstructionOptions;
+use super::edit::{angle_field, length_field, Params};
+use super::feature::{EditLock, Feature, FeatureTool};
+use super::targets::{Selected};
 
 /// The extrusion's grips.
 const DISTANCE_HANDLE: HandleId = HandleId(0);
@@ -35,7 +36,7 @@ const MAX_TILT: Real = 85.0 * consts::PI / 180.0;
 /// A tilt below this reads as straight out of the profile.
 const TILT_EPSILON: Real = 1e-4;
 
-impl TweakParams for ExtrudeParams {
+impl Params for ExtrudeParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         let min_distance = self.min_distance();
         let mut changed = length_field(ui, "Distance", &mut self.distance, min_distance..=Real::MAX);
@@ -117,6 +118,10 @@ impl TweakParams for ExtrudeParams {
             _ => {}
         }
     }
+
+    fn is_degenerate(&self) -> bool {
+        ExtrudeParams::is_degenerate(self)
+    }
 }
 
 /// The middle of the extrusion's axis, where the direction grip rides.
@@ -146,58 +151,30 @@ fn limit_tilt(direction: Vector3, normal: Vector3) -> Vector3 {
 
 /// Extrudes the selected face into a solid or edge into a face, with a draft
 /// and a wall thickness.
-pub type ExtrudeTool = TargetedTool<Extrude>;
+pub type ExtrudeTool = FeatureTool<Extrude>;
 
 /// The extrude operation, on the primary selection. Editing locks it outright.
 #[derive(Default)]
 pub struct Extrude;
 
-impl TargetedOp for Extrude {
+impl Feature for Extrude {
     type Target = ExtrudeTarget;
     type Params = ExtrudeParams;
 
+    const TOOL: ToolInfo = ToolInfo { id: "extrude", icon: icons::EXTRUDE, shortcut: None };
+    /// A face extrudes into a solid, an edge into a face.
+    const SELECTS: SelectionMode = SelectionMode::SubGeometry(SelectionKinds::FACE.union(SelectionKinds::EDGE));
     const LOCK: EditLock = EditLock::Target;
 
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "extrude", icon: icons::EXTRUDE, shortcut: None }
-    }
-
-    fn selection_mode(&self) -> SelectionMode {
-        // Extrude operates on a face (→ solid) or an edge (→ face).
-        SelectionMode::SubGeometry(SelectionKinds::FACE | SelectionKinds::EDGE)
-    }
-
-    fn title(&self, _params: Option<&ExtrudeParams>) -> &'static str {
-        "Extrude"
-    }
-
-    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
-        "Select a face or edge to extrude."
-    }
-
-    fn node(&self, target: &ExtrudeTarget) -> NodeId {
-        target.node()
-    }
-
     /// The face or edge chosen as the primary selection, if any.
-    fn select(
-        &self,
-        selection: &SelectionManager,
-        _locked: Option<&ExtrudeTarget>,
-    ) -> (Option<ExtrudeTarget>, usize) {
-        let target = match selection.primary() {
-            Some(SelectionItem::SubGeometry { node_id, element }) => match element.kind {
-                SubGeometryKind::Face => {
-                    Some(ExtrudeTarget::Face { node: node_id, face_index: element.index })
-                }
-                SubGeometryKind::Edge => {
-                    Some(ExtrudeTarget::Edge { node: node_id, edge_index: element.index })
-                }
-                SubGeometryKind::Pointset => None,
-            },
-            _ => None,
+    fn select(&self, selection: &SelectionManager, _locked: Option<NodeId>) -> Option<Selected<ExtrudeTarget>> {
+        let Some(SelectionItem::SubGeometry { node_id, element }) = selection.primary() else { return None };
+        let target = match element.kind {
+            SubGeometryKind::Face => ExtrudeTarget::Face { node: node_id, face_index: element.index },
+            SubGeometryKind::Edge => ExtrudeTarget::Edge { node: node_id, edge_index: element.index },
+            SubGeometryKind::Pointset => return None,
         };
-        (target, 0)
+        Some(Selected { node: node_id, target, ignored: 0 })
     }
 
     /// A locked target is never re-resolved, so there is no edit to carry over.
@@ -214,31 +191,26 @@ impl TargetedOp for Extrude {
         Ok(ExtrudeParams::new(ExtrudeFrame::new(doc, target, sketch_normal)?))
     }
 
-    fn is_degenerate(&self, params: &ExtrudeParams) -> bool {
-        params.is_degenerate()
-    }
-
-    /// The extrusion stands in for a bare sketch. A solid source stays in view:
-    /// the pad overlapping it already looks like the fused result.
-    fn preview_style(&self, params: &ExtrudeParams) -> PreviewStyle {
-        PreviewStyle::Alongside { hide_source: params.frame.fate == SourceFate::Replace }
-    }
-
     fn build(&self, doc: &Document, target: &ExtrudeTarget, params: &ExtrudeParams) -> Result<Shape> {
         build_extrusion(doc, target, params)
     }
 
-    fn apply(
-        &self,
-        doc: &mut Document,
-        target: &ExtrudeTarget,
-        params: &ExtrudeParams,
-        construction: &ConstructionOptions,
-    ) -> Result<()> {
-        let extrusion = build_extrusion(doc, target, params)?;
-        let source = doc.part_for_node(target.node()).context("Extrude target is not a known CAD part")?;
-        let options = &construction.geometry_options;
-        doc.commit_result(source, extrusion, params.frame.fate, "Extrude", "Extrusion", options)
+    /// The frame's: a pad fuses into its solid, an extrusion replaces a bare
+    /// sketch, and one off an edge of a solid stands beside it.
+    fn fate(&self, params: &ExtrudeParams) -> SourceFate {
+        params.frame.fate
+    }
+
+    fn title(&self, _params: Option<&ExtrudeParams>) -> &'static str {
+        "Extrude"
+    }
+
+    fn new_part_name(&self) -> &'static str {
+        "Extrusion"
+    }
+
+    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
+        "Select a face or edge to extrude."
     }
 }
 
@@ -251,7 +223,6 @@ mod tests {
     use duck_engine_viewer::operator::HandleEvent;
 
     use crate::testing::{doc_with_box, drag, edge_item, face_item, workspace_with_box};
-    use crate::tools::targeted::Phase;
     use crate::tools::ModelingTool;
 
     const EPSILON: Real = 1e-5;
@@ -426,16 +397,16 @@ mod tests {
 
         selection.set(face_item(node, 0));
         op.follow_selection(&selection);
-        let first = *op.phase.target().expect("targeted");
+        let first = *op.target().expect("targeted");
 
         selection.set(face_item(node, 1));
         op.follow_selection(&selection);
-        let second = *op.phase.target().expect("still targeted");
+        let second = *op.target().expect("still targeted");
         assert_ne!(first, second, "the target did not follow the selection");
 
         selection.clear();
         op.follow_selection(&selection);
-        assert!(matches!(op.phase, Phase::AwaitingSelection));
+        assert!(op.target().is_none());
     }
 
     /// Grabbing a grip begins the edit, after which the selection no longer moves
@@ -451,11 +422,11 @@ mod tests {
 
         op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
         assert!(op.is_editing());
-        let locked = *op.phase.target().expect("editing");
+        let locked = *op.target().expect("editing");
 
         selection.set(face_item(node, 1));
         op.follow_selection(&selection);
-        assert_eq!(*op.phase.target().expect("still editing"), locked);
+        assert_eq!(*op.target().expect("still editing"), locked);
     }
 
     /// An arrow dragged and released drives the preview through one rebuild.
@@ -467,23 +438,23 @@ mod tests {
         selection.set(face_item(node, 0));
         op.follow_selection(&selection);
 
-        let tip = op.phase.params().expect("targeted").tip();
-        let direction = op.phase.params().expect("targeted").direction;
+        let tip = op.params().expect("targeted").tip();
+        let direction = op.params().expect("targeted").direction;
         op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
         op.on_handle(&HandleEvent::Drag(drag(DISTANCE_HANDLE, tip, direction * 2.0)));
         op.on_handle(&HandleEvent::End(DISTANCE_HANDLE));
         op.refresh_preview();
 
-        assert!((op.phase.params().expect("editing").distance - 2.0).abs() < EPSILON);
-        assert!(op.error.is_none(), "{:?}", op.error);
-        assert_eq!(op.preview.preview_nodes().len(), 1);
+        assert!((op.params().expect("editing").distance - 2.0).abs() < EPSILON);
+        assert!(op.error().is_none(), "{:?}", op.error());
+        assert_eq!(op.preview().preview_nodes().len(), 1);
     }
 
     /// Drags the arrow of an operator targeting face 0 out to `distance` and
     /// rebuilds the preview.
     fn drag_out(op: &mut ExtrudeTool, distance: Real) {
         let (tip, direction) = {
-            let params = op.phase.params().expect("targeted");
+            let params = op.params().expect("targeted");
             (params.tip(), params.direction)
         };
         op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
@@ -502,7 +473,7 @@ mod tests {
         op.follow_selection(&selection);
         drag_out(&mut op, 1.0);
 
-        let [preview] = <[NodeId; 1]>::try_from(op.preview.preview_nodes()).expect("one preview");
+        let [preview] = <[NodeId; 1]>::try_from(op.preview().preview_nodes()).expect("one preview");
         let scene = ws.document.lock().unwrap().scene().clone();
         let flags = scene.lock().get_node(preview).expect("preview exists").flags();
         assert!(flags.contains(NodeFlags::DO_NOT_SELECT));
@@ -570,8 +541,8 @@ mod tests {
         selection.set(face_item(node, 99));
         op.follow_selection(&selection);
 
-        assert!(matches!(op.phase, Phase::AwaitingSelection));
-        let error = op.error.as_deref().expect("the failure is reported");
+        assert!(op.target().is_none());
+        let error = op.error().expect("the failure is reported");
         assert!(error.contains("not part of a known CAD part"), "got {error}");
     }
 }

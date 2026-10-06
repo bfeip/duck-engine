@@ -13,9 +13,8 @@ use crate::ops::primitives::sphere;
 use crate::preview::PreviewSession;
 use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
-use super::tweak::{
-    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
-    TweakAction, TweakParams,
+use super::edit::{
+    commit_primitive, dimension_field, grip_dimension, Edit, PanelAction, Params, PrimitiveParams,
 };
 
 /// The sphere's one grip, on the pole.
@@ -34,7 +33,7 @@ enum Phase {
     Defining { center: Point3, axis: Vector3 },
     /// Radius picked; the options panel drives it until the sphere is applied
     /// or cancelled.
-    Tweak(SphereParams),
+    Tweak(Edit<SphereParams>),
 }
 
 
@@ -60,7 +59,7 @@ impl PrimitiveParams for SphereParams {
     }
 }
 
-impl TweakParams for SphereParams {
+impl Params for SphereParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         dimension_field(ui, "Radius", &mut self.radius)
     }
@@ -91,9 +90,6 @@ pub struct SphereTool {
     /// Where the modeler's 3D cursor should sit (the latest snap point), or
     /// `None` to hide it. Read by the modeler via [`ModelingTool::cursor_target`].
     cursor_target: Option<Point3>,
-    /// Parameters as they were when the radius grip was grabbed; `None` when
-    /// it is not held.
-    grabbed: Option<SphereParams>,
     /// Set once the sphere is applied, so the
     /// tool cedes back to selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
@@ -117,16 +113,10 @@ impl SphereTool {
             preview,
             bindings,
             cursor_target: None,
-            grabbed: None,
             finished: false,
         }
     }
 
-    /// Writes `params` back into the tweak phase and refreshes the preview.
-    fn set_tweak(&mut self, params: SphereParams) {
-        self.preview.set_preview_transform(params.preview_transform());
-        self.phase = Phase::Tweak(params);
-    }
 
     /// Scales the unit reference sphere to `radius` about `center`.
     fn preview_transform(center: Point3, radius: Real) -> Transform {
@@ -182,15 +172,15 @@ impl SphereTool {
         // axis comes from the placement snap (chosen in `on_place_center`).
         let params = SphereParams { center, axis, radius };
         self.preview.set_preview_transform(params.preview_transform());
-        self.phase = Phase::Tweak(params);
+        self.phase = Phase::Tweak(Edit::new(params));
         true
     }
 
     /// Commit the sphere and finish the tool. A failed build keeps the
     /// panel open so the radius can be corrected.
     fn apply(&mut self) -> anyhow::Result<()> {
-        let Phase::Tweak(params) = self.phase else { return Ok(()) };
-        commit_tweak(&params, &mut self.preview, &self.workspace)?;
+        let Phase::Tweak(edit) = self.phase else { return Ok(()) };
+        commit_primitive(edit.params(), &mut self.preview, &self.workspace)?;
         self.phase = Phase::Idle;
         self.finished = true;
         Ok(())
@@ -305,7 +295,6 @@ impl ModelingTool for SphereTool {
     fn deactivate(&mut self) {
         self.cancel();
         self.finished = false;
-        self.grabbed = None;
         // The modeler hides the cursor for the (now inactive) tool, but clear our
         // target so a stale point can't flash if we're reactivated before a move.
         self.cursor_target = None;
@@ -334,15 +323,15 @@ impl ModelingTool for SphereTool {
     /// The grip appears only once the radius is picked.
     fn handles(&self) -> Vec<Handle> {
         match &self.phase {
-            Phase::Tweak(params) => params.handles(),
+            Phase::Tweak(edit) => edit.handles(),
             _ => Vec::new(),
         }
     }
 
     fn on_handle(&mut self, event: &HandleEvent) {
-        let Phase::Tweak(params) = self.phase else { return };
-        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
-            self.set_tweak(edited);
+        let Phase::Tweak(edit) = &mut self.phase else { return };
+        if edit.on_handle(event) {
+            self.preview.set_preview_transform(edit.params().preview_transform());
         }
     }
 
@@ -351,14 +340,14 @@ impl ModelingTool for SphereTool {
     }
 
     fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let Phase::Tweak(params) = &mut self.phase else { return };
-        let action = tweak_panel(ui, params);
-        let transform = params.preview_transform();
+        let Phase::Tweak(edit) = &mut self.phase else { return };
+        let action = edit.panel(ui);
+        let transform = edit.params().preview_transform();
         match action {
-            TweakAction::Changed => self.preview.set_preview_transform(transform),
-            TweakAction::Apply => self.apply_and_report(),
-            TweakAction::Cancel => self.cancel(),
-            TweakAction::None => {}
+            PanelAction::Changed => self.preview.set_preview_transform(transform),
+            PanelAction::Apply => self.apply_and_report(),
+            PanelAction::Cancel => self.cancel(),
+            PanelAction::None => {}
         }
     }
 }
@@ -366,7 +355,7 @@ impl ModelingTool for SphereTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tweak::MIN_DIMENSION;
+    use crate::tools::edit::MIN_DIMENSION;
 
     const EPSILON: Real = 1e-6;
 

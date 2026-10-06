@@ -9,7 +9,9 @@ mod curve;
 mod cylinder;
 mod draft;
 mod duplicate;
+mod edit;
 mod extrude;
+mod feature;
 mod fillet;
 mod hollow;
 mod line;
@@ -17,10 +19,9 @@ mod loft;
 mod manager;
 mod rectangle;
 mod sphere;
-mod targeted;
+mod targets;
 mod thicken;
 mod transform;
-mod tweak;
 
 pub use boolean::BooleanTool;
 pub use r#box::BoxTool;
@@ -47,7 +48,8 @@ use std::sync::{Arc, Mutex};
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::common::Point3;
-use duck_engine_viewer::event::{Event, EventContext};
+use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
+use duck_engine_viewer::input::{ElementState, Key, Modifiers, MouseButton, NamedKey};
 use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionMode};
 use duck_engine_viewer::selection::SelectionManager;
 use opencascade::primitives::Shape;
@@ -139,6 +141,47 @@ impl Workspace {
     }
 }
 
+/// What an event means to a tool, under the modeler's standard bindings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Gesture {
+    /// The once-per-frame tick.
+    Frame,
+    /// The cursor moved to this view position.
+    Hover((f32, f32)),
+    /// A left click at this view position.
+    Click { at: (f32, f32), modifiers: Modifiers },
+    /// Right-click or Enter: finish what is in progress.
+    Finish,
+    /// Escape: back out of the tool.
+    Cancel,
+    /// An unmodified character key, lowercased.
+    Key(char),
+}
+
+impl Gesture {
+    /// The gesture `event` makes while `modifiers` are held, if any.
+    pub fn read(event: &Event, modifiers: Modifiers) -> Option<Self> {
+        let Event::Device(event) = event else { return None };
+        match event {
+            DeviceEvent::Update { .. } => Some(Gesture::Frame),
+            DeviceEvent::CursorMoved { position } => Some(Gesture::Hover((position.0 as f32, position.1 as f32))),
+            DeviceEvent::MouseClick { button: MouseButton::Left, position, .. } => {
+                Some(Gesture::Click { at: *position, modifiers })
+            }
+            DeviceEvent::MouseClick { button: MouseButton::Right, .. } => Some(Gesture::Finish),
+            DeviceEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
+                match event.logical_key {
+                    Key::Named(NamedKey::Enter) => Some(Gesture::Finish),
+                    Key::Named(NamedKey::Escape) => Some(Gesture::Cancel),
+                    Key::Character(c) if modifiers == Modifiers::default() => Some(Gesture::Key(c.to_ascii_lowercase())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
 /// A palette tool, as the [`ToolManager`] drives it.
 pub trait ModelingTool: 'static {
     // Identity
@@ -224,5 +267,63 @@ pub trait ModelingTool: 'static {
     /// True when the tool completed or was cancelled and should cede back to selection.
     fn is_finished(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use duck_engine_viewer::input::{KeyEvent, PhysicalKey};
+
+    use super::*;
+    use crate::testing::key;
+
+    fn read(event: DeviceEvent, modifiers: Modifiers) -> Option<Gesture> {
+        Gesture::read(&Event::Device(event), modifiers)
+    }
+
+    fn press(event: KeyEvent) -> DeviceEvent {
+        DeviceEvent::KeyboardInput { event, is_synthetic: false }
+    }
+
+    fn named(key: NamedKey) -> KeyEvent {
+        KeyEvent { physical_key: PhysicalKey::Unidentified, logical_key: Key::Named(key), state: ElementState::Pressed, repeat: false }
+    }
+
+    fn click(button: MouseButton) -> DeviceEvent {
+        DeviceEvent::MouseClick { button, position: (3.0, 4.0), duration_ms: 50 }
+    }
+
+    #[test]
+    fn right_click_and_enter_finish_and_escape_cancels() {
+        assert_eq!(read(click(MouseButton::Right), Modifiers::default()), Some(Gesture::Finish));
+        assert_eq!(read(press(named(NamedKey::Enter)), Modifiers::default()), Some(Gesture::Finish));
+        assert_eq!(read(press(named(NamedKey::Escape)), Modifiers::default()), Some(Gesture::Cancel));
+    }
+
+    #[test]
+    fn a_left_click_carries_its_position_and_modifiers() {
+        let shift = Modifiers { shift: true, ..Modifiers::default() };
+        assert_eq!(read(click(MouseButton::Left), shift), Some(Gesture::Click { at: (3.0, 4.0), modifiers: shift }));
+    }
+
+    #[test]
+    fn unmodified_characters_are_keys_lowercased() {
+        assert_eq!(read(press(key('c')), Modifiers::default()), Some(Gesture::Key('c')));
+        assert_eq!(read(press(key('C')), Modifiers::default()), Some(Gesture::Key('c')));
+    }
+
+    /// A chord is someone else's, and only a fresh press counts.
+    #[test]
+    fn chords_repeats_and_releases_are_not_keys() {
+        let control = Modifiers { control: true, ..Modifiers::default() };
+        assert_eq!(read(press(key('c')), control), None);
+        assert_eq!(read(press(KeyEvent { repeat: true, ..key('c') }), Modifiers::default()), None);
+        assert_eq!(read(press(KeyEvent { state: ElementState::Released, ..key('c') }), Modifiers::default()), None);
+    }
+
+    #[test]
+    fn the_frame_tick_and_cursor_moves_are_read() {
+        assert_eq!(read(DeviceEvent::Update { delta_time: 0.016 }, Modifiers::default()), Some(Gesture::Frame));
+        assert_eq!(read(DeviceEvent::CursorMoved { position: (5.0, 6.0) }, Modifiers::default()), Some(Gesture::Hover((5.0, 6.0))));
     }
 }

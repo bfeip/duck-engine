@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use duck_engine_common::{consts, Real};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
@@ -10,15 +10,14 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
+use crate::construction::ConstructionOptions;
 use crate::document::{Document, SourceFate};
 use crate::ops::draft::{build_draft, DraftFrame, DraftParams, DraftTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
-use super::targeted::{
-    count_summary, selected_on_part, EditLock, PreviewStyle, TargetedOp, TargetedTool,
-};
-use super::tweak::{angle_field, TweakParams};
-use crate::construction::ConstructionOptions;
+use super::edit::{angle_field, Params};
+use super::feature::{EditLock, Feature, FeatureTool};
+use super::targets::{count_summary, selected_on_part, Selected};
 
 /// The draft's grip.
 const ANGLE_HANDLE: HandleId = HandleId(0);
@@ -27,7 +26,7 @@ const ANGLE_HANDLE: HandleId = HandleId(0);
 /// would lie along the neutral plane.
 const MAX_DRAFT: Real = 85.0 * consts::PI / 180.0;
 
-impl TweakParams for DraftParams {
+impl Params for DraftParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         angle_field(ui, "Angle", &mut self.angle, MAX_DRAFT)
     }
@@ -50,10 +49,14 @@ impl TweakParams for DraftParams {
             self.angle = (grabbed.angle + swept).clamp(-MAX_DRAFT, MAX_DRAFT);
         }
     }
+
+    fn is_degenerate(&self) -> bool {
+        DraftParams::is_degenerate(self)
+    }
 }
 
 /// Tilts selected faces of a part about where they cross a neutral face.
-pub type DraftTool = TargetedTool<Draft>;
+pub type DraftTool = FeatureTool<Draft>;
 
 /// The draft operation. The primary selection is the neutral face and the
 /// other selected faces on its part are drafted. Editing locks the part,
@@ -61,54 +64,23 @@ pub type DraftTool = TargetedTool<Draft>;
 #[derive(Default)]
 pub struct Draft;
 
-impl TargetedOp for Draft {
+impl Feature for Draft {
     type Target = DraftTarget;
     type Params = DraftParams;
 
+    const TOOL: ToolInfo = ToolInfo { id: "draft", icon: icons::DRAFT, shortcut: None };
+    const SELECTS: SelectionMode = SelectionMode::SubGeometry(SelectionKinds::FACE);
     const LOCK: EditLock = EditLock::Part;
 
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "draft", icon: icons::DRAFT, shortcut: None }
-    }
-
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::SubGeometry(SelectionKinds::FACE)
-    }
-
-    fn title(&self, _params: Option<&DraftParams>) -> &'static str {
-        "Draft"
-    }
-
-    fn prompt(&self, selection: &SelectionManager) -> &'static str {
-        if selection.is_empty() {
-            "Select the neutral face, then shift-click faces to draft."
-        } else {
-            "Shift-click faces to draft."
+    /// The primary face is neutral, and the rest on its part are drafted.
+    fn select(&self, selection: &SelectionManager, locked: Option<NodeId>) -> Option<Selected<DraftTarget>> {
+        let selected = selected_on_part(selection, SubGeometryKind::Face, locked)?;
+        let (&neutral, faces) = selected.target.split_first()?;
+        if faces.is_empty() {
+            return None;
         }
-    }
-
-    fn node(&self, target: &DraftTarget) -> NodeId {
-        target.node
-    }
-
-    fn select(
-        &self,
-        selection: &SelectionManager,
-        locked: Option<&DraftTarget>,
-    ) -> (Option<DraftTarget>, usize) {
-        let locked = locked.map(|target| target.node);
-        let (selected, ignored) = selected_on_part(selection, SubGeometryKind::Face, locked);
-        let target = selected.and_then(|(node, faces)| match faces.as_slice() {
-            [neutral, faces @ ..] if !faces.is_empty() => {
-                Some(DraftTarget { node, neutral: *neutral, faces: faces.to_vec() })
-            }
-            _ => None,
-        });
-        (target, ignored)
-    }
-
-    fn summary(&self, target: &DraftTarget, ignored: usize) -> Option<String> {
-        Some(count_summary("face", target.faces.len(), ignored))
+        let target = DraftTarget { node: selected.node, neutral, faces: faces.to_vec() };
+        Some(Selected { node: selected.node, target, ignored: selected.ignored })
     }
 
     /// The grip rides on the first face to draft; an edit keeps its angle.
@@ -126,28 +98,29 @@ impl TargetedOp for Draft {
         })
     }
 
-    fn is_degenerate(&self, params: &DraftParams) -> bool {
-        params.is_degenerate()
-    }
-
-    fn preview_style(&self, _params: &DraftParams) -> PreviewStyle {
-        PreviewStyle::InPlace
-    }
-
     fn build(&self, doc: &Document, target: &DraftTarget, params: &DraftParams) -> Result<Shape> {
         build_draft(doc, target, params)
     }
 
-    fn apply(
-        &self,
-        doc: &mut Document,
-        target: &DraftTarget,
-        params: &DraftParams,
-        construction: &ConstructionOptions,
-    ) -> Result<()> {
-        let shape = build_draft(doc, target, params)?;
-        let part = doc.part_for_node(target.node).context("Draft target is not a known CAD part")?;
-        doc.commit_result(part, shape, SourceFate::Reshape, "Draft", "Draft", &construction.geometry_options)
+    /// A draft reshapes its part in place.
+    fn fate(&self, _params: &DraftParams) -> SourceFate {
+        SourceFate::Reshape
+    }
+
+    fn title(&self, _params: Option<&DraftParams>) -> &'static str {
+        "Draft"
+    }
+
+    fn prompt(&self, selection: &SelectionManager) -> &'static str {
+        if selection.is_empty() {
+            "Select the neutral face, then shift-click faces to draft."
+        } else {
+            "Shift-click faces to draft."
+        }
+    }
+
+    fn summary(&self, target: &DraftTarget, ignored: usize) -> Option<String> {
+        Some(count_summary("face", target.faces.len(), ignored))
     }
 }
 
@@ -163,7 +136,6 @@ mod tests {
     use glam::DVec3;
 
     use crate::testing::{face_item_along, visibility, volume, workspace_with_box};
-    use crate::tools::targeted::Phase;
     use crate::tools::{ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
@@ -186,7 +158,7 @@ mod tests {
     }
 
     fn params(op: &DraftTool) -> DraftParams {
-        *op.phase.params().expect("a draft is targeted")
+        *op.params().expect("a draft is targeted")
     }
 
     /// A drag that swings the grip of `grabbed` by `angle` about its hinge.
@@ -271,13 +243,13 @@ mod tests {
         let floor = face_item_along(&ws, node, DVec3::NEG_Y);
         selection.set(floor);
         op.follow_selection(&selection);
-        assert!(matches!(op.phase, Phase::AwaitingSelection));
+        assert!(op.target().is_none());
         assert_eq!(Draft.prompt(&selection), "Shift-click faces to draft.");
 
         let walls = [face_item_along(&ws, node, DVec3::X), face_item_along(&ws, node, DVec3::Z)];
         selection.extend(walls);
         op.follow_selection(&selection);
-        let target = op.phase.target().expect("a draft is targeted");
+        let target = op.target().expect("a draft is targeted");
         assert_eq!(target.neutral, index(floor));
         assert_eq!(target.faces, walls.map(index));
     }
@@ -294,7 +266,7 @@ mod tests {
         selection.add(face_item_along(&ws, node, DVec3::NEG_X));
         op.follow_selection(&selection);
         assert!(op.is_editing());
-        assert_eq!(op.phase.target().expect("still targeted").faces.len(), 2);
+        assert_eq!(op.target().expect("still targeted").faces.len(), 2);
         assert!((params(&op).angle - Real::to_radians(5.0)).abs() < EPSILON);
     }
 
@@ -306,14 +278,14 @@ mod tests {
 
         drag_by(&mut op, angle);
         op.refresh_preview();
-        assert!(op.error.is_none(), "{:?}", op.error);
-        assert_eq!(op.preview.preview_nodes().len(), 1);
+        assert!(op.error().is_none(), "{:?}", op.error());
+        assert_eq!(op.preview().preview_nodes().len(), 1);
         assert_eq!(visibility(&ws, node), Visibility::Invisible);
 
         op.apply(&mut selection).expect("the draft applies");
         assert!(op.is_finished());
         assert!(selection.is_empty(), "the part's faces were renumbered");
-        assert!(op.preview.is_empty());
+        assert!(op.preview().is_empty());
         assert_eq!(visibility(&ws, node), Visibility::Visible);
         let expected = 8.0 - 4.0 * f64::from(angle).tan();
         assert!((volume(&ws, node) - expected).abs() < 1e-6, "got {}", volume(&ws, node));
@@ -329,7 +301,7 @@ mod tests {
 
         op.cancel();
         assert!(op.is_finished());
-        assert!(op.preview.is_empty());
+        assert!(op.preview().is_empty());
         assert_eq!(visibility(&ws, node), Visibility::Visible);
         assert!((volume(&ws, node) - 8.0).abs() < 1e-9);
     }

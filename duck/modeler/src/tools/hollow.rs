@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use duck_engine_common::Real;
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
@@ -9,20 +9,19 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
+use crate::construction::ConstructionOptions;
 use crate::document::{Document, SourceFate};
 use crate::ops::hollow::{build_hollow, HollowFrame, HollowParams, HollowTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
-use super::targeted::{
-    count_summary, selected_faces_or_part, EditLock, PreviewStyle, TargetedOp, TargetedTool,
-};
-use super::tweak::{length_field, TweakParams};
-use crate::construction::ConstructionOptions;
+use super::edit::{length_field, Params};
+use super::feature::{EditLock, Feature, FeatureTool};
+use super::targets::{count_summary, selected_faces_or_part, Selected};
 
 /// The wall's grip.
 const THICKNESS_HANDLE: HandleId = HandleId(0);
 
-impl TweakParams for HollowParams {
+impl Params for HollowParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         length_field(ui, "Thickness", &mut self.thickness, Real::MIN..=Real::MAX)
     }
@@ -46,10 +45,14 @@ impl TweakParams for HollowParams {
             self.thickness = grabbed.thickness + drag.distance_along(-grabbed.frame.normal);
         }
     }
+
+    fn is_degenerate(&self) -> bool {
+        HollowParams::is_degenerate(self)
+    }
 }
 
 /// Shells a solid into walls, opening any of its faces selected.
-pub type HollowTool = TargetedTool<Hollow>;
+pub type HollowTool = FeatureTool<Hollow>;
 
 /// The hollow operation, on a solid selected whole, which closes around a
 /// void, or on faces of one to open. Editing locks the part, though its faces
@@ -57,50 +60,18 @@ pub type HollowTool = TargetedTool<Hollow>;
 #[derive(Default)]
 pub struct Hollow;
 
-impl TargetedOp for Hollow {
+impl Feature for Hollow {
     type Target = HollowTarget;
     type Params = HollowParams;
 
+    const TOOL: ToolInfo = ToolInfo { id: "hollow", icon: icons::HOLLOW, shortcut: None };
+    /// The part first; a second click on it picks a face to open.
+    const SELECTS: SelectionMode = SelectionMode::Progressive(SelectionKinds::FACE);
     const LOCK: EditLock = EditLock::Part;
 
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "hollow", icon: icons::HOLLOW, shortcut: None }
-    }
-
-    /// The part first; a second click on it picks a face to open.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::Progressive(SelectionKinds::FACE)
-    }
-
-    fn title(&self, _params: Option<&HollowParams>) -> &'static str {
-        "Hollow"
-    }
-
-    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
-        "Select a solid to hollow, then click it again for faces to open."
-    }
-
-    fn node(&self, target: &HollowTarget) -> NodeId {
-        target.node
-    }
-
-    fn select(
-        &self,
-        selection: &SelectionManager,
-        locked: Option<&HollowTarget>,
-    ) -> (Option<HollowTarget>, usize) {
-        let (selected, ignored) = selected_faces_or_part(selection, locked.map(|target| target.node));
-        (selected.map(|(node, faces)| HollowTarget { node, faces }), ignored)
-    }
-
-    fn summary(&self, target: &HollowTarget, ignored: usize) -> Option<String> {
-        if !target.is_closed() {
-            return Some(format!("Opening {}", count_summary("face", target.faces.len(), ignored)));
-        }
-        Some(match ignored {
-            0 => "Closed around a void".to_owned(),
-            ignored => format!("Closed around a void ({ignored} on other parts ignored)"),
-        })
+    fn select(&self, selection: &SelectionManager, locked: Option<NodeId>) -> Option<Selected<HollowTarget>> {
+        let selected = selected_faces_or_part(selection, locked)?;
+        Some(selected.map(|node, faces| HollowTarget { node, faces }))
     }
 
     /// The grip rides the rim of the primary opening; an edit keeps its
@@ -119,28 +90,31 @@ impl TargetedOp for Hollow {
         })
     }
 
-    fn is_degenerate(&self, params: &HollowParams) -> bool {
-        params.is_degenerate()
-    }
-
-    fn preview_style(&self, _params: &HollowParams) -> PreviewStyle {
-        PreviewStyle::InPlace
-    }
-
     fn build(&self, doc: &Document, target: &HollowTarget, params: &HollowParams) -> Result<Shape> {
         build_hollow(doc, target, params)
     }
 
-    fn apply(
-        &self,
-        doc: &mut Document,
-        target: &HollowTarget,
-        params: &HollowParams,
-        construction: &ConstructionOptions,
-    ) -> Result<()> {
-        let shape = build_hollow(doc, target, params)?;
-        let part = doc.part_for_node(target.node).context("Hollow target is not a known CAD part")?;
-        doc.commit_result(part, shape, SourceFate::Reshape, "Hollow", "Hollow", &construction.geometry_options)
+    /// A hollow reshapes its part in place.
+    fn fate(&self, _params: &HollowParams) -> SourceFate {
+        SourceFate::Reshape
+    }
+
+    fn title(&self, _params: Option<&HollowParams>) -> &'static str {
+        "Hollow"
+    }
+
+    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
+        "Select a solid to hollow, then click it again for faces to open."
+    }
+
+    fn summary(&self, target: &HollowTarget, ignored: usize) -> Option<String> {
+        if !target.is_closed() {
+            return Some(format!("Opening {}", count_summary("face", target.faces.len(), ignored)));
+        }
+        Some(match ignored {
+            0 => "Closed around a void".to_owned(),
+            ignored => format!("Closed around a void ({ignored} on other parts ignored)"),
+        })
     }
 }
 
@@ -157,7 +131,6 @@ mod tests {
     use opencascade::primitives::{Face, Wire};
 
     use crate::testing::{face_item_along, visibility, volume, workspace_with, workspace_with_box_and_cube};
-    use crate::tools::targeted::Phase;
     use crate::tools::{ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
@@ -172,7 +145,7 @@ mod tests {
     }
 
     fn params(op: &HollowTool) -> HollowParams {
-        *op.phase.params().expect("a hollow is targeted")
+        *op.params().expect("a hollow is targeted")
     }
 
     /// Grabs the grip and drags it `distance` into the part, then lets go.
@@ -189,7 +162,7 @@ mod tests {
     fn a_part_selected_whole_is_hollowed_closed() {
         let (ws, node, _) = workspace_with_box_and_cube();
         let (op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
-        let target = op.phase.target().expect("the part is targeted");
+        let target = op.target().expect("the part is targeted");
         assert!(target.is_closed());
         assert_eq!(Hollow.summary(target, 0).as_deref(), Some("Closed around a void"));
     }
@@ -199,7 +172,7 @@ mod tests {
         let (ws, node, _) = workspace_with_box_and_cube();
         let top = face_item_along(&ws, node, DVec3::Y);
         let (op, _) = targeting(&ws, &[top]);
-        let target = op.phase.target().expect("the face is targeted");
+        let target = op.target().expect("the face is targeted");
         assert_eq!(target.faces.len(), 1);
         assert_eq!(Hollow.summary(target, 1).as_deref(), Some("Opening 1 face (1 on other parts ignored)"));
     }
@@ -251,14 +224,14 @@ mod tests {
         selection.toggle(top);
         op.follow_selection(&selection);
         assert!(op.is_editing());
-        assert_eq!(op.phase.target().expect("still targeted").faces.len(), 1);
+        assert_eq!(op.target().expect("still targeted").faces.len(), 1);
         assert!((params(&op).thickness - 0.25).abs() < EPSILON);
         let rim = params(&op).frame;
         assert!((rim.anchor.y - 1.0).abs() < EPSILON, "the grip moves to the rim: {:?}", rim.anchor);
 
         selection.toggle(top);
         op.follow_selection(&selection);
-        assert!(op.phase.target().expect("still targeted").is_closed());
+        assert!(op.target().expect("still targeted").is_closed());
         assert!((params(&op).thickness - 0.25).abs() < EPSILON);
     }
 
@@ -269,9 +242,9 @@ mod tests {
         let (mut op, mut selection) = targeting(&ws, &[top]);
         drag_in(&mut op, 0.2);
         op.refresh_preview();
-        assert!(op.error.is_none(), "{:?}", op.error);
+        assert!(op.error().is_none(), "{:?}", op.error());
         assert_eq!(visibility(&ws, node), Visibility::Invisible);
-        let [preview] = <[NodeId; 1]>::try_from(op.preview.preview_nodes()).expect("one preview");
+        let [preview] = <[NodeId; 1]>::try_from(op.preview().preview_nodes()).expect("one preview");
         let scene = ws.document.lock().unwrap().scene().clone();
         assert!(scene.lock().get_node(preview).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));
 
@@ -291,13 +264,13 @@ mod tests {
         let (mut op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
         drag_in(&mut op, 0.2);
         op.refresh_preview();
-        let shown = op.preview.preview_nodes().to_vec();
+        let shown = op.preview().preview_nodes().to_vec();
 
         drag_in(&mut op, 1.0);
         op.refresh_preview();
-        let error = op.error.as_deref().expect("the wall is reported");
+        let error = op.error().expect("the wall is reported");
         assert!(error.contains("too thick"), "got {error}");
-        assert_eq!(op.preview.preview_nodes(), shown);
+        assert_eq!(op.preview().preview_nodes(), shown);
     }
 
     #[test]
@@ -308,7 +281,7 @@ mod tests {
         op.refresh_preview();
 
         op.cancel();
-        assert!(op.preview.is_empty());
+        assert!(op.preview().is_empty());
         assert_eq!(visibility(&ws, node), Visibility::Visible);
         assert!((volume(&ws, node) - 8.0).abs() < 1e-9);
     }
@@ -319,7 +292,7 @@ mod tests {
         let (ws, node) = workspace_with(region.into());
 
         let (op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
-        assert!(matches!(op.phase, Phase::AwaitingSelection));
-        assert!(op.error.as_deref().is_some_and(|error| error.contains("Only a solid")), "{:?}", op.error);
+        assert!(op.target().is_none());
+        assert!(op.error().is_some_and(|error| error.contains("Only a solid")), "{:?}", op.error());
     }
 }

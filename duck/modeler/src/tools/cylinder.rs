@@ -15,9 +15,8 @@ use crate::ops::primitives::{circle, cylinder, region};
 use crate::preview::PreviewSession;
 use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
-use super::tweak::{
-    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
-    TweakAction, TweakParams,
+use super::edit::{
+    commit_primitive, dimension_field, grip_dimension, Edit, PanelAction, Params, PrimitiveParams,
 };
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
@@ -44,7 +43,7 @@ enum Phase {
     Height { center: Point3, radius: Real, plane: Plane },
     /// Every point picked; the options panel drives the dimensions until the
     /// cylinder is applied or cancelled.
-    Tweak(CylinderParams),
+    Tweak(Edit<CylinderParams>),
 }
 
 /// The dimensions of a placed cylinder, adjustable before it is committed.
@@ -93,7 +92,7 @@ impl PrimitiveParams for CylinderParams {
     }
 }
 
-impl TweakParams for CylinderParams {
+impl Params for CylinderParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = dimension_field(ui, "Radius", &mut self.radius);
         changed |= dimension_field(ui, "Height", &mut self.height);
@@ -138,10 +137,6 @@ pub struct CylinderTool {
     preview: PreviewSession,
     bindings: InputMap<CylinderAction>,
     cursor_target: Option<Point3>,
-    /// Dimensions as they were when the held grip was grabbed; `None` when no
-    /// grip is held. A drag reports its total offset, so it is applied to this
-    /// rather than to the live dimensions.
-    grabbed: Option<CylinderParams>,
     // Set once the cylinder is applied, so
     // the tool cedes back to selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
@@ -167,17 +162,10 @@ impl CylinderTool {
             preview,
             bindings,
             cursor_target: None,
-            grabbed: None,
             finished: false,
         }
     }
 
-    /// Writes `params` back into the tweak phase and refreshes the preview.
-    /// The 3D twin of the panel's [`TweakAction::Changed`] arm.
-    fn set_tweak(&mut self, params: CylinderParams) {
-        self.preview.set_preview_transform(params.preview_transform());
-        self.phase = Phase::Tweak(params);
-    }
 
     /// Lays the flat unit base disk (local XY, normal +Z) on `plane`, scaled to
     /// `radius`. [`Plane::rotation`] maps the local +Z axis to the plane normal.
@@ -299,15 +287,15 @@ impl CylinderTool {
         // preview stays live and the dimensions stay editable until Apply.
         let params = CylinderParams::from_pick(center, radius, height, plane);
         self.preview.set_preview_transform(params.preview_transform());
-        self.phase = Phase::Tweak(params);
+        self.phase = Phase::Tweak(Edit::new(params));
         true
     }
 
     /// Commit the cylinder and finish the tool. A failed build keeps the
     /// panel open so the dimensions can be corrected.
     fn apply(&mut self) -> anyhow::Result<()> {
-        let Phase::Tweak(params) = self.phase else { return Ok(()) };
-        commit_tweak(&params, &mut self.preview, &self.workspace)?;
+        let Phase::Tweak(edit) = self.phase else { return Ok(()) };
+        commit_primitive(edit.params(), &mut self.preview, &self.workspace)?;
         self.phase = Phase::Idle;
         self.finished = true;
         Ok(())
@@ -456,7 +444,6 @@ impl ModelingTool for CylinderTool {
     fn deactivate(&mut self) {
         self.cancel();
         self.finished = false;
-        self.grabbed = None;
         // The modeler hides the cursor for the (now inactive) tool, but clear our
         // target so a stale point can't flash if we're reactivated before a move.
         self.cursor_target = None;
@@ -486,15 +473,15 @@ impl ModelingTool for CylinderTool {
     /// defining it, and a grip would be something to fight with.
     fn handles(&self) -> Vec<Handle> {
         match &self.phase {
-            Phase::Tweak(params) => params.handles(),
+            Phase::Tweak(edit) => edit.handles(),
             _ => Vec::new(),
         }
     }
 
     fn on_handle(&mut self, event: &HandleEvent) {
-        let Phase::Tweak(params) = self.phase else { return };
-        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
-            self.set_tweak(edited);
+        let Phase::Tweak(edit) = &mut self.phase else { return };
+        if edit.on_handle(event) {
+            self.preview.set_preview_transform(edit.params().preview_transform());
         }
     }
 
@@ -503,14 +490,14 @@ impl ModelingTool for CylinderTool {
     }
 
     fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let Phase::Tweak(params) = &mut self.phase else { return };
-        let action = tweak_panel(ui, params);
-        let transform = params.preview_transform();
+        let Phase::Tweak(edit) = &mut self.phase else { return };
+        let action = edit.panel(ui);
+        let transform = edit.params().preview_transform();
         match action {
-            TweakAction::Changed => self.preview.set_preview_transform(transform),
-            TweakAction::Apply => self.apply_and_report(),
-            TweakAction::Cancel => self.cancel(),
-            TweakAction::None => {}
+            PanelAction::Changed => self.preview.set_preview_transform(transform),
+            PanelAction::Apply => self.apply_and_report(),
+            PanelAction::Cancel => self.cancel(),
+            PanelAction::None => {}
         }
     }
 }
@@ -519,7 +506,7 @@ impl ModelingTool for CylinderTool {
 mod tests {
     use super::*;
     use duck_engine_common::InnerSpace;
-    use crate::tools::tweak::MIN_DIMENSION;
+    use crate::tools::edit::MIN_DIMENSION;
 
     #[test]
     fn cylinder_valid_accepts_nondegenerate() {

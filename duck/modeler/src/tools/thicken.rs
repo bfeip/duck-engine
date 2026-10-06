@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use duck_engine_common::Real;
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
@@ -9,21 +9,20 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
+use crate::construction::ConstructionOptions;
 use crate::document::{Document, SourceFate};
 use crate::ops::thicken::{build_thicken, ThickenFrame, ThickenParams, ThickenTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
-use super::targeted::{
-    count_summary, selected_faces_or_part, EditLock, PreviewStyle, TargetedOp, TargetedTool,
-};
-use super::tweak::{length_field, TweakParams};
-use crate::construction::ConstructionOptions;
+use super::edit::{length_field, Params};
+use super::feature::{EditLock, Feature, FeatureTool};
+use super::targets::{count_summary, selected_faces_or_part, Selected};
 
 /// The thickness grips.
 const FRONT_HANDLE: HandleId = HandleId(0);
 const BACK_HANDLE: HandleId = HandleId(1);
 
-impl TweakParams for ThickenParams {
+impl Params for ThickenParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         if self.frame.on_solid {
@@ -88,10 +87,14 @@ impl TweakParams for ThickenParams {
             _ => {}
         }
     }
+
+    fn is_degenerate(&self) -> bool {
+        ThickenParams::is_degenerate(self)
+    }
 }
 
 /// Grows selected faces, or a whole sheet, into a solid slab.
-pub type ThickenTool = TargetedTool<Thicken>;
+pub type ThickenTool = FeatureTool<Thicken>;
 
 /// The thicken operation, on faces of one part or a sheet selected whole. A
 /// face of a solid joins its slab to the solid unless it makes a new body.
@@ -100,49 +103,17 @@ pub type ThickenTool = TargetedTool<Thicken>;
 #[derive(Default)]
 pub struct Thicken;
 
-impl TargetedOp for Thicken {
+impl Feature for Thicken {
     type Target = ThickenTarget;
     type Params = ThickenParams;
 
+    const TOOL: ToolInfo = ToolInfo { id: "thicken", icon: icons::THICKEN, shortcut: None };
+    const SELECTS: SelectionMode = SelectionMode::SubGeometry(SelectionKinds::FACE);
     const LOCK: EditLock = EditLock::Part;
 
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "thicken", icon: icons::THICKEN, shortcut: None }
-    }
-
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::SubGeometry(SelectionKinds::FACE)
-    }
-
-    fn title(&self, _params: Option<&ThickenParams>) -> &'static str {
-        "Thicken"
-    }
-
-    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
-        "Select faces or a sheet to thicken."
-    }
-
-    fn node(&self, target: &ThickenTarget) -> NodeId {
-        target.node
-    }
-
-    fn select(
-        &self,
-        selection: &SelectionManager,
-        locked: Option<&ThickenTarget>,
-    ) -> (Option<ThickenTarget>, usize) {
-        let (selected, ignored) = selected_faces_or_part(selection, locked.map(|target| target.node));
-        (selected.map(|(node, faces)| ThickenTarget { node, faces }), ignored)
-    }
-
-    fn summary(&self, target: &ThickenTarget, ignored: usize) -> Option<String> {
-        if !target.faces.is_empty() {
-            return Some(count_summary("face", target.faces.len(), ignored));
-        }
-        Some(match ignored {
-            0 => "The whole sheet".to_owned(),
-            ignored => format!("The whole sheet ({ignored} on other parts ignored)"),
-        })
+    fn select(&self, selection: &SelectionManager, locked: Option<NodeId>) -> Option<Selected<ThickenTarget>> {
+        let selected = selected_faces_or_part(selection, locked)?;
+        Some(selected.map(|node, faces| ThickenTarget { node, faces }))
     }
 
     /// The grips ride the primary face; an edit keeps its thicknesses and
@@ -161,30 +132,36 @@ impl TargetedOp for Thicken {
         })
     }
 
-    fn is_degenerate(&self, params: &ThickenParams) -> bool {
-        params.is_degenerate()
-    }
-
-    /// The slab stands in for a sheet it replaces. Beside a solid it already
-    /// looks joined, and a sheet it leaves stays in view.
-    fn preview_style(&self, params: &ThickenParams) -> PreviewStyle {
-        PreviewStyle::Alongside { hide_source: params.fate() == SourceFate::Replace }
-    }
-
     fn build(&self, doc: &Document, target: &ThickenTarget, params: &ThickenParams) -> Result<Shape> {
         build_thicken(doc, target, params)
     }
 
-    fn apply(
-        &self,
-        doc: &mut Document,
-        target: &ThickenTarget,
-        params: &ThickenParams,
-        construction: &ConstructionOptions,
-    ) -> Result<()> {
-        let slab = build_thicken(doc, target, params)?;
-        let source = doc.part_for_node(target.node).context("Thicken target is not a known CAD part")?;
-        doc.commit_result(source, slab, params.fate(), "Thicken", "Thickened", &construction.geometry_options)
+    /// The slab joins a solid unless it makes a new body, replaces a sheet it
+    /// covers whole, and otherwise stands beside its part.
+    fn fate(&self, params: &ThickenParams) -> SourceFate {
+        params.fate()
+    }
+
+    fn title(&self, _params: Option<&ThickenParams>) -> &'static str {
+        "Thicken"
+    }
+
+    fn new_part_name(&self) -> &'static str {
+        "Thickened"
+    }
+
+    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
+        "Select faces or a sheet to thicken."
+    }
+
+    fn summary(&self, target: &ThickenTarget, ignored: usize) -> Option<String> {
+        if !target.faces.is_empty() {
+            return Some(count_summary("face", target.faces.len(), ignored));
+        }
+        Some(match ignored {
+            0 => "The whole sheet".to_owned(),
+            ignored => format!("The whole sheet ({ignored} on other parts ignored)"),
+        })
     }
 
     /// S holds front and back equal; N switches faces of a solid between
@@ -208,16 +185,14 @@ mod tests {
 
     use duck_engine_common::InnerSpace;
     use duck_engine_scene::resource::{NodeFlags, Visibility};
-    use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
     use duck_engine_viewer::selection::SelectionItem;
     use glam::DVec3;
 
     use crate::testing::{
-        face_item, face_item_along, key, tube, visibility, volumes, workspace_with, workspace_with_box,
+        face_item, face_item_along, tube, visibility, volumes, workspace_with, workspace_with_box,
     };
-    use crate::tools::targeted::Phase;
-    use crate::tools::{ModelingTool, Workspace};
+    use crate::tools::{Gesture, ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
 
@@ -230,7 +205,7 @@ mod tests {
     }
 
     fn params(op: &ThickenTool) -> ThickenParams {
-        *op.phase.params().expect("a thickening is targeted")
+        *op.params().expect("a thickening is targeted")
     }
 
     /// Grabs grip `id` and drags it `distance` the way it points, then lets go.
@@ -284,11 +259,11 @@ mod tests {
     fn s_locks_the_sides_together_and_is_always_taken() {
         let (ws, node) = workspace_with_box();
         let (mut op, mut selection) = targeting(&ws, &[face_item_along(&ws, node, DVec3::Y)]);
-        assert!(op.on_key(&key('s'), Modifiers::default(), &mut selection), "taken while joining");
+        assert!(op.on_gesture(Gesture::Key('s'), &mut selection), "taken while joining");
         assert!(params(&op).lock);
         assert!(op.is_editing());
 
-        assert!(op.on_key(&key('n'), Modifiers::default(), &mut selection));
+        assert!(op.on_gesture(Gesture::Key('n'), &mut selection));
         drag_out(&mut op, FRONT_HANDLE, 0.4);
         assert!((params(&op).back - 0.4).abs() < EPSILON, "the back follows the front");
     }
@@ -299,22 +274,22 @@ mod tests {
     fn n_switches_a_solids_faces_to_a_new_body() {
         let (ws, node) = workspace_with_box();
         let (mut op, mut selection) = targeting(&ws, &[face_item_along(&ws, node, DVec3::Y)]);
-        assert!(op.on_key(&key('n'), Modifiers::default(), &mut selection));
+        assert!(op.on_gesture(Gesture::Key('n'), &mut selection));
         assert_eq!(params(&op).fate(), SourceFate::Keep);
-        assert!(op.on_key(&key('n'), Modifiers::default(), &mut selection));
+        assert!(op.on_gesture(Gesture::Key('n'), &mut selection));
         assert_eq!(params(&op).fate(), SourceFate::Fuse);
 
         let (ws, node) = workspace_with(tube());
         let (mut op, mut selection) = targeting(&ws, &[face_item(node, 0)]);
-        assert!(!op.on_key(&key('n'), Modifiers::default(), &mut selection), "a sheet has no solid to join");
+        assert!(!op.on_gesture(Gesture::Key('n'), &mut selection), "a sheet has no solid to join");
     }
 
     #[test]
     fn a_whole_solid_says_to_pick_its_faces() {
         let (ws, node) = workspace_with_box();
         let (op, _) = targeting(&ws, &[SelectionItem::Node(node)]);
-        assert!(matches!(op.phase, Phase::AwaitingSelection));
-        let error = op.error.as_deref().expect("the refusal is reported");
+        assert!(op.target().is_none());
+        let error = op.error().expect("the refusal is reported");
         assert!(error.contains("faces of the solid"), "got {error}");
     }
 
@@ -326,15 +301,15 @@ mod tests {
         let (mut op, mut selection) = targeting(&ws, &[face_item_along(&ws, node, DVec3::Y)]);
         drag_out(&mut op, FRONT_HANDLE, 0.5);
         op.refresh_preview();
-        assert!(op.error.is_none(), "{:?}", op.error);
+        assert!(op.error().is_none(), "{:?}", op.error());
         assert_eq!(visibility(&ws, node), Visibility::Visible);
-        let [preview] = <[NodeId; 1]>::try_from(op.preview.preview_nodes()).expect("one preview");
+        let [preview] = <[NodeId; 1]>::try_from(op.preview().preview_nodes()).expect("one preview");
         let scene = ws.document.lock().unwrap().scene().clone();
         assert!(scene.lock().get_node(preview).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));
 
         op.apply(&mut selection).expect("the slab joins");
         assert!(op.is_finished());
-        assert!(op.preview.is_empty());
+        assert!(op.preview().is_empty());
         let doc = ws.document.lock().unwrap();
         let part = doc.part_for_node(node).expect("the solid keeps its node");
         assert!((doc.get_part(part).unwrap().shape.volume() - 10.0).abs() < 1e-6);
@@ -345,7 +320,7 @@ mod tests {
     fn a_new_body_applies_beside_its_solid() {
         let (ws, node) = workspace_with_box();
         let (mut op, mut selection) = targeting(&ws, &[face_item_along(&ws, node, DVec3::Y)]);
-        assert!(op.on_key(&key('n'), Modifiers::default(), &mut selection));
+        assert!(op.on_gesture(Gesture::Key('n'), &mut selection));
         drag_out(&mut op, FRONT_HANDLE, 0.5);
         drag_out(&mut op, BACK_HANDLE, 0.25);
         op.refresh_preview();

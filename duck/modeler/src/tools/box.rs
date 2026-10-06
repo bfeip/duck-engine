@@ -15,9 +15,8 @@ use crate::ops::primitives::{prism, rectangle_corners};
 use crate::preview::PreviewSession;
 use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
-use super::tweak::{
-    commit_tweak, dimension_field, grip_dimension, handle_tweak, tweak_panel, PrimitiveParams,
-    TweakAction, TweakParams,
+use super::edit::{
+    commit_primitive, dimension_field, grip_dimension, Edit, PanelAction, Params, PrimitiveParams,
 };
 
 /// A dimension at or below this is degenerate: the preview is hidden and the pick
@@ -45,7 +44,7 @@ enum Phase {
     Height { center: Point3, width: Real, depth: Real, plane: Plane },
     /// Every point picked; the options panel drives the dimensions until the
     /// box is applied or cancelled.
-    Tweak(BoxParams),
+    Tweak(Edit<BoxParams>),
 }
 
 /// The dimensions of a placed box. `base` is
@@ -116,7 +115,7 @@ impl PrimitiveParams for BoxParams {
     }
 }
 
-impl TweakParams for BoxParams {
+impl Params for BoxParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = dimension_field(ui, "Width", &mut self.width);
         changed |= dimension_field(ui, "Length", &mut self.depth);
@@ -170,10 +169,6 @@ pub struct BoxTool {
     preview: PreviewSession,
     bindings: InputMap<BoxAction>,
     cursor_target: Option<Point3>,
-    /// Dimensions as they were when the held grip was grabbed; `None` when no
-    /// grip is held. A drag reports its total offset, so it is applied to this
-    /// rather than to the live dimensions.
-    grabbed: Option<BoxParams>,
     // Set once the box is applied, so the
     // tool cedes back to selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
@@ -197,17 +192,10 @@ impl BoxTool {
             preview,
             bindings,
             cursor_target: None,
-            grabbed: None,
             finished: false,
         }
     }
 
-    /// Writes `params` back into the tweak phase and refreshes the preview.
-    /// The 3D twin of the panel's [`TweakAction::Changed`] arm.
-    fn set_tweak(&mut self, params: BoxParams) {
-        self.preview.set_preview_transform(params.preview_transform());
-        self.phase = Phase::Tweak(params);
-    }
 
     /// Lays the flat unit footprint face (local XY, normal +Z) on `plane`, scaled to
     /// `width`×`depth`. [`Plane::rotation`] maps the local +Z axis to the plane normal.
@@ -329,15 +317,15 @@ impl BoxTool {
         // preview stays live and the dimensions stay editable until Apply.
         let params = BoxParams::from_pick(center, width, depth, height, plane);
         self.preview.set_preview_transform(params.preview_transform());
-        self.phase = Phase::Tweak(params);
+        self.phase = Phase::Tweak(Edit::new(params));
         true
     }
 
     /// Commit the box and finish the tool. A failed build keeps the
     /// panel open so the dimensions can be corrected.
     fn apply(&mut self) -> anyhow::Result<()> {
-        let Phase::Tweak(params) = self.phase else { return Ok(()) };
-        commit_tweak(&params, &mut self.preview, &self.workspace)?;
+        let Phase::Tweak(edit) = self.phase else { return Ok(()) };
+        commit_primitive(edit.params(), &mut self.preview, &self.workspace)?;
         self.phase = Phase::Idle;
         self.finished = true;
         Ok(())
@@ -474,7 +462,6 @@ impl ModelingTool for BoxTool {
     fn deactivate(&mut self) {
         self.cancel();
         self.finished = false;
-        self.grabbed = None;
         // The modeler hides the cursor for the (now inactive) tool, but clear our
         // target so a stale point can't flash if we're reactivated before a move.
         self.cursor_target = None;
@@ -504,15 +491,15 @@ impl ModelingTool for BoxTool {
     /// defining it, and a grip would be something to fight with.
     fn handles(&self) -> Vec<Handle> {
         match &self.phase {
-            Phase::Tweak(params) => params.handles(),
+            Phase::Tweak(edit) => edit.handles(),
             _ => Vec::new(),
         }
     }
 
     fn on_handle(&mut self, event: &HandleEvent) {
-        let Phase::Tweak(params) = self.phase else { return };
-        if let Some(edited) = handle_tweak(params, &mut self.grabbed, event) {
-            self.set_tweak(edited);
+        let Phase::Tweak(edit) = &mut self.phase else { return };
+        if edit.on_handle(event) {
+            self.preview.set_preview_transform(edit.params().preview_transform());
         }
     }
 
@@ -521,14 +508,14 @@ impl ModelingTool for BoxTool {
     }
 
     fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let Phase::Tweak(params) = &mut self.phase else { return };
-        let action = tweak_panel(ui, params);
-        let transform = params.preview_transform();
+        let Phase::Tweak(edit) = &mut self.phase else { return };
+        let action = edit.panel(ui);
+        let transform = edit.params().preview_transform();
         match action {
-            TweakAction::Changed => self.preview.set_preview_transform(transform),
-            TweakAction::Apply => self.apply_and_report(),
-            TweakAction::Cancel => self.cancel(),
-            TweakAction::None => {}
+            PanelAction::Changed => self.preview.set_preview_transform(transform),
+            PanelAction::Apply => self.apply_and_report(),
+            PanelAction::Cancel => self.cancel(),
+            PanelAction::None => {}
         }
     }
 }
@@ -536,7 +523,7 @@ impl ModelingTool for BoxTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tweak::MIN_DIMENSION;
+    use crate::tools::edit::MIN_DIMENSION;
 
     /// A plane aligned with no world axis, so a mistaken basis shows up.
     fn skewed_plane(origin: Point3) -> Plane {

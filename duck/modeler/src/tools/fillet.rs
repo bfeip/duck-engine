@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds, SelectionMode},
@@ -7,20 +7,19 @@ use duck_engine_viewer::{
 use duck_engine_viewer::common::Real;
 use opencascade::primitives::Shape;
 
+use crate::construction::ConstructionOptions;
 use crate::document::{Document, SourceFate};
 use crate::ops::fillet::{build_fillet, BlendKind, FilletFrame, FilletParams, FilletTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
-use super::targeted::{
-    count_summary, selected_on_part, EditLock, PreviewStyle, TargetedOp, TargetedTool,
-};
-use super::tweak::{length_field, TweakParams};
-use crate::construction::ConstructionOptions;
+use super::edit::{length_field, Params};
+use super::feature::{EditLock, Feature, FeatureTool};
+use super::targets::{count_summary, selected_on_part, Selected};
 
 /// The blend's grip.
 const SIZE_HANDLE: HandleId = HandleId(0);
 
-impl TweakParams for FilletParams {
+impl Params for FilletParams {
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.label("Type");
@@ -58,55 +57,32 @@ impl TweakParams for FilletParams {
             self.set_signed_size(grabbed.signed_size() + drag.distance_along(grabbed.frame.outward));
         }
     }
+
+    fn is_degenerate(&self) -> bool {
+        FilletParams::is_degenerate(self)
+    }
 }
 
 /// Rounds or bevels selected edges of a part: one tool, whose grip makes a
 /// fillet on one side of the edge and a chamfer on the other.
-pub type FilletTool = TargetedTool<Fillet>;
+pub type FilletTool = FeatureTool<Fillet>;
 
 /// The fillet/chamfer operation, on the selected edges of one part. Editing
 /// locks the part, though its edges can still be shift-clicked in and out.
 #[derive(Default)]
 pub struct Fillet;
 
-impl TargetedOp for Fillet {
+impl Feature for Fillet {
     type Target = FilletTarget;
     type Params = FilletParams;
 
+    const TOOL: ToolInfo = ToolInfo { id: "fillet", icon: icons::FILLET, shortcut: Some('f') };
+    const SELECTS: SelectionMode = SelectionMode::SubGeometry(SelectionKinds::EDGE);
     const LOCK: EditLock = EditLock::Part;
 
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "fillet", icon: icons::FILLET, shortcut: Some('f') }
-    }
-
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::SubGeometry(SelectionKinds::EDGE)
-    }
-
-    fn title(&self, params: Option<&FilletParams>) -> &'static str {
-        params.map_or(BlendKind::Fillet, |params| params.kind).name()
-    }
-
-    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
-        "Select edges to fillet or chamfer."
-    }
-
-    fn node(&self, target: &FilletTarget) -> NodeId {
-        target.node
-    }
-
-    fn select(
-        &self,
-        selection: &SelectionManager,
-        locked: Option<&FilletTarget>,
-    ) -> (Option<FilletTarget>, usize) {
-        let locked = locked.map(|target| target.node);
-        let (selected, ignored) = selected_on_part(selection, SubGeometryKind::Edge, locked);
-        (selected.map(|(node, edges)| FilletTarget { node, edges }), ignored)
-    }
-
-    fn summary(&self, target: &FilletTarget, ignored: usize) -> Option<String> {
-        Some(count_summary("edge", target.edges.len(), ignored))
+    fn select(&self, selection: &SelectionManager, locked: Option<NodeId>) -> Option<Selected<FilletTarget>> {
+        let selected = selected_on_part(selection, SubGeometryKind::Edge, locked)?;
+        Some(selected.map(|node, edges| FilletTarget { node, edges }))
     }
 
     /// The grip rides on the primary edge; an edit keeps its kind and size.
@@ -124,29 +100,25 @@ impl TargetedOp for Fillet {
         })
     }
 
-    fn is_degenerate(&self, params: &FilletParams) -> bool {
-        params.is_degenerate()
-    }
-
-    fn preview_style(&self, _params: &FilletParams) -> PreviewStyle {
-        PreviewStyle::InPlace
-    }
-
     fn build(&self, doc: &Document, target: &FilletTarget, params: &FilletParams) -> Result<Shape> {
         build_fillet(doc, target, params)
     }
 
-    fn apply(
-        &self,
-        doc: &mut Document,
-        target: &FilletTarget,
-        params: &FilletParams,
-        construction: &ConstructionOptions,
-    ) -> Result<()> {
-        let shape = build_fillet(doc, target, params)?;
-        let part = doc.part_for_node(target.node).context("Fillet target is not a known CAD part")?;
-        let name = params.kind.name();
-        doc.commit_result(part, shape, SourceFate::Reshape, name, name, &construction.geometry_options)
+    /// A blend reshapes its part in place.
+    fn fate(&self, _params: &FilletParams) -> SourceFate {
+        SourceFate::Reshape
+    }
+
+    fn title(&self, params: Option<&FilletParams>) -> &'static str {
+        params.map_or(BlendKind::Fillet, |params| params.kind).name()
+    }
+
+    fn prompt(&self, _selection: &SelectionManager) -> &'static str {
+        "Select edges to fillet or chamfer."
+    }
+
+    fn summary(&self, target: &FilletTarget, ignored: usize) -> Option<String> {
+        Some(count_summary("edge", target.edges.len(), ignored))
     }
 
     /// F and C switch between fillet and chamfer.
@@ -169,9 +141,8 @@ mod tests {
     use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
 
-    use crate::testing::{edge_item, key, visibility, volume, workspace_with_box_and_cube};
-    use crate::tools::targeted::Phase;
-    use crate::tools::{ModelingTool, Workspace};
+    use crate::testing::{edge_item, visibility, volume, workspace_with_box_and_cube};
+    use crate::tools::{Gesture, ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
 
@@ -185,11 +156,11 @@ mod tests {
     }
 
     fn params(op: &FilletTool) -> FilletParams {
-        *op.phase.params().expect("a blend is targeted")
+        *op.params().expect("a blend is targeted")
     }
 
     fn edges(op: &FilletTool) -> Vec<u32> {
-        op.phase.target().expect("a blend is targeted").edges.clone()
+        op.target().expect("a blend is targeted").edges.clone()
     }
 
     /// A drag of `offset` on the grip, as the handle machinery reports it.
@@ -286,7 +257,7 @@ mod tests {
 
         selection.clear();
         op.follow_selection(&selection);
-        assert!(matches!(op.phase, Phase::AwaitingSelection));
+        assert!(op.target().is_none());
     }
 
     /// One blend works on one part: edges on others are counted, not blended.
@@ -297,10 +268,10 @@ mod tests {
 
         selection.add(edge_item(other, 0));
         op.follow_selection(&selection);
-        assert_eq!(op.phase.target().unwrap().node, main);
+        assert_eq!(op.target().unwrap().node, main);
         assert_eq!(edges(&op), [0]);
-        assert_eq!(op.ignored, 1);
-        assert_eq!(count_summary("edge", 1, op.ignored), "1 edge (1 on other parts ignored)");
+        assert_eq!(op.ignored(), 1);
+        assert_eq!(count_summary("edge", 1, op.ignored()), "1 edge (1 on other parts ignored)");
     }
 
     /// Grabbing the grip locks the part: a plain click stops at the tool, but a
@@ -325,7 +296,7 @@ mod tests {
 
         selection.add(edge_item(other, 0));
         op.follow_selection(&selection);
-        assert_eq!(op.phase.target().unwrap().node, main, "the part stays locked");
+        assert_eq!(op.target().unwrap().node, main, "the part stays locked");
         assert_eq!(edges(&op), [0, 5]);
     }
 
@@ -339,8 +310,8 @@ mod tests {
 
         selection.clear();
         op.follow_selection(&selection);
-        assert!(matches!(op.phase, Phase::AwaitingSelection));
-        assert!(op.preview.is_empty());
+        assert!(op.target().is_none());
+        assert!(op.preview().is_empty());
         assert_eq!(visibility(&ws, node), Visibility::Visible);
     }
 
@@ -352,8 +323,8 @@ mod tests {
 
         drag_out(&mut op, 0.3);
         op.refresh_preview();
-        assert!(op.error.is_none(), "{:?}", op.error);
-        assert_eq!(op.preview.preview_nodes().len(), 1);
+        assert!(op.error().is_none(), "{:?}", op.error());
+        assert_eq!(op.preview().preview_nodes().len(), 1);
         assert_eq!(visibility(&ws, node), Visibility::Invisible);
     }
 
@@ -363,13 +334,13 @@ mod tests {
         let (mut op, _) = targeting_edge(&ws, node);
         drag_out(&mut op, 0.3);
         op.refresh_preview();
-        let shown = op.preview.preview_nodes().to_vec();
+        let shown = op.preview().preview_nodes().to_vec();
 
         drag_out(&mut op, 5.0);
         op.refresh_preview();
-        let error = op.error.as_deref().expect("the oversized blend is reported");
+        let error = op.error().expect("the oversized blend is reported");
         assert!(error.contains("too large"), "got {error}");
-        assert_eq!(op.preview.preview_nodes(), shown, "the last good preview stays");
+        assert_eq!(op.preview().preview_nodes(), shown, "the last good preview stays");
     }
 
     #[test]
@@ -382,7 +353,7 @@ mod tests {
         op.apply(&mut selection).expect("the fillet applies");
         assert!(op.is_finished());
         assert!(selection.is_empty(), "the part's edges were renumbered");
-        assert!(op.preview.is_empty());
+        assert!(op.preview().is_empty());
         assert_eq!(visibility(&ws, node), Visibility::Visible);
         let expected = 8.0 - 2.0 * 0.09 * (1.0 - std::f64::consts::FRAC_PI_4);
         assert!((volume(&ws, node) - expected).abs() < 1e-5, "got {}", volume(&ws, node));
@@ -393,7 +364,7 @@ mod tests {
     fn a_chamfer_applies_under_its_own_name() {
         let (ws, node, _) = workspace_with_box_and_cube();
         let (mut op, mut selection) = targeting_edge(&ws, node);
-        assert!(op.on_key(&key('c'), Modifiers::default(), &mut selection));
+        assert!(op.on_gesture(Gesture::Key('c'), &mut selection));
         drag_out(&mut op, -0.3);
 
         op.apply(&mut selection).expect("the chamfer applies");
@@ -410,7 +381,7 @@ mod tests {
 
         op.cancel();
         assert!(op.is_finished());
-        assert!(op.preview.is_empty());
+        assert!(op.preview().is_empty());
         assert_eq!(visibility(&ws, node), Visibility::Visible);
         assert!((volume(&ws, node) - 8.0).abs() < 1e-9);
     }
@@ -434,16 +405,14 @@ mod tests {
         let (ws, node, _) = workspace_with_box_and_cube();
         let (mut op, mut selection) = targeting_edge(&ws, node);
 
-        assert!(op.on_key(&key('c'), Modifiers::default(), &mut selection));
+        assert!(op.on_gesture(Gesture::Key('c'), &mut selection));
         assert_eq!(params(&op).kind, BlendKind::Chamfer);
         assert_eq!(op.panel_title(), Some("Chamfer"));
         assert!(op.is_editing(), "switching kind is an edit");
 
-        assert!(op.on_key(&key('f'), Modifiers::default(), &mut selection));
+        assert!(op.on_gesture(Gesture::Key('f'), &mut selection));
         assert_eq!(params(&op).kind, BlendKind::Fillet);
         assert_eq!(op.panel_title(), Some("Fillet"));
 
-        let control = Modifiers { control: true, ..Default::default() };
-        assert!(!op.on_key(&key('c'), control, &mut selection), "a chord is someone else's");
     }
 }
