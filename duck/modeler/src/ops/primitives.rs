@@ -95,13 +95,10 @@ mod tests {
     use duck_engine_scene::common::InnerSpace;
     use opencascade::primitives::ShapeType;
 
+    use crate::testing::skewed_plane;
+
     fn p(x: Real, y: Real, z: Real) -> Point3 {
         Point3::new(x, y, z)
-    }
-
-    /// A plane aligned with no world axis, so a mistaken basis shows up.
-    fn skewed_plane(origin: Point3) -> Plane {
-        Plane::from_point(Vector3::new(1.0, 2.0, 3.0).normalize(), origin)
     }
 
     #[test]

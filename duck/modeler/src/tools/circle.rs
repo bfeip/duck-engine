@@ -1,188 +1,100 @@
-use duck_engine_common::{MetricSpace, Point3, Vector3};
-use duck_engine_viewer::{
-    bindings::{InputBinding, InputMap},
-    event::{DeviceEvent, Event, EventContext},
-    input::{Modifiers, MouseButton},
-};
-use log::warn;
+use anyhow::Result;
+use duck_engine_common::{Plane, Point3, Real, Transform};
+use opencascade::primitives::Shape;
 
 use crate::ops::primitives::{circle, region};
-use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, ToolInfo, Workspace};
+use crate::snap::Snap;
+use crate::tools::ToolInfo;
 use crate::ui::icons;
+use super::edit::{dimension_field, Params};
+use super::primitive::{
+    flat, radius_to, seat, unit_disk, Next, Pointer, Primitive, PrimitiveTool, Track,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum CircleAction {
-    Place,
-    Cancel,
+/// The size of a placed circle, about its centre.
+#[derive(Clone, Copy)]
+pub struct CircleParams {
+    center: Point3,
+    plane: Plane,
+    radius: Real,
 }
 
-enum Phase {
-    Idle,
-    /// Center placed; the cursor drives the radius. `normal` is the disk's plane
-    /// normal.
-    Defining { center: Point3, normal: Vector3 },
+/// Placement of a circle: the centre picked, and the pointer sizing the radius
+/// about it.
+#[derive(Clone, Copy, Debug)]
+pub struct CircleStage {
+    center: Point3,
+    plane: Plane,
 }
 
-pub struct CircleTool {
-    phase: Phase,
-    workspace: Workspace,
-    preview: PreviewSession,
-    bindings: InputMap<CircleAction>,
-    cursor_target: Option<Point3>,
-}
-
-
-impl CircleTool {
-    pub fn new(workspace: &Workspace) -> Self {
-        let bindings = InputMap::new()
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
-                CircleAction::Place,
-            )
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
-                CircleAction::Cancel,
-            );
-        let preview = workspace.preview_session();
-        Self {
-            phase: Phase::Idle,
-            workspace: workspace.clone(),
-            preview,
-            bindings,
-            cursor_target: None,
-        }
-    }
-
-    fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let cplane_normal = self.workspace.construction.borrow().construction_plane.normal;
-        let Some(snap) = self.workspace.snap(position, &[], ctx)
-        else {
-            return false;
-        };
-        let center = snap.position;
-        // Lay the disk on the snapped geometry when the snap carries a direction.
-        // Otherwise use the construction plane.
-        let normal = snap.direction.unwrap_or(cplane_normal);
-        let shape = match circle(center, normal, 0.01) {
-            Ok(outline) => region(outline),
-            Err(e) => {
-                warn!("Failed to build the circle: {e:#}");
-                return false;
-            }
-        };
-        // Coarser preview tolerance since the preview is rebuilt on every move.
-        let preview_options = self.workspace.preview_options();
-        if self.preview.add_preview_from_shape(&shape, &preview_options, "circle").is_none() {
-            return false;
-        }
-        self.phase = Phase::Defining { center, normal };
-        true
-    }
-
-    fn on_place_outer(
-        &mut self,
-        center: Point3,
-        normal: Vector3,
-        position: (f32, f32),
-        ctx: &mut EventContext
-    ) -> bool {
-        // Exclude the preview so the radius can snap through a corner, not to the
-        // preview's own geometry.
-        let radius = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
-            .map(|s| center.distance(s.position).max(0.01))
-            .unwrap_or(0.01);
-
-        let shape = circle(center, normal, radius).map(region);
-
-        // Discard the preview node, then commit the world-space shape as a part.
-        let _ = self.preview.commit();
-        self.phase = Phase::Idle;
-        match shape.and_then(|shape| self.workspace.add_numbered_part("Circle", shape)) {
-            Ok(_) => true,
-            Err(e) => {
-                self.workspace.notifications.failure("Circle", &e);
-                false
-            }
-        }
-    }
-
-    pub fn cancel(&mut self) {
-        self.preview.cancel();
-        self.phase = Phase::Idle;
-    }
-
-    fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
-        let cursor = (position.0 as f32, position.1 as f32);
-
-        // While defining, exclude our own preview so the radius doesn't snap to it.
-        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
-
-        // Record where the modeler should draw the 3D cursor.
-        self.cursor_target = snap.map(|s| s.position);
-
-        // Rebuild the preview disk from the snapped radius while defining. A flat
-        // disk's orientation depends on the plane normal, so we re-tessellate
-        // rather than scaling a unit mesh.
-        if let Phase::Defining { center, normal } = self.phase {
-            if let Some(snap) = snap {
-                let radius = center.distance(snap.position).max(0.01);
-                if let Ok(shape) = circle(center, normal, radius).map(region) {
-                    let preview_options = self.workspace.preview_options();
-                    self.preview.try_replace_preview(&shape, &preview_options, "circle");
-                }
-            }
-        }
+impl Params for CircleParams {
+    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
+        dimension_field(ui, "Radius", &mut self.radius)
     }
 }
 
-impl ModelingTool for CircleTool {
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "circle", icon: icons::CIRCLE, shortcut: None }
+/// Places a flat disk: its centre, then a point on its rim.
+pub type CircleTool = PrimitiveTool<CircleParams>;
+
+impl Primitive for CircleParams {
+    type Stage = CircleStage;
+
+    const TOOL: ToolInfo = ToolInfo { id: "circle", icon: icons::CIRCLE, shortcut: None };
+    const NAME: &'static str = "Circle";
+
+    fn start(first: &Snap, construction: &Plane) -> CircleStage {
+        CircleStage { center: first.position, plane: seat(first, construction) }
     }
 
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::MouseClick { button, position, .. } => {
-                let actions = self.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
-                let mut handled = false;
-                for action in actions {
-                    handled |= match action {
-                        CircleAction::Place => {
-                            if let Phase::Defining { center, normal } = self.phase {
-                                self.on_place_outer(center, normal, *position, ctx)
-                            } else {
-                                self.on_place_center(*position, ctx)
-                            }
-                        }
-                        CircleAction::Cancel => {
-                            let was_defining = matches!(self.phase, Phase::Defining { .. });
-                            if was_defining {
-                                self.cancel();
-                            }
-                            was_defining
-                        }
-                    };
-                }
-                handled
-            }
-            DeviceEvent::CursorMoved { position } => {
-                self.on_cursor_moved(*position, ctx);
-                false
-            }
-            _ => false,
+    fn track(stage: CircleStage, pointer: &Pointer) -> Track<Self> {
+        let CircleStage { center, plane } = stage;
+        let rim = pointer.snap.map(|snap| snap.position);
+        let placed = rim
+            .and_then(|rim| radius_to(center, rim))
+            .map(|radius| CircleParams { center, plane, radius });
+        Track {
+            cursor: rim,
+            preview: placed.map(|params| params.preview_transform()),
+            click: placed.map(Next::Placed),
         }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        // The modeler hides the cursor for the (now inactive) tool, but clear our
-        // target so a stale point can't flash if we're reactivated before a move.
-        self.cursor_target = None;
+    fn reference(_stage: CircleStage) -> Result<Shape> {
+        unit_disk()
     }
 
-    fn cursor_target(&self) -> Option<Point3> {
-        self.cursor_target
+    fn preview_transform(&self) -> Transform {
+        flat(self.center, &self.plane, self.radius, self.radius)
+    }
+
+    fn build(&self) -> Result<Shape> {
+        Ok(region(circle(self.center, self.plane.normal, self.radius)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use super::super::primitive::pointer_at;
+
+    const EPSILON: Real = 1e-6;
+
+    #[test]
+    fn a_point_on_the_rim_places_the_circle() {
+        let center = Point3::new(1.0, 0.0, 2.0);
+        let stage = CircleStage { center, plane: Plane::xz() };
+        let track = CircleParams::track(stage, &pointer_at(Point3::new(4.0, 0.0, 6.0)));
+        let Some(Next::Placed(params)) = track.click else { panic!("the rim places the circle") };
+        assert!((params.radius - 5.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn a_point_on_the_centre_cannot_be_clicked() {
+        let center = Point3::new(1.0, 0.0, 2.0);
+        let stage = CircleStage { center, plane: Plane::xz() };
+        let track = CircleParams::track(stage, &pointer_at(center));
+        assert!(track.click.is_none());
+        assert!(track.preview.is_none());
     }
 }

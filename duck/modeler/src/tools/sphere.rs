@@ -1,62 +1,34 @@
-use duck_engine_common::{InnerSpace, MetricSpace, Point3, Quaternion, Real, Vector3};
-use duck_engine_viewer::{
-    bindings::{InputBinding, InputMap},
-    common::Transform,
-    event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
-    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape},
-    selection::SelectionManager,
-};
+use anyhow::Result;
+use duck_engine_common::{InnerSpace, Plane, Point3, Quaternion, Real, Transform, Vector3};
+use duck_engine_viewer::operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape};
 use opencascade::primitives::Shape;
 
 use crate::ops::primitives::sphere;
-use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
+use crate::snap::Snap;
+use crate::tools::ToolInfo;
 use crate::ui::icons;
-use super::edit::{
-    commit_primitive, dimension_field, grip_dimension, Edit, PanelAction, Params, PrimitiveParams,
-};
+use super::edit::{dimension_field, grip_dimension, Params};
+use super::primitive::{radius_to, Next, Pointer, Primitive, PrimitiveTool, Track};
 
 /// The sphere's one grip, on the pole.
 const RADIUS_HANDLE: HandleId = HandleId(0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum SphereAction {
-    Place,
-    /// End the operation: commit if the sphere is fully defined, else abort.
-    Finish,
-}
-
-enum Phase {
-    Idle,
-    /// Center placed; the cursor drives the radius. `axis` is the polar axis.
-    Defining { center: Point3, axis: Vector3 },
-    /// Radius picked; the options panel drives it until the sphere is applied
-    /// or cancelled.
-    Tweak(Edit<SphereParams>),
-}
-
-
 /// The dimensions of a placed sphere, adjustable before it is committed.
 /// `center` is the first point picked and never moves: the radius grows about it.
 #[derive(Clone, Copy)]
-pub(super) struct SphereParams {
+pub struct SphereParams {
     center: Point3,
-    /// Polar axis, chosen at placement (see [`SphereTool::on_place_center`]).
+    /// Polar axis, chosen at placement (see [`SphereParams::start`]).
     axis: Vector3,
     radius: Real,
 }
 
-impl PrimitiveParams for SphereParams {
-    const NAME: &'static str = "Sphere";
-
-    fn preview_transform(&self) -> Transform {
-        SphereTool::preview_transform(self.center, self.radius)
-    }
-
-    fn build(&self) -> anyhow::Result<Shape> {
-        Ok(sphere(self.center, self.axis, self.radius))
-    }
+/// Placement of a sphere: the centre picked, and the pointer sizing the radius
+/// about it.
+#[derive(Clone, Copy, Debug)]
+pub struct SphereStage {
+    center: Point3,
+    axis: Vector3,
 }
 
 impl Params for SphereParams {
@@ -82,280 +54,62 @@ impl Params for SphereParams {
     }
 }
 
-pub struct SphereTool {
-    phase: Phase,
-    workspace: Workspace,
-    preview: PreviewSession,
-    bindings: InputMap<SphereAction>,
-    /// Where the modeler's 3D cursor should sit (the latest snap point), or
-    /// `None` to hide it. Read by the modeler via [`ModelingTool::cursor_target`].
-    cursor_target: Option<Point3>,
-    /// Set once the sphere is applied, so the
-    /// tool cedes back to selection. Cleared on [`ModelingTool::deactivate`].
-    finished: bool,
-}
+/// Places a sphere: its centre, then a point on its surface.
+pub type SphereTool = PrimitiveTool<SphereParams>;
 
-impl SphereTool {
-    pub fn new(workspace: &Workspace) -> Self {
-        let bindings = InputMap::new()
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
-                SphereAction::Place,
-            )
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
-                SphereAction::Finish,
-            );
-        let preview = workspace.preview_session();
-        Self {
-            phase: Phase::Idle,
-            workspace: workspace.clone(),
-            preview,
-            bindings,
-            cursor_target: None,
-            finished: false,
+impl Primitive for SphereParams {
+    type Stage = SphereStage;
+
+    const TOOL: ToolInfo = ToolInfo { id: "sphere", icon: icons::SPHERE, shortcut: None };
+    const NAME: &'static str = "Sphere";
+
+    /// The polar axis is the snapped direction, such as a face normal, where
+    /// there is one.
+    fn start(first: &Snap, _construction: &Plane) -> SphereStage {
+        // Otherwise a skewed axis keeps the seam and poles off every world axis,
+        // so a later boolean's cutting plane isn't near-coincident with them.
+        let axis = first.direction.unwrap_or_else(|| Vector3::new(1.0, 2.0, 3.0).normalize());
+        SphereStage { center: first.position, axis }
+    }
+
+    fn track(stage: SphereStage, pointer: &Pointer) -> Track<Self> {
+        let SphereStage { center, axis } = stage;
+        let rim = pointer.snap.map(|snap| snap.position);
+        let placed = rim
+            .and_then(|rim| radius_to(center, rim))
+            .map(|radius| SphereParams { center, axis, radius });
+        Track {
+            cursor: rim,
+            preview: placed.map(|params| params.preview_transform()),
+            click: placed.map(Next::Placed),
         }
     }
 
+    /// The unit sphere about the origin.
+    fn reference(_stage: SphereStage) -> Result<Shape> {
+        Ok(Shape::sphere(1.0).build())
+    }
 
-    /// Scales the unit reference sphere to `radius` about `center`.
-    fn preview_transform(center: Point3, radius: Real) -> Transform {
+    fn preview_transform(&self) -> Transform {
         Transform {
-            position: center,
+            position: self.center,
             rotation: Quaternion::new(1.0, 0.0, 0.0, 0.0),
-            scale: Vector3::new(radius, radius, radius),
+            scale: Vector3::new(self.radius, self.radius, self.radius),
         }
     }
 
-    fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let Some(snap) = self.workspace.snap(position, &[], ctx)
-        else {
-            return false;
-        };
-        let center = snap.position;
-        // Polar axis: the snapped direction (e.g. a face normal) when present, else
-        // a skewed fallback that keeps the seam/poles off every world axis so a
-        // later boolean's cutting plane isn't near-coincident with them (OCCT
-        // boolean near-coincidence robustness).
-        let axis = snap
-            .direction
-            .unwrap_or_else(|| Vector3::new(1.0, 2.0, 3.0).normalize());
-        // Does not need preview tessellation detail because we only make the
-        // sphere once, and then scale it.
-        let preview_shape = Shape::sphere(1.0).build();
-        let options = self.workspace.geometry_options();
-        let Some(node) = self.preview.add_preview_from_shape(&preview_shape, &options, "sphere") else {
-            return false;
-        };
-        ctx.scene
-            
-            .set_node_transform(node, Self::preview_transform(center, 0.01));
-        self.phase = Phase::Defining { center, axis };
-        true
-    }
-
-    fn on_place_outer(
-        &mut self,
-        center: Point3,
-        axis: Vector3,
-        position: (f32, f32),
-        ctx: &mut EventContext
-    ) -> bool {
-        // Exclude the preview so the radius can snap through a corner, not to the
-        // preview's own geometry.
-        let radius = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
-            .map(|s| center.distance(s.position).max(0.01))
-            .unwrap_or(0.01);
-
-        // Hand the sphere to the options panel rather than committing it: the
-        // preview stays live and the radius stays editable until Apply. The polar
-        // axis comes from the placement snap (chosen in `on_place_center`).
-        let params = SphereParams { center, axis, radius };
-        self.preview.set_preview_transform(params.preview_transform());
-        self.phase = Phase::Tweak(Edit::new(params));
-        true
-    }
-
-    /// Commit the sphere and finish the tool. A failed build keeps the
-    /// panel open so the radius can be corrected.
-    fn apply(&mut self) -> anyhow::Result<()> {
-        let Phase::Tweak(edit) = self.phase else { return Ok(()) };
-        commit_primitive(edit.params(), &mut self.preview, &self.workspace)?;
-        self.phase = Phase::Idle;
-        self.finished = true;
-        Ok(())
-    }
-
-    /// Apply, logging a failure. For the gestures that keep the tool active and
-    /// so must report for themselves: the panel's Apply button, Enter, right-click.
-    fn apply_and_report(&mut self) {
-        if let Err(e) = self.apply() {
-            self.workspace.notifications.failure(SphereParams::NAME, &e);
-        }
-    }
-
-    /// Drop the in-progress sphere.
-    pub fn cancel(&mut self) {
-        self.preview.cancel();
-        self.phase = Phase::Idle;
-    }
-
-    fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
-        // The radius is picked; the panel drives the preview from here.
-        if matches!(self.phase, Phase::Tweak(_)) {
-            return;
-        }
-        let cursor = (position.0 as f32, position.1 as f32);
-
-        // While defining, exclude our own preview so the radius doesn't snap to it.
-        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
-
-        // Record where the modeler should draw the 3D cursor
-        self.cursor_target = snap.map(|s| s.position);
-
-        // Drive the preview radius from the snapped point while defining.
-        if let Phase::Defining { center, .. } = self.phase {
-            if let (Some(snap), Some(preview_node)) = (snap, self.preview.preview_node()) {
-                let radius = center.distance(snap.position).max(0.01);
-                ctx.scene
-                    
-                    .set_node_transform(preview_node, Self::preview_transform(center, radius));
-            }
-        }
-    }
-}
-
-impl ModelingTool for SphereTool {
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "sphere", icon: icons::SPHERE, shortcut: None }
-    }
-
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::MouseClick { button, position, .. } => {
-                let actions = self.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
-                let mut handled = false;
-                for action in actions {
-                    handled |= match action {
-                        SphereAction::Place => match self.phase {
-                            Phase::Defining { center, axis } => {
-                                self.on_place_outer(center, axis, *position, ctx)
-                            }
-                            // Swallow the click: the panel owns the sphere now, so a
-                            // stray pick must not select or place anything.
-                            Phase::Tweak(_) => true,
-                            Phase::Idle => self.on_place_center(*position, ctx),
-                        },
-                        // Right-click ends the operation: it commits a sphere the
-                        // panel already holds, and aborts one still being picked.
-                        SphereAction::Finish => match self.phase {
-                            Phase::Idle => false,
-                            Phase::Tweak(_) => {
-                                self.apply_and_report();
-                                true
-                            }
-                            _ => {
-                                self.cancel();
-                                true
-                            }
-                        },
-                    };
-                }
-                handled
-            }
-            DeviceEvent::CursorMoved { position } => {
-                self.on_cursor_moved(*position, ctx);
-                false
-            }
-            // Keyboard equivalents of the tweak panel's Apply and Cancel buttons.
-            DeviceEvent::KeyboardInput { event: key_event, .. } => {
-                if !matches!(self.phase, Phase::Tweak(_))
-                    || key_event.state != ElementState::Pressed
-                    || key_event.repeat
-                {
-                    return false;
-                }
-                match key_event.logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        self.apply_and_report();
-                        true
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        self.cancel();
-                        true
-                    }
-                    _ => false,
-                }
-            }
-            _ => false,
-        }
-    }
-
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.finished = false;
-        // The modeler hides the cursor for the (now inactive) tool, but clear our
-        // target so a stale point can't flash if we're reactivated before a move.
-        self.cursor_target = None;
-    }
-
-    /// A sphere waiting on the panel is fully defined, so leaving the tool commits it.
-    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if matches!(self.phase, Phase::Tweak(_)) {
-            self.apply()?;
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    fn cursor_target(&self) -> Option<Point3> {
-        // Nothing left to pick while the panel is open.
-        match self.phase {
-            Phase::Tweak(_) => None,
-            _ => self.cursor_target,
-        }
-    }
-
-    /// The grip appears only once the radius is picked.
-    fn handles(&self) -> Vec<Handle> {
-        match &self.phase {
-            Phase::Tweak(edit) => edit.handles(),
-            _ => Vec::new(),
-        }
-    }
-
-    fn on_handle(&mut self, event: &HandleEvent) {
-        let Phase::Tweak(edit) = &mut self.phase else { return };
-        if edit.on_handle(event) {
-            self.preview.set_preview_transform(edit.params().preview_transform());
-        }
-    }
-
-    fn panel_title(&self) -> Option<&str> {
-        matches!(self.phase, Phase::Tweak(_)).then_some(SphereParams::NAME)
-    }
-
-    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let Phase::Tweak(edit) = &mut self.phase else { return };
-        let action = edit.panel(ui);
-        let transform = edit.params().preview_transform();
-        match action {
-            PanelAction::Changed => self.preview.set_preview_transform(transform),
-            PanelAction::Apply => self.apply_and_report(),
-            PanelAction::Cancel => self.cancel(),
-            PanelAction::None => {}
-        }
+    fn build(&self) -> Result<Shape> {
+        Ok(sphere(self.center, self.axis, self.radius))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::snap::SnapKind;
     use crate::tools::edit::MIN_DIMENSION;
+    use super::super::primitive::pointer_at;
 
     const EPSILON: Real = 1e-6;
 
@@ -371,8 +125,45 @@ mod tests {
 
     /// A drag of `offset` on the radius grip, as the handle machinery reports it.
     fn drag(offset: Vector3) -> HandleDrag {
-        let grab = Point3::new(0.0, 0.0, 0.0);
-        HandleDrag { id: RADIUS_HANDLE, grab, point: grab + offset, modifiers: Modifiers::default() }
+        crate::testing::drag(RADIUS_HANDLE, Point3::new(0.0, 0.0, 0.0), offset)
+    }
+
+    #[test]
+    fn the_polar_axis_follows_a_snapped_direction() {
+        let normal = Vector3::new(0.0, 0.0, 1.0);
+        let at = Point3::new(1.0, 2.0, 3.0);
+        let face = Snap { position: at, direction: Some(normal), kind: SnapKind::Face };
+        assert!((SphereParams::start(&face, &Plane::xz()).axis - normal).magnitude() < EPSILON);
+    }
+
+    /// With no direction to follow, the axis lies along none of the world's.
+    #[test]
+    fn the_polar_axis_otherwise_runs_off_the_world_axes() {
+        let at = Point3::new(1.0, 2.0, 3.0);
+        let free = Snap { position: at, direction: None, kind: SnapKind::ConstructionPlane };
+        let axis = SphereParams::start(&free, &Plane::xz()).axis;
+        for world in [Vector3::unit_x(), Vector3::unit_y(), Vector3::unit_z()] {
+            assert!(axis.dot(world).abs() < 1.0 - 1e-3, "{axis:?} runs along {world:?}");
+        }
+    }
+
+    #[test]
+    fn a_point_on_the_surface_places_the_sphere() {
+        let center = Point3::new(1.0, 2.0, 3.0);
+        let stage = SphereStage { center, axis: Vector3::unit_y() };
+        let track = SphereParams::track(stage, &pointer_at(center + Vector3::new(3.0, 0.0, 4.0)));
+        let Some(Next::Placed(params)) = track.click else { panic!("the point places the sphere") };
+        assert!((params.radius - 5.0).abs() < EPSILON);
+        assert!((params.center - center).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn a_point_on_the_centre_cannot_be_clicked() {
+        let center = Point3::new(1.0, 2.0, 3.0);
+        let stage = SphereStage { center, axis: Vector3::unit_y() };
+        let track = SphereParams::track(stage, &pointer_at(center));
+        assert!(track.click.is_none());
+        assert!(track.preview.is_none());
     }
 
     #[test]

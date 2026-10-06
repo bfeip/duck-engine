@@ -1,19 +1,10 @@
 //! Settings a tool edits live, by its panel fields and its grips in the
 //! viewport, until it applies them; and the panel parts every tool shares.
-//!
-//! The primitive tools additionally drive only their preview node's transform —
-//! the unit reference shape is never re-tessellated — and build the
-//! world-space shape once, on apply.
 
 use std::ops::RangeInclusive;
 
-use anyhow::Context;
-use duck_engine_viewer::common::{Real, Transform};
+use duck_engine_viewer::common::Real;
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleEvent};
-use opencascade::primitives::Shape;
-
-use crate::preview::PreviewSession;
-use crate::tools::Workspace;
 
 /// Smallest value a dimension field accepts. Anything at or below it is
 /// degenerate and can't be built.
@@ -182,39 +173,8 @@ pub(super) fn angle_field(ui: &mut egui::Ui, label: &str, radians: &mut Real, li
     changed
 }
 
-/// The settings of a placed primitive.
-///
-/// Both editors end in the same place — a new
-/// [`preview_transform`](PrimitiveParams::preview_transform) on the preview
-/// node holding the tool's unit reference shape.
-pub(super) trait PrimitiveParams: Params {
-    /// Panel title and committed part name.
-    const NAME: &'static str;
-
-    /// Places the tool's unit reference shape for these settings.
-    fn preview_transform(&self) -> Transform;
-
-    /// The world-space shape to commit.
-    fn build(&self) -> anyhow::Result<Shape>;
-}
-
 /// A dimension moved by `delta`, held at or above [`MIN_DIMENSION`] so a grip
 /// dragged past the opposite face flattens the shape rather than inverting it.
 pub(super) fn grip_dimension(from: Real, delta: Real) -> Real {
     (from + delta).max(MIN_DIMENSION)
-}
-
-/// Build the world-space shape, drop the preview, and register it as a part.
-/// A failed build leaves the preview session untouched so the settings can be
-/// corrected and applied again.
-pub(super) fn commit_primitive<P: PrimitiveParams>(
-    params: &P,
-    preview: &mut PreviewSession,
-    workspace: &Workspace,
-) -> anyhow::Result<()> {
-    let shape = params.build().with_context(|| format!("Failed to build {}", P::NAME))?;
-
-    let _ = preview.commit();
-    workspace.add_numbered_part(P::NAME, shape)?;
-    Ok(())
 }

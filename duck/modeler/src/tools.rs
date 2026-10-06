@@ -17,6 +17,7 @@ mod hollow;
 mod line;
 mod loft;
 mod manager;
+mod primitive;
 mod rectangle;
 mod sphere;
 mod targets;

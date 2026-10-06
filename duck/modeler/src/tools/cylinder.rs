@@ -1,56 +1,26 @@
-use duck_engine_common::{MetricSpace, Plane, Point3, Ray, Real, Vector3};
-use duck_engine_scene::resource::Visibility;
-use duck_engine_viewer::{
-    bindings::{InputBinding, InputMap},
-    common::Transform,
-    event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, Modifiers, MouseButton, NamedKey},
-    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape},
-    selection::SelectionManager,
-};
-use log::warn;
+use anyhow::Result;
+use duck_engine_common::{Plane, Point3, Real, Transform, Vector3};
+use duck_engine_viewer::operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape};
 use opencascade::primitives::Shape;
 
-use crate::ops::primitives::{circle, cylinder, region};
-use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
+use crate::ops::primitives::cylinder;
+use crate::snap::Snap;
+use crate::tools::ToolInfo;
 use crate::ui::icons;
-use super::edit::{
-    commit_primitive, dimension_field, grip_dimension, Edit, PanelAction, Params, PrimitiveParams,
+use super::edit::{dimension_field, grip_dimension, Params, MIN_DIMENSION};
+use super::primitive::{
+    flat, height_along, radius_to, seat, unit_disk, Next, Pointer, Primitive, PrimitiveTool, Track,
 };
-
-/// A dimension at or below this is degenerate: the preview is hidden and the pick
-/// can't be committed.
-const EPSILON: Real = 1e-6;
 
 /// The cylinder's dimension grips.
 const RADIUS_HANDLE: HandleId = HandleId(0);
 const HEIGHT_HANDLE: HandleId = HandleId(1);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum CylinderAction {
-    Place,
-    /// End the operation: commit if the cylinder is fully defined, else abort.
-    Finish,
-}
-
-enum Phase {
-    Idle,
-    /// Center placed; the cursor drives the radius. Preview is the flat base face.
-    /// `plane` is the placement plane through the center.
-    Radius { center: Point3, plane: Plane },
-    /// Radius fixed; the cursor drives the height. Preview is the 3D cylinder.
-    Height { center: Point3, radius: Real, plane: Plane },
-    /// Every point picked; the options panel drives the dimensions until the
-    /// cylinder is applied or cancelled.
-    Tweak(Edit<CylinderParams>),
-}
-
 /// The dimensions of a placed cylinder, adjustable before it is committed.
 /// `base` is the first point picked and never moves: the radius grows about the
 /// axis through it and the height grows away from it along `plane.normal`.
 #[derive(Clone, Copy)]
-pub(super) struct CylinderParams {
+pub struct CylinderParams {
     base: Point3,
     plane: Plane,
     radius: Real,
@@ -72,24 +42,13 @@ impl CylinderParams {
     }
 }
 
-impl PrimitiveParams for CylinderParams {
-    const NAME: &'static str = "Cylinder";
-
-    /// Scales the unit reference cylinder (base at the origin, axis +Z, radius 1,
-    /// height 1) to these dimensions.  Every scale
-    /// component stays non-negative — a negative one would make the baked
-    /// transform a reflection, flipping the face normals inward.
-    fn preview_transform(&self) -> Transform {
-        Transform {
-            position: self.base,
-            rotation: self.plane.rotation(),
-            scale: Vector3::new(self.radius, self.radius, self.height),
-        }
-    }
-
-    fn build(&self) -> anyhow::Result<Shape> {
-        Ok(cylinder(self.base, self.plane.normal, self.radius, self.height))
-    }
+/// Placement of a cylinder between its base and its height.
+#[derive(Clone, Copy, Debug)]
+pub enum CylinderStage {
+    /// The base picked; the pointer sizes the radius about it.
+    Radius { base: Point3, plane: Plane },
+    /// The radius sized; the pointer sets the height.
+    Height { base: Point3, plane: Plane, radius: Real },
 }
 
 impl Params for CylinderParams {
@@ -131,401 +90,125 @@ impl Params for CylinderParams {
     }
 }
 
-pub struct CylinderTool {
-    phase: Phase,
-    workspace: Workspace,
-    preview: PreviewSession,
-    bindings: InputMap<CylinderAction>,
-    cursor_target: Option<Point3>,
-    // Set once the cylinder is applied, so
-    // the tool cedes back to selection. Cleared on [`ModelingTool::deactivate`].
-    finished: bool,
-}
+/// Places a cylinder: the centre of its base, a point on its rim, then its
+/// height.
+pub type CylinderTool = PrimitiveTool<CylinderParams>;
 
+impl Primitive for CylinderParams {
+    type Stage = CylinderStage;
 
+    const TOOL: ToolInfo = ToolInfo { id: "cylinder", icon: icons::CYLINDER, shortcut: None };
+    const NAME: &'static str = "Cylinder";
 
-impl CylinderTool {
-    pub fn new(workspace: &Workspace) -> Self {
-        let bindings = InputMap::new()
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
-                CylinderAction::Place,
-            )
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
-                CylinderAction::Finish,
-            );
-        let preview = workspace.preview_session();
-        Self {
-            phase: Phase::Idle,
-            workspace: workspace.clone(),
-            preview,
-            bindings,
-            cursor_target: None,
-            finished: false,
+    fn start(first: &Snap, construction: &Plane) -> CylinderStage {
+        CylinderStage::Radius { base: first.position, plane: seat(first, construction) }
+    }
+
+    fn track(stage: CylinderStage, pointer: &Pointer) -> Track<Self> {
+        match stage {
+            CylinderStage::Radius { base, plane } => {
+                let rim = pointer.snap.map(|snap| snap.position);
+                let radius = rim.and_then(|rim| radius_to(base, rim));
+                Track {
+                    cursor: rim,
+                    preview: radius.map(|radius| flat(base, &plane, radius, radius)),
+                    click: radius
+                        .map(|radius| Next::Stage(CylinderStage::Height { base, plane, radius })),
+                }
+            }
+            CylinderStage::Height { base, plane, radius } => {
+                let height = height_along(base, plane.normal, &pointer.ray);
+                let placed = (height.abs() > MIN_DIMENSION)
+                    .then(|| CylinderParams::from_pick(base, radius, height, plane));
+                Track {
+                    cursor: Some(base + plane.normal * height),
+                    preview: placed.map(|params| params.preview_transform()),
+                    click: placed.map(Next::Placed),
+                }
+            }
         }
     }
 
+    /// A unit disk while the radius is sized, then the unit cylinder: base at
+    /// the origin, axis along local +Z.
+    fn reference(stage: CylinderStage) -> Result<Shape> {
+        match stage {
+            CylinderStage::Radius { .. } => unit_disk(),
+            CylinderStage::Height { .. } => Ok(Shape::cylinder_radius_height(1.0, 1.0)),
+        }
+    }
 
-    /// Lays the flat unit base disk (local XY, normal +Z) on `plane`, scaled to
-    /// `radius`. [`Plane::rotation`] maps the local +Z axis to the plane normal.
-    fn disk_transform(center: Point3, radius: Real, plane: &Plane) -> Transform {
+    /// Scales the unit cylinder to these dimensions. Every scale component
+    /// stays non-negative — a negative one would make the baked transform a
+    /// reflection, flipping the face normals inward.
+    fn preview_transform(&self) -> Transform {
         Transform {
-            position: center,
-            rotation: plane.rotation(),
-            scale: Vector3::new(radius, radius, 1.0),
+            position: self.base,
+            rotation: self.plane.rotation(),
+            scale: Vector3::new(self.radius, self.radius, self.height),
         }
     }
 
-    /// Unit reference cylinder for the preview: base at the origin, axis +Z,
-    /// radius 1, height 1. Scaled and oriented via
-    /// [`CylinderParams::preview_transform`].
-    fn reference_cylinder() -> Shape {
-        Shape::cylinder_radius_height(1.0, 1.0)
-    }
-
-    /// Unit reference base disk for the radius phase: a lone face of radius 1
-    /// centered on the origin in local XY, so it reads as a sketch until the
-    /// cursor gives the cylinder a height. Placed via the preview node transform
-    /// ([`disk_transform`](Self::disk_transform)).
-    fn reference_disk() -> anyhow::Result<Shape> {
-        Ok(region(circle(Point3::new(0.0, 0.0, 0.0), Vector3::unit_z(), 1.0)?))
-    }
-
-    /// A radius is valid once it is non-degenerate.
-    fn radius_valid(radius: Real) -> bool {
-        radius > EPSILON
-    }
-
-    /// A cylinder is valid once it has a non-degenerate radius and a non-zero height.
-    fn cylinder_valid(radius: Real, height: Real) -> bool {
-        Self::radius_valid(radius) && height.abs() > EPSILON
-    }
-
-    /// Signed height from projecting the cursor pick ray onto the plane normal through `center`.
-    fn height_from_cursor(center: Point3, plane: &Plane, position: (f32, f32), ctx: &mut EventContext) -> Real {
-        let ray: Ray = ctx.camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
-        ray.closest_param_on_axis(center, plane.normal).unwrap_or(0.0)
-    }
-
-    fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let cplane = self.workspace.construction.borrow().construction_plane;
-        let Some(snap) = self.workspace.snap(position, &[], ctx)
-        else {
-            return false;
-        };
-        let center = snap.position;
-        // Orient the cylinder to the snapped geometry when the snap carries a
-        // direction. Otherwise fall back to the construction plane.
-        let plane = Plane::from_point(snap.direction.unwrap_or(cplane.normal), center);
-
-        // A single unit disk, scaled each move; preview detail is irrelevant here.
-        let preview_shape = match Self::reference_disk() {
-            Ok(shape) => shape,
-            Err(e) => {
-                warn!("Failed to build the base disk: {e:#}");
-                return false;
-            }
-        };
-        let options = self.workspace.geometry_options();
-        if self.preview.add_preview_from_shape(&preview_shape, &options, "cylinder base preview").is_none() {
-            return false;
-        }
-        // Hidden until the cursor defines a non-degenerate radius.
-        self.preview.set_preview_visibility(Visibility::Invisible);
-        self.phase = Phase::Radius { center, plane };
-        true
-    }
-
-    fn on_place_radius(
-        &mut self,
-        center: Point3,
-        plane: Plane,
-        position: (f32, f32),
-        ctx: &mut EventContext
-    ) -> bool {
-        // Exclude the preview so the radius can snap through a corner, not to the
-        // preview's own geometry.
-        let radius = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
-            .map(|s| center.distance(s.position))
-            .unwrap_or(0.0);
-        // A degenerate radius can't be committed; stay in the radius stage.
-        if !Self::radius_valid(radius) {
-            return false;
-        }
-
-        // Swap the flat base preview for the 3D cylinder preview.
-        let options = self.workspace.geometry_options();
-        if self
-            .preview
-            .try_replace_preview(&Self::reference_cylinder(), &options, "cylinder preview")
-            .is_none()
-        {
-            return false;
-        }
-        // Hidden until the cursor defines a non-zero height.
-        self.preview.set_preview_visibility(Visibility::Invisible);
-        self.phase = Phase::Height { center, radius, plane };
-        true
-    }
-
-    fn on_place_height(
-        &mut self,
-        center: Point3,
-        radius: Real,
-        plane: Plane,
-        position: (f32, f32),
-        ctx: &mut EventContext,
-    ) -> bool {
-        let height = Self::height_from_cursor(center, &plane, position, ctx);
-        // A zero-height (degenerate) cylinder can't be tweaked; stay in the height stage.
-        if !Self::cylinder_valid(radius, height) {
-            return false;
-        }
-
-        // Hand the cylinder to the options panel rather than committing it: the
-        // preview stays live and the dimensions stay editable until Apply.
-        let params = CylinderParams::from_pick(center, radius, height, plane);
-        self.preview.set_preview_transform(params.preview_transform());
-        self.phase = Phase::Tweak(Edit::new(params));
-        true
-    }
-
-    /// Commit the cylinder and finish the tool. A failed build keeps the
-    /// panel open so the dimensions can be corrected.
-    fn apply(&mut self) -> anyhow::Result<()> {
-        let Phase::Tweak(edit) = self.phase else { return Ok(()) };
-        commit_primitive(edit.params(), &mut self.preview, &self.workspace)?;
-        self.phase = Phase::Idle;
-        self.finished = true;
-        Ok(())
-    }
-
-    /// Apply, logging a failure. For the gestures that keep the tool active and
-    /// so must report for themselves: the panel's Apply button, Enter, right-click.
-    fn apply_and_report(&mut self) {
-        if let Err(e) = self.apply() {
-            self.workspace.notifications.failure(CylinderParams::NAME, &e);
-        }
-    }
-
-    /// Drop the in-progress cylinder.
-    pub fn cancel(&mut self) {
-        self.preview.cancel();
-        self.phase = Phase::Idle;
-    }
-
-    fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
-        // Every point is picked; the panel drives the preview from here.
-        if matches!(self.phase, Phase::Tweak(_)) {
-            return;
-        }
-        let cursor = (position.0 as f32, position.1 as f32);
-
-        // While defining, exclude our own preview so snapping doesn't lock onto it.
-        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
-
-        match self.phase {
-            Phase::Idle => {
-                self.cursor_target = snap.map(|s| s.position);
-            }
-            Phase::Radius { center, plane } => {
-                self.cursor_target = snap.map(|s| s.position);
-                let radius = snap.map(|s| center.distance(s.position));
-                if let Some(preview_node) = self.preview.preview_node() {
-                    let mut scene = ctx.scene.lock();
-                    match radius {
-                        Some(radius) if Self::radius_valid(radius) => {
-                            scene.set_node_visibility(preview_node, Visibility::Visible);
-                            scene.set_node_transform(
-                                preview_node,
-                                Self::disk_transform(center, radius, &plane),
-                            );
-                        }
-                        // No snap, or a degenerate radius: nothing to draw.
-                        _ => scene.set_node_visibility(preview_node, Visibility::Invisible),
-                    }
-                }
-            }
-            Phase::Height { center, radius, plane } => {
-                let height = Self::height_from_cursor(center, &plane, cursor, ctx);
-                self.cursor_target = Some(center + plane.normal * height);
-                if let Some(preview_node) = self.preview.preview_node() {
-                    let mut scene = ctx.scene.lock();
-                    if Self::cylinder_valid(radius, height) {
-                        scene.set_node_visibility(preview_node, Visibility::Visible);
-                        scene.set_node_transform(
-                            preview_node,
-                            CylinderParams::from_pick(center, radius, height, plane)
-                                .preview_transform(),
-                        );
-                    } else {
-                        // Degenerate height: nothing to draw.
-                        scene.set_node_visibility(preview_node, Visibility::Invisible);
-                    }
-                }
-            }
-            // Handled by the early return above.
-            Phase::Tweak(_) => {}
-        }
-    }
-}
-
-impl ModelingTool for CylinderTool {
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "cylinder", icon: icons::CYLINDER, shortcut: None }
-    }
-
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::MouseClick { button, position, .. } => {
-                let actions = self.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
-                let mut handled = false;
-                for action in actions {
-                    handled |= match action {
-                        CylinderAction::Place => match self.phase {
-                            Phase::Idle => self.on_place_center(*position, ctx),
-                            Phase::Radius { center, plane } => {
-                                self.on_place_radius(center, plane, *position, ctx)
-                            }
-                            Phase::Height { center, radius, plane } => {
-                                self.on_place_height(center, radius, plane, *position, ctx)
-                            }
-                            // Swallow the click: the panel owns the cylinder now, so
-                            // a stray pick must not select or place anything.
-                            Phase::Tweak(_) => true,
-                        },
-                        // Right-click ends the operation: it commits a cylinder the
-                        // panel already holds, and aborts one still being picked.
-                        CylinderAction::Finish => match self.phase {
-                            Phase::Idle => false,
-                            Phase::Tweak(_) => {
-                                self.apply_and_report();
-                                true
-                            }
-                            _ => {
-                                self.cancel();
-                                true
-                            }
-                        },
-                    };
-                }
-                handled
-            }
-            DeviceEvent::CursorMoved { position } => {
-                self.on_cursor_moved(*position, ctx);
-                false
-            }
-            // Keyboard equivalents of the tweak panel's Apply and Cancel buttons.
-            DeviceEvent::KeyboardInput { event: key_event, .. } => {
-                if !matches!(self.phase, Phase::Tweak(_))
-                    || key_event.state != ElementState::Pressed
-                    || key_event.repeat
-                {
-                    return false;
-                }
-                match key_event.logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        self.apply_and_report();
-                        true
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        self.cancel();
-                        true
-                    }
-                    _ => false,
-                }
-            }
-            _ => false,
-        }
-    }
-
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.finished = false;
-        // The modeler hides the cursor for the (now inactive) tool, but clear our
-        // target so a stale point can't flash if we're reactivated before a move.
-        self.cursor_target = None;
-    }
-
-    /// A cylinder waiting on the panel is fully defined, so leaving the tool commits it.
-    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if matches!(self.phase, Phase::Tweak(_)) {
-            self.apply()?;
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    fn cursor_target(&self) -> Option<Point3> {
-        // Nothing left to pick while the panel is open.
-        match self.phase {
-            Phase::Tweak(_) => None,
-            _ => self.cursor_target,
-        }
-    }
-
-    /// Grips only once the cylinder is placed — until then the cursor is still
-    /// defining it, and a grip would be something to fight with.
-    fn handles(&self) -> Vec<Handle> {
-        match &self.phase {
-            Phase::Tweak(edit) => edit.handles(),
-            _ => Vec::new(),
-        }
-    }
-
-    fn on_handle(&mut self, event: &HandleEvent) {
-        let Phase::Tweak(edit) = &mut self.phase else { return };
-        if edit.on_handle(event) {
-            self.preview.set_preview_transform(edit.params().preview_transform());
-        }
-    }
-
-    fn panel_title(&self) -> Option<&str> {
-        matches!(self.phase, Phase::Tweak(_)).then_some(CylinderParams::NAME)
-    }
-
-    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let Phase::Tweak(edit) = &mut self.phase else { return };
-        let action = edit.panel(ui);
-        let transform = edit.params().preview_transform();
-        match action {
-            PanelAction::Changed => self.preview.set_preview_transform(transform),
-            PanelAction::Apply => self.apply_and_report(),
-            PanelAction::Cancel => self.cancel(),
-            PanelAction::None => {}
-        }
+    fn build(&self) -> Result<Shape> {
+        Ok(cylinder(self.base, self.plane.normal, self.radius, self.height))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use duck_engine_common::InnerSpace;
-    use crate::tools::edit::MIN_DIMENSION;
 
-    #[test]
-    fn cylinder_valid_accepts_nondegenerate() {
-        assert!(CylinderTool::cylinder_valid(1.0, 2.0));
-        assert!(CylinderTool::cylinder_valid(1.0, -2.0));
+    use crate::testing::skewed_plane;
+    use super::super::primitive::pointer_at;
+
+    const EPSILON: Real = 1e-6;
+
+    /// A drag of `offset` on the grip `id`, as the handle machinery reports it.
+    fn drag(id: HandleId, offset: Vector3) -> HandleDrag {
+        crate::testing::drag(id, Point3::new(0.0, 0.0, 0.0), offset)
     }
 
     #[test]
-    fn cylinder_valid_rejects_degenerate() {
-        assert!(!CylinderTool::cylinder_valid(0.0, 2.0));
-        assert!(!CylinderTool::cylinder_valid(1.0, 0.0));
+    fn the_rim_leads_to_the_height_stage() {
+        let stage = CylinderStage::Radius { base: Point3::new(0.0, 0.0, 0.0), plane: Plane::xz() };
+        let track = CylinderParams::track(stage, &pointer_at(Point3::new(3.0, 0.0, 4.0)));
+        let Some(Next::Stage(CylinderStage::Height { radius, .. })) = track.click else {
+            panic!("the rim sizes the radius");
+        };
+        assert!((radius - 5.0).abs() < EPSILON);
     }
 
     #[test]
-    fn from_pick_flips_negative_height_about_the_base() {
+    fn a_rim_on_the_base_cannot_be_clicked() {
+        let base = Point3::new(1.0, 2.0, 3.0);
+        let stage = CylinderStage::Radius { base, plane: Plane::xz() };
+        let track = CylinderParams::track(stage, &pointer_at(base));
+        assert!(track.click.is_none());
+        assert!(track.preview.is_none());
+    }
+
+    #[test]
+    fn a_flat_height_cannot_be_clicked() {
+        let base = Point3::new(1.0, 2.0, 3.0);
+        let stage = CylinderStage::Height { base, plane: Plane::xz(), radius: 2.0 };
+        let track = CylinderParams::track(stage, &pointer_at(base));
+        assert!(track.click.is_none());
+        assert!(track.preview.is_none());
+    }
+
+    #[test]
+    fn a_downward_height_flips_the_plane_about_the_base() {
         let plane = Plane::xz();
         let base = Point3::new(1.0, 2.0, 3.0);
-        let params = CylinderParams::from_pick(base, 2.0, -3.0, plane);
-        // The picked point stays the base; the axis flips instead (XZ normal is +Y).
+        let stage = CylinderStage::Height { base, plane, radius: 2.0 };
+        let track = CylinderParams::track(stage, &pointer_at(base - plane.normal * 3.0));
+        let Some(Next::Placed(params)) = track.click else {
+            panic!("the height places the cylinder");
+        };
+
+        // The picked point stays the base; the axis flips instead.
         assert!((params.base - base).magnitude() < EPSILON);
         assert!((params.height - 3.0).abs() < EPSILON);
         assert!((params.plane.normal + plane.normal).magnitude() < EPSILON);
@@ -538,7 +221,7 @@ mod tests {
 
     #[test]
     fn height_edits_leave_the_base_cap_in_place() {
-        let plane = Plane::from_point(Vector3::new(1.0, 2.0, 3.0).normalize(), Point3::new(0.0, 0.0, 0.0));
+        let plane = skewed_plane(Point3::new(0.0, 0.0, 0.0));
         let base = Point3::new(-4.0, 5.0, 6.0);
         let mut params = CylinderParams::from_pick(base, 2.0, 3.0, plane);
         params.height = 10.0;
@@ -546,17 +229,6 @@ mod tests {
         assert!((params.base - base).magnitude() < EPSILON);
         assert!((params.plane.normal - plane.normal).magnitude() < EPSILON);
         assert!((params.preview_transform().position - base).magnitude() < EPSILON);
-    }
-
-    /// A plane aligned with no world axis, so a mistaken basis shows up.
-    fn skewed_plane(origin: Point3) -> Plane {
-        Plane::from_point(Vector3::new(1.0, 2.0, 3.0).normalize(), origin)
-    }
-
-    /// A drag of `offset` on the grip `id`, as the handle machinery reports it.
-    fn drag(id: HandleId, offset: Vector3) -> HandleDrag {
-        let grab = Point3::new(0.0, 0.0, 0.0);
-        HandleDrag { id, grab, point: grab + offset, modifiers: Modifiers::default() }
     }
 
     #[test]

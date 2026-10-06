@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::common::{Point3, Vector3};
+use duck_engine_scene::common::{InnerSpace, Plane, Point3, Vector3};
 use duck_engine_scene::resource::{NodeId, SubGeometryElement, SubGeometryKind, Visibility};
 use duck_engine_scene::Scene;
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, PhysicalKey};
@@ -61,6 +61,12 @@ pub fn tube() -> Shape {
         .expect("square builds")
     };
     Shell::loft([square(0.0), square(2.0)]).into()
+}
+
+/// A plane through `origin` aligned with no world axis, so a mistaken basis
+/// shows up.
+pub fn skewed_plane(origin: Point3) -> Plane {
+    Plane::from_point(Vector3::new(1.0, 2.0, 3.0).normalize(), origin)
 }
 
 /// The shape of the part at `node`.

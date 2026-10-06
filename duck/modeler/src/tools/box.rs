@@ -1,57 +1,29 @@
-use duck_engine_common::{InnerSpace, Plane, Point3, Ray, Real, Vector3};
-use duck_engine_scene::resource::Visibility;
-use duck_engine_viewer::{
-    bindings::{InputBinding, InputMap},
-    common::Transform,
-    event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, KeyEvent, Modifiers, MouseButton, NamedKey},
-    operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape},
-    selection::SelectionManager,
-};
+use anyhow::Result;
+use duck_engine_common::{Plane, Point3, Real, Transform, Vector3};
+use duck_engine_viewer::operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape};
 use glam::dvec3;
-use opencascade::primitives::{Face, Shape, Wire};
+use opencascade::primitives::Shape;
 
 use crate::ops::primitives::{prism, rectangle_corners};
-use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
+use crate::snap::Snap;
+use crate::tools::ToolInfo;
 use crate::ui::icons;
-use super::edit::{
-    commit_primitive, dimension_field, grip_dimension, Edit, PanelAction, Params, PrimitiveParams,
+use super::edit::{dimension_field, grip_dimension, Params, MIN_DIMENSION};
+use super::primitive::{
+    flat, footprint, height_along, seat, unit_square, Next, Pointer, Primitive, PrimitiveTool,
+    Track,
 };
-
-/// A dimension at or below this is degenerate: the preview is hidden and the pick
-/// can't be committed.
-const EPSILON: Real = 1e-6;
 
 /// The box's dimension grips, one per axis of [`BoxParams`].
 const WIDTH_HANDLE: HandleId = HandleId(0);
 const DEPTH_HANDLE: HandleId = HandleId(1);
 const HEIGHT_HANDLE: HandleId = HandleId(2);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum BoxAction {
-    Place,
-    /// End the operation: commit if the box is fully defined, else abort.
-    Finish,
-}
-
-enum Phase {
-    Idle,
-    /// Center placed; the cursor drives the footprint. Preview is a flat rectangle face.
-    /// Base being defined. `plane` is the plane the base rectangle is being defined on.
-    Base { center: Point3, plane: Plane },
-    /// Footprint fixed; the cursor drives the height. Preview is the 3D box.
-    Height { center: Point3, width: Real, depth: Real, plane: Plane },
-    /// Every point picked; the options panel drives the dimensions until the
-    /// box is applied or cancelled.
-    Tweak(Edit<BoxParams>),
-}
-
-/// The dimensions of a placed box. `base` is
-/// the first point picked and never moves: the footprint grows about it and the
-/// height grows away from it along `plane.normal`.
+/// The dimensions of a placed box. `base` is the first point picked and never
+/// moves: the footprint grows about it and the height grows away from it along
+/// `plane.normal`.
 #[derive(Clone, Copy)]
-pub(super) struct BoxParams {
+pub struct BoxParams {
     base: Point3,
     plane: Plane,
     width: Real,
@@ -92,27 +64,13 @@ impl BoxParams {
     }
 }
 
-impl PrimitiveParams for BoxParams {
-    const NAME: &'static str = "Box";
-
-    /// Scales the unit reference box (footprint in local XY, height along local
-    /// +Z) to these dimensions. Every scale component stays
-    /// non-negative — a negative one would make the baked GTransform a
-    /// reflection, flipping the box's face normals inward.
-    fn preview_transform(&self) -> Transform {
-        let (offset, _, _) = self.local_rect();
-        Transform {
-            position: self.base + offset,
-            rotation: self.plane.rotation(),
-            scale: Vector3::new(self.width, self.depth, self.height),
-        }
-    }
-
-    /// World-space box with analytic planar faces: the footprint rectangle on
-    /// the plane, extruded along its normal.
-    fn build(&self) -> anyhow::Result<Shape> {
-        prism(&self.footprint_corners(), self.plane.normal * self.height)
-    }
+/// Placement of a box between its base and its height.
+#[derive(Clone, Copy, Debug)]
+pub enum BoxStage {
+    /// The base picked; the pointer sizes the footprint about it.
+    Footprint { base: Point3, plane: Plane },
+    /// The footprint sized; the pointer sets the height.
+    Height { base: Point3, plane: Plane, width: Real, depth: Real },
 }
 
 impl Params for BoxParams {
@@ -163,379 +121,132 @@ impl Params for BoxParams {
     }
 }
 
-pub struct BoxTool {
-    phase: Phase,
-    workspace: Workspace,
-    preview: PreviewSession,
-    bindings: InputMap<BoxAction>,
-    cursor_target: Option<Point3>,
-    // Set once the box is applied, so the
-    // tool cedes back to selection. Cleared on [`ModelingTool::deactivate`].
-    finished: bool,
-}
+/// Places a box: the centre of its base, a corner of its footprint, then its
+/// height.
+pub type BoxTool = PrimitiveTool<BoxParams>;
 
-impl BoxTool {
-    pub fn new(workspace: &Workspace) -> Self {
-        let bindings = InputMap::new()
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
-                BoxAction::Place,
-            )
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
-                BoxAction::Finish,
-            );
-        let preview = workspace.preview_session();
-        Self {
-            phase: Phase::Idle,
-            workspace: workspace.clone(),
-            preview,
-            bindings,
-            cursor_target: None,
-            finished: false,
-        }
+impl Primitive for BoxParams {
+    type Stage = BoxStage;
+
+    const TOOL: ToolInfo = ToolInfo { id: "box", icon: icons::BOX, shortcut: None };
+    const NAME: &'static str = "Box";
+
+    fn start(first: &Snap, construction: &Plane) -> BoxStage {
+        BoxStage::Footprint { base: first.position, plane: seat(first, construction) }
     }
 
-
-    /// Lays the flat unit footprint face (local XY, normal +Z) on `plane`, scaled to
-    /// `width`×`depth`. [`Plane::rotation`] maps the local +Z axis to the plane normal.
-    fn footprint_transform(center: Point3, width: Real, depth: Real, plane: &Plane) -> Transform {
-        Transform {
-            position: center,
-            rotation: plane.rotation(),
-            scale: Vector3::new(width, depth, 1.0),
-        }
-    }
-
-    /// Unit reference box for the preview: footprint centered in local XY,
-    /// height along local +Z (`[0, 1]`), scaled/oriented via
-    /// [`BoxParams::preview_transform`].
-    fn reference_box() -> Shape {
-        Shape::box_from_corners(dvec3(-0.5, -0.5, 0.0), dvec3(0.5, 0.5, 1.0))
-    }
-
-    /// In-plane extents from the center→corner vector, as full (width, depth).
-    fn footprint_dims(center: Point3, corner: Point3, plane: &Plane) -> (Real, Real) {
-        let (u, v) = plane.basis();
-        let d = corner - center;
-        let width = 2.0 * d.dot(u).abs();
-        let depth = 2.0 * d.dot(v).abs();
-        (width, depth)
-    }
-
-    /// A footprint is valid once both in-plane dimensions are non-degenerate.
-    fn footprint_valid(width: Real, depth: Real) -> bool {
-        width > EPSILON && depth > EPSILON
-    }
-
-    /// A box is valid once it has a non-degenerate footprint and a non-zero height
-    fn box_valid(width: Real, depth: Real, height: Real) -> bool {
-        Self::footprint_valid(width, depth) && height.abs() > EPSILON
-    }
-
-    /// Signed height from projecting the cursor pick ray onto the plane normal through `center`.
-    fn height_from_cursor(center: Point3, plane: &Plane, position: (f32, f32), ctx: &EventContext) -> Real {
-        let ray: Ray = ctx.camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
-        ray.closest_param_on_axis(center, plane.normal).unwrap_or(0.0)
-    }
-
-    fn on_place_center(&mut self, position: (f32, f32), ctx: &EventContext) -> bool {
-        let cplane = self.workspace.construction.borrow().construction_plane;
-        let Some(snap) = self.workspace.snap(position, &[], ctx)
-        else {
-            return false;
-        };
-        let center = snap.position;
-        // Seat the box on the snapped geometry when the snap carries a direction.
-        // Otherwise use the construction plane.
-        let plane = Plane::from_point(snap.direction.unwrap_or(cplane.normal), center);
-
-        let Ok(preview_shape): Result<Shape, _> =
-            Face::from_wire(&Wire::rect(1.0, 1.0).unwrap()).map(Into::into)
-        else {
-            return false;
-        };
-
-        // A single unit face, scaled each move; preview detail is irrelevant for a flat quad.
-        let options = self.workspace.geometry_options();
-        if self.preview.add_preview_from_shape(&preview_shape, &options, "box plane preview").is_none() {
-            return false;
-        }
-        // Hidden until the cursor defines a non-degenerate footprint.
-        self.preview.set_preview_visibility(Visibility::Invisible);
-        self.phase = Phase::Base { center, plane };
-        true
-    }
-
-    fn on_place_corner(
-        &mut self,
-        center: Point3,
-        plane: Plane,
-        position: (f32, f32),
-        ctx: &mut EventContext
-    ) -> bool {
-        // Exclude the preview so the footprint can snap through it.
-        let Some(corner) = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
-            .map(|s| s.position)
-        else {
-            return false;
-        };
-        let (width, depth) = Self::footprint_dims(center, corner, &plane);
-        // A degenerate footprint can't be committed; stay in the footprint stage.
-        if !Self::footprint_valid(width, depth) {
-            return false;
-        }
-
-        // Swap the flat footprint preview for the 3D box preview.
-        let preview_shape = Self::reference_box();
-        let options = self.workspace.geometry_options();
-        if self.preview.try_replace_preview(&preview_shape, &options, "box preview").is_none() {
-            return false;
-        }
-        // Hidden until the cursor defines a non-zero height.
-        self.preview.set_preview_visibility(Visibility::Invisible);
-        self.phase = Phase::Height { center, width, depth, plane };
-        true
-    }
-
-    fn on_place_height(
-        &mut self,
-        center: Point3,
-        width: Real,
-        depth: Real,
-        plane: Plane,
-        position: (f32, f32),
-        ctx: &mut EventContext,
-    ) -> bool {
-        let height = Self::height_from_cursor(center, &plane, position, ctx);
-        // A zero-height (degenerate) box can't be tweaked; stay in the height stage.
-        if !Self::box_valid(width, depth, height) {
-            return false;
-        }
-
-        // Hand the box to the options panel rather than committing it: the
-        // preview stays live and the dimensions stay editable until Apply.
-        let params = BoxParams::from_pick(center, width, depth, height, plane);
-        self.preview.set_preview_transform(params.preview_transform());
-        self.phase = Phase::Tweak(Edit::new(params));
-        true
-    }
-
-    /// Commit the box and finish the tool. A failed build keeps the
-    /// panel open so the dimensions can be corrected.
-    fn apply(&mut self) -> anyhow::Result<()> {
-        let Phase::Tweak(edit) = self.phase else { return Ok(()) };
-        commit_primitive(edit.params(), &mut self.preview, &self.workspace)?;
-        self.phase = Phase::Idle;
-        self.finished = true;
-        Ok(())
-    }
-
-    /// Apply, logging a failure. For the gestures that keep the tool active and
-    /// so must report for themselves: the panel's Apply button, Enter, right-click.
-    fn apply_and_report(&mut self) {
-        if let Err(e) = self.apply() {
-            self.workspace.notifications.failure(BoxParams::NAME, &e);
-        }
-    }
-
-    /// Drop the in-progress box.
-    pub fn cancel(&mut self) {
-        self.preview.cancel();
-        self.phase = Phase::Idle;
-    }
-
-    /// Advances the pick by one point.
-    fn on_place(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        match self.phase {
-            Phase::Idle => self.on_place_center(position, ctx),
-            Phase::Base { center, plane } => self.on_place_corner(center, plane, position, ctx),
-            Phase::Height { center, width, depth, plane } => {
-                self.on_place_height(center, width, depth, plane, position, ctx)
-            }
-            // Swallow the click: the panel owns the box now, so a stray pick
-            // must not select or place anything.
-            Phase::Tweak(_) => true,
-        }
-    }
-
-    /// Ends the operation: commits a box the panel already holds, and aborts
-    /// one still being picked.
-    fn on_finish(&mut self) -> bool {
-        match self.phase {
-            Phase::Idle => return false,
-            Phase::Tweak(_) => self.apply_and_report(),
-            Phase::Base { .. } | Phase::Height { .. } => self.cancel(),
-        }
-        true
-    }
-
-    /// Keyboard equivalents of the tweak panel's Apply and Cancel buttons.
-    fn on_key(&mut self, event: &KeyEvent) -> bool {
-        if !matches!(self.phase, Phase::Tweak(_))
-            || event.state != ElementState::Pressed
-            || event.repeat
-        {
-            return false;
-        }
-        match event.logical_key {
-            Key::Named(NamedKey::Enter) => self.apply_and_report(),
-            Key::Named(NamedKey::Escape) => self.cancel(),
-            _ => return false,
-        }
-        true
-    }
-
-    fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
-        let cursor = (position.0 as f32, position.1 as f32);
-
-        // While defining, exclude our own preview so snapping doesn't lock onto it.
-        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
-
-        match self.phase {
-            Phase::Idle => {
-                self.cursor_target = snap.map(|s| s.position);
-            }
-            Phase::Base { center, plane } => {
-                self.cursor_target = snap.map(|s| s.position);
-                // No snap, or a degenerate footprint: nothing to draw.
-                let transform = snap
-                    .map(|s| Self::footprint_dims(center, s.position, &plane))
-                    .filter(|&(width, depth)| Self::footprint_valid(width, depth))
-                    .map(|(width, depth)| Self::footprint_transform(center, width, depth, &plane));
-                self.show_preview(transform);
-            }
-            Phase::Height { center, width, depth, plane } => {
-                let height = Self::height_from_cursor(center, &plane, cursor, ctx);
-                self.cursor_target = Some(center + plane.normal * height);
-                // Degenerate height: nothing to draw.
-                let transform = Self::box_valid(width, depth, height).then(|| {
-                    BoxParams::from_pick(center, width, depth, height, plane).preview_transform()
-                });
-                self.show_preview(transform);
-            }
-            // Handled by the early return above.
-            Phase::Tweak(_) => {}
-        }
-    }
-
-    /// Shows the preview at `transform`, or hides it when there is nothing to draw.
-    fn show_preview(&self, transform: Option<Transform>) {
-        match transform {
-            Some(transform) => {
-                self.preview.set_preview_transform(transform);
-                self.preview.set_preview_visibility(Visibility::Visible);
-            }
-            None => self.preview.set_preview_visibility(Visibility::Invisible),
-        }
-    }
-}
-
-impl ModelingTool for BoxTool {
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "box", icon: icons::BOX, shortcut: None }
-    }
-
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::MouseClick { button, position, .. } => {
-                let actions = self.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
-                let mut handled = false;
-                for action in actions {
-                    handled |= match action {
-                        BoxAction::Place => self.on_place(*position, ctx),
-                        BoxAction::Finish => self.on_finish(),
-                    };
+    fn track(stage: BoxStage, pointer: &Pointer) -> Track<Self> {
+        match stage {
+            BoxStage::Footprint { base, plane } => {
+                let corner = pointer.snap.map(|snap| snap.position);
+                let size = corner.and_then(|corner| footprint(base, corner, &plane));
+                Track {
+                    cursor: corner,
+                    preview: size.map(|(width, depth)| flat(base, &plane, width, depth)),
+                    click: size.map(|(width, depth)| {
+                        Next::Stage(BoxStage::Height { base, plane, width, depth })
+                    }),
                 }
-                handled
             }
-            DeviceEvent::CursorMoved { position } => {
-                self.on_cursor_moved(*position, ctx);
-                false
+            BoxStage::Height { base, plane, width, depth } => {
+                let height = height_along(base, plane.normal, &pointer.ray);
+                let placed = (height.abs() > MIN_DIMENSION)
+                    .then(|| BoxParams::from_pick(base, width, depth, height, plane));
+                Track {
+                    cursor: Some(base + plane.normal * height),
+                    preview: placed.map(|params| params.preview_transform()),
+                    click: placed.map(Next::Placed),
+                }
             }
-            DeviceEvent::KeyboardInput { event, .. } => self.on_key(event),
-            _ => false,
         }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.finished = false;
-        // The modeler hides the cursor for the (now inactive) tool, but clear our
-        // target so a stale point can't flash if we're reactivated before a move.
-        self.cursor_target = None;
-    }
-
-    /// A box waiting on the panel is fully defined, so leaving the tool commits it.
-    fn finalize(&mut self, _selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if matches!(self.phase, Phase::Tweak(_)) {
-            self.apply()?;
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    fn cursor_target(&self) -> Option<Point3> {
-        // Nothing left to pick while the panel is open.
-        match self.phase {
-            Phase::Tweak(_) => None,
-            _ => self.cursor_target,
+    /// A unit square while the footprint is sized, then the unit box:
+    /// footprint centred in local XY, height along local +Z.
+    fn reference(stage: BoxStage) -> Result<Shape> {
+        match stage {
+            BoxStage::Footprint { .. } => unit_square(),
+            BoxStage::Height { .. } => {
+                Ok(Shape::box_from_corners(dvec3(-0.5, -0.5, 0.0), dvec3(0.5, 0.5, 1.0)))
+            }
         }
     }
 
-    /// Grips only once the box is placed — until then the cursor is still
-    /// defining it, and a grip would be something to fight with.
-    fn handles(&self) -> Vec<Handle> {
-        match &self.phase {
-            Phase::Tweak(edit) => edit.handles(),
-            _ => Vec::new(),
+    /// Scales the unit box to these dimensions. Every scale component stays
+    /// non-negative — a negative one would make the baked GTransform a
+    /// reflection, flipping the box's face normals inward.
+    fn preview_transform(&self) -> Transform {
+        let (offset, _, _) = self.local_rect();
+        Transform {
+            position: self.base + offset,
+            rotation: self.plane.rotation(),
+            scale: Vector3::new(self.width, self.depth, self.height),
         }
     }
 
-    fn on_handle(&mut self, event: &HandleEvent) {
-        let Phase::Tweak(edit) = &mut self.phase else { return };
-        if edit.on_handle(event) {
-            self.preview.set_preview_transform(edit.params().preview_transform());
-        }
-    }
-
-    fn panel_title(&self) -> Option<&str> {
-        matches!(self.phase, Phase::Tweak(_)).then_some(BoxParams::NAME)
-    }
-
-    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let Phase::Tweak(edit) = &mut self.phase else { return };
-        let action = edit.panel(ui);
-        let transform = edit.params().preview_transform();
-        match action {
-            PanelAction::Changed => self.preview.set_preview_transform(transform),
-            PanelAction::Apply => self.apply_and_report(),
-            PanelAction::Cancel => self.cancel(),
-            PanelAction::None => {}
-        }
+    /// World-space box with analytic planar faces: the footprint rectangle on
+    /// the plane, extruded along its normal.
+    fn build(&self) -> Result<Shape> {
+        prism(&self.footprint_corners(), self.plane.normal * self.height)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::edit::MIN_DIMENSION;
 
-    /// A plane aligned with no world axis, so a mistaken basis shows up.
-    fn skewed_plane(origin: Point3) -> Plane {
-        Plane::from_point(Vector3::new(1.0, 2.0, 3.0).normalize(), origin)
+    use duck_engine_common::InnerSpace;
+
+    use crate::testing::skewed_plane;
+    use super::super::primitive::pointer_at;
+
+    const EPSILON: Real = 1e-6;
+
+    /// A drag of `offset` on the grip `id`, as the handle machinery reports it.
+    fn drag(id: HandleId, offset: Vector3) -> HandleDrag {
+        crate::testing::drag(id, Point3::new(0.0, 0.0, 0.0), offset)
     }
 
     #[test]
-    fn from_pick_flips_negative_height_about_the_base() {
+    fn the_footprint_corner_leads_to_the_height_stage() {
+        let stage = BoxStage::Footprint { base: Point3::new(0.0, 0.0, 0.0), plane: Plane::xz() };
+        let track = BoxParams::track(stage, &pointer_at(Point3::new(1.5, 0.0, 2.0)));
+        let Some(Next::Stage(BoxStage::Height { width, depth, .. })) = track.click else {
+            panic!("the corner sizes the footprint");
+        };
+        assert!((width - 3.0).abs() < EPSILON);
+        assert!((depth - 4.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn a_footprint_needs_a_snapped_corner_off_its_axes() {
+        let stage = BoxStage::Footprint { base: Point3::new(0.0, 0.0, 0.0), plane: Plane::xz() };
+        let on_an_axis = BoxParams::track(stage, &pointer_at(Point3::new(1.0, 0.0, 0.0)));
+        assert!(on_an_axis.click.is_none());
+        assert!(on_an_axis.preview.is_none());
+
+        let unsnapped = Pointer { snap: None, ..pointer_at(Point3::new(1.0, 0.0, 1.0)) };
+        assert!(BoxParams::track(stage, &unsnapped).click.is_none());
+    }
+
+    #[test]
+    fn a_flat_height_cannot_be_clicked() {
+        let base = Point3::new(1.0, 2.0, 3.0);
+        let stage = BoxStage::Height { base, plane: Plane::xz(), width: 4.0, depth: 5.0 };
+        let track = BoxParams::track(stage, &pointer_at(base));
+        assert!(track.click.is_none());
+        assert!(track.preview.is_none());
+    }
+
+    #[test]
+    fn a_downward_height_flips_the_plane_about_the_base() {
         let base = Point3::new(1.0, 2.0, 3.0);
         let plane = Plane::xz();
-        let params = BoxParams::from_pick(base, 4.0, 5.0, -6.0, plane);
-        // The picked point stays the base; the normal flips instead (XZ normal is +Y).
+        let stage = BoxStage::Height { base, plane, width: 4.0, depth: 5.0 };
+        let track = BoxParams::track(stage, &pointer_at(base - plane.normal * 6.0));
+        let Some(Next::Placed(params)) = track.click else { panic!("the height places the box") };
+
+        // The picked point stays the base; the normal flips instead.
         assert!((params.base - base).magnitude() < EPSILON);
         assert!((params.height - 6.0).abs() < EPSILON);
         assert!((params.plane.normal + plane.normal).magnitude() < EPSILON);
@@ -572,12 +283,6 @@ mod tests {
             assert!((a - b).magnitude() < EPSILON);
         }
         assert!((params.preview_transform().position - base).magnitude() < EPSILON);
-    }
-
-    /// A drag of `offset` on the grip `id`, as the handle machinery reports it.
-    fn drag(id: HandleId, offset: Vector3) -> HandleDrag {
-        let grab = Point3::new(0.0, 0.0, 0.0);
-        HandleDrag { id, grab, point: grab + offset, modifiers: Modifiers::default() }
     }
 
     #[test]

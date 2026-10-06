@@ -1,252 +1,79 @@
-use duck_engine_common::{InnerSpace, Plane, Point3, Real, Vector3};
-use duck_engine_scene::resource::Visibility;
-use duck_engine_viewer::{
-    bindings::{InputBinding, InputMap},
-    common::Transform,
-    event::{DeviceEvent, Event, EventContext},
-    input::{Modifiers, MouseButton},
-};
-use log::warn;
-use opencascade::primitives::{Face, Shape, Wire};
+use anyhow::Result;
+use duck_engine_common::{Plane, Point3, Real, Transform};
+use opencascade::primitives::Shape;
 
 use crate::ops::primitives::{closed_polyline, rectangle_corners, region};
-use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, ToolInfo, Workspace};
+use crate::snap::Snap;
+use crate::tools::ToolInfo;
 use crate::ui::icons;
+use super::edit::{dimension_field, Params};
+use super::primitive::{
+    flat, footprint, seat, unit_square, Next, Pointer, Primitive, PrimitiveTool, Track,
+};
 
-/// A dimension at or below this is degenerate: the preview is hidden and the pick
-/// can't be committed.
-const EPSILON: Real = 1e-6;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum RectangleAction {
-    Place,
-    Cancel,
+/// The size of a placed rectangle, about its centre.
+#[derive(Clone, Copy)]
+pub struct RectangleParams {
+    center: Point3,
+    plane: Plane,
+    width: Real,
+    depth: Real,
 }
 
-enum Phase {
-    Idle,
-    /// Center placed; the cursor drives the footprint. Preview is a flat rectangle face.
-    /// `plane` is the placement plane through the center.
-    Defining { center: Point3, plane: Plane },
+/// Placement of a rectangle: the centre picked, and the pointer sizing it
+/// about that.
+#[derive(Clone, Copy, Debug)]
+pub struct RectangleStage {
+    center: Point3,
+    plane: Plane,
 }
 
-pub struct RectangleTool {
-    phase: Phase,
-    workspace: Workspace,
-    preview: PreviewSession,
-    bindings: InputMap<RectangleAction>,
-    cursor_target: Option<Point3>,
-}
-
-impl RectangleTool {
-    pub fn new(workspace: &Workspace) -> Self {
-        let bindings = InputMap::new()
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
-                RectangleAction::Place,
-            )
-            .bind(
-                InputBinding::MouseClick { button: MouseButton::Right, modifiers: Modifiers::default() },
-                RectangleAction::Cancel,
-            );
-        let preview = workspace.preview_session();
-        Self {
-            phase: Phase::Idle,
-            workspace: workspace.clone(),
-            preview,
-            bindings,
-            cursor_target: None,
-        }
-    }
-
-    /// Lays the unit reference face (local XY, normal +Z) flat on `plane`, scaled to
-    /// the footprint. [`Plane::rotation`] maps the local +Z axis to the plane normal.
-    fn footprint_transform(center: Point3, width: Real, depth: Real, plane: &Plane) -> Transform {
-        Transform {
-            position: center,
-            rotation: plane.rotation(),
-            scale: Vector3::new(width, depth, 1.0),
-        }
-    }
-
-    /// In-plane extents from the center→corner vector, as full (width, depth).
-    fn footprint_dims(center: Point3, corner: Point3, plane: &Plane) -> (Real, Real) {
-        let (u, v) = plane.basis();
-        let d = corner - center;
-        let width = 2.0 * d.dot(u).abs();
-        let depth = 2.0 * d.dot(v).abs();
-        (width, depth)
-    }
-
-    /// A footprint is valid once both in-plane dimensions are non-degenerate.
-    fn footprint_valid(width: Real, depth: Real) -> bool {
-        width > EPSILON && depth > EPSILON
-    }
-
-    /// Unit reference rectangle face (local XY, normal +Z), oriented onto the
-    /// construction plane via the preview transform.
-    fn reference_face() -> Option<Shape> {
-        let wire = Wire::rect(1.0, 1.0)
-            .map_err(|e| warn!("Failed to build rectangle wire: {e}"))
-            .ok()?;
-        Face::from_wire(&wire)
-            .map(Into::into)
-            .map_err(|e| warn!("Failed to build rectangle face: {e}"))
-            .ok()
-    }
-
-    /// World-space rectangle face with an analytic planar surface.
-    fn analytic_face(center: Point3, width: Real, depth: Real, plane: &Plane) -> anyhow::Result<Shape> {
-        Ok(region(closed_polyline(&rectangle_corners(center, plane, width, depth))?))
-    }
-
-    fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
-        let cplane = self.workspace.construction.borrow().construction_plane;
-        let Some(snap) = self.workspace.snap(position, &[], ctx)
-        else {
-            return false;
-        };
-        let center = snap.position;
-        // Seat the rectangle on the snapped geometry when the snap carries a
-        // direction. Otherwise use the  construction plane.
-        let plane = Plane::from_point(snap.direction.unwrap_or(cplane.normal), center);
-
-        let Some(preview_shape) = Self::reference_face() else {
-            return false;
-        };
-
-        // A single unit face, scaled each move; preview detail is irrelevant for a flat quad.
-        let options = self.workspace.geometry_options();
-        if self.preview.add_preview_from_shape(&preview_shape, &options, "rectangle preview").is_none() {
-            return false;
-        }
-        // Hidden until the cursor defines a non-degenerate footprint.
-        self.preview.set_preview_visibility(Visibility::Invisible);
-        self.phase = Phase::Defining { center, plane };
-        true
-    }
-
-    fn on_place_corner(
-        &mut self,
-        center: Point3,
-        plane: Plane,
-        position: (f32, f32),
-        ctx: &mut EventContext
-    ) -> bool {
-        // Exclude the preview so the footprint can snap through it.
-        let Some(corner) = self.workspace.snap(position, self.preview.preview_nodes(), ctx)
-            .map(|s| s.position)
-        else {
-            return false;
-        };
-        let (width, depth) = Self::footprint_dims(center, corner, &plane);
-        // A degenerate footprint can't be committed; stay in the footprint stage.
-        if !Self::footprint_valid(width, depth) {
-            return false;
-        }
-
-        // Build the face analytically in world space
-        let world_shape = match Self::analytic_face(center, width, depth, &plane) {
-            Ok(shape) => shape,
-            Err(e) => {
-                self.workspace.notifications.failure("Rectangle", &e);
-                return false;
-            }
-        };
-
-        // Discard the preview, then commit the world-space shape as a registered part.
-        let _ = self.preview.commit();
-        self.phase = Phase::Idle;
-        match self.workspace.add_numbered_part("Rectangle", world_shape) {
-            Ok(_) => true,
-            Err(e) => {
-                self.workspace.notifications.failure("Rectangle", &e);
-                false
-            }
-        }
-    }
-
-    pub fn cancel(&mut self) {
-        self.preview.cancel();
-        self.phase = Phase::Idle;
-    }
-
-    fn on_cursor_moved(&mut self, position: (f64, f64), ctx: &mut EventContext) {
-        let cursor = (position.0 as f32, position.1 as f32);
-
-        // While defining, exclude our own preview so snapping doesn't lock onto it.
-        let snap = self.workspace.snap(cursor, self.preview.preview_nodes(), ctx);
-
-        self.cursor_target = snap.map(|s| s.position);
-
-        if let Phase::Defining { center, plane } = self.phase {
-            let dims = snap.map(|s| Self::footprint_dims(center, s.position, &plane));
-            if let Some(preview_node) = self.preview.preview_node() {
-                let mut scene = ctx.scene.lock();
-                match dims {
-                    Some((width, depth)) if Self::footprint_valid(width, depth) => {
-                        scene.set_node_visibility(preview_node, Visibility::Visible);
-                        scene.set_node_transform(
-                            preview_node,
-                            Self::footprint_transform(center, width, depth, &plane),
-                        );
-                    }
-                    // No snap, or a degenerate footprint: nothing to draw.
-                    _ => scene.set_node_visibility(preview_node, Visibility::Invisible),
-                }
-            }
-        }
+impl Params for RectangleParams {
+    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = dimension_field(ui, "Width", &mut self.width);
+        changed |= dimension_field(ui, "Length", &mut self.depth);
+        changed
     }
 }
 
-impl ModelingTool for RectangleTool {
-    fn info(&self) -> ToolInfo {
-        ToolInfo { id: "rectangle", icon: icons::RECTANGLE, shortcut: None }
+/// Places a flat rectangle: its centre, then a corner.
+pub type RectangleTool = PrimitiveTool<RectangleParams>;
+
+impl Primitive for RectangleParams {
+    type Stage = RectangleStage;
+
+    const TOOL: ToolInfo = ToolInfo { id: "rectangle", icon: icons::RECTANGLE, shortcut: None };
+    const NAME: &'static str = "Rectangle";
+
+    fn start(first: &Snap, construction: &Plane) -> RectangleStage {
+        RectangleStage { center: first.position, plane: seat(first, construction) }
     }
 
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::MouseClick { button, position, .. } => {
-                let actions = self.bindings.actions_for_click(*button, ctx.modifiers).to_vec();
-                let mut handled = false;
-                for action in actions {
-                    handled |= match action {
-                        RectangleAction::Place => match self.phase {
-                            Phase::Idle => self.on_place_center(*position, ctx),
-                            Phase::Defining { center, plane } => {
-                                self.on_place_corner(center, plane, *position, ctx)
-                            }
-                        },
-                        RectangleAction::Cancel => {
-                            let was_defining = matches!(self.phase, Phase::Defining { .. });
-                            if was_defining {
-                                self.cancel();
-                            }
-                            was_defining
-                        }
-                    };
-                }
-                handled
-            }
-            DeviceEvent::CursorMoved { position } => {
-                self.on_cursor_moved(*position, ctx);
-                false
-            }
-            _ => false,
+    fn track(stage: RectangleStage, pointer: &Pointer) -> Track<Self> {
+        let RectangleStage { center, plane } = stage;
+        let corner = pointer.snap.map(|snap| snap.position);
+        let placed = corner
+            .and_then(|corner| footprint(center, corner, &plane))
+            .map(|(width, depth)| RectangleParams { center, plane, width, depth });
+        Track {
+            cursor: corner,
+            preview: placed.map(|params| params.preview_transform()),
+            click: placed.map(Next::Placed),
         }
     }
 
-    fn deactivate(&mut self) {
-        self.cancel();
-        // The modeler hides the cursor for the (now inactive) tool, but clear our
-        // target so a stale point can't flash if we're reactivated before a move.
-        self.cursor_target = None;
+    fn reference(_stage: RectangleStage) -> Result<Shape> {
+        unit_square()
     }
 
-    fn cursor_target(&self) -> Option<Point3> {
-        self.cursor_target
+    fn preview_transform(&self) -> Transform {
+        flat(self.center, &self.plane, self.width, self.depth)
+    }
+
+    /// World-space face with an analytic planar surface.
+    fn build(&self) -> Result<Shape> {
+        let corners = rectangle_corners(self.center, &self.plane, self.width, self.depth);
+        Ok(region(closed_polyline(&corners)?))
     }
 }
 
@@ -254,28 +81,26 @@ impl ModelingTool for RectangleTool {
 mod tests {
     use super::*;
 
+    use super::super::primitive::pointer_at;
+
+    const EPSILON: Real = 1e-6;
+
     #[test]
-    fn reference_face_builds() {
-        assert!(RectangleTool::reference_face().is_some());
+    fn a_corner_places_the_rectangle_about_its_centre() {
+        let stage = RectangleStage { center: Point3::new(0.0, 0.0, 0.0), plane: Plane::xz() };
+        let track = RectangleParams::track(stage, &pointer_at(Point3::new(1.5, 0.0, 2.0)));
+        let Some(Next::Placed(params)) = track.click else {
+            panic!("the corner places the rectangle");
+        };
+        assert!((params.width - 3.0).abs() < EPSILON);
+        assert!((params.depth - 4.0).abs() < EPSILON);
     }
 
     #[test]
-    fn footprint_dims_doubles_half_extents() {
-        // xz plane: normal +Y, in-plane basis (u=+X, v=+Z).
-        let plane = Plane::xz();
-        let center = Point3::new(0.0, 0.0, 0.0);
-        let corner = Point3::new(1.5, 0.0, 2.0);
-        let (width, depth) = RectangleTool::footprint_dims(center, corner, &plane);
-        assert!(RectangleTool::footprint_valid(width, depth));
-        assert!((width - 3.0).abs() < EPSILON);
-        assert!((depth - 4.0).abs() < EPSILON);
-    }
-
-    #[test]
-    fn footprint_invalid_when_corner_on_center() {
-        let plane = Plane::xz();
-        let center = Point3::new(0.0, 0.0, 0.0);
-        let (width, depth) = RectangleTool::footprint_dims(center, center, &plane);
-        assert!(!RectangleTool::footprint_valid(width, depth));
+    fn a_corner_on_an_axis_cannot_be_clicked() {
+        let stage = RectangleStage { center: Point3::new(0.0, 0.0, 0.0), plane: Plane::xz() };
+        let track = RectangleParams::track(stage, &pointer_at(Point3::new(1.0, 0.0, 0.0)));
+        assert!(track.click.is_none());
+        assert!(track.preview.is_none());
     }
 }
