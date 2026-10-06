@@ -40,8 +40,8 @@ pub enum EditLock {
 pub enum PreviewStyle {
     /// In place of the target's part, which applying reshapes where it stands.
     InPlace,
-    /// Beside the target's part, hiding it if `hide_source`; applying consumes
-    /// whatever was hidden.
+    /// Beside the target's part, hidden if `hide_source`. Applying consumes a
+    /// hidden part and leaves a shown one standing.
     Alongside { hide_source: bool },
 }
 
@@ -298,15 +298,15 @@ impl<O: TargetedOp> TargetedTool<O> {
             return;
         }
         self.error = None;
+        // Clicks reach the part the preview hides or covers, whose sub-shapes
+        // shift-clicks toggle.
+        self.preview.set_preview_flags(NodeFlags::DO_NOT_SELECT);
         match style {
-            PreviewStyle::InPlace => {
+            PreviewStyle::InPlace | PreviewStyle::Alongside { hide_source: true } => {
                 self.preview.hide_source_node(node);
-                // Clicks reach the hidden part beneath, whose sub-shapes
-                // shift-clicks toggle.
-                self.preview.set_preview_flags(NodeFlags::DO_NOT_SELECT);
             }
-            PreviewStyle::Alongside { hide_source: true } => self.preview.hide_source_node(node),
-            PreviewStyle::Alongside { hide_source: false } => {}
+            // A build in an earlier style may have hidden it.
+            PreviewStyle::Alongside { hide_source: false } => self.preview.show_sources(),
         }
     }
 
@@ -325,12 +325,14 @@ impl<O: TargetedOp> TargetedTool<O> {
         )?;
 
         match style {
-            // The part the preview hid was reshaped where it stands: it comes
-            // back rather than being handed over for deletion.
-            PreviewStyle::InPlace => self.preview.cancel(),
-            // Anything the preview hid was consumed by the result.
-            PreviewStyle::Alongside { .. } => {
+            // The hidden part was consumed by the result.
+            PreviewStyle::Alongside { hide_source: true } => {
                 let _ = self.preview.commit();
+            }
+            // The part stands, reshaped where it is or untouched beside the
+            // result: it comes back, even if a build in an earlier style hid it.
+            PreviewStyle::InPlace | PreviewStyle::Alongside { hide_source: false } => {
+                self.preview.cancel();
             }
         }
         // The selected sub-shapes were renumbered or removed.
@@ -543,6 +545,26 @@ pub fn selected_on_part(
     ((!on_part.is_empty()).then_some((node, on_part)), ignored)
 }
 
+/// The selected faces on one part, as [`selected_on_part`] picks them, or with
+/// none, that part whole — no faces — if its node is selected; and how many
+/// selected items on other parts are left out.
+pub fn selected_faces_or_part(
+    selection: &SelectionManager,
+    locked: Option<NodeId>,
+) -> (Option<(NodeId, Vec<u32>)>, usize) {
+    let target = match selected_on_part(selection, SubGeometryKind::Face, locked) {
+        (Some(faces), _) => Some(faces),
+        (None, _) => locked
+            .or_else(|| selection.primary().map(|item| item.node_id()))
+            .filter(|&node| selection.contains(&SelectionItem::Node(node)))
+            .map(|node| (node, Vec::new())),
+    };
+    let ignored = target.as_ref().map_or(0, |(node, _)| {
+        selection.iter().filter(|item| item.node_id() != *node).count()
+    });
+    (target, ignored)
+}
+
 /// "3 edges", noting any on other parts that are left out.
 pub fn count_summary(noun: &str, count: usize, ignored: usize) -> String {
     let counted = match count {
@@ -552,5 +574,62 @@ pub fn count_summary(noun: &str, count: usize, ignored: usize) -> String {
     match ignored {
         0 => counted,
         ignored => format!("{counted} ({ignored} on other parts ignored)"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duck_engine_scene::resource::SubGeometryElement;
+
+    fn face(node: NodeId, index: u32) -> SelectionItem {
+        SelectionItem::SubGeometry { node_id: node, element: SubGeometryElement::new(SubGeometryKind::Face, index) }
+    }
+
+    fn select(items: &[SelectionItem]) -> SelectionManager {
+        let mut selection = SelectionManager::new();
+        selection.extend(items.iter().copied());
+        selection
+    }
+
+    #[test]
+    fn faces_on_one_part_are_its_target() {
+        let (part, other) = (NodeId::new(), NodeId::new());
+        let selection = select(&[face(part, 2), face(part, 0), face(other, 1)]);
+        assert_eq!(selected_faces_or_part(&selection, None), (Some((part, vec![2, 0])), 1));
+    }
+
+    #[test]
+    fn a_part_selected_whole_is_its_target_with_no_faces() {
+        let (part, other) = (NodeId::new(), NodeId::new());
+        let selection = select(&[SelectionItem::Node(part), SelectionItem::Node(other)]);
+        assert_eq!(selected_faces_or_part(&selection, None), (Some((part, vec![])), 1));
+    }
+
+    /// Faces picked on a part selected whole say which of its faces to use.
+    #[test]
+    fn faces_win_over_their_own_part() {
+        let part = NodeId::new();
+        let selection = select(&[SelectionItem::Node(part), face(part, 3)]);
+        assert_eq!(selected_faces_or_part(&selection, None), (Some((part, vec![3])), 0));
+    }
+
+    /// Faces on one part outrank another part selected whole first, which is
+    /// left out.
+    #[test]
+    fn faces_outrank_another_part_selected_whole() {
+        let (part, other) = (NodeId::new(), NodeId::new());
+        let selection = select(&[SelectionItem::Node(other), face(part, 1)]);
+        assert_eq!(selected_faces_or_part(&selection, None), (Some((part, vec![1])), 1));
+    }
+
+    #[test]
+    fn a_locked_part_must_itself_be_selected() {
+        let (part, other) = (NodeId::new(), NodeId::new());
+        let selection = select(&[SelectionItem::Node(other)]);
+        assert_eq!(selected_faces_or_part(&selection, Some(part)), (None, 0));
+
+        let selection = select(&[SelectionItem::Node(other), SelectionItem::Node(part)]);
+        assert_eq!(selected_faces_or_part(&selection, Some(part)), (Some((part, vec![])), 1));
     }
 }

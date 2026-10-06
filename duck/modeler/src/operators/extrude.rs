@@ -10,10 +10,8 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
-use crate::document::Document;
-use crate::extrude::{
-    build_extrusion, execute_extrude, ExtrudeFrame, ExtrudeParams, ExtrudeTarget, SourceFate,
-};
+use crate::document::{Document, SourceFate};
+use crate::extrude::{build_extrusion, execute_extrude, ExtrudeFrame, ExtrudeParams, ExtrudeTarget};
 use crate::tool::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{EditLock, PreviewStyle, TargetedOp, TargetedTool};
@@ -249,7 +247,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::resource::SubGeometryElement;
+    use duck_engine_scene::resource::{NodeFlags, SubGeometryElement, Visibility};
     use duck_engine_scene::Scene;
     use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
@@ -509,6 +507,54 @@ mod tests {
         assert!((op.phase.params().expect("editing").distance - 2.0).abs() < EPSILON);
         assert!(op.error.is_none(), "{:?}", op.error);
         assert_eq!(op.preview.preview_nodes().len(), 1);
+    }
+
+    /// Drags the arrow of an operator targeting face 0 out to `distance` and
+    /// rebuilds the preview.
+    fn drag_out(op: &mut ExtrudeOperator, distance: Real) {
+        let (tip, direction) = {
+            let params = op.phase.params().expect("targeted");
+            (params.tip(), params.direction)
+        };
+        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
+        op.on_handle(&HandleEvent::Drag(drag(DISTANCE_HANDLE, tip, direction * distance)));
+        op.on_handle(&HandleEvent::End(DISTANCE_HANDLE));
+        op.refresh_preview();
+    }
+
+    /// Clicks pass through the preview to the parts beneath it.
+    #[test]
+    fn the_preview_is_not_selectable() {
+        let (document, node) = document_with_box();
+        let mut op = operator(&document);
+        let mut selection = SelectionManager::new();
+        select_face(&mut selection, node, 0);
+        op.follow_selection(&selection);
+        drag_out(&mut op, 1.0);
+
+        let [preview] = <[NodeId; 1]>::try_from(op.preview.preview_nodes()).expect("one preview");
+        let scene = document.lock().unwrap().scene().clone();
+        let flags = scene.lock().get_node(preview).expect("preview exists").flags();
+        assert!(flags.contains(NodeFlags::DO_NOT_SELECT));
+    }
+
+    /// A pad fuses into its part where it stands, keeping the part's node.
+    #[test]
+    fn applying_a_pad_reshapes_its_part_in_place() {
+        let (document, node) = document_with_box();
+        let mut op = operator(&document);
+        let mut selection = SelectionManager::new();
+        select_face(&mut selection, node, 0);
+        op.follow_selection(&selection);
+        drag_out(&mut op, 1.0);
+
+        op.apply(&mut selection).expect("the pad applies");
+        let doc = document.lock().unwrap();
+        assert_eq!(doc.parts().count(), 1);
+        let part = doc.part_for_node(node).expect("the part keeps its node");
+        assert!((doc.get_part(part).unwrap().shape.volume() - 12.0).abs() < 1e-6);
+        let scene = doc.scene().clone();
+        assert_eq!(scene.lock().get_node(node).expect("node exists").visibility(), Visibility::Visible);
     }
 
     /// An extrusion has one target, so once editing there is nothing for a

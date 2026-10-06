@@ -3,11 +3,10 @@ use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::common::{EuclideanSpace, InnerSpace, Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
 use opencascade::history::ShapeHistory;
-use opencascade::primitives::{Face, JoinType, Shape, ShapeType};
+use opencascade::primitives::{Face, JoinType, Shape};
 
 use crate::document::{
-    dvec3_to_point3, dvec3_to_vec3, interactive_fuzz, unify_same_domain, unwrap_single_solid,
-    vec3_to_dvec3, Document,
+    dvec3_to_point3, dvec3_to_vec3, has_solid, vec3_to_dvec3, Document, SourceFate,
 };
 
 /// A distance at or below this is degenerate: there is nothing to extrude.
@@ -36,17 +35,6 @@ impl ExtrudeTarget {
             ExtrudeTarget::Face { node, .. } | ExtrudeTarget::Edge { node, .. } => node,
         }
     }
-}
-
-/// What an extrusion does with the part its profile belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SourceFate {
-    /// A face of a solid: the result fuses into the solid and replaces it.
-    Fuse,
-    /// A bare sketch region or wire: the result replaces it outright.
-    Replace,
-    /// An edge of a solid: the result is a new part beside it.
-    Keep,
 }
 
 /// Where an extrusion grows from, resolved once from its target.
@@ -221,7 +209,7 @@ pub fn build_extrusion(doc: &Document, params: &ExtrudeParams) -> Result<Shape> 
             }
             if params.has_thickness() {
                 wall = wall
-                    .thicken(f64::from(params.thickness))
+                    .thicken(f64::from(params.thickness), JoinType::Intersection)
                     .context("Wall thickness failed")?;
             }
             Ok(wall)
@@ -245,8 +233,8 @@ fn draft(shape: &Shape, sides: &[Face], params: &ExtrudeParams) -> Result<(Shape
         .context("Draft angle not supported for this profile")
 }
 
-/// Apply the extrusion: build it, combine it with its source as the frame's
-/// [`SourceFate`] says, and commit the result as one undo step.
+/// Apply the extrusion: build it and commit it with its source as the frame's
+/// [`SourceFate`] says, as one undo step.
 pub fn execute_extrude(
     doc: &mut Document,
     params: &ExtrudeParams,
@@ -256,61 +244,8 @@ pub fn execute_extrude(
     let source = doc
         .part_for_node(params.frame.target.node())
         .context("Extrude target is not a known CAD part")?;
-    let fate = params.frame.fate;
-
-    let shape = match fate {
-        SourceFate::Fuse => {
-            // Fuse a deep copy: the OCCT boolean may mutate its inputs, and the
-            // source must survive unchanged if the fuse or the tessellation
-            // below fails.
-            let body = doc.get_part(source).context("Source part not found")?.shape.deep_copy();
-            let fuzz = interactive_fuzz([&body, &extrusion].into_iter());
-            let fused = body
-                .union_with_fuzz(&extrusion, fuzz)
-                .context("Failed to fuse the extrusion into its source")?;
-            if let Some(warnings) = &fused.warnings {
-                log::warn!("Extrude fuse completed with warnings:\n{warnings}");
-            }
-            // The fuse wraps its result in a compound and can split a periodic face
-            // at its seam; unwrap a lone solid, then merge the halves back.
-            unify_same_domain(unwrap_single_solid(fused.shape))
-        }
-        SourceFate::Replace | SourceFate::Keep => extrusion,
-    };
-    let replaces_source = fate != SourceFate::Keep;
-
-    // A result that supersedes its source inherits its name; one that stands
-    // alongside an untouched source is a new part.
-    let inherited = replaces_source
-        .then(|| doc.get_part(source).map(|part| part.name.clone()))
-        .flatten();
-
-    // One undo step covers the added extrusion and the superseded source.
-    let mut doc = doc.undo_scope("Extrude");
-
-    // Tessellates atomically — if this fails, nothing is changed.
-    match inherited {
-        Some(name) => doc.add_part(name, shape, options),
-        None => doc.add_numbered_part("Extrusion", shape, options),
-    }
-    .context("Failed to tessellate extrusion")?;
-    if replaces_source {
-        doc.remove_part(source);
-    }
-    Ok(())
+    doc.commit_result(source, extrusion, params.frame.fate, "Extrude", "Extrusion", options)
 }
-
-/// Whether `shape` is (or contains) a solid body, as opposed to a bare
-/// region/sketch (face, shell, wire, edge, vertex).
-fn has_solid(shape: &Shape) -> bool {
-    !matches!(
-        shape.shape_type(),
-        ShapeType::Face | ShapeType::Shell | ShapeType::Wire | ShapeType::Edge | ShapeType::Vertex
-    )
-}
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -318,7 +253,7 @@ mod tests {
 
     use duck_engine_scene::common::consts;
     use duck_engine_scene::Scene;
-    use opencascade::primitives::{Edge, Wire};
+    use opencascade::primitives::{Edge, ShapeType, Wire};
 
     use crate::document::PartKind;
 

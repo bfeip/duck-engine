@@ -192,6 +192,13 @@ impl PreviewSession {
         self.hidden.push(node);
     }
 
+    /// Restore every hidden source, keeping the previews.
+    pub fn show_sources(&mut self) {
+        let scene = self.scene();
+        let mut scene = scene.lock();
+        Self::restore_hidden(&mut scene, &mut self.hidden);
+    }
+
     /// Hide `node` as [`hide_source_node`](Self::hide_source_node) does, and
     /// track a preview in its place drawing the same mesh with `face` and
     /// `line`. The preview is not selectable, so picks reach the source beneath

@@ -7,11 +7,13 @@ mod draft;
 mod duplicate;
 mod extrude;
 mod fillet;
+mod hollow;
 mod line;
 mod loft;
 mod rectangle;
 mod sphere;
 mod targeted;
+mod thicken;
 mod transform;
 mod tweak;
 
@@ -24,10 +26,12 @@ pub use draft::DraftOperator;
 pub use duplicate::DuplicateTool;
 pub use extrude::ExtrudeOperator;
 pub use fillet::FilletOperator;
+pub use hollow::HollowOperator;
 pub use line::LineOperator;
 pub use loft::LoftOperator;
 pub use rectangle::RectangleOperator;
 pub use sphere::SphereOperator;
+pub use thicken::ThickenOperator;
 pub use transform::TransformTool;
 
 use duck_engine_common::{Plane, RgbaColor};

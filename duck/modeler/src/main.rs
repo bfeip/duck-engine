@@ -8,6 +8,7 @@ mod extrude;
 mod fillet;
 mod grid;
 mod history;
+mod hollow;
 #[cfg(not(target_arch = "wasm32"))]
 mod io;
 mod loft;
@@ -16,6 +17,7 @@ mod operators;
 mod platform;
 mod preview;
 mod snap;
+mod thicken;
 mod tool;
 mod tool_manager;
 mod ui;
@@ -38,8 +40,8 @@ use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
 use crate::operators::{
     BooleanOperator, BoxOperator, CircleOperator, ConstructionOptions, CurveOperator,
-    CylinderOperator, DraftOperator, DuplicateTool, ExtrudeOperator, FilletOperator, LineOperator,
-    LoftOperator, RectangleOperator, SphereOperator, TransformTool,
+    CylinderOperator, DraftOperator, DuplicateTool, ExtrudeOperator, FilletOperator, HollowOperator,
+    LineOperator, LoftOperator, RectangleOperator, SphereOperator, ThickenOperator, TransformTool,
 };
 use crate::delete::DeleteOperator;
 use crate::notifications::Notifications;
@@ -165,6 +167,8 @@ impl ViewerState<'static> {
         tools.register(ExtrudeOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(FilletOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(DraftOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(ThickenOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
+        tools.register(HollowOperator::new(Rc::clone(&construction_options), Arc::clone(&document), notifications.clone()));
         tools.register(LoftOperator::new(Rc::clone(&construction_options), Arc::clone(&document)));
 
         Self {

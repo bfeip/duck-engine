@@ -41,6 +41,23 @@ impl PartKind {
     }
 }
 
+/// What a result grown from a part does with that part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceFate {
+    /// The result fuses into its source, which is reshaped in place.
+    Fuse,
+    /// The result replaces its source outright, under its name.
+    Replace,
+    /// The result is a new part beside its untouched source.
+    Keep,
+}
+
+/// Whether `shape` is or contains a solid body, as opposed to bare sheets,
+/// wires and points.
+pub fn has_solid(shape: &Shape) -> bool {
+    shape.contains_type(ShapeType::Solid)
+}
+
 /// Merges faces and edges left split across a shared surface or curve — chiefly
 /// the two halves a boolean leaves when it divides a periodic face at its seam,
 /// which would otherwise be separate geometry.
@@ -74,6 +91,22 @@ pub fn unwrap_single_solid(shape: Shape) -> Shape {
         (Some(only), None) if only.shape_type() == ShapeType::Solid => only,
         _ => shape,
     }
+}
+
+/// `addition` fused into `body`: a lone solid, with any seams the fuse split
+/// merged back.
+fn fuse(body: &Shape, addition: &Shape) -> Result<Shape> {
+    // An OCCT boolean may mutate its inputs, which must survive a failed fuse
+    // unchanged.
+    let (body, addition) = (body.deep_copy(), addition.deep_copy());
+    let fuzz = interactive_fuzz([&body, &addition].into_iter());
+    let fused = body.union_with_fuzz(&addition, fuzz)?;
+    if let Some(warnings) = &fused.warnings {
+        log::warn!("Fuse completed with warnings:\n{warnings}");
+    }
+    // The fuse wraps its result in a compound and can split a periodic face at
+    // its seam; unwrap a lone solid, then merge the halves back.
+    Ok(unify_same_domain(unwrap_single_solid(fused.shape)))
 }
 
 /// `shape` moved by `placement`. A similarity keeps surfaces analytic (planes
@@ -394,6 +427,43 @@ impl Document {
         self.reshape(part, &shape, &options)?;
         self.history.record(label, Delta::Reshaped { part, before, after: shape, options });
         Ok(())
+    }
+
+    /// Commits `result`, grown from part `source`, as `fate` says, as one undo
+    /// step labelled `label`. A new part is named in `base`'s series and
+    /// tessellated with `options`; a fused source keeps its own.
+    pub fn commit_result(
+        &mut self,
+        source: PartId,
+        result: Shape,
+        fate: SourceFate,
+        label: &str,
+        base: &str,
+        options: &CadTessellationOptions,
+    ) -> Result<()> {
+        let source_part = self.get_part(source).context("Source part not found")?;
+        match fate {
+            SourceFate::Fuse => {
+                let fused = fuse(&source_part.shape, &result)
+                    .context("Failed to fuse into the source part")?;
+                self.reshape_part(source, fused, label)
+            }
+            // A new part rather than a reshape: a sheet's node carries sketch
+            // materials, which retessellating in place would keep.
+            SourceFate::Replace => {
+                let name = source_part.name.clone();
+                let mut doc = self.undo_scope(label);
+                // Tessellates atomically — if this fails, nothing is changed.
+                doc.add_part(name, result, options).context("Failed to tessellate the result")?;
+                doc.remove_part(source);
+                Ok(())
+            }
+            SourceFate::Keep => {
+                let mut doc = self.undo_scope(label);
+                doc.add_numbered_part(base, result, options).context("Failed to tessellate the result")?;
+                Ok(())
+            }
+        }
     }
 
     /// Groups every mutation made through the returned guard into one undo step.
@@ -932,6 +1002,95 @@ mod tests {
 
         doc.redo().expect("redo reshape");
         assert!((max_y(&doc, part) - 3.0).abs() < 1e-6, "captured result replayed");
+    }
+
+    /// A 2×1×2 pad standing on the 2-cube's top face.
+    fn pad() -> Shape {
+        Shape::box_from_corners(DVec3::new(0.0, 2.0, 0.0), DVec3::new(2.0, 3.0, 2.0))
+    }
+
+    /// A unit-square sketch region.
+    fn region() -> Shape {
+        Face::from_wire(&Wire::rect(1.0, 1.0).expect("rectangle builds")).expect("face builds").into()
+    }
+
+    fn part_volume(doc: &Document, part: PartId) -> f64 {
+        doc.get_part(part).unwrap().shape.volume()
+    }
+
+    /// A fused result reshapes its source in place, keeping the part, its node
+    /// and its appearance, as one undo step.
+    #[test]
+    fn a_fused_result_reshapes_its_source_in_place() {
+        let red = RgbaColor { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+        let options = CadTessellationOptions {
+            face_material: FaceMaterial::new().with_base_color_factor(red),
+            ..Default::default()
+        };
+        let mut doc = Document::new(Scene::default());
+        let part = doc.add_part("imported", Shape::cube(2.0), &options).expect("cube tessellates");
+        let node = doc.node_for_part(part);
+
+        doc.commit_result(part, pad(), SourceFate::Fuse, "Pad", "Pad", &CadTessellationOptions::default())
+            .expect("the pad fuses");
+        assert_eq!(doc.parts().count(), 1);
+        assert_eq!(doc.node_for_part(part), node);
+        assert_eq!(doc.get_part(part).unwrap().kind(), PartKind::Solid);
+        assert!((part_volume(&doc, part) - 12.0).abs() < 1e-6, "got {}", part_volume(&doc, part));
+        assert_part_color(&doc, part, red);
+        assert_eq!(doc.undo_label(), Some("Pad"));
+
+        doc.undo().expect("undo the pad");
+        assert!((part_volume(&doc, part) - 8.0).abs() < 1e-9);
+        doc.redo().expect("redo the pad");
+        assert!((part_volume(&doc, part) - 12.0).abs() < 1e-6);
+    }
+
+    /// A result that replaces its source takes over its name; undo brings the
+    /// source back.
+    #[test]
+    fn a_replacing_result_takes_over_its_sources_name() {
+        let mut doc = Document::new(Scene::default());
+        let sketch = doc.add_part("sketch", region(), &CadTessellationOptions::default()).expect("sketch tessellates");
+
+        doc.commit_result(sketch, Shape::cube(1.0), SourceFate::Replace, "Thicken", "Thickened", &CadTessellationOptions::default())
+            .expect("the result replaces the sketch");
+        let parts: Vec<_> = doc.parts().collect();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].name, "sketch");
+        assert_eq!(parts[0].kind(), PartKind::Solid);
+        assert!(doc.get_part(sketch).is_none(), "the sketch was consumed");
+        assert_eq!(doc.undo_label(), Some("Thicken"));
+
+        doc.undo().expect("undo the replacement");
+        assert_eq!(doc.parts().count(), 1);
+        assert_eq!(doc.get_part(sketch).map(CadPart::kind), Some(PartKind::Face));
+    }
+
+    /// A kept source stands untouched beside a new, numbered part.
+    #[test]
+    fn a_kept_source_stands_beside_a_new_part() {
+        let (mut doc, part, _) = doc_with_box();
+
+        doc.commit_result(part, pad(), SourceFate::Keep, "Thicken", "Thickened", &CadTessellationOptions::default())
+            .expect("the result is added");
+        let names: Vec<_> = doc.parts().map(|part| part.name.as_str()).collect();
+        assert_eq!(names, ["box", "Thickened-001"]);
+        assert!((part_volume(&doc, part) - 8.0).abs() < 1e-9);
+        assert_eq!(doc.undo_label(), Some("Thicken"));
+
+        doc.undo().expect("undo the new part");
+        assert_eq!(doc.parts().count(), 1);
+    }
+
+    #[test]
+    fn only_solid_geometry_has_a_solid() {
+        use opencascade::primitives::Compound;
+
+        assert!(has_solid(&Shape::cube(2.0)));
+        assert!(has_solid(&Compound::from_shapes([Shape::cube(2.0)]).into()));
+        assert!(!has_solid(&region()));
+        assert!(!has_solid(&Compound::from_shapes([region()]).into()));
     }
 
     #[test]
