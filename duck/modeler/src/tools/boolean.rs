@@ -1,153 +1,123 @@
+use anyhow::{Context, Result};
 use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions};
 use duck_engine_scene::common::RgbaColor;
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, NodeFlags, NodeId};
 use duck_engine_viewer::{
-    event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, MouseButton, NamedKey},
-    operator::{SelectionMode},
+    event::{Event, EventContext},
+    operator::SelectionMode,
     selection::{SelectionItem, SelectionManager},
 };
 use opencascade::primitives::Shape;
 
-use crate::ops::boolean::{build_boolean, commit_boolean, preview_boolean, BooleanKind, BooleanTarget};
+use crate::ops::boolean::{
+    build_boolean, commit_boolean, preview_boolean, BooleanKind, BooleanTarget,
+};
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
+use crate::tools::{Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
+use super::edit::{apply_row, error_line, PanelAction};
+use super::targets::selected_boolean;
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum BooleanPhase {
-    #[default]
-    Configuring,
-    Done,
-    Cancelled,
-}
-
+/// Combines the selected parts: the primary part is the target, cut by, joined
+/// with or intersected with the others.
+///
+/// The result previews live, with the material it removes in translucent red.
+/// Enter, right-click, Apply or switching tools applies it once there is a part
+/// to combine with; Escape or Cancel discards it. Either leaves the tool.
 pub struct BooleanTool {
-    pub kind: BooleanKind,
-    phase: BooleanPhase,
-
-    preview: PreviewSession,
-
-    /// The parts the preview was built for.
-    target: Option<BooleanTarget>,
-    last_kind: BooleanKind,
-
+    kind: BooleanKind,
     workspace: Workspace,
+    preview: PreviewSession,
+    /// The parts and kind the preview was last built for: a target and at least
+    /// one tool, or `None` while the selection designates no such boolean.
+    previewed: Option<(BooleanTarget, BooleanKind)>,
+    /// Why the preview could not be built, shown in the panel.
+    error: Option<String>,
+    /// Set once the boolean is applied or discarded, so the tool cedes back to
+    /// selection. Cleared on [`ModelingTool::deactivate`].
+    finished: bool,
 }
 
 impl BooleanTool {
     pub fn new(workspace: &Workspace) -> Self {
-        let preview = workspace.preview_session();
         Self {
             kind: BooleanKind::default(),
-            phase: BooleanPhase::default(),
-            preview,
-            target: None,
-            last_kind: BooleanKind::default(),
             workspace: workspace.clone(),
+            preview: workspace.preview_session(),
+            previewed: None,
+            error: None,
+            finished: false,
         }
     }
 
-    /// Execute the boolean operation and clean up preview state.
-    /// On success sets phase = Done; on failure stays in Configuring so the user can retry.
-    /// Call `selection.clear()` yourself on success.
-    fn apply(&mut self) -> anyhow::Result<()> {
-        let Some(target) = self.target.clone() else {
-            return Ok(());
-        };
-        let options = self.workspace.geometry_options();
-        {
-            let mut doc = self.workspace.document.lock().unwrap();
-            let result = build_boolean(&doc, &target, self.kind)?;
-            commit_boolean(&mut doc, &target, result, &options)?;
-        }
-
-        // Remove the preview. The hidden sources it hands back were the boolean's
-        // inputs, already deleted by commit_boolean; on failure above the session
-        // stays live so the preview and hidden sources survive for retry/cancel.
-        let _ = self.preview.commit();
-
-        self.target = None;
-        self.phase = BooleanPhase::Done;
-        Ok(())
-    }
-
-    /// Apply and, on success, clear the selection. Shared by the Enter key
-    /// handler and the panel's Apply button.
-    pub fn apply_and_clear(&mut self, selection: &mut SelectionManager) {
-        if let Err(e) = self.apply() {
-            self.workspace.notifications.failure("Boolean", &e);
-        } else {
-            selection.clear();
-        }
-    }
-
-    /// Abort the operation, restoring the visibility of all hidden original parts.
-    pub fn cancel(&mut self) {
-        self.preview.cancel();
-        self.target = None;
-        self.phase = BooleanPhase::Cancelled;
-    }
-
-    /// The boolean the selection designates: the primary part as the target,
-    /// and the other selected parts as its tools.
-    fn selection_snapshot(selection: &SelectionManager) -> Option<BooleanTarget> {
-        let primary = selection.primary();
-        let Some(SelectionItem::Node(target)) = primary else { return None };
-        let tools = selection
-            .iter()
-            .filter(|&&item| Some(item) != primary)
-            .filter_map(|item| match item {
-                SelectionItem::Node(id) => Some(*id),
-                _ => None,
-            })
-            .collect();
-        Some(BooleanTarget { target, tools })
-    }
-
-    fn refresh_preview(&mut self, selection: &SelectionManager) {
-        // Drop the old preview and re-show last pass's hidden sources.
-        self.preview.clear_previews();
-
-        self.target = Self::selection_snapshot(selection);
-        self.last_kind = self.kind;
-        let Some(target) = self.target.clone() else { return };
-
-        let result = {
-            let doc = self.workspace.document.lock().unwrap();
-            preview_boolean(&doc, &target, self.kind)
-        };
-        let preview = match result {
-            Ok(preview) => preview,
-            Err(e) => {
-                log::warn!("Boolean preview failed: {e}");
-                return;
+    /// Acts on `gesture`, returning whether it was consumed.
+    fn on_gesture(&mut self, gesture: Gesture, selection: &mut SelectionManager) -> bool {
+        match gesture {
+            Gesture::Frame => {
+                self.follow_selection(selection);
+                false
             }
-        };
-        let options = self.workspace.preview_options();
-        if self.preview.add_preview_from_shape(&preview.shape, &options, "Boolean preview").is_none() {
-            log::warn!("Boolean preview could not be tessellated");
+            Gesture::Finish if self.previewed.is_some() => {
+                self.apply_and_report(selection);
+                true
+            }
+            Gesture::Cancel => {
+                self.cancel();
+                true
+            }
+            Gesture::Finish | Gesture::Hover(_) | Gesture::Click { .. } | Gesture::Key(_) => false,
+        }
+    }
+
+    /// Previews the boolean the selection designates, once it or the kind
+    /// changes.
+    fn follow_selection(&mut self, selection: &SelectionManager) {
+        let designated = selected_boolean(selection)
+            .filter(|target| !target.tools.is_empty())
+            .map(|target| (target, self.kind));
+        if designated == self.previewed {
             return;
         }
+        self.previewed = designated;
+
+        // Drop the old preview, showing again the parts it hid.
+        self.preview.clear_previews();
+        self.error = None;
+        let Some((target, kind)) = self.previewed.clone() else { return };
+        if let Err(e) = self.show(&target, kind) {
+            self.error = Some(format!("{e:#}"));
+        }
+    }
+
+    /// Previews `kind` of `target`: the result in place of the parts it
+    /// combines, and the material it removes.
+    fn show(&mut self, target: &BooleanTarget, kind: BooleanKind) -> Result<()> {
+        let preview = preview_boolean(&self.workspace.document.lock().unwrap(), target, kind)?;
+        let options = self.workspace.preview_options();
+        self.preview
+            .add_preview_from_shape(&preview.shape, &options, "Boolean preview")
+            .context("The boolean could not be tessellated")?;
         self.preview.hide_source_node(target.target);
         for &tool in &target.tools {
             self.preview.hide_source_node(tool);
         }
-        self.show_removed(&target.tools, &preview.removed, &options);
+        self.show_removed(kind, &target.tools, &preview.removed, &options);
         // No preview is a part: picks must reach the hidden parts beneath.
         self.preview.set_preview_flags(NodeFlags::DO_NOT_SELECT);
+        Ok(())
     }
 
     /// Show the `removed` material in translucent red.
     fn show_removed(
         &mut self,
+        kind: BooleanKind,
         tools: &[NodeId],
         removed: &[Shape],
         options: &CadTessellationOptions,
     ) {
         // A subtract removes its tools whole, and their meshes already exist.
         let (ghosted, pieces): (&[NodeId], &[Shape]) =
-            if self.kind == BooleanKind::Subtract { (tools, &[]) } else { (&[], removed) };
+            if kind == BooleanKind::Subtract { (tools, &[]) } else { (&[], removed) };
         if ghosted.is_empty() && pieces.is_empty() {
             return;
         }
@@ -179,88 +149,40 @@ impl BooleanTool {
         }
     }
 
-    /// The boolean configuration panel body (operation kind, target/tool parts,
-    /// Apply/Cancel).
-    fn render_panel(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
-        let mut apply_clicked = false;
-        let mut cancel_clicked = false;
-
-        let primary = panel.selection.primary();
-        let target_node = primary.and_then(|item| match item {
-            SelectionItem::Node(id) => Some(id),
-            _ => None,
-        });
-        let tool_items: Vec<SelectionItem> = panel.selection.iter()
-            .filter(|&&item| Some(item) != primary)
-            .copied()
-            .collect();
-
-        let (target_name, tool_entries) = {
-            let doc = self.workspace.document.lock().unwrap();
-            let name_for = |node: NodeId| doc.part_at(node).map(|part| part.name.clone());
-            let target_name = target_node
-                .and_then(name_for)
-                .unwrap_or_else(|| "(none — click a part)".to_owned());
-            let tool_entries: Vec<(SelectionItem, String)> = tool_items
-                .into_iter()
-                .map(|item| {
-                    let name = match item {
-                        SelectionItem::Node(id) => name_for(id),
-                        _ => None,
-                    }
-                    .unwrap_or_else(|| "Unknown".to_owned());
-                    (item, name)
-                })
-                .collect();
-            (target_name, tool_entries)
-        };
-
-        ui.label("Operation");
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.kind, BooleanKind::Subtract, "Subtract");
-            ui.selectable_value(&mut self.kind, BooleanKind::Union, "Union");
-            ui.selectable_value(&mut self.kind, BooleanKind::Intersect, "Intersect");
-        });
-
-        ui.separator();
-
-        ui.label("Target");
-        ui.label(&target_name);
-
-        ui.separator();
-
-        ui.label("Tools");
-        if tool_entries.is_empty() {
-            ui.label("(shift-click parts to add tools)");
-        } else {
-            for (item, name) in &tool_entries {
-                ui.horizontal(|ui| {
-                    ui.label(name);
-                    if ui.small_button("×").clicked() {
-                        panel.selection.remove(item);
-                    }
-                });
-            }
+    /// Commits the boolean previewed and finishes the tool. A failure keeps
+    /// the preview so the selection can be corrected.
+    fn apply(&mut self, selection: &mut SelectionManager) -> Result<()> {
+        let Some((target, kind)) = self.previewed.clone() else { return Ok(()) };
+        {
+            let mut doc = self.workspace.document.lock().unwrap();
+            let result = build_boolean(&doc, &target, kind)?;
+            commit_boolean(&mut doc, &target, result, &self.workspace.geometry_options())?;
         }
+        // The parts the preview hid were consumed by the result.
+        let _ = self.preview.commit();
+        selection.clear();
+        self.previewed = None;
+        self.error = None;
+        self.finished = true;
+        Ok(())
+    }
 
-        ui.separator();
-
-        ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
-                cancel_clicked = true;
-            }
-            if ui.button("Apply  ⏎").clicked() {
-                apply_clicked = true;
-            }
-        });
-
-        // Act after rendering the body so we don't call &mut self methods
-        // while the widgets above still borrow self.
-        if apply_clicked {
-            self.apply_and_clear(panel.selection);
-        } else if cancel_clicked {
-            self.cancel();
+    /// Apply, reporting a failure. For the gestures that keep the tool active
+    /// and so must report for themselves: the panel's Apply, Enter,
+    /// right-click.
+    fn apply_and_report(&mut self, selection: &mut SelectionManager) {
+        if let Err(e) = self.apply(selection) {
+            self.workspace.notifications.failure("Boolean", &e);
         }
+    }
+
+    /// Discards the boolean and finishes the tool, showing again the parts the
+    /// preview hid.
+    fn cancel(&mut self) {
+        self.preview.cancel();
+        self.previewed = None;
+        self.error = None;
+        self.finished = true;
     }
 }
 
@@ -282,69 +204,14 @@ impl ModelingTool for BooleanTool {
         ToolInfo { id: "boolean", icon: icons::BOOLEAN, shortcut: None }
     }
 
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::Update { .. } => {
-                let selection_changed = Self::selection_snapshot(ctx.selection) != self.target;
-                let kind_changed = self.kind != self.last_kind;
-                if selection_changed || kind_changed {
-                    self.refresh_preview(ctx.selection);
-                }
-                false
-            }
-            // Right-click finalizes a configured operation.
-            DeviceEvent::MouseClick { button: MouseButton::Right, .. } => {
-                if self.target.is_none() {
-                    return false;
-                }
-                self.apply_and_clear(ctx.selection);
-                true
-            }
-            DeviceEvent::KeyboardInput { event: key_event, .. } => {
-                if key_event.state != ElementState::Pressed || key_event.repeat {
-                    return false;
-                }
-                match key_event.logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        self.apply_and_clear(ctx.selection);
-                        true
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        self.cancel();
-                        true
-                    }
-                    _ => false,
-                }
-            }
-            _ => false,
-        }
-    }
-
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.phase = BooleanPhase::Configuring;
-    }
-
-    /// A picked target (with or without tools) is a configured operation, so
-    /// leaving the tool runs it rather than dropping the configuration.
-    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if self.target.is_some() {
-            self.apply()?;
-            // The sources the boolean consumed must not stay selected.
-            selection.clear();
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        matches!(self.phase, BooleanPhase::Done | BooleanPhase::Cancelled)
-    }
-
-    // Boolean operates on whole parts, so drop the always-on selection
-    // operator to node granularity while active.
+    /// Whole parts.
     fn selection_mode(&self) -> SelectionMode {
         SelectionMode::Node
+    }
+
+    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
+        let Some(gesture) = Gesture::read(event, ctx.modifiers) else { return false };
+        self.on_gesture(gesture, ctx.selection)
     }
 
     fn panel_title(&self) -> Option<&str> {
@@ -352,42 +219,97 @@ impl ModelingTool for BooleanTool {
     }
 
     fn panel_ui(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
-        self.render_panel(ui, panel);
+        if let Some(error) = &self.error {
+            error_line(ui, error);
+        }
+        ui.label("Operation");
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.kind, BooleanKind::Subtract, "Subtract");
+            ui.selectable_value(&mut self.kind, BooleanKind::Union, "Union");
+            ui.selectable_value(&mut self.kind, BooleanKind::Intersect, "Intersect");
+        });
+        ui.separator();
+
+        let designated = selected_boolean(panel.selection);
+        ui.label("Target");
+        let target = designated.as_ref().map(|designated| self.workspace.part_name(designated.target));
+        ui.label(target.as_deref().unwrap_or("(none — click a part)"));
+        ui.separator();
+
+        ui.label("Tools");
+        let tools = designated.map(|designated| designated.tools).unwrap_or_default();
+        if tools.is_empty() {
+            ui.label("(shift-click parts to add tools)");
+        }
+        for tool in tools {
+            let name = self.workspace.part_name(tool);
+            ui.horizontal(|ui| {
+                ui.label(name);
+                if ui.small_button("×").clicked() {
+                    panel.selection.remove(&SelectionItem::Node(tool));
+                }
+            });
+        }
+        ui.separator();
+
+        match apply_row(ui) {
+            PanelAction::Apply => self.apply_and_report(panel.selection),
+            PanelAction::Cancel => self.cancel(),
+            PanelAction::None | PanelAction::Changed => {}
+        }
+    }
+
+    /// A boolean with a part to combine with is complete, so leaving the tool
+    /// applies it.
+    fn finalize(&mut self, selection: &mut SelectionManager) -> Result<()> {
+        self.apply(selection)
+    }
+
+    fn deactivate(&mut self) {
+        self.preview.cancel();
+        self.previewed = None;
+        self.error = None;
+        self.finished = false;
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_scene::Scene;
-    use glam::dvec3;
 
-    use crate::document::Document;
-    use crate::testing::workspace;
+    use duck_engine_scene::resource::Visibility;
+
+    use crate::testing::{doc_with_box_and_sphere, visibility, workspace};
+
+    /// A tool on a box and a sphere cutting its corner, with both selected,
+    /// the box as the target.
+    fn tool() -> (BooleanTool, Workspace, SelectionManager, [NodeId; 2]) {
+        let (doc, target, tool) = doc_with_box_and_sphere();
+        let ws = workspace(doc);
+        let mut selection = SelectionManager::new();
+        selection.extend([SelectionItem::Node(target), SelectionItem::Node(tool)]);
+        (BooleanTool::new(&ws), ws, selection, [target, tool])
+    }
+
+    fn part_count(ws: &Workspace) -> usize {
+        ws.document.lock().unwrap().parts().count()
+    }
 
     /// Each kind shows what it removes exactly once: a subtract as a ghost of
     /// its tool, an intersect as the two removed pieces, a union not at all.
     #[test]
     fn preview_shows_each_kinds_removed_material_once() {
-        let ws = workspace(Document::new(Scene::default()));
-        let (target, tool) = {
-            let options = ws.geometry_options();
-            let mut doc = ws.document.lock().unwrap();
-            let target = doc.add_part("box", Shape::cube(2.0), &options).unwrap();
-            let sphere = Shape::sphere(1.0).at(dvec3(2.0, 2.0, 2.0)).build();
-            let tool = doc.add_part("sphere", sphere, &options).unwrap();
-            (doc.node_for_part(target).unwrap(), doc.node_for_part(tool).unwrap())
-        };
-        let mut selection = SelectionManager::new();
-        selection.add(SelectionItem::Node(target));
-        selection.add(SelectionItem::Node(tool));
-        let mut op = BooleanTool::new(&ws);
+        let (mut op, ws, selection, _) = tool();
 
         for (kind, removed_nodes) in
             [(BooleanKind::Subtract, 1), (BooleanKind::Intersect, 2), (BooleanKind::Union, 0)]
         {
             op.kind = kind;
-            op.refresh_preview(&selection);
+            op.follow_selection(&selection);
 
             // The result node plus the removed material.
             let previews = op.preview.preview_nodes();
@@ -398,5 +320,63 @@ mod tests {
                 assert!(scene.get_node(node).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));
             }
         }
+    }
+
+    #[test]
+    fn finishing_combines_the_parts_and_leaves() {
+        let (mut op, ws, mut selection, _) = tool();
+        op.on_gesture(Gesture::Frame, &mut selection);
+
+        assert!(op.on_gesture(Gesture::Finish, &mut selection));
+        assert!(op.is_finished());
+        assert!(op.preview.is_empty());
+        assert!(selection.is_empty());
+        assert_eq!(part_count(&ws), 1, "the result replaces the target and the tool");
+    }
+
+    /// A target alone is no boolean yet, so there is nothing to finish.
+    #[test]
+    fn a_boolean_needs_a_part_to_combine_with() {
+        let (mut op, ws, mut selection, [_, tool]) = tool();
+        selection.remove(&SelectionItem::Node(tool));
+        op.on_gesture(Gesture::Frame, &mut selection);
+
+        assert!(!op.on_gesture(Gesture::Finish, &mut selection));
+        assert!(!op.is_finished());
+        assert!(op.preview.is_empty());
+        assert_eq!(part_count(&ws), 2);
+    }
+
+    #[test]
+    fn cancelling_shows_the_parts_again_and_leaves() {
+        let (mut op, ws, mut selection, parts) = tool();
+        op.on_gesture(Gesture::Frame, &mut selection);
+        assert_eq!(visibility(&ws, parts[0]), Visibility::Invisible);
+
+        assert!(op.on_gesture(Gesture::Cancel, &mut selection));
+        assert!(op.is_finished());
+        for part in parts {
+            assert_eq!(visibility(&ws, part), Visibility::Visible);
+        }
+        assert_eq!(part_count(&ws), 2);
+    }
+
+    /// A subtract that misses says why in the panel rather than previewing
+    /// nothing.
+    #[test]
+    fn a_failed_preview_says_why() {
+        let (mut op, ws, mut selection, [target, _]) = tool();
+        let far = {
+            let mut doc = ws.document.lock().unwrap();
+            let sphere = Shape::sphere(1.0).at(glam::DVec3::splat(10.0)).build();
+            let part = doc.add_part("far", sphere, &ws.geometry_options()).expect("tessellates");
+            doc.node_for_part(part).expect("part has a node")
+        };
+        selection.clear();
+        selection.extend([SelectionItem::Node(target), SelectionItem::Node(far)]);
+        op.on_gesture(Gesture::Frame, &mut selection);
+
+        assert!(op.error.is_some());
+        assert!(op.preview.is_empty());
     }
 }

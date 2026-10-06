@@ -400,7 +400,8 @@ impl<F: Feature> ModelingTool for FeatureTool<F> {
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        Gesture::read(event, ctx.modifiers).is_some_and(|gesture| self.on_gesture(gesture, ctx.selection))
+        let Some(gesture) = Gesture::read(event, ctx.modifiers) else { return false };
+        self.on_gesture(gesture, ctx.selection)
     }
 
     fn handles(&self) -> Vec<Handle> {

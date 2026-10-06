@@ -1,23 +1,21 @@
-use std::sync::{Arc, Mutex};
-
 use duck_engine_scene::resource::{NodeFlags, NodeId};
 use duck_engine_scene::Scene;
 use duck_engine_viewer::{
     common::{decompose_matrix, Matrix4, SquareMatrix, Transform},
-    event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, MouseButton, NamedKey},
+    event::{Event, EventContext},
     operator::{
         NodeTransformTarget, Operator, SelectionMode, TransformDriver, TransformFrame,
         TransformInteraction, TransformMode, TransformTarget,
     },
-    selection::{SelectionItem, SelectionManager},
+    selection::SelectionItem,
 };
 
-use crate::document::{Document, PartId};
+use crate::document::PartId;
 use crate::ops::duplicate::duplicate_parts;
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, ToolInfo, Workspace};
+use crate::tools::{Gesture, ModelingTool, ToolInfo, Workspace};
 use crate::ui::icons;
+use super::targets::selected_parts;
 
 /// Copies the selected parts and places the copies with the translate gizmo.
 ///
@@ -33,9 +31,6 @@ use crate::ui::icons;
 /// placement is a single undo step.
 pub struct DuplicateTool {
     driver: TransformDriver<DuplicateTarget>,
-    /// Held only to reach the scene on [`ModelingTool::deactivate`], which has
-    /// no event context.
-    document: Arc<Mutex<Document>>,
 }
 
 impl DuplicateTool {
@@ -48,37 +43,11 @@ impl DuplicateTool {
             done: false,
             workspace: workspace.clone(),
         };
-        Self {
-            driver: TransformDriver::with_target(TransformMode::Translate, target),
-            document: Arc::clone(&workspace.document),
-        }
+        Self { driver: TransformDriver::with_target(TransformMode::Translate, target) }
     }
 
-    /// Dispatches an event so long as a drag is not active.
-    /// 
-    /// Returns `true` if an action was taken.
-    fn dispatch_idle(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        if self.driver.is_active() {
-            return false;
-        }
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::MouseClick { button: MouseButton::Right, .. } => self.place(ctx),
-            DeviceEvent::KeyboardInput { event: key_event, .. } => {
-                if key_event.state != ElementState::Pressed || key_event.repeat {
-                    return false;
-                }
-                match key_event.logical_key {
-                    Key::Named(NamedKey::Enter) => self.place(ctx),
-                    Key::Named(NamedKey::Escape) => self.abandon(),
-                    _ => false,
-                }
-            }
-            _ => false,
-        }
-    }
-
-    /// Commit the copies at their current, undragged position.
+    /// Commit the copies at their current, undragged position. Returns whether
+    /// there were any.
     fn place(&mut self, ctx: &mut EventContext) -> bool {
         let target = self.driver.target_mut();
         if target.sources.is_empty() {
@@ -88,15 +57,11 @@ impl DuplicateTool {
         true
     }
 
-    /// Drop the copies without adding anything to the document.
-    fn abandon(&mut self) -> bool {
+    /// Drop the copies without adding anything to the document, and leave.
+    fn abandon(&mut self) {
         let target = self.driver.target_mut();
-        if target.sources.is_empty() {
-            return false;
-        }
         target.discard();
         target.done = true;
-        true
     }
 }
 
@@ -105,14 +70,34 @@ impl ModelingTool for DuplicateTool {
         ToolInfo { id: "duplicate", icon: icons::DUPLICATE, shortcut: Some('d') }
     }
 
+    /// Whole parts only — there is nothing to copy below part granularity.
+    fn selection_mode(&self) -> SelectionMode {
+        SelectionMode::Node
+    }
+
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
+        let gesture = Gesture::read(event, ctx.modifiers);
         // The copies are built from the selection, which `activate` cannot see;
         // the frame tick is the first point with an event context.
-        if let Event::Device(DeviceEvent::Update { .. }) = event {
+        if gesture == Some(Gesture::Frame) {
             self.driver.target_mut().sync_sources(ctx);
         }
 
-        self.driver.dispatch(event, ctx) || self.dispatch_idle(event, ctx)
+        // A drag takes its own confirm and cancel.
+        if self.driver.dispatch(event, ctx) {
+            return true;
+        }
+        if self.driver.is_active() {
+            return false;
+        }
+        match gesture {
+            Some(Gesture::Finish) => self.place(ctx),
+            Some(Gesture::Cancel) => {
+                self.abandon();
+                true
+            }
+            _ => false,
+        }
     }
 
     fn activate(&mut self) {
@@ -122,14 +107,9 @@ impl ModelingTool for DuplicateTool {
 
     fn deactivate(&mut self) {
         // Abort any in-progress drag and remove the gizmo and copy previews.
-        let scene = self.document.lock().unwrap().scene().clone();
+        let scene = self.driver.target().workspace.document.lock().unwrap().scene().clone();
         self.driver.teardown(&scene);
         self.driver.target_mut().done = false;
-    }
-
-    /// Whole parts only — there is nothing to copy below part granularity.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::Node
     }
 
     fn is_finished(&self) -> bool {
@@ -171,24 +151,12 @@ impl DuplicateTarget {
         if self.done {
             return;
         }
-        let selected = self.selected_part_nodes(ctx.selection);
+        let selected = selected_parts(ctx.selection, &self.workspace.document.lock().unwrap());
         if !self.pending_spawn && selected == self.sources {
             return;
         }
         self.pending_spawn = false;
         self.respawn(selected);
-    }
-
-    /// The selected nodes that are CAD parts, in selection order.
-    fn selected_part_nodes(&self, selection: &SelectionManager) -> Vec<NodeId> {
-        let document = self.workspace.document.lock().unwrap();
-        selection
-            .iter()
-            .filter_map(|item| match item {
-                SelectionItem::Node(node) => document.part_for_node(*node).map(|_| *node),
-                SelectionItem::SubGeometry { .. } => None,
-            })
-            .collect()
     }
 
     /// Replace the previewed copies with one per node in `sources`.
@@ -223,31 +191,30 @@ impl DuplicateTarget {
         }
     }
 
-    /// Cut the real parts at `placement` and select them. Ends the tool either
-    /// way — the previews are gone, so there is nothing left to place.
+    /// Cut the real parts at `placement`, select them and end the tool. A
+    /// failure keeps the copies, back where they started, to place again.
     fn apply(&mut self, placement: Matrix4, ctx: &mut EventContext) {
-        self.preview.cancel();
-        let sources = std::mem::take(&mut self.sources);
-        self.done = true;
-
         let copies = {
             let mut document = self.workspace.document.lock().unwrap();
             let parts: Vec<PartId> =
-                sources.iter().filter_map(|&node| document.part_for_node(node)).collect();
-            duplicate_parts(&mut document, &parts, &[placement])
+                self.sources.iter().filter_map(|&node| document.part_for_node(node)).collect();
+            duplicate_parts(&mut document, &parts, &[placement]).map(|copies| {
+                copies.iter().filter_map(|&part| document.node_for_part(part)).collect::<Vec<_>>()
+            })
         };
 
         match copies {
-            Ok(copies) => {
-                let nodes: Vec<NodeId> = {
-                    let document = self.workspace.document.lock().unwrap();
-                    copies.iter().filter_map(|&part| document.node_for_part(part)).collect()
-                };
+            Ok(nodes) => {
+                self.discard();
+                self.done = true;
                 // The copies are what the user is now working with.
                 ctx.selection.clear();
                 ctx.selection.extend(nodes.into_iter().map(SelectionItem::Node));
             }
-            Err(e) => self.workspace.notifications.failure("Duplicate", &e),
+            Err(e) => {
+                self.workspace.notifications.failure("Duplicate", &e);
+                self.preview.set_preview_transform(Transform::IDENTITY);
+            }
         }
     }
 

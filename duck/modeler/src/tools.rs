@@ -5,7 +5,6 @@
 mod boolean;
 mod r#box;
 mod circle;
-mod curve;
 mod cylinder;
 mod draft;
 mod duplicate;
@@ -14,9 +13,9 @@ mod extrude;
 mod feature;
 mod fillet;
 mod hollow;
-mod line;
 mod loft;
 mod manager;
+mod path;
 mod primitive;
 mod rectangle;
 mod sphere;
@@ -27,16 +26,15 @@ mod transform;
 pub use boolean::BooleanTool;
 pub use r#box::BoxTool;
 pub use circle::CircleTool;
-pub use curve::CurveTool;
 pub use cylinder::CylinderTool;
 pub use draft::DraftTool;
 pub use duplicate::DuplicateTool;
 pub use extrude::ExtrudeTool;
 pub use fillet::FilletTool;
 pub use hollow::HollowTool;
-pub use line::LineTool;
 pub use loft::LoftTool;
 pub use manager::{ToolId, ToolManager};
+pub use path::{PathKind, PathTool};
 pub use rectangle::RectangleTool;
 pub use sphere::SphereTool;
 pub use thicken::ThickenTool;
@@ -103,6 +101,12 @@ impl Workspace {
     /// Coarser tessellation options for previews.
     pub fn preview_options(&self) -> CadTessellationOptions {
         self.construction.borrow().preview_options()
+    }
+
+    /// The name of the part at `node`, or "Unknown" if it is no part.
+    pub fn part_name(&self, node: NodeId) -> String {
+        let doc = self.document.lock().unwrap();
+        doc.part_at(node).map_or_else(|| "Unknown".to_owned(), |part| part.name.clone())
     }
 
     /// Adds `shape` as a new part numbered in `base`'s series, tessellated for

@@ -3,6 +3,10 @@
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 
+use crate::document::Document;
+use crate::ops::boolean::BooleanTarget;
+use crate::ops::loft::LoftProfile;
+
 /// A target the selection designates, the part it lies on, and how many
 /// selected items it leaves out.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +74,46 @@ pub fn selected_faces_or_part(
     Some(Selected { node, target: faces, ignored })
 }
 
+/// The boolean the selection designates: the primary part as its target, and
+/// the other selected parts as its tools.
+pub fn selected_boolean(selection: &SelectionManager) -> Option<BooleanTarget> {
+    let Some(SelectionItem::Node(target)) = selection.primary() else { return None };
+    let tools = selection
+        .iter()
+        .filter_map(|item| match *item {
+            SelectionItem::Node(node) if node != target => Some(node),
+            _ => None,
+        })
+        .collect();
+    Some(BooleanTarget { target, tools })
+}
+
+/// The selected edges, in the order they were picked, as loft profiles.
+pub fn selected_profiles(selection: &SelectionManager) -> Vec<LoftProfile> {
+    selection
+        .iter()
+        .filter_map(|item| match *item {
+            SelectionItem::SubGeometry { node_id, element }
+                if element.kind == SubGeometryKind::Edge =>
+            {
+                Some(LoftProfile { node: node_id, edge_index: element.index })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The selected parts, in the order they were picked.
+pub fn selected_parts(selection: &SelectionManager, doc: &Document) -> Vec<NodeId> {
+    selection
+        .iter()
+        .filter_map(|item| match *item {
+            SelectionItem::Node(node) if doc.part_at(node).is_some() => Some(node),
+            _ => None,
+        })
+        .collect()
+}
+
 /// "3 edges", noting any on other parts that are left out.
 pub fn count_summary(noun: &str, count: usize, ignored: usize) -> String {
     let counted = match count {
@@ -86,7 +130,7 @@ pub fn count_summary(noun: &str, count: usize, ignored: usize) -> String {
 mod tests {
     use super::*;
 
-    use crate::testing::face_item;
+    use crate::testing::{doc_with_box, edge_item, face_item};
 
     fn select(items: &[SelectionItem]) -> SelectionManager {
         let mut selection = SelectionManager::new();
@@ -137,5 +181,44 @@ mod tests {
 
         let selection = select(&[SelectionItem::Node(other), SelectionItem::Node(part)]);
         assert_eq!(selected_faces_or_part(&selection, Some(part)), faces(part, &[], 1));
+    }
+
+    #[test]
+    fn a_boolean_targets_the_primary_part_with_the_others_as_tools() {
+        let (target, a, b) = (NodeId::new(), NodeId::new(), NodeId::new());
+        let selection = select(&[
+            SelectionItem::Node(target),
+            face_item(a, 0),
+            SelectionItem::Node(a),
+            SelectionItem::Node(b),
+        ]);
+        assert_eq!(selected_boolean(&selection), Some(BooleanTarget { target, tools: vec![a, b] }));
+    }
+
+    #[test]
+    fn a_boolean_needs_a_part_as_its_primary() {
+        let part = NodeId::new();
+        let selection = select(&[face_item(part, 0), SelectionItem::Node(part)]);
+        assert_eq!(selected_boolean(&selection), None);
+    }
+
+    #[test]
+    fn profiles_are_the_selected_edges_in_picking_order() {
+        let (a, b) = (NodeId::new(), NodeId::new());
+        let selection =
+            select(&[edge_item(b, 4), face_item(a, 0), SelectionItem::Node(a), edge_item(a, 1)]);
+        assert_eq!(
+            selected_profiles(&selection),
+            [LoftProfile { node: b, edge_index: 4 }, LoftProfile { node: a, edge_index: 1 }]
+        );
+    }
+
+    #[test]
+    fn selected_parts_are_the_part_nodes_in_picking_order() {
+        let (doc, part) = doc_with_box();
+        let stranger = NodeId::new();
+        let selection =
+            select(&[SelectionItem::Node(stranger), face_item(part, 0), SelectionItem::Node(part)]);
+        assert_eq!(selected_parts(&selection, &doc), [part]);
     }
 }

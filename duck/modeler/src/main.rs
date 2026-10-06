@@ -34,9 +34,9 @@ use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
 use crate::construction::ConstructionOptions;
 use crate::tools::{
-    BooleanTool, BoxTool, CircleTool, CurveTool, CylinderTool, DraftTool, DuplicateTool,
-    ExtrudeTool, FilletTool, HollowTool, LineTool, LoftTool, RectangleTool, SphereTool,
-    ThickenTool, ToolManager, TransformTool, Workspace,
+    BooleanTool, BoxTool, CircleTool, CylinderTool, DraftTool, DuplicateTool, ExtrudeTool,
+    FilletTool, HollowTool, LoftTool, PathKind, PathTool, RectangleTool, SphereTool, ThickenTool,
+    ToolManager, TransformTool, Workspace,
 };
 use crate::delete::DeleteOperator;
 use crate::notifications::Notifications;
@@ -159,8 +159,8 @@ impl ViewerState<'static> {
         tools.register(BoxTool::new(&workspace));
         tools.register(CylinderTool::new(&workspace));
         tools.register(RectangleTool::new(&workspace));
-        tools.register(LineTool::new(&workspace));
-        tools.register(CurveTool::new(&workspace));
+        tools.register(PathTool::new(PathKind::Polyline, &workspace));
+        tools.register(PathTool::new(PathKind::Spline, &workspace));
         tools.register(CircleTool::new(&workspace));
         tools.register(BooleanTool::new(&workspace));
         tools.register(ExtrudeTool::new(&workspace));

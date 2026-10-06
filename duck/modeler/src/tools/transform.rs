@@ -15,7 +15,7 @@ use opencascade::primitives::FaceOrientation;
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartId};
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, ToolInfo, Workspace};
+use crate::tools::{Gesture, ModelingTool, ToolInfo, Workspace};
 use crate::ui::icons;
 
 /// CAD-aware transform tool for one operation (move, rotate, *or* scale). Each
@@ -37,13 +37,14 @@ use crate::ui::icons;
 /// Selecting the tool shows its handle set immediately; drag a handle to
 /// transform. The mode's key (G/R/S) starts a freeform transform and X/Y/Z
 /// start an axis-constrained one; left-click or Enter confirms, right-click or
-/// Escape cancels.
+/// Escape cancels. The tool stays for the next transform until Escape with
+/// none in progress, or another tool.
 pub struct TransformTool {
     mode: TransformMode,
     driver: TransformDriver<ModelerTarget>,
-    /// Held only to reach the scene on [`ModelingTool::deactivate`], which has
-    /// no event context.
-    document: Arc<Mutex<Document>>,
+    /// Set by Escape with no transform in progress, so the tool cedes back to
+    /// selection. Cleared on [`ModelingTool::deactivate`].
+    finished: bool,
 }
 
 impl TransformTool {
@@ -54,11 +55,7 @@ impl TransformTool {
             active: None,
             workspace: workspace.clone(),
         };
-        Self {
-            mode,
-            driver: TransformDriver::with_target(mode, target),
-            document: Arc::clone(&workspace.document),
-        }
+        Self { mode, driver: TransformDriver::with_target(mode, target), finished: false }
     }
 }
 
@@ -71,8 +68,22 @@ impl ModelingTool for TransformTool {
         }
     }
 
+    /// Whole parts first; a second click drills into a face for tweaking.
+    fn selection_mode(&self) -> SelectionMode {
+        SelectionMode::Progressive(SelectionKinds::FACE)
+    }
+
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        self.driver.dispatch(event, ctx)
+        if self.driver.dispatch(event, ctx) {
+            return true;
+        }
+        // Escape cancels a transform in progress, above; with none, it leaves.
+        let escape = Gesture::read(event, ctx.modifiers) == Some(Gesture::Cancel);
+        if escape && !self.driver.is_active() {
+            self.finished = true;
+            return true;
+        }
+        false
     }
 
     fn activate(&mut self) {
@@ -83,13 +94,13 @@ impl ModelingTool for TransformTool {
 
     fn deactivate(&mut self) {
         // Abort any in-progress transform and remove gizmo/ghost nodes.
-        let scene_arc = self.document.lock().unwrap().scene().clone();
-        self.driver.teardown(&scene_arc);
+        let scene = self.driver.target().workspace.document.lock().unwrap().scene().clone();
+        self.driver.teardown(&scene);
+        self.finished = false;
     }
 
-    /// Whole parts first; a second click drills into a face for tweaking.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::Progressive(SelectionKinds::FACE)
+    fn is_finished(&self) -> bool {
+        self.finished
     }
 }
 

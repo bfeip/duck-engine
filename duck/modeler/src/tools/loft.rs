@@ -1,176 +1,136 @@
-use anyhow::Context;
-use duck_engine_scene::resource::SubGeometryKind;
+use anyhow::{Context, Result};
+use duck_engine_scene::resource::{SubGeometryElement, SubGeometryKind};
 use duck_engine_viewer::{
-    event::{DeviceEvent, Event, EventContext},
-    input::{ElementState, Key, MouseButton, NamedKey},
+    event::{Event, EventContext},
     operator::{SelectionKinds, SelectionMode},
     selection::{SelectionItem, SelectionManager},
 };
 
 use crate::ops::loft::{build_loft, LoftProfile};
 use crate::preview::PreviewSession;
-use crate::tools::{ModelingTool, PanelContext, ToolInfo, Workspace};
+use crate::tools::{Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
+use super::edit::{apply_row, error_line, PanelAction};
+use super::targets::selected_profiles;
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum LoftPhase {
-    #[default]
-    Configuring,
-    Done,
-    Cancelled,
-}
-
+/// Skins a surface through the wires of the selected edges, in the order they
+/// were picked.
+///
+/// The surface previews live. Enter, right-click, Apply or switching tools adds
+/// it as a part once there are two profiles; Escape or Cancel discards it.
+/// Either leaves the tool.
 pub struct LoftTool {
-    phase: LoftPhase,
-
-    preview: PreviewSession,
-    /// Profiles the current preview was built from, so we only rebuild on change.
-    preview_profiles: Vec<LoftProfile>,
-
     workspace: Workspace,
+    preview: PreviewSession,
+    /// The profiles the preview was last built for, so it is rebuilt only when
+    /// they change.
+    previewed: Vec<LoftProfile>,
+    /// Why the preview could not be built, shown in the panel.
+    error: Option<String>,
+    /// Set once the loft is applied or discarded, so the tool cedes back to
+    /// selection. Cleared on [`ModelingTool::deactivate`].
+    finished: bool,
 }
 
 impl LoftTool {
     pub fn new(workspace: &Workspace) -> Self {
-        let preview = workspace.preview_session();
         Self {
-            phase: LoftPhase::default(),
-            preview,
-            preview_profiles: Vec::new(),
             workspace: workspace.clone(),
+            preview: workspace.preview_session(),
+            previewed: Vec::new(),
+            error: None,
+            finished: false,
         }
     }
 
-    /// The selected edges, in click order, as loft profiles.
-    fn selection_snapshot(selection: &SelectionManager) -> Vec<LoftProfile> {
-        selection
-            .iter()
-            .filter_map(|item| match item {
-                SelectionItem::SubGeometry { node_id, element }
-                    if element.kind == SubGeometryKind::Edge =>
-                {
-                    Some(LoftProfile { node: *node_id, edge_index: element.index })
-                }
-                _ => None,
-            })
-            .collect()
+    /// Acts on `gesture`, returning whether it was consumed.
+    fn on_gesture(&mut self, gesture: Gesture, selection: &mut SelectionManager) -> bool {
+        match gesture {
+            Gesture::Frame => {
+                self.follow_selection(selection);
+                false
+            }
+            Gesture::Finish if self.is_complete() => {
+                self.apply_and_report(selection);
+                true
+            }
+            Gesture::Cancel => {
+                self.cancel();
+                true
+            }
+            Gesture::Finish | Gesture::Hover(_) | Gesture::Click { .. } | Gesture::Key(_) => false,
+        }
     }
 
-    fn refresh_preview(&mut self, selection: &SelectionManager) {
-        self.preview.clear_previews();
+    /// Whether there are profiles enough to skin.
+    fn is_complete(&self) -> bool {
+        self.previewed.len() >= 2
+    }
 
-        let profiles = Self::selection_snapshot(selection);
-        self.preview_profiles = profiles.clone();
-
-        if profiles.len() < 2 {
+    /// Previews the loft through the selected profiles, once they change.
+    fn follow_selection(&mut self, selection: &SelectionManager) {
+        let profiles = selected_profiles(selection);
+        if profiles == self.previewed {
             return;
         }
+        self.previewed = profiles;
 
-        let result = build_loft(&self.workspace.document.lock().unwrap(), &profiles);
-        let options = self.workspace.preview_options();
-        match result {
-            Ok(loft) => {
-                if self.preview.add_preview_from_shape(&loft, &options, "Loft preview").is_none() {
-                    log::warn!("Loft preview could not be tessellated");
-                }
-            }
-            Err(e) => log::warn!("Loft preview failed: {e}"),
+        self.preview.clear_previews();
+        self.error = None;
+        if self.is_complete()
+            && let Err(e) = self.show()
+        {
+            self.error = Some(format!("{e:#}"));
         }
     }
 
-    /// Add the loft as a part of its own and clean up preview state. On success
-    /// sets phase = Done; on failure stays in Configuring, preview and all, so
-    /// the user can retry with different profiles.
-    fn apply(&mut self) -> anyhow::Result<()> {
-        let options = self.workspace.geometry_options();
-        {
-            let mut doc = self.workspace.document.lock().unwrap();
-            let loft = build_loft(&doc, &self.preview_profiles)?;
-            // Tessellates atomically — if this fails, nothing changes.
-            doc.undo_scope("Loft").add_numbered_part("Loft", loft, &options).context("Failed to tessellate loft")?;
-        }
-
-        let _ = self.preview.commit();
-        self.preview_profiles.clear();
-        self.phase = LoftPhase::Done;
+    /// Previews the loft through the profiles.
+    fn show(&mut self) -> Result<()> {
+        let loft = build_loft(&self.workspace.document.lock().unwrap(), &self.previewed)?;
+        let options = self.workspace.preview_options();
+        self.preview
+            .add_preview_from_shape(&loft, &options, "Loft preview")
+            .context("The loft could not be tessellated")?;
         Ok(())
     }
 
-    /// Apply and, on success, clear the selection. Shared by the Enter key handler
-    /// and the panel's Apply button.
-    pub fn apply_and_clear(&mut self, selection: &mut SelectionManager) {
-        if let Err(e) = self.apply() {
-            self.workspace.notifications.failure("Loft", &e);
-        } else {
-            selection.clear();
+    /// Adds the loft through the profiles as a part of its own and finishes
+    /// the tool. A failure keeps the preview so the profiles can be corrected.
+    fn apply(&mut self, selection: &mut SelectionManager) -> Result<()> {
+        if !self.is_complete() {
+            return Ok(());
         }
-    }
-
-    /// Abort: drop the preview (profiles are construction curves, never hidden).
-    pub fn cancel(&mut self) {
+        {
+            let mut doc = self.workspace.document.lock().unwrap();
+            let loft = build_loft(&doc, &self.previewed)?;
+            doc.undo_scope("Loft")
+                .add_numbered_part("Loft", loft, &self.workspace.geometry_options())
+                .context("Failed to tessellate the loft")?;
+        }
+        // The profiles stand; only the preview goes.
         self.preview.cancel();
-        self.preview_profiles.clear();
-        self.phase = LoftPhase::Cancelled;
+        selection.clear();
+        self.previewed.clear();
+        self.error = None;
+        self.finished = true;
+        Ok(())
     }
 
-    /// The loft configuration panel body (ordered profile list, Apply/Cancel).
-    fn render_panel(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
-        let mut apply_clicked = false;
-        let mut cancel_clicked = false;
-
-        // Snapshot profile names under the document lock so the body holds none.
-        let profiles = Self::selection_snapshot(panel.selection);
-        let entries: Vec<(SelectionItem, String)> = {
-            let doc = self.workspace.document.lock().unwrap();
-            profiles
-                .iter()
-                .map(|p| {
-                    let name =
-                        doc.part_at(p.node).map_or_else(|| "Unknown".to_owned(), |part| part.name.clone());
-                    let item = SelectionItem::SubGeometry {
-                        node_id: p.node,
-                        element: duck_engine_scene::resource::SubGeometryElement::new(
-                            SubGeometryKind::Edge,
-                            p.edge_index,
-                        ),
-                    };
-                    (item, format!("{name} · edge {}", p.edge_index))
-                })
-                .collect()
-        };
-
-        ui.label("Profiles");
-        if entries.is_empty() {
-            ui.label("(click an edge per profile)");
-        } else {
-            for (idx, (item, name)) in entries.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{}. {name}", idx + 1));
-                    if ui.small_button("×").clicked() {
-                        panel.selection.remove(item);
-                    }
-                });
-            }
+    /// Apply, reporting a failure. For the gestures that keep the tool active
+    /// and so must report for themselves: the panel's Apply, Enter,
+    /// right-click.
+    fn apply_and_report(&mut self, selection: &mut SelectionManager) {
+        if let Err(e) = self.apply(selection) {
+            self.workspace.notifications.failure("Loft", &e);
         }
+    }
 
-        ui.separator();
-
-        ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
-                cancel_clicked = true;
-            }
-            if ui.button("Apply  ⏎").clicked() {
-                apply_clicked = true;
-            }
-        });
-
-        // Act after rendering the body so we don't call &mut self methods while
-        // the widgets above still borrow self.
-        if apply_clicked {
-            self.apply_and_clear(panel.selection);
-        } else if cancel_clicked {
-            self.cancel();
-        }
+    /// Discards the loft and finishes the tool.
+    fn cancel(&mut self) {
+        self.preview.cancel();
+        self.previewed.clear();
+        self.error = None;
+        self.finished = true;
     }
 }
 
@@ -179,66 +139,14 @@ impl ModelingTool for LoftTool {
         ToolInfo { id: "loft", icon: icons::LOFT, shortcut: None }
     }
 
-    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(event) = event else { return false };
-        match event {
-            DeviceEvent::Update { .. } => {
-                let profiles = Self::selection_snapshot(ctx.selection);
-                if profiles != self.preview_profiles {
-                    self.refresh_preview(ctx.selection);
-                }
-                false
-            }
-            // Right-click finalizes once there are profiles to skin.
-            DeviceEvent::MouseClick { button: MouseButton::Right, .. } => {
-                if self.preview_profiles.len() < 2 {
-                    return false;
-                }
-                self.apply_and_clear(ctx.selection);
-                true
-            }
-            DeviceEvent::KeyboardInput { event: key_event, .. } => {
-                if key_event.state != ElementState::Pressed || key_event.repeat {
-                    return false;
-                }
-                match key_event.logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        self.apply_and_clear(ctx.selection);
-                        true
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        self.cancel();
-                        true
-                    }
-                    _ => false,
-                }
-            }
-            _ => false,
-        }
-    }
-
-    fn deactivate(&mut self) {
-        self.cancel();
-        self.phase = LoftPhase::Configuring;
-    }
-
-    /// Two or more profiles are a complete loft, so leaving the tool skins them
-    /// rather than dropping the picks.
-    fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if self.preview_profiles.len() >= 2 {
-            self.apply()?;
-            selection.clear();
-        }
-        Ok(())
-    }
-
-    fn is_finished(&self) -> bool {
-        matches!(self.phase, LoftPhase::Done | LoftPhase::Cancelled)
-    }
-
-    // Loft skins through profile edges, so select at edge granularity.
+    /// The profiles' edges.
     fn selection_mode(&self) -> SelectionMode {
         SelectionMode::SubGeometry(SelectionKinds::EDGE)
+    }
+
+    fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
+        let Some(gesture) = Gesture::read(event, ctx.modifiers) else { return false };
+        self.on_gesture(gesture, ctx.selection)
     }
 
     fn panel_title(&self) -> Option<&str> {
@@ -246,6 +154,104 @@ impl ModelingTool for LoftTool {
     }
 
     fn panel_ui(&mut self, ui: &mut egui::Ui, panel: &mut PanelContext) {
-        self.render_panel(ui, panel);
+        if let Some(error) = &self.error {
+            error_line(ui, error);
+        }
+        ui.label("Profiles");
+        let profiles = selected_profiles(panel.selection);
+        if profiles.is_empty() {
+            ui.label("(click an edge per profile)");
+        }
+        for (number, profile) in (1..).zip(profiles) {
+            let name = self.workspace.part_name(profile.node);
+            ui.horizontal(|ui| {
+                ui.label(format!("{number}. {name} · edge {}", profile.edge_index));
+                if ui.small_button("×").clicked() {
+                    let edge = SubGeometryElement::new(SubGeometryKind::Edge, profile.edge_index);
+                    let item = SelectionItem::SubGeometry { node_id: profile.node, element: edge };
+                    panel.selection.remove(&item);
+                }
+            });
+        }
+        ui.separator();
+
+        match apply_row(ui) {
+            PanelAction::Apply => self.apply_and_report(panel.selection),
+            PanelAction::Cancel => self.cancel(),
+            PanelAction::None | PanelAction::Changed => {}
+        }
+    }
+
+    /// Two profiles make a complete loft, so leaving the tool adds it.
+    fn finalize(&mut self, selection: &mut SelectionManager) -> Result<()> {
+        self.apply(selection)
+    }
+
+    fn deactivate(&mut self) {
+        self.preview.cancel();
+        self.previewed.clear();
+        self.error = None;
+        self.finished = false;
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::testing::{doc_with_two_squares, edge_item, workspace};
+
+    /// A tool on two stacked squares, with an edge of each selected.
+    fn tool() -> (LoftTool, Workspace, SelectionManager) {
+        let (doc, profiles) = doc_with_two_squares();
+        let ws = workspace(doc);
+        let mut selection = SelectionManager::new();
+        selection.extend(profiles.map(|profile| edge_item(profile.node, profile.edge_index)));
+        (LoftTool::new(&ws), ws, selection)
+    }
+
+    fn part_count(ws: &Workspace) -> usize {
+        ws.document.lock().unwrap().parts().count()
+    }
+
+    #[test]
+    fn finishing_adds_the_loft_and_leaves() {
+        let (mut op, ws, mut selection) = tool();
+        op.on_gesture(Gesture::Frame, &mut selection);
+        assert!(!op.preview.is_empty());
+
+        assert!(op.on_gesture(Gesture::Finish, &mut selection));
+        assert!(op.is_finished());
+        assert!(op.preview.is_empty());
+        assert_eq!(part_count(&ws), 3, "the loft stands beside its profiles");
+    }
+
+    /// One profile is no loft yet, so there is nothing to finish.
+    #[test]
+    fn a_loft_needs_two_profiles() {
+        let (mut op, ws, mut selection) = tool();
+        let second = selection.as_slice()[1];
+        selection.remove(&second);
+        op.on_gesture(Gesture::Frame, &mut selection);
+
+        assert!(!op.on_gesture(Gesture::Finish, &mut selection));
+        assert!(!op.is_finished());
+        assert!(op.error.is_none());
+        assert_eq!(part_count(&ws), 2);
+    }
+
+    #[test]
+    fn cancelling_discards_the_loft_and_leaves() {
+        let (mut op, ws, mut selection) = tool();
+        op.on_gesture(Gesture::Frame, &mut selection);
+
+        assert!(op.on_gesture(Gesture::Cancel, &mut selection));
+        assert!(op.is_finished());
+        assert!(op.preview.is_empty());
+        assert_eq!(part_count(&ws), 2);
     }
 }

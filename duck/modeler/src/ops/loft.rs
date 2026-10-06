@@ -46,40 +46,9 @@ pub fn build_loft(doc: &Document, profiles: &[LoftProfile]) -> Result<Shape> {
 mod tests {
     use super::*;
 
-    use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::Scene;
-    use opencascade::primitives::{Face, ShapeType};
+    use opencascade::primitives::ShapeType;
 
-    /// A document holding two stacked square profiles (closed wires), returning the
-    /// nodes and the index of one edge per profile.
-    fn doc_with_two_squares() -> (Document, [LoftProfile; 2]) {
-        let scene = Scene::default();
-        let mut doc = Document::new(scene);
-
-        let square = |y: f64| {
-            let wire = Wire::from_ordered_points([
-                glam::dvec3(0.0, y, 0.0),
-                glam::dvec3(1.0, y, 0.0),
-                glam::dvec3(1.0, y, 1.0),
-                glam::dvec3(0.0, y, 1.0),
-            ])
-            .expect("wire builds");
-            // Faces so the profile has a wire OCCT can iterate via Shape::wires().
-            Shape::from(Face::from_wire(&wire).expect("face builds"))
-        };
-
-        let opts = CadTessellationOptions::default();
-        let lower = doc.add_part("lower", square(0.0), &opts).expect("tessellates");
-        let upper = doc.add_part("upper", square(2.0), &opts).expect("tessellates");
-        let lower_node = doc.node_for_part(lower).expect("node");
-        let upper_node = doc.node_for_part(upper).expect("node");
-
-        let profiles = [
-            LoftProfile { node: lower_node, edge_index: 0 },
-            LoftProfile { node: upper_node, edge_index: 0 },
-        ];
-        (doc, profiles)
-    }
+    use crate::testing::doc_with_two_squares;
 
     #[test]
     fn surface_loft_produces_a_shell() {

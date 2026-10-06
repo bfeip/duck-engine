@@ -149,6 +149,7 @@ mod tests {
 
     use super::*;
     use crate::document::PartKind;
+    use crate::testing::doc_with_box_and_sphere;
 
     /// The box at `target`, cut by the sphere at `tool`.
     fn parts(target: NodeId, tool: NodeId) -> BooleanTarget {
@@ -159,21 +160,6 @@ mod tests {
     fn apply(doc: &mut Document, target: &BooleanTarget, kind: BooleanKind) -> Result<()> {
         let result = build_boolean(doc, target, kind)?;
         commit_boolean(doc, target, result, &CadTessellationOptions::default())
-    }
-
-    fn doc_with_box_and_sphere() -> (Document, NodeId, NodeId) {
-        let scene = Scene::default();
-        let mut doc = Document::new(scene);
-        let options = CadTessellationOptions::default();
-        let box_part = doc
-            .add_part("box", Shape::cube(2.0), &options)
-            .expect("box tessellates");
-        let sphere_part = doc
-            .add_part("sphere", Shape::sphere(1.0).at(dvec3(2.0, 2.0, 2.0)).build(), &options)
-            .expect("sphere tessellates");
-        let box_node = doc.node_for_part(box_part).unwrap();
-        let sphere_node = doc.node_for_part(sphere_part).unwrap();
-        (doc, box_node, sphere_node)
     }
 
     /// The boolean must run on deep copies: OCCT BOPs are destructive toward

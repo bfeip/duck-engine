@@ -12,11 +12,12 @@ use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, Physical
 use duck_engine_viewer::operator::{HandleDrag, HandleId};
 use duck_engine_viewer::selection::SelectionItem;
 use glam::DVec3;
-use opencascade::primitives::{Shape, Shell, Wire};
+use opencascade::primitives::{Face, Shape, Shell, Wire};
 
 use crate::construction::ConstructionOptions;
 use crate::document::{Document, PartId, SourceFate};
 use crate::notifications::Notifications;
+use crate::ops::loft::LoftProfile;
 use crate::tools::Workspace;
 
 /// A document holding `shape` as a part named "part", and the part's node.
@@ -46,6 +47,39 @@ pub fn doc_with_boxes(count: usize) -> (Document, Vec<(PartId, NodeId)>) {
         })
         .collect();
     (doc, parts)
+}
+
+/// A document holding a 2-unit cube on the origin and a unit sphere on its far
+/// corner, and their nodes.
+pub fn doc_with_box_and_sphere() -> (Document, NodeId, NodeId) {
+    let mut doc = Document::new(Scene::default());
+    let options = CadTessellationOptions::default();
+    let cube = doc.add_part("box", Shape::cube(2.0), &options).expect("box tessellates");
+    let sphere = Shape::sphere(1.0).at(DVec3::splat(2.0)).build();
+    let sphere = doc.add_part("sphere", sphere, &options).expect("sphere tessellates");
+    let cube = doc.node_for_part(cube).expect("part has a node");
+    let sphere = doc.node_for_part(sphere).expect("part has a node");
+    (doc, cube, sphere)
+}
+
+/// A document holding two unit square faces, one 2 above the other, and an
+/// edge of each as a loft profile.
+pub fn doc_with_two_squares() -> (Document, [LoftProfile; 2]) {
+    let mut doc = Document::new(Scene::default());
+    let mut square = |name: &str, y: f64| {
+        let outline = Wire::from_ordered_points([
+            DVec3::new(0.0, y, 0.0),
+            DVec3::new(1.0, y, 0.0),
+            DVec3::new(1.0, y, 1.0),
+            DVec3::new(0.0, y, 1.0),
+        ])
+        .expect("square builds");
+        let face = Shape::from(Face::from_wire(&outline).expect("face builds"));
+        let part = doc.add_part(name, face, &CadTessellationOptions::default()).expect("tessellates");
+        LoftProfile { node: doc.node_for_part(part).expect("part has a node"), edge_index: 0 }
+    };
+    let profiles = [square("lower", 0.0), square("upper", 2.0)];
+    (doc, profiles)
 }
 
 /// An open square tube lofted between unit squares two apart: four faces of
