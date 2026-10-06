@@ -10,9 +10,9 @@ use duck_engine_viewer::{
     operator::Operator,
 };
 use log::warn;
-use opencascade::primitives::{Edge, Shape, Wire};
 
-use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
+use crate::document::Document;
+use crate::ops::primitives::{circle, region};
 use crate::preview::PreviewSession;
 use crate::tools::{ModelingTool, ToolInfo};
 use crate::ui::icons;
@@ -40,26 +40,6 @@ pub struct CircleTool {
     cursor_target: Option<Point3>,
 }
 
-
-
-/// Builds a filled planar disk bounded by a circle of `radius` centered at
-/// `center`, lying in the plane with the given `normal`. Falls back to the bare
-/// ring (wire) if the face can't be built. Returns `None` on construction error.
-fn circle_shape(center: Point3, normal: Vector3, radius: f64) -> Option<Shape> {
-    let edge = Edge::circle(point3_to_dvec3(center), vec3_to_dvec3(normal), radius)
-        .map_err(|e| warn!("Failed to build circle edge: {e}"))
-        .ok()?;
-    let wire = Wire::from_edges(&[edge])
-        .map_err(|e| warn!("Failed to build circle wire: {e}"))
-        .ok()?;
-    // Filled disk (Region): fall back to the bare ring if the face can't be
-    // built. `to_face` consumes the wire, so capture the ring shape first.
-    let ring = Shape::from(&wire);
-    match wire.to_face() {
-        Ok(face) => Some(Shape::from(&face)),
-        Err(_) => Some(ring),
-    }
-}
 
 impl CircleTool {
     pub fn new(
@@ -100,8 +80,12 @@ impl CircleTool {
         // Lay the disk on the snapped geometry when the snap carries a direction.
         // Otherwise use the construction plane.
         let normal = snap.direction.unwrap_or(cplane_normal);
-        let Some(shape) = circle_shape(center, normal, 0.01) else {
-            return false;
+        let shape = match circle(center, normal, 0.01) {
+            Ok(outline) => region(outline),
+            Err(e) => {
+                warn!("Failed to build the circle: {e:#}");
+                return false;
+            }
         };
         // Coarser preview tolerance since the preview is rebuilt on every move.
         let preview_options = self.construction_options.borrow().preview_options();
@@ -126,22 +110,25 @@ impl CircleTool {
             .construction_options
             .borrow()
             .resolve_snap(position, self.preview.preview_nodes(), &camera, ctx, &[])
-            .map(|s| f64::from(center.distance(s.position).max(0.01)))
+            .map(|s| center.distance(s.position).max(0.01))
             .unwrap_or(0.01);
 
-        let shape = circle_shape(center, normal, radius);
+        let shape = circle(center, normal, radius).map(region);
 
         // Discard the preview node, then commit the world-space shape as a part.
         let _ = self.preview.commit();
 
-        let committed = if let Some(shape) = shape {
-            let coptions = self.construction_options.borrow();
-            let mut doc = self.document.lock().unwrap();
-            doc.add_numbered_part("Circle", shape, &coptions.geometry_options)
-                .is_ok()
-        } else {
-            warn!("Failed to build circle shape.");
-            false
+        let committed = match shape {
+            Ok(shape) => {
+                let coptions = self.construction_options.borrow();
+                let mut doc = self.document.lock().unwrap();
+                doc.add_numbered_part("Circle", shape, &coptions.geometry_options)
+                    .is_ok()
+            }
+            Err(e) => {
+                warn!("Failed to build the circle: {e:#}");
+                false
+            }
         };
 
         self.phase = Phase::Idle;
@@ -174,8 +161,8 @@ impl CircleTool {
         // rather than scaling a unit mesh.
         if let Phase::Defining { center, normal } = self.phase {
             if let Some(snap) = snap {
-                let radius = f64::from(center.distance(snap.position).max(0.01));
-                if let Some(shape) = circle_shape(center, normal, radius) {
+                let radius = center.distance(snap.position).max(0.01);
+                if let Ok(shape) = circle(center, normal, radius).map(region) {
                     let preview_options = self.construction_options.borrow().preview_options();
                     self.preview.try_replace_preview(&shape, &preview_options, "circle");
                 }
@@ -238,24 +225,5 @@ impl Operator for CircleTool {
 
     fn name(&self) -> &str {
         "Circle"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn circle_shape_from_positive_radius() {
-        let center = Point3::new(0.0, 0.0, 0.0);
-        let normal = Vector3::new(0.0, 1.0, 0.0);
-        assert!(circle_shape(center, normal, 1.0).is_some());
-    }
-
-    #[test]
-    fn circle_shape_off_origin() {
-        let center = Point3::new(3.0, 0.0, -2.0);
-        let normal = Vector3::new(0.0, 1.0, 0.0);
-        assert!(circle_shape(center, normal, 2.5).is_some());
     }
 }

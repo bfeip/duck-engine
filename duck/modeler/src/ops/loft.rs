@@ -1,5 +1,4 @@
 use anyhow::{bail, Context, Result};
-use duck_engine_scene::cad::{tessellate_into, CadTessellationOptions};
 use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::{Shape, Shell, Wire};
 
@@ -36,42 +35,18 @@ fn resolve_profiles(doc: &Document, profiles: &[LoftProfile]) -> Result<Vec<Wire
     Ok(wires)
 }
 
-/// Non-destructive preview: skin the loft and add a temporary scene node without
-/// modifying the source parts. The caller owns the returned `NodeId` and must
-/// remove it when the preview is rebuilt or the operation ends.
-pub fn preview_loft(
-    doc: &Document,
-    profiles: &[LoftProfile],
-    options: &CadTessellationOptions,
-) -> Result<NodeId> {
+/// The surface skinned through the profiles, to add as a part of its own: a
+/// loft is additive, and profiles are usually reused as construction curves.
+pub fn build_loft(doc: &Document, profiles: &[LoftProfile]) -> Result<Shape> {
     let wires = resolve_profiles(doc, profiles)?;
-    let shape: Shape = Shell::loft(&wires).into();
-    tessellate_into(&shape, doc.scene(), options, None, Some("Loft preview"))
-        .map(|node| node.id())
-        .context("Failed to tessellate loft preview")
-}
-
-/// Apply the loft: build the final shape and tessellate it into a new part. The
-/// source profile bodies are kept — a loft is additive, and profiles are usually
-/// reused as construction curves.
-pub fn execute_loft(
-    doc: &mut Document,
-    profiles: &[LoftProfile],
-    options: &CadTessellationOptions,
-) -> Result<()> {
-    let wires = resolve_profiles(doc, profiles)?;
-    let shape: Shape = Shell::loft(&wires).into();
-    // Tessellates atomically — if this fails, nothing changes.
-    doc.undo_scope("Loft")
-        .add_numbered_part("Loft", shape, options)
-        .context("Failed to tessellate loft")?;
-    Ok(())
+    Ok(Shell::loft(&wires).into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use duck_engine_scene::cad::CadTessellationOptions;
     use duck_engine_scene::Scene;
     use opencascade::primitives::{Face, ShapeType};
 
@@ -108,20 +83,14 @@ mod tests {
 
     #[test]
     fn surface_loft_produces_a_shell() {
-        let (mut doc, profiles) = doc_with_two_squares();
-        let before = doc.parts().count();
-        execute_loft(&mut doc, &profiles, &CadTessellationOptions::default())
-            .expect("surface loft succeeds");
-        assert_eq!(doc.parts().count(), before + 1, "profiles kept, loft added");
-        let loft = doc.parts().last().expect("loft part");
-        assert_eq!(loft.shape.shape_type(), ShapeType::Shell);
+        let (doc, profiles) = doc_with_two_squares();
+        let loft = build_loft(&doc, &profiles).expect("surface loft succeeds");
+        assert_eq!(loft.shape_type(), ShapeType::Shell);
     }
 
     #[test]
     fn single_profile_is_rejected() {
-        let (mut doc, profiles) = doc_with_two_squares();
-        let one = &profiles[..1];
-        let err = execute_loft(&mut doc, one, &CadTessellationOptions::default());
-        assert!(err.is_err(), "a loft needs at least two profiles");
+        let (doc, profiles) = doc_with_two_squares();
+        assert!(build_loft(&doc, &profiles[..1]).is_err(), "a loft needs at least two profiles");
     }
 }

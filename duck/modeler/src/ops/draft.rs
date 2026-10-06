@@ -4,7 +4,9 @@ use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::{FaceType, Shape};
 use opencascade::DraftError;
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, vec3_to_dvec3, Document};
+use crate::document::{
+    dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, selected_face, vec3_to_dvec3, Document,
+};
 
 /// A change of angle at or below this many radians drafts nothing; OCCT
 /// ignores anything smaller.
@@ -53,18 +55,11 @@ impl DraftFrame {
     /// Resolves the frame from the target's neutral face and its first face to
     /// draft.
     pub fn new(doc: &Document, target: &DraftTarget) -> Result<Self> {
-        let part = doc
-            .part_for_node(target.node)
-            .and_then(|part| doc.get_part(part))
-            .context("Draft target is not a known CAD part")?;
-        let face = |index: u32| {
-            part.shape
-                .face_at(index as usize)
-                .with_context(|| format!("Selected face {index} is not part of the part"))
-        };
-        let neutral = face(target.neutral)?;
+        let part = doc.part_at(target.node).context("Draft target is not a known CAD part")?;
+        let neutral = selected_face(&part.shape, target.neutral)?;
         ensure!(neutral.face_type() == FaceType::Plane, "The neutral face must be flat");
-        let lever_face = face(*target.faces.first().context("There are no faces to draft")?)?;
+        let primary = *target.faces.first().context("There are no faces to draft")?;
+        let lever_face = selected_face(&part.shape, primary)?;
 
         // `normal_at_center` goes through `BRepGProp_Face::Normal`, which applies
         // each face's orientation: both normals point out of the material.
@@ -124,84 +119,44 @@ impl DraftParams {
     }
 }
 
-/// The target's part with its faces drafted.
+/// The target's part with its faces drafted, to reshape the part with.
 pub fn build_draft(doc: &Document, target: &DraftTarget, params: &DraftParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to draft at the faces' own angle");
-    let part = doc
-        .part_for_node(target.node)
-        .and_then(|part| doc.get_part(part))
-        .context("Draft target is not a known CAD part")?;
+    let part = doc.part_at(target.node).context("Draft target is not a known CAD part")?;
 
     // OCCT's modifications may raise tolerances on their input, so the draft
     // works on a copy: an abandoned preview must leave the part as it was.
     let body = part.shape.deep_copy();
-    let faces = target
-        .faces
-        .iter()
-        .map(|&index| {
-            body.face_at(index as usize)
-                .with_context(|| format!("Selected face {index} is not part of the part"))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let faces = target.faces.iter().map(|&index| selected_face(&body, index)).collect::<Result<Vec<_>>>()?;
 
     let pull = vec3_to_dvec3(params.frame.pull);
     let origin = point3_to_dvec3(params.frame.origin);
-    body.draft_faces(&faces, pull, f64::from(params.angle), origin, pull)
-        .map_err(|error| {
-            let hint = failure_hint(&error);
-            anyhow::Error::new(error).context(hint)
-        })
+    body.draft_faces(&faces, pull, f64::from(params.angle), origin, pull).map_err(explained)
 }
 
-/// A plain-language account of why a draft failed, to lead the kernel's reason.
-fn failure_hint(error: &opencascade::Error) -> &'static str {
-    match error {
+/// `error`, led by a plain-language account of why the draft failed.
+fn explained(error: opencascade::Error) -> anyhow::Error {
+    let hint = match &error {
         opencascade::Error::DraftFailed(DraftError::FaceRecomputation) => {
             "Only flat faces, and cylinders or cones standing along the pull, can be drafted"
         }
         _ => "The drafted faces can't be rejoined to their neighbours; try a smaller angle",
-    }
-}
-
-/// Apply the draft: rebuild the target's part with it, in place, as one undo
-/// step.
-pub fn execute_draft(doc: &mut Document, target: &DraftTarget, params: &DraftParams) -> Result<()> {
-    let shape = build_draft(doc, target, params)?;
-    let part = doc.part_for_node(target.node).context("Draft target is not a known CAD part")?;
-    doc.reshape_part(part, shape, "Draft")
+    };
+    anyhow::Error::new(error).context(hint)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use duck_engine_scene::cad::CadTessellationOptions;
     use duck_engine_scene::common::Vector3;
-    use duck_engine_scene::Scene;
     use glam::DVec3;
     use opencascade::primitives::{Edge, Face, ShapeType, Wire};
 
-    use crate::document::unwrap_single_solid;
+    use crate::document::{unwrap_single_solid, SourceFate};
+    use crate::testing::{commit, doc_with_box, doc_with_shape, face_along, part_shape, square_frustum};
 
     const EPSILON: Real = 1e-5;
-
-    fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
-        let mut doc = Document::new(Scene::default());
-        let part = doc
-            .add_part("part", shape, &CadTessellationOptions::default())
-            .expect("shape tessellates");
-        let node = doc.node_for_part(part).expect("part has a node");
-        (doc, node)
-    }
-
-    /// A 2×2×2 box centred on the origin.
-    fn doc_with_box() -> (Document, NodeId) {
-        doc_with_shape(Shape::box_centered(2.0, 2.0, 2.0))
-    }
-
-    fn part_shape(doc: &Document, node: NodeId) -> &Shape {
-        &doc.get_part(doc.part_for_node(node).unwrap()).unwrap().shape
-    }
 
     /// The index of the face whose outward normal at its centre is `normal`
     /// and whose centre has `height` along it.
@@ -216,11 +171,6 @@ mod tests {
             .expect("a face matches") as u32
     }
 
-    /// A face of the box by its outward normal.
-    fn box_face(doc: &Document, node: NodeId, normal: DVec3) -> u32 {
-        face_at(doc, node, normal, 1.0)
-    }
-
     fn target(node: NodeId, neutral: u32, faces: &[u32]) -> DraftTarget {
         DraftTarget { node, neutral, faces: faces.to_vec() }
     }
@@ -232,13 +182,8 @@ mod tests {
 
     /// The bottom of the box and its four walls.
     fn walls(doc: &Document, node: NodeId) -> DraftTarget {
-        let faces = [DVec3::X, DVec3::Z, DVec3::NEG_X, DVec3::NEG_Z].map(|n| box_face(doc, node, n));
-        target(node, box_face(doc, node, DVec3::NEG_Y), &faces)
-    }
-
-    /// Volume of a frustum between squares of side `a` and `b`, `height` apart.
-    fn square_frustum(a: f64, b: f64, height: f64) -> f64 {
-        height / 3.0 * (a * a + b * b + a * b)
+        let faces = [DVec3::X, DVec3::Z, DVec3::NEG_X, DVec3::NEG_Z].map(|n| face_along(doc, node, n));
+        target(node, face_along(doc, node, DVec3::NEG_Y), &faces)
     }
 
     fn degrees(angle: f64) -> Real {
@@ -248,7 +193,7 @@ mod tests {
     #[test]
     fn a_box_wall_hinges_on_the_floor_it_stands_on() {
         let (doc, node) = doc_with_box();
-        let wall = target(node, box_face(&doc, node, DVec3::NEG_Y), &[box_face(&doc, node, DVec3::X)]);
+        let wall = target(node, face_along(&doc, node, DVec3::NEG_Y), &[face_along(&doc, node, DVec3::X)]);
         let frame = DraftFrame::new(&doc, &wall).expect("wall resolves");
 
         assert!((frame.pull - Vector3::unit_y()).magnitude() < EPSILON, "pull {:?}", frame.pull);
@@ -262,7 +207,7 @@ mod tests {
     #[test]
     fn the_pull_points_from_the_neutral_face_toward_the_drafted_one() {
         let (doc, node) = doc_with_box();
-        let wall = target(node, box_face(&doc, node, DVec3::Y), &[box_face(&doc, node, DVec3::X)]);
+        let wall = target(node, face_along(&doc, node, DVec3::Y), &[face_along(&doc, node, DVec3::X)]);
         let frame = DraftFrame::new(&doc, &wall).expect("wall resolves");
         assert!((frame.pull + Vector3::unit_y()).magnitude() < EPSILON, "pull {:?}", frame.pull);
         assert!((frame.hinge - Point3::new(1.0, 1.0, 0.0)).magnitude() < EPSILON);
@@ -271,7 +216,7 @@ mod tests {
     #[test]
     fn a_face_parallel_to_the_neutral_face_is_refused() {
         let (doc, node) = doc_with_box();
-        let top = target(node, box_face(&doc, node, DVec3::NEG_Y), &[box_face(&doc, node, DVec3::Y)]);
+        let top = target(node, face_along(&doc, node, DVec3::NEG_Y), &[face_along(&doc, node, DVec3::Y)]);
         let Err(error) = DraftFrame::new(&doc, &top) else { panic!("the top has no hinge on the floor") };
         assert!(format!("{error:#}").contains("parallel"), "got {error:#}");
     }
@@ -294,7 +239,7 @@ mod tests {
     #[test]
     fn one_drafted_wall_cuts_a_wedge() {
         let (doc, node) = doc_with_box();
-        let wall = target(node, box_face(&doc, node, DVec3::NEG_Y), &[box_face(&doc, node, DVec3::X)]);
+        let wall = target(node, face_along(&doc, node, DVec3::NEG_Y), &[face_along(&doc, node, DVec3::X)]);
         let angle = degrees(10.0);
 
         let shape = build_draft(&doc, &wall, &params(&doc, &wall, angle)).expect("the wall drafts");
@@ -326,17 +271,18 @@ mod tests {
     #[test]
     fn a_drafted_face_starts_from_its_own_angle() {
         let (mut doc, node) = doc_with_box();
-        let floor = box_face(&doc, node, DVec3::NEG_Y);
-        let wall = target(node, floor, &[box_face(&doc, node, DVec3::X)]);
+        let floor = face_along(&doc, node, DVec3::NEG_Y);
+        let wall = target(node, floor, &[face_along(&doc, node, DVec3::X)]);
         let angle = degrees(10.0);
         let draft = params(&doc, &wall, angle);
-        execute_draft(&mut doc, &wall, &draft).expect("the wall drafts");
+        let shape = build_draft(&doc, &wall, &draft).expect("the wall drafts");
+        commit(&mut doc, node, shape, SourceFate::Reshape).expect("the draft applies");
 
         let leaning = part_shape(&doc, node)
             .faces()
             .position(|face| face.normal_at_center().is_ok_and(|n| n.x > 0.5 && n.y > 0.1))
             .expect("the drafted wall") as u32;
-        let floor = box_face(&doc, node, DVec3::NEG_Y);
+        let floor = face_along(&doc, node, DVec3::NEG_Y);
         let frame = DraftFrame::new(&doc, &target(node, floor, &[leaning])).expect("it resolves");
         assert!((frame.initial - angle).abs() < 1e-6, "got {}°", frame.initial.to_degrees());
         assert!(DraftParams { angle, ..DraftParams::new(frame) }.is_degenerate());
@@ -430,7 +376,7 @@ mod tests {
     #[test]
     fn the_grip_turns_with_the_face_about_the_hinge() {
         let (doc, node) = doc_with_box();
-        let wall = target(node, box_face(&doc, node, DVec3::NEG_Y), &[box_face(&doc, node, DVec3::X)]);
+        let wall = target(node, face_along(&doc, node, DVec3::NEG_Y), &[face_along(&doc, node, DVec3::X)]);
         let flat = params(&doc, &wall, 0.0);
         assert!((flat.grip() - Point3::new(1.0, 0.0, 0.0)).magnitude() < EPSILON);
 
@@ -466,22 +412,21 @@ mod tests {
         }
     }
 
-    /// Applying a draft reshapes the part where it stands, as one undo step
-    /// that undo and redo replay.
+    /// A draft reshapes its part where it stands, as one undo step that undo
+    /// and redo replay.
     #[test]
-    fn execute_reshapes_in_place_as_one_undo_step() {
+    fn a_draft_reshapes_its_part_in_place_as_one_undo_step() {
         let (mut doc, node) = doc_with_box();
         let part = doc.part_for_node(node).unwrap();
         let walls = walls(&doc, node);
         let angle = degrees(5.0);
         let drafted = square_frustum(2.0, 2.0 - 4.0 * f64::from(angle).tan(), 2.0);
 
-        let draft = params(&doc, &walls, angle);
-        execute_draft(&mut doc, &walls, &draft).expect("the draft applies");
+        let shape = build_draft(&doc, &walls, &params(&doc, &walls, angle)).expect("the walls draft");
+        commit(&mut doc, node, shape, SourceFate::Reshape).expect("the draft applies");
         assert_eq!(doc.parts().count(), 1);
         assert_eq!(doc.node_for_part(part), Some(node), "the part keeps its node");
         assert!((part_shape(&doc, node).volume() - drafted).abs() < 1e-6);
-        assert_eq!(doc.undo_label(), Some("Draft"));
 
         doc.undo().expect("undo the draft");
         assert!((part_shape(&doc, node).volume() - 8.0).abs() < 1e-9);

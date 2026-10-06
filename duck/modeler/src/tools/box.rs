@@ -13,10 +13,11 @@ use duck_engine_viewer::{
     selection::SelectionManager,
 };
 use glam::dvec3;
-use log::{error, warn};
+use log::error;
 use opencascade::primitives::{Face, Shape, Wire};
 
-use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
+use crate::document::Document;
+use crate::ops::primitives::{prism, rectangle_corners};
 use crate::preview::PreviewSession;
 use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
@@ -94,17 +95,8 @@ impl BoxParams {
 
     /// The footprint's four world-space corners, in wire order.
     fn footprint_corners(&self) -> [Point3; 4] {
-        let (u, v) = self.plane.basis();
         let (offset, half_width, half_depth) = self.local_rect();
-        let centre = self.base + offset;
-        let half_w = u * half_width;
-        let half_d = v * half_depth;
-        [
-            centre - half_w - half_d,
-            centre + half_w - half_d,
-            centre + half_w + half_d,
-            centre - half_w + half_d,
-        ]
+        rectangle_corners(self.base + offset, &self.plane, 2.0 * half_width, 2.0 * half_depth)
     }
 }
 
@@ -126,19 +118,8 @@ impl PrimitiveParams for BoxParams {
 
     /// World-space box with analytic planar faces: the footprint rectangle on
     /// the plane, extruded along its normal.
-    fn build(&self) -> Option<Shape> {
-        let wire = Wire::from_ordered_points(
-            self.footprint_corners()
-                .iter()
-                .map(|&p| point3_to_dvec3(p)),
-        )
-        .map_err(|e| warn!("Failed to build box footprint wire: {e}"))
-        .ok()?;
-        let face = Face::from_wire(&wire)
-            .map_err(|e| warn!("Failed to build box footprint face: {e}"))
-            .ok()?;
-        let dir = self.plane.normal * self.height;
-        Some(face.extrude(vec3_to_dvec3(dir)).into())
+    fn build(&self) -> anyhow::Result<Shape> {
+        prism(&self.footprint_corners(), self.plane.normal * self.height)
     }
 }
 

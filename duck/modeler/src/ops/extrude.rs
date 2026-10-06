@@ -1,5 +1,4 @@
 use anyhow::{ensure, Context, Result};
-use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::common::{EuclideanSpace, InnerSpace, Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
 use opencascade::history::ShapeHistory;
@@ -40,12 +39,12 @@ impl ExtrudeTarget {
 /// Where an extrusion grows from, resolved once from its target.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExtrudeFrame {
-    pub target: ExtrudeTarget,
     /// The face's centre of mass, or the edge's midpoint.
     pub origin: Point3,
     /// Unit direction out of the profile: the outward normal of a face, or the
     /// sketch plane normal for an edge.
     pub normal: Vector3,
+    /// What the extrusion does with the part it grows from.
     pub fate: SourceFate,
 }
 
@@ -54,14 +53,11 @@ impl ExtrudeFrame {
     ///
     /// `sketch_normal` is the modeler's construction-plane normal; it sets the
     /// edge extrusion direction so a sketch edge grows out of its plane into a wall.
-    pub fn new(doc: &Document, target: ExtrudeTarget, sketch_normal: Vector3) -> Result<Self> {
-        let source = doc
-            .part_for_node(target.node())
-            .and_then(|part| doc.get_part(part))
-            .context("Extrude target is not a known CAD part")?;
+    pub fn new(doc: &Document, target: &ExtrudeTarget, sketch_normal: Vector3) -> Result<Self> {
+        let source = doc.part_at(target.node()).context("Extrude target is not a known CAD part")?;
         let source_is_solid = has_solid(&source.shape);
 
-        let (origin, normal) = match target {
+        let (origin, normal) = match *target {
             ExtrudeTarget::Face { node, face_index } => {
                 let face = doc
                     .face_subshape(node, face_index)
@@ -85,13 +81,13 @@ impl ExtrudeFrame {
 
         // A face of a solid pads it. A face or edge of a bare sketch region grows
         // into what replaces the sketch. An edge of a solid grows a wall beside it.
-        let fate = match (target, source_is_solid) {
+        let fate = match (*target, source_is_solid) {
             (_, false) => SourceFate::Replace,
             (ExtrudeTarget::Face { .. }, true) => SourceFate::Fuse,
             (ExtrudeTarget::Edge { .. }, true) => SourceFate::Keep,
         };
 
-        Ok(Self { target, origin, normal, fate })
+        Ok(Self { origin, normal, fate })
     }
 }
 
@@ -130,7 +126,7 @@ impl ExtrudeParams {
     pub fn min_distance(&self) -> Real {
         match self.frame.fate {
             SourceFate::Fuse => 0.0,
-            SourceFate::Replace | SourceFate::Keep => Real::MIN,
+            SourceFate::Reshape | SourceFate::Replace | SourceFate::Keep => Real::MIN,
         }
     }
 
@@ -156,14 +152,14 @@ impl ExtrudeParams {
     }
 }
 
-/// The extruded geometry on its own, before it is combined with its source:
-/// a prism solid for a face, a swept face for an edge. Either is tapered by the
-/// draft, then made into walls by the thickness.
-pub fn build_extrusion(doc: &Document, params: &ExtrudeParams) -> Result<Shape> {
+/// The extruded geometry on its own, to commit with its source as the frame's
+/// [`SourceFate`] says: a prism solid for a face, a swept face for an edge.
+/// Either is tapered by the draft, then made into walls by the thickness.
+pub fn build_extrusion(doc: &Document, target: &ExtrudeTarget, params: &ExtrudeParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to extrude at zero distance");
     let sweep = vec3_to_dvec3(params.direction * params.distance);
 
-    match params.frame.target {
+    match *target {
         ExtrudeTarget::Face { node, face_index } => {
             let face = doc
                 .face_subshape(node, face_index)
@@ -233,46 +229,17 @@ fn draft(shape: &Shape, sides: &[Face], params: &ExtrudeParams) -> Result<(Shape
         .context("Draft angle not supported for this profile")
 }
 
-/// Apply the extrusion: build it and commit it with its source as the frame's
-/// [`SourceFate`] says, as one undo step.
-pub fn execute_extrude(
-    doc: &mut Document,
-    params: &ExtrudeParams,
-    options: &CadTessellationOptions,
-) -> Result<()> {
-    let extrusion = build_extrusion(doc, params)?;
-    let source = doc
-        .part_for_node(params.frame.target.node())
-        .context("Extrude target is not a known CAD part")?;
-    doc.commit_result(source, extrusion, params.frame.fate, "Extrude", "Extrusion", options)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use duck_engine_scene::common::consts;
-    use duck_engine_scene::Scene;
     use opencascade::primitives::{Edge, ShapeType, Wire};
 
     use crate::document::PartKind;
+    use crate::testing::{commit, doc_with_box, doc_with_shape, square_frustum};
 
     const SKETCH_NORMAL: Vector3 = Vector3::new(0.0, 1.0, 0.0);
-
-    fn doc_with_box() -> (Document, NodeId) {
-        let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
-        doc_with_shape(shape)
-    }
-
-    fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
-        let scene = Scene::default();
-        let mut doc = Document::new(scene);
-        let part = doc
-            .add_part("part", shape, &CadTessellationOptions::default())
-            .expect("shape tessellates");
-        let node = doc.node_for_part(part).expect("part has a node");
-        (doc, node)
-    }
 
     /// A closed unit-square planar region on the XZ plane, exactly what the line
     /// tool produces.
@@ -300,23 +267,35 @@ mod tests {
         Face::from_wire(&wire).expect("face builds").into()
     }
 
-    /// Volume of a frustum between squares of side `a` and `b`, `height` apart.
-    fn square_frustum(a: f64, b: f64, height: f64) -> f64 {
-        height / 3.0 * (a * a + b * b + a * b)
+    /// The first face of the part at `node`.
+    fn first_face(node: NodeId) -> ExtrudeTarget {
+        ExtrudeTarget::Face { node, face_index: 0 }
     }
 
-    /// Extrudes `params` and returns the resulting part's volume.
-    fn extruded_volume(doc: &mut Document, params: &ExtrudeParams) -> f64 {
-        execute_extrude(doc, params, &CadTessellationOptions::default()).expect("extrude succeeds");
-        let part = doc.parts().last().expect("a part remains");
-        assert_eq!(part.shape.shape_type(), ShapeType::Solid, "the extrusion must be a solid");
-        part.shape.volume()
+    /// The first edge of the part at `node`.
+    fn first_edge(node: NodeId) -> ExtrudeTarget {
+        ExtrudeTarget::Edge { node, edge_index: 0 }
     }
 
     /// An extrusion of `target` by `distance` straight out of its profile.
-    fn params(doc: &Document, target: ExtrudeTarget, distance: Real) -> ExtrudeParams {
+    fn params(doc: &Document, target: &ExtrudeTarget, distance: Real) -> ExtrudeParams {
         let frame = ExtrudeFrame::new(doc, target, SKETCH_NORMAL).expect("target resolves");
         ExtrudeParams { distance, ..ExtrudeParams::new(frame) }
+    }
+
+    /// Builds the extrusion and commits it with its source as the frame's fate
+    /// says.
+    fn extrude(doc: &mut Document, target: &ExtrudeTarget, params: &ExtrudeParams) -> Result<()> {
+        let extrusion = build_extrusion(doc, target, params)?;
+        commit(doc, target.node(), extrusion, params.frame.fate)
+    }
+
+    /// Extrudes `params` and returns the resulting part's volume.
+    fn extruded_volume(doc: &mut Document, target: &ExtrudeTarget, params: &ExtrudeParams) -> f64 {
+        extrude(doc, target, params).expect("extrude succeeds");
+        let part = doc.parts().last().expect("a part remains");
+        assert_eq!(part.shape.shape_type(), ShapeType::Solid, "the extrusion must be a solid");
+        part.shape.volume()
     }
 
     #[test]
@@ -324,9 +303,9 @@ mod tests {
         let (mut doc, node) = doc_with_box();
         assert_eq!(doc.parts().count(), 1);
 
-        let params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 1.0);
-        execute_extrude(&mut doc, &params, &CadTessellationOptions::default())
-            .expect("face extrude succeeds");
+        let face = first_face(node);
+        let params = params(&doc, &face, 1.0);
+        extrude(&mut doc, &face, &params).expect("face extrude succeeds");
 
         assert_eq!(doc.parts().count(), 1, "source box should be replaced by the pad");
         let part = doc.parts().next().expect("one part remains");
@@ -338,9 +317,9 @@ mod tests {
         // Repro for the reported bug: extruding a closed sketch region must yield a
         // solid, not a degenerate union of a solid with the 2D region it grew from.
         let (mut doc, node) = doc_with_shape(region_shape());
-        let params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 2.0);
-        execute_extrude(&mut doc, &params, &CadTessellationOptions::default())
-            .expect("region extrude succeeds");
+        let face = first_face(node);
+        let params = params(&doc, &face, 2.0);
+        extrude(&mut doc, &face, &params).expect("region extrude succeeds");
 
         assert_eq!(doc.parts().count(), 1, "region is replaced by its extrusion");
         let part = doc.parts().next().expect("one part remains");
@@ -354,9 +333,9 @@ mod tests {
     fn box_face_extrude_produces_a_solid() {
         for face_index in 0..6 {
             let (mut doc, node) = doc_with_box();
-            let params = params(&doc, ExtrudeTarget::Face { node, face_index }, 1.0);
-            execute_extrude(&mut doc, &params, &CadTessellationOptions::default())
-                .expect("face extrude succeeds");
+            let face = ExtrudeTarget::Face { node, face_index };
+            let params = params(&doc, &face, 1.0);
+            extrude(&mut doc, &face, &params).expect("face extrude succeeds");
 
             let part = doc.parts().next().expect("one part remains");
             assert_eq!(
@@ -377,7 +356,7 @@ mod tests {
     fn box_face_frame_normal_is_unit_and_points_outward() {
         let (doc, node) = doc_with_box();
         for face_index in 0..6 {
-            let frame = ExtrudeFrame::new(&doc, ExtrudeTarget::Face { node, face_index }, SKETCH_NORMAL)
+            let frame = ExtrudeFrame::new(&doc, &ExtrudeTarget::Face { node, face_index }, SKETCH_NORMAL)
                 .expect("box face resolves");
             assert!((frame.normal.magnitude() - 1.0).abs() < 1e-4, "normal should be unit");
             // A box face normal points along exactly one world axis.
@@ -399,53 +378,53 @@ mod tests {
     #[test]
     fn box_edge_extrude_keeps_solid_and_adds_face() {
         let (mut doc, node) = doc_with_box();
-        let params = params(&doc, ExtrudeTarget::Edge { node, edge_index: 0 }, 1.0);
-        execute_extrude(&mut doc, &params, &CadTessellationOptions::default())
-            .expect("edge extrude succeeds");
+        let edge = first_edge(node);
+        let params = params(&doc, &edge, 1.0);
+        extrude(&mut doc, &edge, &params).expect("edge extrude succeeds");
         // Extruding an edge of a solid must not delete the solid.
         assert_eq!(doc.parts().count(), 2, "solid kept, extruded face added");
         let names: Vec<_> = doc.parts().map(|p| p.name.as_str()).collect();
         assert!(
-            names.contains(&"part") && names.contains(&"Extrusion-001"),
+            names.contains(&"part") && names.contains(&"Result-001"),
             "the untouched source keeps its name and the new face is numbered, got {names:?}"
         );
     }
 
     #[test]
     fn the_fate_follows_the_target_and_its_source() {
-        let fate = |doc: &Document, target| {
-            ExtrudeFrame::new(doc, target, SKETCH_NORMAL).expect("target resolves").fate
+        let fate = |doc: &Document, target: ExtrudeTarget| {
+            ExtrudeFrame::new(doc, &target, SKETCH_NORMAL).expect("target resolves").fate
         };
 
         let (doc, node) = doc_with_box();
-        assert_eq!(fate(&doc, ExtrudeTarget::Face { node, face_index: 0 }), SourceFate::Fuse);
-        assert_eq!(fate(&doc, ExtrudeTarget::Edge { node, edge_index: 0 }), SourceFate::Keep);
+        assert_eq!(fate(&doc, first_face(node)), SourceFate::Fuse);
+        assert_eq!(fate(&doc, first_edge(node)), SourceFate::Keep);
 
         let (doc, node) = doc_with_shape(region_shape());
-        assert_eq!(fate(&doc, ExtrudeTarget::Face { node, face_index: 0 }), SourceFate::Replace);
-        assert_eq!(fate(&doc, ExtrudeTarget::Edge { node, edge_index: 0 }), SourceFate::Replace);
+        assert_eq!(fate(&doc, first_face(node)), SourceFate::Replace);
+        assert_eq!(fate(&doc, first_edge(node)), SourceFate::Replace);
     }
 
     /// A pad only adds material; everything else may grow to either side.
     #[test]
     fn only_a_pad_is_held_out_of_its_body() {
         let (doc, node) = doc_with_box();
-        let pad = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 1.0);
+        let pad = params(&doc, &first_face(node), 1.0);
         assert_eq!(pad.min_distance(), 0.0);
-        let wall = params(&doc, ExtrudeTarget::Edge { node, edge_index: 0 }, 1.0);
+        let wall = params(&doc, &first_edge(node), 1.0);
         assert!(wall.min_distance() < 0.0);
 
         let (doc, node) = doc_with_shape(region_shape());
-        let region = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 1.0);
+        let region = params(&doc, &first_face(node), 1.0);
         assert!(region.min_distance() < 0.0);
     }
 
     #[test]
     fn a_region_extrudes_to_either_side() {
         let (mut doc, node) = doc_with_shape(region_shape());
-        let params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, -2.0);
-        execute_extrude(&mut doc, &params, &CadTessellationOptions::default())
-            .expect("a backwards region extrude succeeds");
+        let face = first_face(node);
+        let params = params(&doc, &face, -2.0);
+        extrude(&mut doc, &face, &params).expect("a backwards region extrude succeeds");
 
         let part = doc.parts().next().expect("one part remains");
         assert_eq!(part.shape.shape_type(), ShapeType::Solid);
@@ -457,13 +436,13 @@ mod tests {
     #[test]
     fn a_tilted_extrusion_keeps_its_base_and_height() {
         let (mut doc, node) = doc_with_shape(region_shape());
-        let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 2.0);
+        let face = first_face(node);
+        let mut params = params(&doc, &face, 2.0);
         params.direction = (params.frame.normal + Vector3::unit_x()).normalize();
         let height = params.distance * params.direction.dot(params.frame.normal);
         assert!((params.tilt() - consts::FRAC_PI_4).abs() < 1e-5);
 
-        execute_extrude(&mut doc, &params, &CadTessellationOptions::default())
-            .expect("a tilted extrude succeeds");
+        extrude(&mut doc, &face, &params).expect("a tilted extrude succeeds");
 
         let part = doc.parts().next().expect("one part remains");
         let expected = 1.0 * f64::from(height);
@@ -481,12 +460,13 @@ mod tests {
         let (height, angle) = (1.0, Real::to_radians(10.0));
         for sign in [1.0, -1.0] {
             let (mut doc, node) = doc_with_shape(polygon_region(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]));
-            let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, height);
+            let face = first_face(node);
+            let mut params = params(&doc, &face, height);
             params.draft = sign * angle;
 
             let top = 2.0 - 2.0 * f64::from(sign * height) * f64::from(angle).tan();
             let expected = square_frustum(2.0, top, f64::from(height));
-            let volume = extruded_volume(&mut doc, &params);
+            let volume = extruded_volume(&mut doc, &face, &params);
             assert!((volume - expected).abs() < 1e-4, "sign {sign}: expected {expected}, got {volume}");
         }
     }
@@ -495,11 +475,12 @@ mod tests {
     #[test]
     fn a_thick_pad_fuses_into_a_cup() {
         let (mut doc, node) = doc_with_box();
-        let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 1.0);
+        let face = first_face(node);
+        let mut params = params(&doc, &face, 1.0);
         params.thickness = 0.25;
 
         let expected = 8.0 + (4.0 - 1.5 * 1.5) * 1.0;
-        let volume = extruded_volume(&mut doc, &params);
+        let volume = extruded_volume(&mut doc, &face, &params);
         assert!((volume - expected).abs() < 1e-5, "expected {expected}, got {volume}");
         assert_eq!(doc.parts().count(), 1, "the cup replaces the box");
     }
@@ -511,7 +492,8 @@ mod tests {
     fn drafted_walls_stay_parallel() {
         let (height, angle, thickness) = (1.0, Real::to_radians(10.0), 0.2);
         let (mut doc, node) = doc_with_shape(polygon_region(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]));
-        let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, height);
+        let face = first_face(node);
+        let mut params = params(&doc, &face, height);
         params.draft = angle;
         params.thickness = thickness;
 
@@ -519,7 +501,7 @@ mod tests {
         let top = 2.0 - 2.0 * h * angle.tan();
         let inset = 2.0 * t / angle.cos();
         let expected = square_frustum(2.0, top, h) - square_frustum(2.0 - inset, top - inset, h);
-        let volume = extruded_volume(&mut doc, &params);
+        let volume = extruded_volume(&mut doc, &face, &params);
         assert!((volume - expected).abs() < 1e-4, "expected {expected}, got {volume}");
     }
 
@@ -529,12 +511,13 @@ mod tests {
     fn a_concave_region_keeps_sharp_inner_corners() {
         let l_shape = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 2.0), (0.0, 2.0)];
         let (mut doc, node) = doc_with_shape(polygon_region(&l_shape));
-        let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 1.0);
+        let face = first_face(node);
+        let mut params = params(&doc, &face, 1.0);
         params.thickness = 0.1;
 
         // The L's area less the L inset by the thickness on every side.
         let expected = 3.0 - (1.8 * 0.8 + 0.8 * 1.0);
-        let volume = extruded_volume(&mut doc, &params);
+        let volume = extruded_volume(&mut doc, &face, &params);
         assert!((volume - expected).abs() < 1e-5, "expected {expected}, got {volume}");
     }
 
@@ -542,11 +525,12 @@ mod tests {
     fn a_circular_region_hollows_into_a_tube() {
         let circle = Edge::circle(glam::DVec3::ZERO, glam::DVec3::Y, 1.0).expect("circle builds");
         let (mut doc, node) = doc_with_shape(edge_region(circle));
-        let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 1.0);
+        let face = first_face(node);
+        let mut params = params(&doc, &face, 1.0);
         params.thickness = 0.1;
 
         let expected = std::f64::consts::PI * (1.0 - 0.9 * 0.9);
-        let volume = extruded_volume(&mut doc, &params);
+        let volume = extruded_volume(&mut doc, &face, &params);
         assert!((volume - expected).abs() < 1e-4, "expected {expected}, got {volume}");
     }
 
@@ -554,10 +538,11 @@ mod tests {
     #[test]
     fn a_thick_edge_grows_a_solid_wall() {
         let (doc, node) = doc_with_shape(region_shape());
+        let edge = first_edge(node);
         for thickness in [0.1, -0.1] {
-            let mut params = params(&doc, ExtrudeTarget::Edge { node, edge_index: 0 }, 1.0);
+            let mut params = params(&doc, &edge, 1.0);
             params.thickness = thickness;
-            let wall = build_extrusion(&doc, &params).expect("a thick edge extrudes");
+            let wall = build_extrusion(&doc, &edge, &params).expect("a thick edge extrudes");
             assert_eq!(wall.shape_type(), ShapeType::Solid, "thickness {thickness}");
             assert!((wall.volume() - 0.1).abs() < 1e-6, "thickness {thickness}: got {}", wall.volume());
         }
@@ -579,10 +564,11 @@ mod tests {
         )
         .expect("spline builds");
         let (doc, node) = doc_with_shape(edge_region(spline));
-        let mut params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 1.0);
+        let face = first_face(node);
+        let mut params = params(&doc, &face, 1.0);
         params.draft = Real::to_radians(5.0);
 
-        let Err(error) = build_extrusion(&doc, &params) else {
+        let Err(error) = build_extrusion(&doc, &face, &params) else {
             panic!("a spline side cannot take a draft");
         };
         assert!(format!("{error:#}").contains("Draft angle not supported"), "got {error:#}");
@@ -593,8 +579,9 @@ mod tests {
     #[test]
     fn a_zero_length_extrusion_is_refused() {
         let (doc, node) = doc_with_box();
-        let params = params(&doc, ExtrudeTarget::Face { node, face_index: 0 }, 0.0);
+        let face = first_face(node);
+        let params = params(&doc, &face, 0.0);
         assert!(params.is_degenerate());
-        assert!(build_extrusion(&doc, &params).is_err());
+        assert!(build_extrusion(&doc, &face, &params).is_err());
     }
 }

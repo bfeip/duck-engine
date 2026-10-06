@@ -1,13 +1,10 @@
 use anyhow::{ensure, Context, Result};
-use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::common::{InnerSpace, Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
-use opencascade::primitives::{Face, JoinType, Shape, Shell};
+use opencascade::primitives::{JoinType, Shape, Shell};
 use opencascade::OffsetError;
 
-use crate::document::{
-    dvec3_to_point3, dvec3_to_vec3, has_solid, CadPart, Document, SourceFate,
-};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, has_solid, selected_face, Document, SourceFate};
 
 /// A side at or below this thickness is none: OCCT's offset takes anything
 /// smaller as null.
@@ -38,7 +35,7 @@ pub struct ThickenFrame {
 
 impl ThickenFrame {
     pub fn new(doc: &Document, target: &ThickenTarget) -> Result<Self> {
-        let shape = &target_part(doc, target)?.shape;
+        let shape = &doc.part_at(target.node).context("Thicken target is not a known CAD part")?.shape;
         let on_solid = has_solid(shape);
         ensure!(!on_solid || !target.faces.is_empty(), "Select faces of the solid to thicken");
         let face_count = shape.faces().count() as u32;
@@ -46,7 +43,7 @@ impl ThickenFrame {
         let whole_sheet =
             !on_solid && (0..face_count).all(|index| target.faces.is_empty() || target.faces.contains(&index));
 
-        let primary = face(shape, target.faces.first().copied().unwrap_or(0))?;
+        let primary = selected_face(shape, target.faces.first().copied().unwrap_or(0))?;
         let origin = primary.midpoint();
         let normal = primary.normal_at(origin).context("The face to thicken has no well-defined normal")?;
         Ok(Self {
@@ -144,10 +141,11 @@ impl ThickenParams {
     }
 }
 
-/// The slab the target's faces thicken into, on its own.
+/// The slab the target's faces thicken into, on its own, to commit with its
+/// part as [`ThickenParams::fate`] says.
 pub fn build_thicken(doc: &Document, target: &ThickenTarget, params: &ThickenParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to thicken without a thickness");
-    let part = target_part(doc, target)?;
+    let part = doc.part_at(target.node).context("Thicken target is not a known CAD part")?;
 
     // OCCT's offset reuses the faces it thickens and may retouch them, so the
     // slab grows from a copy: an abandoned preview must leave the part as it was.
@@ -155,7 +153,7 @@ pub fn build_thicken(doc: &Document, target: &ThickenTarget, params: &ThickenPar
     let sheet: Shape = if params.frame.whole_sheet {
         body
     } else {
-        let faces = target.faces.iter().map(|&index| face(&body, index)).collect::<Result<Vec<_>>>()?;
+        let faces = target.faces.iter().map(|&index| selected_face(&body, index)).collect::<Result<Vec<_>>>()?;
         match faces.as_slice() {
             [face] => face.into(),
             faces => Shell::from_faces(faces).into(),
@@ -170,47 +168,19 @@ pub fn build_thicken(doc: &Document, target: &ThickenTarget, params: &ThickenPar
         (false, true) => sheet.thicken(-back, join),
         _ => sheet.offset_surface(-back, join).and_then(|base| base.thicken(front + back, join)),
     };
-    slab.map_err(|error| {
-        let hint = failure_hint(&error);
-        anyhow::Error::new(error).context(hint)
-    })
+    slab.map_err(explained)
 }
 
-/// A plain-language account of why a thickening failed, to lead the kernel's
-/// reason.
-fn failure_hint(error: &opencascade::Error) -> &'static str {
-    match error {
+/// `error`, led by a plain-language account of why the thickening failed.
+fn explained(error: opencascade::Error) -> anyhow::Error {
+    let hint = match &error {
         opencascade::Error::OffsetFailed(OffsetError::NotConnectedShell) => "The faces to thicken must touch",
         opencascade::Error::OffsetFailed(OffsetError::InvalidResult) => {
             "The thickness is too large for these faces"
         }
         _ => "The thickness may be too large for these faces",
-    }
-}
-
-/// Apply the thickening: build the slab and commit it with its source as the
-/// parameters' [`SourceFate`] says, as one undo step.
-pub fn execute_thicken(
-    doc: &mut Document,
-    target: &ThickenTarget,
-    params: &ThickenParams,
-    options: &CadTessellationOptions,
-) -> Result<()> {
-    let slab = build_thicken(doc, target, params)?;
-    let source = doc.part_for_node(target.node).context("Thicken target is not a known CAD part")?;
-    doc.commit_result(source, slab, params.fate(), "Thicken", "Thickened", options)
-}
-
-fn target_part<'a>(doc: &'a Document, target: &ThickenTarget) -> Result<&'a CadPart> {
-    doc.part_for_node(target.node)
-        .and_then(|part| doc.get_part(part))
-        .context("Thicken target is not a known CAD part")
-}
-
-fn face(shape: &Shape, index: u32) -> Result<Face> {
-    shape
-        .face_at(index as usize)
-        .with_context(|| format!("Selected face {index} is not part of the part"))
+    };
+    anyhow::Error::new(error).context(hint)
 }
 
 #[cfg(test)]
@@ -218,61 +188,21 @@ mod tests {
     use super::*;
 
     use duck_engine_scene::common::EuclideanSpace;
-    use duck_engine_scene::Scene;
     use glam::DVec3;
     use opencascade::bounding_box::aabb;
-    use opencascade::primitives::{FaceType, ShapeType, Wire};
+    use opencascade::primitives::{Face, FaceType, ShapeType, Wire};
 
     use crate::document::PartKind;
+    use crate::testing::{commit, doc_with_box, doc_with_shape, face_along, part_shape, tube, volumes};
 
     const EPSILON: Real = 1e-5;
 
     /// Slack for bounding boxes, which OCCT pads by the shape's tolerance.
     const BOUNDS: f64 = 5e-3;
 
-    fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
-        let mut doc = Document::new(Scene::default());
-        let part = doc
-            .add_part("part", shape, &CadTessellationOptions::default())
-            .expect("shape tessellates");
-        let node = doc.node_for_part(part).expect("part has a node");
-        (doc, node)
-    }
-
-    /// A 2×2×2 box centred on the origin.
-    fn doc_with_box() -> (Document, NodeId) {
-        doc_with_shape(Shape::box_centered(2.0, 2.0, 2.0))
-    }
-
     /// A 2×3 sheet on the XY plane, centred on the origin.
     fn sheet() -> Shape {
         Face::from_wire(&Wire::rect(2.0, 3.0).expect("rectangle builds")).expect("face builds").into()
-    }
-
-    /// An open square tube: the sides lofted between unit squares two apart.
-    fn tube() -> Shape {
-        let square = |y: f64| {
-            Wire::from_ordered_points([
-                DVec3::new(-0.5, y, -0.5),
-                DVec3::new(0.5, y, -0.5),
-                DVec3::new(0.5, y, 0.5),
-                DVec3::new(-0.5, y, 0.5),
-            ])
-            .expect("square builds")
-        };
-        Shell::loft([square(0.0), square(2.0)]).into()
-    }
-
-    fn part_shape(doc: &Document, node: NodeId) -> &Shape {
-        &doc.get_part(doc.part_for_node(node).unwrap()).unwrap().shape
-    }
-
-    /// The index of the face whose outward normal at its centre is `normal`.
-    fn face_along(doc: &Document, node: NodeId, normal: DVec3) -> u32 {
-        part_shape(doc, node)
-            .faces()
-            .position(|face| face.normal_at_center().is_ok_and(|n| n.normalize().distance(normal) < 1e-6))
-            .expect("a face matches") as u32
     }
 
     fn target(node: NodeId, faces: &[u32]) -> ThickenTarget {
@@ -284,12 +214,10 @@ mod tests {
         ThickenParams { front, back, ..ThickenParams::new(frame) }
     }
 
-    fn volumes(doc: &Document) -> Vec<f64> {
-        doc.parts().map(|part| part.shape.volume()).collect()
-    }
-
+    /// Builds the slab and commits it with its part as the parameters' fate says.
     fn thicken(doc: &mut Document, target: &ThickenTarget, params: &ThickenParams) {
-        execute_thicken(doc, target, params, &CadTessellationOptions::default()).expect("the faces thicken");
+        let slab = build_thicken(doc, target, params).expect("the faces thicken");
+        commit(doc, target.node, slab, params.fate()).expect("the slab commits");
     }
 
     #[test]
@@ -318,7 +246,6 @@ mod tests {
         assert_eq!(volumes(&doc).len(), 1);
         assert_eq!(doc.node_for_part(part), Some(node), "the part keeps its node");
         assert!((part_shape(&doc, node).volume() - 10.0).abs() < 1e-6, "got {}", part_shape(&doc, node).volume());
-        assert_eq!(doc.undo_label(), Some("Thicken"));
 
         doc.undo().expect("undo the thickening");
         assert!((part_shape(&doc, node).volume() - 8.0).abs() < 1e-9);
@@ -347,7 +274,7 @@ mod tests {
 
         thicken(&mut doc, &top, &slab);
         let names: Vec<_> = doc.parts().map(|part| part.name.as_str()).collect();
-        assert_eq!(names, ["part", "Thickened-001"]);
+        assert_eq!(names, ["part", "Result-001"], "the solid stays, and the slab is a part of its own");
         let volumes = volumes(&doc);
         assert!((volumes[0] - 8.0).abs() < 1e-9);
         assert!((volumes[1] - 3.0).abs() < 1e-6, "got {}", volumes[1]);

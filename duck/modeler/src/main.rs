@@ -11,6 +11,8 @@ mod ops;
 mod platform;
 mod preview;
 mod snap;
+#[cfg(test)]
+mod testing;
 mod tools;
 mod ui;
 mod undo;

@@ -13,9 +13,10 @@ use duck_engine_viewer::{
     selection::SelectionManager,
 };
 use log::warn;
-use opencascade::primitives::{Edge, Shape, Wire};
+use opencascade::primitives::Shape;
 
-use crate::document::{point3_to_dvec3, Document};
+use crate::document::Document;
+use crate::ops::primitives::{closed_polyline, polyline, region};
 use crate::preview::PreviewSession;
 use crate::snap::{Snap, SnapKind, SnapProvider, WireStartSnap};
 use crate::tools::{ModelingTool, ToolInfo};
@@ -53,49 +54,6 @@ pub struct LineTool {
     finished: bool,
 }
 
-
-/// Builds an open polyline wire shape from `points` (one segment per consecutive
-/// pair). Returns `None` if there are fewer than two points.
-fn open_wire_shape(points: &[Point3]) -> Option<Shape> {
-    if points.len() < 2 {
-        return None;
-    }
-    let edges: Vec<Edge> = points
-        .windows(2)
-        .map(|w| Edge::segment(point3_to_dvec3(w[0]), point3_to_dvec3(w[1])))
-        .collect::<Result<_, _>>()
-        .map_err(|e| warn!("Failed to build polyline edge: {e}"))
-        .ok()?;
-    let wire = Wire::from_edges(&edges)
-        .map_err(|e| warn!("Failed to build polyline wire: {e}"))
-        .ok()?;
-    Some(Shape::from(&wire))
-}
-
-/// Builds a closed wire from `points`. Returns `None` with fewer than three points.
-/// `Wire::from_ordered_points` closes the loop automatically.
-fn closed_wire(points: &[Point3]) -> Option<Wire> {
-    if points.len() < 3 {
-        return None;
-    }
-    Wire::from_ordered_points(points.iter().copied().map(point3_to_dvec3))
-        .map_err(|e| warn!("Failed to build closed wire: {e}"))
-        .ok()
-}
-
-/// Builds a closed wire shape (the loop, with no fill) from `points`. Used as a
-/// fallback when the points are not co-planar and a face cannot be built.
-fn closed_wire_shape(points: &[Point3]) -> Option<Shape> {
-    Some(Shape::from(&closed_wire(points)?))
-}
-
-/// Builds a closed planar face shape from `points`. Returns `None` with fewer than
-/// three points, or when the points are not co-planar (no face can be built).
-fn closed_face_shape(points: &[Point3]) -> Option<Shape> {
-    let wire = closed_wire(points)?;
-    let face = wire.to_face().map_err(|e| warn!("Failed to build face from wire: {e}")).ok()?;
-    Some(Shape::from(&face))
-}
 
 impl LineTool {
     pub fn new(
@@ -159,19 +117,17 @@ impl LineTool {
         };
 
         let shape = if closing {
-            // Non-coplanar points can't form a face; fall back to the closed wire.
-            closed_face_shape(&points).or_else(|| closed_wire_shape(&points))
+            // Non-coplanar points bound no face; the region is then the loop alone.
+            closed_polyline(&points).map(region)
         } else {
             let mut all = points;
-            if let Some(c) = cursor_point {
-                all.push(c);
-            }
-            open_wire_shape(&all)
+            all.extend(cursor_point);
+            polyline(&all).map(|wire| Shape::from(&wire))
         };
 
         // `rebuild` keeps the last valid preview if construction fails (e.g. a snap
         // produced a degenerate point), so the line doesn't momentarily disappear.
-        let Some(shape) = shape else { return };
+        let Ok(shape) = shape else { return };
         let preview_options = self.construction_options.borrow().preview_options();
         if self.preview.try_replace_preview(&shape, &preview_options, "line").is_some()
             && let Phase::Building { closing: c, .. } = &mut self.phase
@@ -218,22 +174,15 @@ impl LineTool {
         };
         let _ = self.preview.commit();
 
-        if let Some(shape) = closed_face_shape(&points).or_else(|| closed_wire_shape(&points)) {
-            let coptions = self.construction_options.borrow();
-            let mut doc = self.document.lock().unwrap();
-            if doc
-                .add_numbered_part(
-                    "Region",
-                    shape,
-                    &coptions.geometry_options,
-                )
-                .is_ok()
-            {
-                self.finished = true;
+        match closed_polyline(&points).map(region) {
+            Ok(shape) => {
+                let coptions = self.construction_options.borrow();
+                let mut doc = self.document.lock().unwrap();
+                if doc.add_numbered_part("Region", shape, &coptions.geometry_options).is_ok() {
+                    self.finished = true;
+                }
             }
-        }
-        else {
-            warn!("Failed to build closed face shape for polyline.")
+            Err(e) => warn!("Failed to close the line: {e:#}"),
         }
         self.phase = Phase::Idle;
     }
@@ -248,16 +197,10 @@ impl LineTool {
         let _ = self.preview.commit();
 
         let mut committed = false;
-        if let Some(shape) = open_wire_shape(&points) {
+        if let Ok(wire) = polyline(&points) {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
-            committed = doc
-                .add_numbered_part(
-                    "Line",
-                    shape,
-                    &coptions.geometry_options,
-                )
-                .is_ok();
+            committed = doc.add_numbered_part("Line", Shape::from(&wire), &coptions.geometry_options).is_ok();
         }
         self.phase = Phase::Idle;
         if committed {

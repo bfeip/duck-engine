@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds, SelectionMode},
@@ -7,10 +7,8 @@ use duck_engine_viewer::{
 use duck_engine_viewer::common::Real;
 use opencascade::primitives::Shape;
 
-use crate::document::Document;
-use crate::ops::fillet::{
-    build_fillet, execute_fillet, BlendKind, FilletFrame, FilletParams, FilletTarget,
-};
+use crate::document::{Document, SourceFate};
+use crate::ops::fillet::{build_fillet, BlendKind, FilletFrame, FilletParams, FilletTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{
@@ -119,7 +117,7 @@ impl TargetedOp for Fillet {
         _construction: &ConstructionOptions,
         edited: Option<&FilletParams>,
     ) -> Result<FilletParams> {
-        let frame = FilletFrame::new(doc, target.node, target.edges[0])?;
+        let frame = FilletFrame::new(doc, target)?;
         Ok(match edited {
             Some(params) => FilletParams { frame, ..*params },
             None => FilletParams::new(frame),
@@ -143,9 +141,12 @@ impl TargetedOp for Fillet {
         doc: &mut Document,
         target: &FilletTarget,
         params: &FilletParams,
-        _construction: &ConstructionOptions,
+        construction: &ConstructionOptions,
     ) -> Result<()> {
-        execute_fillet(doc, target, params)
+        let shape = build_fillet(doc, target, params)?;
+        let part = doc.part_for_node(target.node).context("Fillet target is not a known CAD part")?;
+        let name = params.kind.name();
+        doc.commit_result(part, shape, SourceFate::Reshape, name, name, &construction.geometry_options)
     }
 
     /// F and C switch between fillet and chamfer.
@@ -440,6 +441,19 @@ mod tests {
         assert_eq!(visibility(&document, node), Visibility::Visible);
         let expected = 8.0 - 2.0 * 0.09 * (1.0 - std::f64::consts::FRAC_PI_4);
         assert!((volume(&document, node) - expected).abs() < 1e-5, "got {}", volume(&document, node));
+        assert_eq!(document.lock().unwrap().undo_label(), Some("Fillet"));
+    }
+
+    #[test]
+    fn a_chamfer_applies_under_its_own_name() {
+        let (document, node, _) = document_with_boxes();
+        let (mut op, mut selection) = targeting_edge(&document, node);
+        assert!(op.on_key(&key('c'), Modifiers::default(), &mut selection));
+        drag_out(&mut op, -0.3);
+
+        op.apply(&mut selection).expect("the chamfer applies");
+        assert!((volume(&document, node) - (8.0 - 0.09)).abs() < 1e-5, "got {}", volume(&document, node));
+        assert_eq!(document.lock().unwrap().undo_label(), Some("Chamfer"));
     }
 
     #[test]

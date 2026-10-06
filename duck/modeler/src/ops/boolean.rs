@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
+use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::NodeId;
-use duck_engine_scene::cad::{CadTessellationOptions, tessellate_into};
 use opencascade::primitives::{BooleanPair, Shape};
 
-use crate::document::{interactive_fuzz, unify_same_domain, unwrap_single_solid, Document, PartId};
+use crate::document::{interactive_fuzz, unify_same_domain, unwrap_single_solid, Document, SourceFate};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum BooleanKind {
@@ -13,37 +13,52 @@ pub enum BooleanKind {
     Intersect,
 }
 
-struct BooleanResult {
-    shape: Shape,
-    target_part_id: PartId,
-    tool_part_ids: Vec<PartId>,
-    /// See [`BooleanPreview::removed`]; gathered only on request.
-    removed: Vec<Shape>,
+/// The parts a boolean combines: the target it reshapes and the tools it cuts
+/// with, joins or intersects with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BooleanTarget {
+    pub target: NodeId,
+    pub tools: Vec<NodeId>,
 }
 
-/// Resolve nodes to shapes and compute the boolean result, without touching the scene.
-/// With `keep_removed`, also gather the input material the result drops.
-fn compute_boolean(
-    kind: BooleanKind,
-    target: NodeId,
-    tools: &[NodeId],
-    doc: &Document,
-    keep_removed: bool,
-) -> Result<BooleanResult> {
-    let target_part_id = doc.part_for_node(target)
-        .context("Target node is not a known CAD part")?;
-    let tool_part_ids: Vec<_> = tools.iter()
-        .map(|&node| doc.part_for_node(node).context("Tool node is not a known CAD part"))
-        .collect::<Result<_>>()?;
+/// A boolean's result, and the input material it drops.
+pub struct BooleanPreview {
+    pub shape: Shape,
+    /// The input material the result drops, as separate shapes: a subtract's
+    /// tools, the part of each intersect input outside the result, and nothing
+    /// for a union.
+    pub removed: Vec<Shape>,
+}
 
-    let target_part = doc.get_part(target_part_id)
-        .context("Target part not found")?;
+/// The boolean's result, to commit with [`commit_boolean`].
+pub fn build_boolean(doc: &Document, target: &BooleanTarget, kind: BooleanKind) -> Result<Shape> {
+    compute_boolean(doc, target, kind, false).map(|computed| computed.shape)
+}
+
+/// The boolean's result and the material it removes, for previewing.
+pub fn preview_boolean(doc: &Document, target: &BooleanTarget, kind: BooleanKind) -> Result<BooleanPreview> {
+    compute_boolean(doc, target, kind, true)
+}
+
+/// Computes the boolean without touching the document. With `keep_removed`,
+/// also gathers the input material the result drops.
+fn compute_boolean(
+    doc: &Document,
+    target: &BooleanTarget,
+    kind: BooleanKind,
+    keep_removed: bool,
+) -> Result<BooleanPreview> {
+    let target_part = doc.part_at(target.target).context("Target node is not a known CAD part")?;
     // Deep copies: OCCT booleans run destructively by default (tolerance bumps,
     // added PCurves on the *inputs*), and Shape::clone shares B-Rep data — so
     // operating on clones would corrupt the document's parts, which outlive a
     // cancelled or failed operation.
-    let tool_shapes: Vec<_> = tool_part_ids.iter()
-        .map(|&id| doc.get_part(id).map(|p| p.shape.deep_copy()).context("Tool part not found"))
+    let tool_shapes: Vec<_> = target
+        .tools
+        .iter()
+        .map(|&node| {
+            doc.part_at(node).map(|part| part.shape.deep_copy()).context("Tool node is not a known CAD part")
+        })
         .collect::<Result<_>>()?;
 
     let target_volume = target_part.shape.volume();
@@ -100,64 +115,31 @@ fn compute_boolean(
     // Unify last: the BOP splits periodic faces at their seam, leaving same-domain
     // halves that would otherwise be drawn and picked as separate geometry.
     let shape = unify_same_domain(unwrap_single_solid(shape));
-    Ok(BooleanResult { shape, target_part_id, tool_part_ids, removed })
+    Ok(BooleanPreview { shape, removed })
 }
 
-pub fn execute_boolean(
-    kind: BooleanKind,
-    target: NodeId,
-    tools: &[NodeId],
+/// Commits `result` in place of the target, under its name, consuming the
+/// tools, as one undo step.
+pub fn commit_boolean(
     doc: &mut Document,
+    target: &BooleanTarget,
+    result: Shape,
     options: &CadTessellationOptions,
 ) -> Result<()> {
-    let computed = compute_boolean(kind, target, tools, doc, false)?;
+    let target_part = doc.part_for_node(target.target).context("Target node is not a known CAD part")?;
+    let tool_parts = target
+        .tools
+        .iter()
+        .map(|&node| doc.part_for_node(node).context("Tool node is not a known CAD part"))
+        .collect::<Result<Vec<_>>>()?;
 
-    // The result supersedes the target, so it inherits the target's name.
-    let name = doc
-        .get_part(computed.target_part_id)
-        .map_or_else(|| "Boolean result".to_owned(), |part| part.name.clone());
-
-    // One undo step covers the added result and the removed inputs.
     let mut doc = doc.undo_scope("Boolean");
-
     // Tessellates atomically — if this fails, nothing is changed.
-    doc.add_part(name, computed.shape, options)
-        .context("Failed to tessellate boolean result")?;
-
-    // Tessellation succeeded — remove inputs.
-    for &part_id in computed.tool_part_ids.iter() {
-        doc.remove_part(part_id);
+    doc.commit_result(target_part, result, SourceFate::Replace, "Boolean", "Boolean", options)?;
+    for part in tool_parts {
+        doc.remove_part(part);
     }
-    doc.remove_part(computed.target_part_id);
-
     Ok(())
-}
-
-/// A non-destructive boolean preview.
-pub struct BooleanPreview {
-    /// Temporary scene node showing the result. The caller owns it and must
-    /// remove it when done.
-    pub node: NodeId,
-    /// The input material the result drops, as separate shapes: a subtract's
-    /// tools, the part of each intersect input outside the result, and nothing
-    /// for a union.
-    pub removed: Vec<Shape>,
-}
-
-/// Non-destructive preview: compute the boolean and add a temporary scene node
-/// without modifying the source parts or document.
-pub fn preview_boolean(
-    kind: BooleanKind,
-    target: NodeId,
-    tools: &[NodeId],
-    doc: &Document,
-    options: &CadTessellationOptions,
-) -> Result<BooleanPreview> {
-    let computed = compute_boolean(kind, target, tools, doc, true)?;
-    let node = tessellate_into(&computed.shape, doc.scene(), options, None, Some("Boolean preview"))
-        .context("Failed to tessellate boolean preview")?
-        .id();
-    Ok(BooleanPreview { node, removed: computed.removed })
 }
 
 #[cfg(test)]
@@ -167,6 +149,17 @@ mod tests {
 
     use super::*;
     use crate::document::PartKind;
+
+    /// The box at `target`, cut by the sphere at `tool`.
+    fn parts(target: NodeId, tool: NodeId) -> BooleanTarget {
+        BooleanTarget { target, tools: vec![tool] }
+    }
+
+    /// Builds the boolean and commits it.
+    fn apply(doc: &mut Document, target: &BooleanTarget, kind: BooleanKind) -> Result<()> {
+        let result = build_boolean(doc, target, kind)?;
+        commit_boolean(doc, target, result, &CadTessellationOptions::default())
+    }
 
     fn doc_with_box_and_sphere() -> (Document, NodeId, NodeId) {
         let scene = Scene::default();
@@ -190,15 +183,14 @@ mod tests {
     fn boolean_shares_no_faces_with_document_parts() {
         let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
 
-        let result = compute_boolean(BooleanKind::Subtract, box_node, &[sphere_node], &doc, false)
+        let result = build_boolean(&doc, &parts(box_node, sphere_node), BooleanKind::Subtract)
             .expect("subtract succeeds");
 
         for node in [box_node, sphere_node] {
-            let part_id = doc.part_for_node(node).unwrap();
-            let source = &doc.get_part(part_id).unwrap().shape;
+            let source = &doc.part_at(node).unwrap().shape;
             for face in source.faces() {
                 assert!(
-                    !result.shape.faces().any(|f| f.is_same(&face)),
+                    !result.faces().any(|f| f.is_same(&face)),
                     "boolean result shares a face with a source part"
                 );
             }
@@ -219,12 +211,12 @@ mod tests {
         let (box_node, sphere_node) =
             (doc.node_for_part(box_part).unwrap(), doc.node_for_part(sphere_part).unwrap());
 
-        let result = compute_boolean(BooleanKind::Subtract, box_node, &[sphere_node], &doc, false)
+        let result = build_boolean(&doc, &parts(box_node, sphere_node), BooleanKind::Subtract)
             .expect("subtract succeeds");
 
         // Cleaning again must find nothing left to merge.
-        let faces = result.shape.faces().count();
-        assert_eq!(faces, result.shape.clean().expect("clean").faces().count());
+        let faces = result.faces().count();
+        assert_eq!(faces, result.clean().expect("clean").faces().count());
         assert_eq!(faces, 5);
     }
 
@@ -260,16 +252,10 @@ mod tests {
             )
             .expect("sphere tessellates");
 
-        let result = compute_boolean(
-            BooleanKind::Subtract,
-            doc.node_for_part(box_part).unwrap(),
-            &[doc.node_for_part(sphere_part).unwrap()],
-            &doc,
-            false,
-        )
-        .expect("near-coincident subtract succeeds");
+        let target = parts(doc.node_for_part(box_part).unwrap(), doc.node_for_part(sphere_part).unwrap());
+        let result = build_boolean(&doc, &target, BooleanKind::Subtract).expect("near-coincident subtract succeeds");
 
-        let removed = box_volume - result.shape.volume();
+        let removed = box_volume - result.volume();
         let expected = 2.0 / 3.0 * std::f64::consts::PI * 20.0f64.powi(3);
         assert!(
             (removed - expected).abs() < 5e-3 * expected,
@@ -288,14 +274,8 @@ mod tests {
             .expect("sphere tessellates");
         let far_node = doc.node_for_part(far_part).unwrap();
 
-        let err = execute_boolean(
-            BooleanKind::Subtract,
-            box_node,
-            &[far_node],
-            &mut doc,
-            &options,
-        )
-        .expect_err("no-op subtract must fail");
+        let err = apply(&mut doc, &parts(box_node, far_node), BooleanKind::Subtract)
+            .expect_err("no-op subtract must fail");
         assert!(err.to_string().contains("removed no material"), "unexpected error: {err}");
         assert_eq!(doc.parts().count(), 3, "a failed boolean must not consume inputs");
     }
@@ -304,14 +284,7 @@ mod tests {
     fn boolean_result_is_solid_part() {
         let (mut doc, box_node, sphere_node) = doc_with_box_and_sphere();
 
-        execute_boolean(
-            BooleanKind::Subtract,
-            box_node,
-            &[sphere_node],
-            &mut doc,
-            &CadTessellationOptions::default(),
-        )
-        .expect("subtract succeeds");
+        apply(&mut doc, &parts(box_node, sphere_node), BooleanKind::Subtract).expect("subtract succeeds");
 
         let part = doc.parts().next().expect("boolean leaves one part");
         assert_eq!(doc.parts().count(), 1, "inputs are consumed");
@@ -322,14 +295,7 @@ mod tests {
     fn boolean_is_one_undo_step() {
         let (mut doc, box_node, sphere_node) = doc_with_box_and_sphere();
 
-        execute_boolean(
-            BooleanKind::Subtract,
-            box_node,
-            &[sphere_node],
-            &mut doc,
-            &CadTessellationOptions::default(),
-        )
-        .expect("subtract succeeds");
+        apply(&mut doc, &parts(box_node, sphere_node), BooleanKind::Subtract).expect("subtract succeeds");
         assert_eq!(doc.undo_label(), Some("Boolean"));
 
         doc.undo().expect("undo succeeds");
@@ -347,14 +313,7 @@ mod tests {
     fn result_inherits_the_target_name() {
         let (mut doc, box_node, sphere_node) = doc_with_box_and_sphere();
 
-        execute_boolean(
-            BooleanKind::Subtract,
-            box_node,
-            &[sphere_node],
-            &mut doc,
-            &CadTessellationOptions::default(),
-        )
-        .expect("subtract succeeds");
+        apply(&mut doc, &parts(box_node, sphere_node), BooleanKind::Subtract).expect("subtract succeeds");
 
         let names: Vec<_> = doc.parts().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["box"], "the result supersedes the target and keeps its name");
@@ -375,14 +334,8 @@ mod tests {
         use std::f64::consts::PI;
 
         let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
-        let preview = preview_boolean(
-            BooleanKind::Intersect,
-            box_node,
-            &[sphere_node],
-            &doc,
-            &CadTessellationOptions::default(),
-        )
-        .expect("intersect succeeds");
+        let preview = preview_boolean(&doc, &parts(box_node, sphere_node), BooleanKind::Intersect)
+            .expect("intersect succeeds");
 
         let shared = PI / 6.0;
         assert_eq!(preview.removed.len(), 2);
@@ -396,14 +349,8 @@ mod tests {
         use std::f64::consts::PI;
 
         let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
-        let preview = preview_boolean(
-            BooleanKind::Subtract,
-            box_node,
-            &[sphere_node],
-            &doc,
-            &CadTessellationOptions::default(),
-        )
-        .expect("subtract succeeds");
+        let preview = preview_boolean(&doc, &parts(box_node, sphere_node), BooleanKind::Subtract)
+            .expect("subtract succeeds");
 
         assert_eq!(preview.removed.len(), 1);
         assert_volume(&preview.removed[0], 4.0 / 3.0 * PI);
@@ -412,14 +359,8 @@ mod tests {
     #[test]
     fn union_preview_removes_nothing() {
         let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
-        let preview = preview_boolean(
-            BooleanKind::Union,
-            box_node,
-            &[sphere_node],
-            &doc,
-            &CadTessellationOptions::default(),
-        )
-        .expect("union succeeds");
+        let preview = preview_boolean(&doc, &parts(box_node, sphere_node), BooleanKind::Union)
+            .expect("union succeeds");
 
         assert!(preview.removed.is_empty());
     }
@@ -428,7 +369,7 @@ mod tests {
     fn removed_material_is_only_gathered_on_request() {
         let (doc, box_node, sphere_node) = doc_with_box_and_sphere();
         for kind in [BooleanKind::Subtract, BooleanKind::Union, BooleanKind::Intersect] {
-            let result = compute_boolean(kind, box_node, &[sphere_node], &doc, false)
+            let result = compute_boolean(&doc, &parts(box_node, sphere_node), kind, false)
                 .expect("boolean succeeds");
             assert!(result.removed.is_empty());
         }

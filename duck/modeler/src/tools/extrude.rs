@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use duck_engine_common::{consts, InnerSpace, Plane, Point3, Real, Vector3};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
@@ -11,7 +11,7 @@ use duck_engine_viewer::{
 use opencascade::primitives::Shape;
 
 use crate::document::{Document, SourceFate};
-use crate::ops::extrude::{build_extrusion, execute_extrude, ExtrudeFrame, ExtrudeParams, ExtrudeTarget};
+use crate::ops::extrude::{build_extrusion, ExtrudeFrame, ExtrudeParams, ExtrudeTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{EditLock, PreviewStyle, TargetedOp, TargetedTool};
@@ -211,7 +211,7 @@ impl TargetedOp for Extrude {
         // Edges extrude out of the sketch (construction) plane; faces ignore this
         // and use their own normal.
         let sketch_normal = construction.construction_plane.normal;
-        Ok(ExtrudeParams::new(ExtrudeFrame::new(doc, *target, sketch_normal)?))
+        Ok(ExtrudeParams::new(ExtrudeFrame::new(doc, target, sketch_normal)?))
     }
 
     fn is_degenerate(&self, params: &ExtrudeParams) -> bool {
@@ -224,18 +224,21 @@ impl TargetedOp for Extrude {
         PreviewStyle::Alongside { hide_source: params.frame.fate == SourceFate::Replace }
     }
 
-    fn build(&self, doc: &Document, _target: &ExtrudeTarget, params: &ExtrudeParams) -> Result<Shape> {
-        build_extrusion(doc, params)
+    fn build(&self, doc: &Document, target: &ExtrudeTarget, params: &ExtrudeParams) -> Result<Shape> {
+        build_extrusion(doc, target, params)
     }
 
     fn apply(
         &self,
         doc: &mut Document,
-        _target: &ExtrudeTarget,
+        target: &ExtrudeTarget,
         params: &ExtrudeParams,
         construction: &ConstructionOptions,
     ) -> Result<()> {
-        execute_extrude(doc, params, &construction.geometry_options)
+        let extrusion = build_extrusion(doc, target, params)?;
+        let source = doc.part_for_node(target.node()).context("Extrude target is not a known CAD part")?;
+        let options = &construction.geometry_options;
+        doc.commit_result(source, extrusion, params.frame.fate, "Extrude", "Extrusion", options)
     }
 }
 
@@ -285,7 +288,7 @@ mod tests {
         let (document, node) = document_with_box();
         let doc = document.lock().unwrap();
         let target = ExtrudeTarget::Face { node, face_index: 0 };
-        let frame = ExtrudeFrame::new(&doc, target, Vector3::unit_y()).expect("face resolves");
+        let frame = ExtrudeFrame::new(&doc, &target, Vector3::unit_y()).expect("face resolves");
         ExtrudeParams { distance, ..ExtrudeParams::new(frame) }
     }
 
@@ -456,11 +459,11 @@ mod tests {
 
         select_face(&mut selection, node, 0);
         op.follow_selection(&selection);
-        let first = op.phase.params().expect("targeted").frame.target;
+        let first = *op.phase.target().expect("targeted");
 
         select_face(&mut selection, node, 1);
         op.follow_selection(&selection);
-        let second = op.phase.params().expect("still targeted").frame.target;
+        let second = *op.phase.target().expect("still targeted");
         assert_ne!(first, second, "the target did not follow the selection");
 
         selection.clear();
@@ -481,11 +484,11 @@ mod tests {
 
         op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
         assert!(op.is_editing());
-        let locked = op.phase.params().expect("editing").frame.target;
+        let locked = *op.phase.target().expect("editing");
 
         select_face(&mut selection, node, 1);
         op.follow_selection(&selection);
-        assert_eq!(op.phase.params().expect("still editing").frame.target, locked);
+        assert_eq!(*op.phase.target().expect("still editing"), locked);
     }
 
     /// An arrow dragged and released drives the preview through one rebuild.
@@ -555,6 +558,26 @@ mod tests {
         assert!((doc.get_part(part).unwrap().shape.volume() - 12.0).abs() < 1e-6);
         let scene = doc.scene().clone();
         assert_eq!(scene.lock().get_node(node).expect("node exists").visibility(), Visibility::Visible);
+        assert_eq!(doc.undo_label(), Some("Extrude"));
+    }
+
+    /// An edge of a solid grows a wall of its own, numbered as an extrusion.
+    #[test]
+    fn applying_an_edge_of_a_solid_adds_a_new_part() {
+        let (document, node) = document_with_box();
+        let mut op = operator(&document);
+        let mut selection = SelectionManager::new();
+        selection.set(SelectionItem::SubGeometry {
+            node_id: node,
+            element: SubGeometryElement::new(SubGeometryKind::Edge, 0),
+        });
+        op.follow_selection(&selection);
+        drag_out(&mut op, 1.0);
+
+        op.apply(&mut selection).expect("the wall applies");
+        let doc = document.lock().unwrap();
+        let names: Vec<_> = doc.parts().map(|part| part.name.as_str()).collect();
+        assert_eq!(names, ["box", "Extrusion-001"]);
     }
 
     /// An extrusion has one target, so once editing there is nothing for a

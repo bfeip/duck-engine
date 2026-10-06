@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use duck_engine_common::Real;
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
@@ -9,8 +9,8 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
-use crate::document::Document;
-use crate::ops::hollow::{build_hollow, execute_hollow, HollowFrame, HollowParams, HollowTarget};
+use crate::document::{Document, SourceFate};
+use crate::ops::hollow::{build_hollow, HollowFrame, HollowParams, HollowTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{
@@ -136,9 +136,11 @@ impl TargetedOp for Hollow {
         doc: &mut Document,
         target: &HollowTarget,
         params: &HollowParams,
-        _construction: &ConstructionOptions,
+        construction: &ConstructionOptions,
     ) -> Result<()> {
-        execute_hollow(doc, target, params)
+        let shape = build_hollow(doc, target, params)?;
+        let part = doc.part_for_node(target.node).context("Hollow target is not a known CAD part")?;
+        doc.commit_result(part, shape, SourceFate::Reshape, "Hollow", "Hollow", &construction.geometry_options)
     }
 }
 
@@ -333,6 +335,7 @@ mod tests {
         assert_eq!(visibility(&document, node), Visibility::Visible);
         let expected = 8.0 - 1.6 * 1.8 * 1.6;
         assert!((volume(&document, node) - expected).abs() < 1e-6, "got {}", volume(&document, node));
+        assert_eq!(document.lock().unwrap().undo_label(), Some("Hollow"));
     }
 
     /// A wall too thick to build keeps the last good preview and says why.

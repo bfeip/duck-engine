@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use duck_engine_common::{consts, Real};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
@@ -10,8 +10,8 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
-use crate::document::Document;
-use crate::ops::draft::{build_draft, execute_draft, DraftFrame, DraftParams, DraftTarget};
+use crate::document::{Document, SourceFate};
+use crate::ops::draft::{build_draft, DraftFrame, DraftParams, DraftTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{
@@ -143,9 +143,11 @@ impl TargetedOp for Draft {
         doc: &mut Document,
         target: &DraftTarget,
         params: &DraftParams,
-        _construction: &ConstructionOptions,
+        construction: &ConstructionOptions,
     ) -> Result<()> {
-        execute_draft(doc, target, params)
+        let shape = build_draft(doc, target, params)?;
+        let part = doc.part_for_node(target.node).context("Draft target is not a known CAD part")?;
+        doc.commit_result(part, shape, SourceFate::Reshape, "Draft", "Draft", &construction.geometry_options)
     }
 }
 
@@ -361,6 +363,7 @@ mod tests {
         assert_eq!(visibility(&document, node), Visibility::Visible);
         let expected = 8.0 - 4.0 * f64::from(angle).tan();
         assert!((volume(&document, node) - expected).abs() < 1e-6, "got {}", volume(&document, node));
+        assert_eq!(document.lock().unwrap().undo_label(), Some("Draft"));
     }
 
     #[test]

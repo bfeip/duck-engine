@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use anyhow::Context;
 use duck_engine_scene::resource::SubGeometryKind;
 use duck_engine_viewer::{
     event::{DeviceEvent, Event, EventContext},
@@ -11,7 +12,7 @@ use duck_engine_viewer::{
 };
 
 use crate::document::Document;
-use crate::ops::loft::{execute_loft, preview_loft, LoftProfile};
+use crate::ops::loft::{build_loft, LoftProfile};
 use crate::preview::PreviewSession;
 use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
@@ -76,29 +77,31 @@ impl LoftTool {
             return;
         }
 
+        let result = build_loft(&self.document.lock().unwrap(), &profiles);
         let options = self.construction_options.borrow().preview_options();
-        let result = {
-            let doc = self.document.lock().unwrap();
-            preview_loft(&doc, &profiles, &options)
-        };
         match result {
-            Ok(node) => self.preview.add_preview_node(node),
+            Ok(loft) => {
+                if self.preview.add_preview_from_shape(&loft, &options, "Loft preview").is_none() {
+                    log::warn!("Loft preview could not be tessellated");
+                }
+            }
             Err(e) => log::warn!("Loft preview failed: {e}"),
         }
     }
 
-    /// Execute the loft and clean up preview state. On success sets phase = Done;
-    /// on failure stays in Configuring so the user can retry with different profiles.
+    /// Add the loft as a part of its own and clean up preview state. On success
+    /// sets phase = Done; on failure stays in Configuring, preview and all, so
+    /// the user can retry with different profiles.
     fn apply(&mut self) -> anyhow::Result<()> {
-        let profiles = self.preview_profiles.clone();
         let options = self.construction_options.borrow().geometry_options.clone();
+        {
+            let mut doc = self.document.lock().unwrap();
+            let loft = build_loft(&doc, &self.preview_profiles)?;
+            // Tessellates atomically — if this fails, nothing changes.
+            doc.undo_scope("Loft").add_numbered_part("Loft", loft, &options).context("Failed to tessellate loft")?;
+        }
 
         let _ = self.preview.commit();
-
-        let mut doc = self.document.lock().unwrap();
-        execute_loft(&mut doc, &profiles, &options)?;
-        drop(doc);
-
         self.preview_profiles.clear();
         self.phase = LoftPhase::Done;
         Ok(())
@@ -133,10 +136,8 @@ impl LoftTool {
             profiles
                 .iter()
                 .map(|p| {
-                    let name = doc
-                        .part_for_node(p.node)
-                        .and_then(|id| doc.get_part(id).map(|part| part.name.clone()))
-                        .unwrap_or_else(|| "Unknown".to_owned());
+                    let name =
+                        doc.part_at(p.node).map_or_else(|| "Unknown".to_owned(), |part| part.name.clone());
                     let item = SelectionItem::SubGeometry {
                         node_id: p.node,
                         element: duck_engine_scene::resource::SubGeometryElement::new(

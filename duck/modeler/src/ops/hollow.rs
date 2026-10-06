@@ -5,7 +5,9 @@ use glam::DVec3;
 use opencascade::primitives::{Face, JoinType, Shape, ShapeType};
 use opencascade::OffsetError;
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, has_solid, unwrap_single_solid, CadPart, Document};
+use crate::document::{
+    dvec3_to_point3, dvec3_to_vec3, has_solid, selected_face, unwrap_single_solid, Document,
+};
 
 /// A wall at or below this thickness is null to OCCT's offset.
 const MIN_THICKNESS: Real = 1e-3;
@@ -38,13 +40,9 @@ pub struct HollowFrame {
 
 impl HollowFrame {
     pub fn new(doc: &Document, target: &HollowTarget) -> Result<Self> {
-        let shape = &target_part(doc, target)?.shape;
+        let shape = &doc.part_at(target.node).context("Hollow target is not a known CAD part")?.shape;
         ensure!(has_solid(shape), "Only a solid can be hollowed");
-        let removed = target
-            .faces
-            .iter()
-            .map(|&index| face(shape, index))
-            .collect::<Result<Vec<_>>>()?;
+        let removed = target.faces.iter().map(|&index| selected_face(shape, index)).collect::<Result<Vec<_>>>()?;
 
         let (anchor, normal) = match removed.first().and_then(|primary| rim(shape, primary, &removed)) {
             Some(rim) => rim,
@@ -112,10 +110,10 @@ impl HollowParams {
     }
 }
 
-/// The target's part hollowed.
+/// The target's part hollowed, to reshape the part with.
 pub fn build_hollow(doc: &Document, target: &HollowTarget, params: &HollowParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to hollow without a wall thickness");
-    let part = target_part(doc, target)?;
+    let part = doc.part_at(target.node).context("Hollow target is not a known CAD part")?;
     ensure!(has_solid(&part.shape), "Only a solid can be hollowed");
 
     // OCCT's offset may retouch its input, so the hollow works on a copy: an
@@ -123,82 +121,34 @@ pub fn build_hollow(doc: &Document, target: &HollowTarget, params: &HollowParams
     let body = unwrap_single_solid(part.shape.deep_copy());
     ensure!(body.shape_type() == ShapeType::Solid, "Only a single solid can be hollowed");
     ensure!(body.sub_shapes().count() == 1, "A part with a void inside can't be hollowed");
-    let faces = target.faces.iter().map(|&index| face(&body, index)).collect::<Result<Vec<_>>>()?;
+    let faces = target.faces.iter().map(|&index| selected_face(&body, index)).collect::<Result<Vec<_>>>()?;
 
-    body.hollow(-f64::from(params.thickness), &faces, JoinType::Intersection)
-        .map_err(|error| {
-            let hint = failure_hint(&error);
-            anyhow::Error::new(error).context(hint)
-        })
+    body.hollow(-f64::from(params.thickness), &faces, JoinType::Intersection).map_err(explained)
 }
 
-/// A plain-language account of why a hollow failed, to lead the kernel's reason.
-fn failure_hint(error: &opencascade::Error) -> &'static str {
-    match error {
+/// `error`, led by a plain-language account of why the hollow failed.
+fn explained(error: opencascade::Error) -> anyhow::Error {
+    let hint = match &error {
         opencascade::Error::OffsetFailed(OffsetError::NullOffset) => "The wall is too thin to build",
         opencascade::Error::OffsetFailed(OffsetError::InvalidResult) => "The wall is too thick for this part",
         opencascade::Error::OffsetFailed(OffsetError::C0Geometry) => {
             "The part has creased surfaces the walls can't follow"
         }
         _ => "The wall may be too thick for this part",
-    }
-}
-
-/// Apply the hollow: rebuild the target's part with it, in place, as one undo
-/// step.
-pub fn execute_hollow(doc: &mut Document, target: &HollowTarget, params: &HollowParams) -> Result<()> {
-    let shape = build_hollow(doc, target, params)?;
-    let part = doc.part_for_node(target.node).context("Hollow target is not a known CAD part")?;
-    doc.reshape_part(part, shape, "Hollow")
-}
-
-fn target_part<'a>(doc: &'a Document, target: &HollowTarget) -> Result<&'a CadPart> {
-    doc.part_for_node(target.node)
-        .and_then(|part| doc.get_part(part))
-        .context("Hollow target is not a known CAD part")
-}
-
-fn face(shape: &Shape, index: u32) -> Result<Face> {
-    shape
-        .face_at(index as usize)
-        .with_context(|| format!("Selected face {index} is not part of the part"))
+    };
+    anyhow::Error::new(error).context(hint)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::Scene;
     use opencascade::primitives::Wire;
 
+    use crate::document::SourceFate;
+    use crate::testing::{commit, doc_with_box, doc_with_shape, face_along, part_shape};
+
     const EPSILON: Real = 1e-5;
-
-    fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
-        let mut doc = Document::new(Scene::default());
-        let part = doc
-            .add_part("part", shape, &CadTessellationOptions::default())
-            .expect("shape tessellates");
-        let node = doc.node_for_part(part).expect("part has a node");
-        (doc, node)
-    }
-
-    /// A 2×2×2 box centred on the origin.
-    fn doc_with_box() -> (Document, NodeId) {
-        doc_with_shape(Shape::box_centered(2.0, 2.0, 2.0))
-    }
-
-    fn part_shape(doc: &Document, node: NodeId) -> &Shape {
-        &doc.get_part(doc.part_for_node(node).unwrap()).unwrap().shape
-    }
-
-    /// The index of the face whose outward normal at its centre is `normal`.
-    fn face_along(doc: &Document, node: NodeId, normal: DVec3) -> u32 {
-        part_shape(doc, node)
-            .faces()
-            .position(|face| face.normal_at_center().is_ok_and(|n| n.normalize().distance(normal) < 1e-6))
-            .expect("a face matches") as u32
-    }
 
     fn target(node: NodeId, faces: &[u32]) -> HollowTarget {
         HollowTarget { node, faces: faces.to_vec() }
@@ -325,21 +275,20 @@ mod tests {
         assert!(build_hollow(&doc, &closed, &thin).is_err());
     }
 
-    /// Applying a hollow reshapes the part where it stands, as one undo step
-    /// that undo and redo replay.
+    /// A hollow reshapes its part where it stands, as one undo step that undo
+    /// and redo replay.
     #[test]
-    fn execute_reshapes_in_place_as_one_undo_step() {
+    fn a_hollow_reshapes_its_part_in_place_as_one_undo_step() {
         let (mut doc, node) = doc_with_box();
         let part = doc.part_for_node(node).unwrap();
         let closed = target(node, &[]);
         let hollowed = 8.0 - 1.6f64.powi(3);
 
-        let hollow = params(&doc, &closed, 0.2);
-        execute_hollow(&mut doc, &closed, &hollow).expect("the hollow applies");
+        let shape = build_hollow(&doc, &closed, &params(&doc, &closed, 0.2)).expect("the part hollows");
+        commit(&mut doc, node, shape, SourceFate::Reshape).expect("the hollow applies");
         assert_eq!(doc.parts().count(), 1);
         assert_eq!(doc.node_for_part(part), Some(node), "the part keeps its node");
         assert!((part_shape(&doc, node).volume() - hollowed).abs() < 1e-6);
-        assert_eq!(doc.undo_label(), Some("Hollow"));
 
         doc.undo().expect("undo the hollow");
         assert!((part_shape(&doc, node).volume() - 8.0).abs() < 1e-9);

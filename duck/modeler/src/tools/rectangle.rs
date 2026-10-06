@@ -14,7 +14,8 @@ use duck_engine_viewer::{
 use log::warn;
 use opencascade::primitives::{Face, Shape, Wire};
 
-use crate::document::{point3_to_dvec3, Document};
+use crate::document::Document;
+use crate::ops::primitives::{closed_polyline, rectangle_corners, region};
 use crate::preview::PreviewSession;
 use crate::tools::{ModelingTool, ToolInfo};
 use crate::ui::icons;
@@ -108,25 +109,8 @@ impl RectangleTool {
     }
 
     /// World-space rectangle face with an analytic planar surface.
-    fn analytic_face(center: Point3, width: Real, depth: Real, plane: &Plane) -> Option<Shape> {
-        let (u, v) = plane.basis();
-        let half_w = u * (0.5 * width);
-        let half_d = v * (0.5 * depth);
-        let corners = [
-            center - half_w - half_d,
-            center + half_w - half_d,
-            center + half_w + half_d,
-            center - half_w + half_d,
-        ];
-        let wire = Wire::from_ordered_points(
-            corners.iter().map(|&p| point3_to_dvec3(p)),
-        )
-        .map_err(|e| warn!("Failed to build rectangle wire: {e}"))
-        .ok()?;
-        Face::from_wire(&wire)
-            .map(Into::into)
-            .map_err(|e| warn!("Failed to build rectangle face: {e}"))
-            .ok()
+    fn analytic_face(center: Point3, width: Real, depth: Real, plane: &Plane) -> anyhow::Result<Shape> {
+        Ok(region(closed_polyline(&rectangle_corners(center, plane, width, depth))?))
     }
 
     fn on_place_center(&mut self, position: (f32, f32), ctx: &mut EventContext) -> bool {
@@ -183,8 +167,12 @@ impl RectangleTool {
         }
 
         // Build the face analytically in world space
-        let Some(world_shape) = Self::analytic_face(center, width, depth, &plane) else {
-            return false;
+        let world_shape = match Self::analytic_face(center, width, depth, &plane) {
+            Ok(shape) => shape,
+            Err(e) => {
+                warn!("Failed to build the rectangle: {e:#}");
+                return false;
+            }
         };
 
         // Discard the preview, then commit the world-space shape as a registered part.

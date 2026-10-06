@@ -252,7 +252,7 @@ impl<O: TargetedOp> TargetedTool<O> {
     /// preview tolerance.
     fn preview_options(&self, doc: &Document, node: NodeId, style: PreviewStyle) -> CadTessellationOptions {
         let construction = self.construction_options.borrow();
-        let part = doc.part_for_node(node).and_then(|part| doc.get_part(part));
+        let part = doc.part_at(node);
         let mut options = match (style, part) {
             (PreviewStyle::InPlace, Some(part)) => part.options().clone(),
             _ => construction.geometry_options.clone(),

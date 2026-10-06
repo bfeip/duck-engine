@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use duck_engine_common::Real;
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
@@ -10,7 +10,7 @@ use duck_engine_viewer::{
 use opencascade::primitives::Shape;
 
 use crate::document::{Document, SourceFate};
-use crate::ops::thicken::{build_thicken, execute_thicken, ThickenFrame, ThickenParams, ThickenTarget};
+use crate::ops::thicken::{build_thicken, ThickenFrame, ThickenParams, ThickenTarget};
 use crate::tools::ToolInfo;
 use crate::ui::icons;
 use super::targeted::{
@@ -182,7 +182,9 @@ impl TargetedOp for Thicken {
         params: &ThickenParams,
         construction: &ConstructionOptions,
     ) -> Result<()> {
-        execute_thicken(doc, target, params, &construction.geometry_options)
+        let slab = build_thicken(doc, target, params)?;
+        let source = doc.part_for_node(target.node).context("Thicken target is not a known CAD part")?;
+        doc.commit_result(source, slab, params.fate(), "Thicken", "Thickened", &construction.geometry_options)
     }
 
     /// S holds front and back equal; N switches faces of a solid between
@@ -411,6 +413,7 @@ mod tests {
         let doc = document.lock().unwrap();
         let part = doc.part_for_node(node).expect("the solid keeps its node");
         assert!((doc.get_part(part).unwrap().shape.volume() - 10.0).abs() < 1e-6);
+        assert_eq!(doc.undo_label(), Some("Thicken"));
     }
 
     #[test]
@@ -428,6 +431,9 @@ mod tests {
         assert!((volumes[0] - 8.0).abs() < 1e-9);
         assert!((volumes[1] - 3.0).abs() < 1e-6, "got {}", volumes[1]);
         assert_eq!(visibility(&document, node), Visibility::Visible);
+        let doc = document.lock().unwrap();
+        let names: Vec<_> = doc.parts().map(|part| part.name.as_str()).collect();
+        assert_eq!(names, ["part", "Thickened-001"]);
     }
 
     /// The slab hides a sheet it would replace. Shift-clicking one of the

@@ -13,9 +13,10 @@ use duck_engine_viewer::{
     selection::SelectionManager,
 };
 use log::warn;
-use opencascade::primitives::{Edge, Shape, Wire};
+use opencascade::primitives::Shape;
 
-use crate::document::{point3_to_dvec3, Document};
+use crate::document::Document;
+use crate::ops::primitives::{closed_spline, region, spline};
 use crate::preview::PreviewSession;
 use crate::snap::{Snap, SnapKind, SnapProvider, WireStartSnap};
 use crate::tools::{ModelingTool, ToolInfo};
@@ -53,52 +54,6 @@ pub struct CurveTool {
     finished: bool,
 }
 
-
-/// Builds an open curve wire shape: a B-spline interpolated through `points`.
-/// Returns `None` if there are fewer than two points (two points are accepted so
-/// the rubber-band preview works, but a committed curve needs three).
-fn open_curve_shape(points: &[Point3]) -> Option<Shape> {
-    if points.len() < 2 {
-        return None;
-    }
-    let edge = Edge::spline_from_points(points.iter().copied().map(point3_to_dvec3), None, false)
-        .map_err(|e| warn!("Failed to build curve edge: {e}"))
-        .ok()?;
-    let wire = Wire::from_edges(&[edge])
-        .map_err(|e| warn!("Failed to build curve wire: {e}"))
-        .ok()?;
-    Some(Shape::from(&wire))
-}
-
-/// Builds a closed wire from a smooth periodic B-spline through `points` (the
-/// start point is not repeated; the interpolation closes the loop). Returns
-/// `None` with fewer than three points.
-fn closed_curve(points: &[Point3]) -> Option<Wire> {
-    if points.len() < 3 {
-        return None;
-    }
-    let edge = Edge::spline_from_points(points.iter().copied().map(point3_to_dvec3), None, true)
-        .map_err(|e| warn!("Failed to build closed curve edge: {e}"))
-        .ok()?;
-    Wire::from_edges(&[edge])
-        .map_err(|e| warn!("Failed to build closed curve wire: {e}"))
-        .ok()
-}
-
-/// Builds a closed curve shape (the loop, with no fill) from `points`. Used as a
-/// fallback when the points are not co-planar and a face cannot be built.
-fn closed_curve_shape(points: &[Point3]) -> Option<Shape> {
-    Some(Shape::from(&closed_curve(points)?))
-}
-
-/// Builds a closed planar face shape bounded by the periodic curve. Returns `None`
-/// with fewer than three points, or when the points are not co-planar (no face can
-/// be built).
-fn closed_face_shape(points: &[Point3]) -> Option<Shape> {
-    let wire = closed_curve(points)?;
-    let face = wire.to_face().map_err(|e| warn!("Failed to build face from curve: {e}")).ok()?;
-    Some(Shape::from(&face))
-}
 
 impl CurveTool {
     pub fn new(
@@ -162,19 +117,17 @@ impl CurveTool {
         };
 
         let shape = if closing {
-            // Non-coplanar points can't form a face; fall back to the closed curve.
-            closed_face_shape(&points).or_else(|| closed_curve_shape(&points))
+            // Non-coplanar points bound no face; the region is then the loop alone.
+            closed_spline(&points).map(region)
         } else {
             let mut all = points;
-            if let Some(c) = cursor_point {
-                all.push(c);
-            }
-            open_curve_shape(&all)
+            all.extend(cursor_point);
+            spline(&all).map(|wire| Shape::from(&wire))
         };
 
         // `rebuild` keeps the last valid preview if construction fails (e.g. a snap
         // produced a degenerate point), so the curve doesn't momentarily disappear.
-        let Some(shape) = shape else { return };
+        let Ok(shape) = shape else { return };
         let preview_options = self.construction_options.borrow().preview_options();
         if self.preview.try_replace_preview(&shape, &preview_options, "curve").is_some()
             && let Phase::Building { closing: c, .. } = &mut self.phase
@@ -222,22 +175,15 @@ impl CurveTool {
         };
         let _ = self.preview.commit();
 
-        if let Some(shape) = closed_face_shape(&points).or_else(|| closed_curve_shape(&points)) {
-            let coptions = self.construction_options.borrow();
-            let mut doc = self.document.lock().unwrap();
-            if doc
-                .add_numbered_part(
-                    "Region",
-                    shape,
-                    &coptions.geometry_options,
-                )
-                .is_ok()
-            {
-                self.finished = true;
+        match closed_spline(&points).map(region) {
+            Ok(shape) => {
+                let coptions = self.construction_options.borrow();
+                let mut doc = self.document.lock().unwrap();
+                if doc.add_numbered_part("Region", shape, &coptions.geometry_options).is_ok() {
+                    self.finished = true;
+                }
             }
-        }
-        else {
-            warn!("Failed to build closed face shape for curve.")
+            Err(e) => warn!("Failed to close the curve: {e:#}"),
         }
         self.phase = Phase::Idle;
     }
@@ -252,16 +198,10 @@ impl CurveTool {
         let _ = self.preview.commit();
 
         let mut committed = false;
-        if let Some(shape) = open_curve_shape(&points) {
+        if let Ok(wire) = spline(&points) {
             let coptions = self.construction_options.borrow();
             let mut doc = self.document.lock().unwrap();
-            committed = doc
-                .add_numbered_part(
-                    "Curve",
-                    shape,
-                    &coptions.geometry_options,
-                )
-                .is_ok();
+            committed = doc.add_numbered_part("Curve", Shape::from(&wire), &coptions.geometry_options).is_ok();
         }
         self.phase = Phase::Idle;
         if committed {
@@ -361,40 +301,5 @@ impl Operator for CurveTool {
 
     fn name(&self) -> &str {
         "Curve"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use duck_engine_common::Real;
-
-    fn p(x: Real, y: Real, z: Real) -> Point3 {
-        Point3::new(x, y, z)
-    }
-
-    #[test]
-    fn open_curve_needs_two_points() {
-        assert!(open_curve_shape(&[p(0.0, 0.0, 0.0)]).is_none());
-        assert!(open_curve_shape(&[p(0.0, 0.0, 0.0), p(1.0, 0.0, 1.0)]).is_some());
-    }
-
-    #[test]
-    fn open_curve_through_three_points() {
-        let pts = [p(0.0, 0.0, 0.0), p(1.0, 0.0, 2.0), p(3.0, 0.0, 1.0)];
-        assert!(open_curve_shape(&pts).is_some());
-    }
-
-    #[test]
-    fn closed_curve_needs_three_points() {
-        assert!(closed_curve(&[p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0)]).is_none());
-        let pts = [p(0.0, 0.0, 0.0), p(2.0, 0.0, 0.0), p(1.0, 0.0, 2.0)];
-        assert!(closed_curve(&pts).is_some());
-    }
-
-    #[test]
-    fn closed_face_from_planar_points() {
-        let pts = [p(0.0, 0.0, 0.0), p(2.0, 0.0, 0.0), p(2.0, 0.0, 2.0), p(0.0, 0.0, 2.0)];
-        assert!(closed_face_shape(&pts).is_some());
     }
 }

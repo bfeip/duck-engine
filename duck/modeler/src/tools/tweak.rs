@@ -9,8 +9,8 @@
 use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
+use anyhow::Context;
 use duck_engine_scene::cad::CadTessellationOptions;
-use anyhow::bail;
 use duck_engine_viewer::common::{Real, Transform};
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleEvent};
 use opencascade::primitives::Shape;
@@ -60,7 +60,7 @@ pub(super) trait PrimitiveParams: TweakParams {
     fn preview_transform(&self) -> Transform;
 
     /// The world-space shape to commit.
-    fn build(&self) -> Option<Shape>;
+    fn build(&self) -> anyhow::Result<Shape>;
 }
 
 /// A dimension moved by `delta`, held at or above [`MIN_DIMENSION`] so a grip
@@ -183,9 +183,7 @@ pub(super) fn commit_tweak<P: PrimitiveParams>(
     document: &Arc<Mutex<Document>>,
     options: &CadTessellationOptions,
 ) -> anyhow::Result<()> {
-    let Some(shape) = params.build() else {
-        bail!("Failed to build {}", P::NAME);
-    };
+    let shape = params.build().with_context(|| format!("Failed to build {}", P::NAME))?;
 
     let _ = preview.commit();
 

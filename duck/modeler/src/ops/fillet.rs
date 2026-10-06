@@ -4,7 +4,7 @@ use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::Shape;
 use opencascade::FilletError;
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, unwrap_single_solid, Document};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, selected_edge, unwrap_single_solid, Document};
 
 /// A size at or below this is degenerate: there is nothing to round or bevel.
 const MIN_SIZE: Real = 1e-6;
@@ -54,16 +54,11 @@ pub struct FilletFrame {
 }
 
 impl FilletFrame {
-    /// Resolves the frame at edge `edge_index` of the part at `node`.
-    pub fn new(doc: &Document, node: NodeId, edge_index: u32) -> Result<Self> {
-        let part = doc
-            .part_for_node(node)
-            .and_then(|part| doc.get_part(part))
-            .context("Fillet target is not a known CAD part")?;
-        let edge = part
-            .shape
-            .edge_at(edge_index as usize)
-            .context("Selected edge is not part of a known CAD part")?;
+    /// Resolves the frame at the target's primary edge.
+    pub fn new(doc: &Document, target: &FilletTarget) -> Result<Self> {
+        let part = doc.part_at(target.node).context("Fillet target is not a known CAD part")?;
+        let primary = *target.edges.first().context("There are no edges to blend")?;
+        let edge = selected_edge(&part.shape, primary)?;
         let faces = part.shape.adjacent_faces(&edge);
         let [first, second] = faces.as_slice() else {
             bail!("Only an edge between two faces can be filleted or chamfered");
@@ -126,47 +121,35 @@ impl FilletParams {
     }
 }
 
-/// The target's part with its edges rounded or bevelled.
+/// The target's part with its edges rounded or bevelled, to reshape the part
+/// with.
 pub fn build_fillet(doc: &Document, target: &FilletTarget, params: &FilletParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to {} at zero size", params.kind.name().to_lowercase());
-    let part = doc
-        .part_for_node(target.node)
-        .and_then(|part| doc.get_part(part))
-        .context("Fillet target is not a known CAD part")?;
+    let part = doc.part_at(target.node).context("Fillet target is not a known CAD part")?;
 
     // OCCT's blend raises the tolerance of vertices it touches on its input, so
     // it works on a copy: an abandoned preview must leave the part as it was.
     let body = part.shape.deep_copy();
-    let edges = target
-        .edges
-        .iter()
-        .map(|&index| {
-            body.edge_at(index as usize)
-                .with_context(|| format!("Selected edge {index} is not part of the part"))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let edges = target.edges.iter().map(|&index| selected_edge(&body, index)).collect::<Result<Vec<_>>>()?;
 
     let size = f64::from(params.size);
     let blended = match params.kind {
         BlendKind::Fillet => body.fillet_edges(size, &edges),
         BlendKind::Chamfer => body.chamfer_edges(size, &edges),
     }
-    .map_err(|error| {
-        let hint = failure_hint(params.kind, &error);
-        anyhow::Error::new(error).context(hint)
-    })?;
+    .map_err(|error| explained(params.kind, error))?;
 
     // The blend comes back wrapped in a compound; a lone solid stays a solid.
     Ok(unwrap_single_solid(blended))
 }
 
-/// A plain-language account of why a blend failed, to lead the kernel's reason.
-fn failure_hint(kind: BlendKind, error: &opencascade::Error) -> String {
+/// `error`, led by a plain-language account of why the blend failed.
+fn explained(kind: BlendKind, error: opencascade::Error) -> anyhow::Error {
     let size = match kind {
         BlendKind::Fillet => "radius",
         BlendKind::Chamfer => "distance",
     };
-    match error {
+    let hint = match &error {
         opencascade::Error::FilletFailed(FilletError::NoSuitableEdges) => {
             "Only an edge between two faces can be filleted or chamfered".to_owned()
         }
@@ -174,46 +157,22 @@ fn failure_hint(kind: BlendKind, error: &opencascade::Error) -> String {
             format!("The {size} is too large: neighbouring blends overlap")
         }
         _ => format!("The {size} may be too large for the faces beside these edges"),
-    }
+    };
+    anyhow::Error::new(error).context(hint)
 }
-
-/// Apply the blend: rebuild the target's part with it, in place, as one undo
-/// step.
-pub fn execute_fillet(doc: &mut Document, target: &FilletTarget, params: &FilletParams) -> Result<()> {
-    let shape = build_fillet(doc, target, params)?;
-    let part = doc.part_for_node(target.node).context("Fillet target is not a known CAD part")?;
-    doc.reshape_part(part, shape, params.kind.name())
-}
-
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use duck_engine_scene::cad::CadTessellationOptions;
     use duck_engine_scene::common::consts;
     use duck_engine_scene::common::{EuclideanSpace, InnerSpace};
-    use duck_engine_scene::Scene;
     use opencascade::primitives::{Face, Wire};
 
-    use crate::document::PartKind;
+    use crate::document::{PartKind, SourceFate};
+    use crate::testing::{commit, doc_with_box, doc_with_shape, part_shape, part_volume};
 
     const EPSILON: Real = 1e-5;
-
-    fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
-        let mut doc = Document::new(Scene::default());
-        let part = doc
-            .add_part("part", shape, &CadTessellationOptions::default())
-            .expect("shape tessellates");
-        let node = doc.node_for_part(part).expect("part has a node");
-        (doc, node)
-    }
-
-    /// A 2×2×2 box centred on the origin.
-    fn doc_with_box() -> (Document, NodeId) {
-        doc_with_shape(Shape::box_centered(2.0, 2.0, 2.0))
-    }
 
     /// An L-shaped prism one unit tall, notched out of a 2×2 square at its
     /// `(1..2, 1..2)` corner, so the notch's inner edge is concave.
@@ -227,9 +186,7 @@ mod tests {
 
     /// The index of the first edge whose midpoint is `point`.
     fn edge_at_point(doc: &Document, node: NodeId, point: glam::DVec3) -> u32 {
-        let part = doc.get_part(doc.part_for_node(node).unwrap()).unwrap();
-        let index = part
-            .shape
+        let index = part_shape(doc, node)
             .edges()
             .position(|edge| edge.midpoint().distance(point) < 1e-9)
             .expect("an edge runs through the point");
@@ -240,13 +197,13 @@ mod tests {
         FilletTarget { node, edges: edges.to_vec() }
     }
 
-    fn params(doc: &Document, node: NodeId, edge: u32, kind: BlendKind, size: Real) -> FilletParams {
-        let frame = FilletFrame::new(doc, node, edge).expect("edge resolves");
-        FilletParams { kind, size, ..FilletParams::new(frame) }
+    fn frame(doc: &Document, node: NodeId, edge: u32) -> Result<FilletFrame> {
+        FilletFrame::new(doc, &target(node, &[edge]))
     }
 
-    fn part_volume(doc: &Document, node: NodeId) -> f64 {
-        doc.get_part(doc.part_for_node(node).unwrap()).unwrap().shape.volume()
+    fn params(doc: &Document, node: NodeId, edge: u32, kind: BlendKind, size: Real) -> FilletParams {
+        let frame = frame(doc, node, edge).expect("edge resolves");
+        FilletParams { kind, size, ..FilletParams::new(frame) }
     }
 
     /// Every edge of a box centred on the origin has its midpoint at two unit
@@ -255,10 +212,10 @@ mod tests {
     #[test]
     fn a_box_edge_frame_sits_on_the_edge_and_points_out_of_the_corner() {
         let (doc, node) = doc_with_box();
-        let edge_count = doc.get_part(doc.part_for_node(node).unwrap()).unwrap().shape.edges().count();
+        let edge_count = part_shape(&doc, node).edges().count();
 
         for edge in 0..edge_count as u32 {
-            let frame = FilletFrame::new(&doc, node, edge).expect("box edge resolves");
+            let frame = frame(&doc, node, edge).expect("box edge resolves");
             let from_centre = frame.apex.to_vec();
             assert!((from_centre.magnitude() - consts::SQRT_2).abs() < EPSILON, "edge {edge}: apex off the edge");
             assert!((frame.outward.magnitude() - 1.0).abs() < EPSILON, "edge {edge}: outward not unit");
@@ -278,7 +235,7 @@ mod tests {
         let (doc, node) = doc_with_shape(l_prism());
         let edge = edge_at_point(&doc, node, glam::dvec3(1.0, 1.0, 0.5));
 
-        let frame = FilletFrame::new(&doc, node, edge).expect("inner edge resolves");
+        let frame = frame(&doc, node, edge).expect("inner edge resolves");
         let into_notch = Vector3::new(1.0, 1.0, 0.0).normalize();
         assert!((frame.outward - into_notch).magnitude() < EPSILON, "got {:?}", frame.outward);
     }
@@ -289,7 +246,7 @@ mod tests {
         let sheet: Shape = Face::from_wire(&wire).expect("face builds").into();
         let (doc, node) = doc_with_shape(sheet);
 
-        let Err(error) = FilletFrame::new(&doc, node, 0) else {
+        let Err(error) = frame(&doc, node, 0) else {
             panic!("a sheet's edge borders only one face");
         };
         assert!(format!("{error:#}").contains("between two faces"), "got {error:#}");
@@ -351,9 +308,7 @@ mod tests {
         let (doc, node) = doc_with_box();
         let first = 0;
         let edge = doc.edge_subshape(node, first).unwrap();
-        let part = doc.get_part(doc.part_for_node(node).unwrap()).unwrap();
-        let second = part
-            .shape
+        let second = part_shape(&doc, node)
             .edges()
             .enumerate()
             .find(|(index, other)| *index != first as usize && other.is_same(&edge))
@@ -403,35 +358,26 @@ mod tests {
         }
     }
 
-    /// Applying a fillet reshapes the part where it stands, as one undo step
-    /// that undo and redo replay.
+    /// A blend reshapes its part where it stands, as one undo step that undo
+    /// and redo replay.
     #[test]
-    fn execute_reshapes_in_place_as_one_undo_step() {
+    fn a_blend_reshapes_its_part_in_place_as_one_undo_step() {
         let (mut doc, node) = doc_with_box();
         let part = doc.part_for_node(node).unwrap();
         let params = params(&doc, node, 0, BlendKind::Fillet, 0.5);
         let filleted = 8.0 - 0.5 * (1.0 - std::f64::consts::FRAC_PI_4);
 
-        execute_fillet(&mut doc, &target(node, &[0]), &params).expect("the fillet applies");
+        let shape = build_fillet(&doc, &target(node, &[0]), &params).expect("the fillet builds");
+        commit(&mut doc, node, shape, SourceFate::Reshape).expect("the fillet applies");
         assert_eq!(doc.parts().count(), 1);
         assert_eq!(doc.node_for_part(part), Some(node), "the part keeps its node");
         assert_eq!(doc.get_part(part).unwrap().kind(), PartKind::Solid);
         assert!((part_volume(&doc, node) - filleted).abs() < 1e-5);
-        assert_eq!(doc.undo_label(), Some("Fillet"));
 
         doc.undo().expect("undo the fillet");
         assert!((part_volume(&doc, node) - 8.0).abs() < 1e-9);
 
         doc.redo().expect("redo the fillet");
         assert!((part_volume(&doc, node) - filleted).abs() < 1e-5);
-    }
-
-    #[test]
-    fn a_chamfer_is_its_own_undo_step() {
-        let (mut doc, node) = doc_with_box();
-        let params = params(&doc, node, 0, BlendKind::Chamfer, 0.5);
-
-        execute_fillet(&mut doc, &target(node, &[0]), &params).expect("the chamfer applies");
-        assert_eq!(doc.undo_label(), Some("Chamfer"));
     }
 }

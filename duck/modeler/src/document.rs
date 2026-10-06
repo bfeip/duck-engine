@@ -44,6 +44,8 @@ impl PartKind {
 /// What a result grown from a part does with that part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceFate {
+    /// The result is the source's new shape, reshaped in place.
+    Reshape,
     /// The result fuses into its source, which is reshaped in place.
     Fuse,
     /// The result replaces its source outright, under its name.
@@ -56,6 +58,20 @@ pub enum SourceFate {
 /// wires and points.
 pub fn has_solid(shape: &Shape) -> bool {
     shape.contains_type(ShapeType::Solid)
+}
+
+/// Face `index` of `shape`, numbered as the selection numbers them.
+pub fn selected_face(shape: &Shape, index: u32) -> Result<Face> {
+    shape
+        .face_at(index as usize)
+        .with_context(|| format!("Selected face {index} is not part of the part"))
+}
+
+/// Edge `index` of `shape`, numbered as the selection numbers them.
+pub fn selected_edge(shape: &Shape, index: u32) -> Result<Edge> {
+    shape
+        .edge_at(index as usize)
+        .with_context(|| format!("Selected edge {index} is not part of the part"))
 }
 
 /// Merges faces and edges left split across a shared surface or curve — chiefly
@@ -431,7 +447,7 @@ impl Document {
 
     /// Commits `result`, grown from part `source`, as `fate` says, as one undo
     /// step labelled `label`. A new part is named in `base`'s series and
-    /// tessellated with `options`; a fused source keeps its own.
+    /// tessellated with `options`; a reshaped source keeps its own.
     pub fn commit_result(
         &mut self,
         source: PartId,
@@ -443,6 +459,7 @@ impl Document {
     ) -> Result<()> {
         let source_part = self.get_part(source).context("Source part not found")?;
         match fate {
+            SourceFate::Reshape => self.reshape_part(source, result, label),
             SourceFate::Fuse => {
                 let fused = fuse(&source_part.shape, &result)
                     .context("Failed to fuse into the source part")?;
@@ -638,18 +655,21 @@ impl Document {
         self.part_to_node.get(&part).copied()
     }
 
+    /// The part whose node is `node`, if it is one.
+    pub fn part_at(&self, node: NodeId) -> Option<&CadPart> {
+        self.part_for_node(node).and_then(|id| self.get_part(id))
+    }
+
     /// Resolve a picked face — identified by its tessellation order (`face_index`,
     /// as carried by a `SubGeometryKind::Face` selection) — back to its OCCT [`Face`] sub-shape.
     pub fn face_subshape(&self, node: NodeId, face_index: u32) -> Option<Face> {
-        let part = self.part_for_node(node).and_then(|id| self.get_part(id))?;
-        part.shape.face_at(face_index as usize)
+        self.part_at(node)?.shape.face_at(face_index as usize)
     }
 
     /// Resolve a picked edge — identified by its tessellation order (`edge_index`,
     /// as carried by a `SubGeometryKind::Edge` selection) — back to its OCCT [`Edge`] sub-shape.
     pub fn edge_subshape(&self, node: NodeId, edge_index: u32) -> Option<Edge> {
-        let part = self.part_for_node(node).and_then(|id| self.get_part(id))?;
-        part.shape.edge_at(edge_index as usize)
+        self.part_at(node)?.shape.edge_at(edge_index as usize)
     }
 
     /// Resolve a picked edge to the [`Wire`] that contains it in the part's B-Rep.
@@ -659,7 +679,7 @@ impl Document {
     /// wire containing a topologically-identical edge), so one click selects a
     /// whole multi-edge profile.
     pub fn wire_for_edge(&self, node: NodeId, edge_index: u32) -> Option<Wire> {
-        let part = self.part_for_node(node).and_then(|id| self.get_part(id))?;
+        let part = self.part_at(node)?;
         let target = part.shape.edge_at(edge_index as usize)?;
         part.shape.wires().find(|wire| wire.edges().any(|e| e.is_same(&target)))
     }
@@ -815,7 +835,7 @@ mod tests {
 
     #[test]
     fn tweak_after_boolean_direct_path() {
-        use crate::ops::boolean::{execute_boolean, BooleanKind};
+        use crate::ops::boolean::{build_boolean, commit_boolean, BooleanKind, BooleanTarget};
 
         let (mut doc, box_part, _) = doc_with_box();
         let sphere = doc
@@ -825,16 +845,12 @@ mod tests {
                 &CadTessellationOptions::default(),
             )
             .expect("sphere tessellates");
-        let box_node = doc.node_for_part(box_part).unwrap();
-        let sphere_node = doc.node_for_part(sphere).unwrap();
-        execute_boolean(
-            BooleanKind::Subtract,
-            box_node,
-            &[sphere_node],
-            &mut doc,
-            &CadTessellationOptions::default(),
-        )
-        .expect("subtract succeeds");
+        let target = BooleanTarget {
+            target: doc.node_for_part(box_part).unwrap(),
+            tools: vec![doc.node_for_part(sphere).unwrap()],
+        };
+        let result = build_boolean(&doc, &target, BooleanKind::Subtract).expect("subtract succeeds");
+        commit_boolean(&mut doc, &target, result, &CadTessellationOptions::default()).expect("the result commits");
 
         let part = doc.parts().next().expect("boolean leaves one part").id;
         let node = doc.node_for_part(part).unwrap();

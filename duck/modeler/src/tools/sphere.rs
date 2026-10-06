@@ -14,7 +14,8 @@ use duck_engine_viewer::{
 use log::error;
 use opencascade::primitives::Shape;
 
-use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
+use crate::document::Document;
+use crate::ops::primitives::sphere;
 use crate::preview::PreviewSession;
 use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
@@ -61,13 +62,8 @@ impl PrimitiveParams for SphereParams {
         SphereTool::preview_transform(self.center, self.radius)
     }
 
-    fn build(&self) -> Option<Shape> {
-        Some(
-            Shape::sphere(f64::from(self.radius))
-                .at(point3_to_dvec3(self.center))
-                .axis(vec3_to_dvec3(self.axis))
-                .build(),
-        )
+    fn build(&self) -> anyhow::Result<Shape> {
+        Ok(sphere(self.center, self.axis, self.radius))
     }
 }
 

@@ -9,6 +9,7 @@ use duck_engine_viewer::operator::Operator;
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 
 use crate::document::Document;
+use crate::ops::delete::delete_parts;
 
 /// Last-priority operator that turns an unclaimed 'X'/Delete press into a
 /// deferred delete request, applied by the app's per-frame update.
@@ -85,31 +86,22 @@ pub fn delete_selected_parts(document: &Mutex<Document>, selection: &mut Selecti
         })
         .collect();
 
-    let mut document = document.lock().unwrap();
-    // One undo step covers the whole multi-selection.
-    let mut document = document.undo_scope("Delete");
-    let mut deleted = 0;
-    for node in nodes {
-        let Some(part) = document.part_for_node(node) else { continue };
-        document.remove_part(part);
+    let deleted = delete_parts(&mut document.lock().unwrap(), &nodes);
+    for &node in &deleted {
         selection.remove_node(node);
-        deleted += 1;
     }
-    deleted
+    deleted.len()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use duck_engine_scene::cad::CadTessellationOptions;
     use duck_engine_scene::common::Transform;
     use duck_engine_scene::resource::{NodeFlags, NodeId, SubGeometryElement, SubGeometryKind};
-    use duck_engine_scene::Scene;
     use duck_engine_viewer::input::PhysicalKey;
 
     use super::*;
     use crate::document::PartId;
+    use crate::testing;
 
     fn key_press(key: Key) -> KeyEvent {
         KeyEvent {
@@ -156,22 +148,10 @@ mod tests {
         assert!(!op.take_pending());
     }
 
-    fn doc_with_boxes(count: usize) -> (Arc<Mutex<Document>>, Vec<(PartId, NodeId)>) {
-        let scene = Scene::default();
-        let mut doc = Document::new(scene);
-        let parts = (0..count)
-            .map(|i| {
-                let part = doc
-                    .add_part(
-                        format!("box {i}"),
-                        opencascade::primitives::Shape::cube(2.0),
-                        &CadTessellationOptions::default(),
-                    )
-                    .expect("box tessellates");
-                (part, doc.node_for_part(part).expect("part has a node"))
-            })
-            .collect();
-        (Arc::new(Mutex::new(doc)), parts)
+    /// A document holding `count` boxes, shared as the app holds it.
+    fn doc_with_boxes(count: usize) -> (Mutex<Document>, Vec<(PartId, NodeId)>) {
+        let (doc, parts) = testing::doc_with_boxes(count);
+        (Mutex::new(doc), parts)
     }
 
     #[test]
@@ -220,22 +200,4 @@ mod tests {
         assert!(selection.is_node_selected(unmapped), "unmapped selection is left untouched");
     }
 
-    #[test]
-    fn multi_delete_is_one_undo_step() {
-        let (doc, parts) = doc_with_boxes(3);
-
-        let mut selection = SelectionManager::new();
-        for &(_, node) in &parts {
-            selection.add(SelectionItem::Node(node));
-        }
-        assert_eq!(delete_selected_parts(&doc, &mut selection), 3);
-
-        let mut doc = doc.lock().unwrap();
-        assert_eq!(doc.undo_label(), Some("Delete"));
-        doc.undo().expect("undo succeeds");
-        assert_eq!(doc.parts().count(), 3, "one undo restores the whole selection");
-        for &(part, node) in &parts {
-            assert_eq!(doc.node_for_part(part), Some(node));
-        }
-    }
 }

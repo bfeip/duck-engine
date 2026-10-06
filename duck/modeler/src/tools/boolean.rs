@@ -13,7 +13,7 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
-use crate::ops::boolean::{execute_boolean, preview_boolean, BooleanKind};
+use crate::ops::boolean::{build_boolean, commit_boolean, preview_boolean, BooleanKind, BooleanTarget};
 use crate::document::Document;
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
@@ -35,8 +35,8 @@ pub struct BooleanTool {
 
     preview: PreviewSession,
 
-    preview_target: Option<NodeId>,
-    preview_tools: Vec<NodeId>,
+    /// The parts the preview was built for.
+    target: Option<BooleanTarget>,
     last_kind: BooleanKind,
 
     document: Arc<Mutex<Document>>,
@@ -55,8 +55,7 @@ impl BooleanTool {
             kind: BooleanKind::default(),
             phase: BooleanPhase::default(),
             preview,
-            preview_target: None,
-            preview_tools: Vec::new(),
+            target: None,
             last_kind: BooleanKind::default(),
             document,
             construction_options,
@@ -68,24 +67,22 @@ impl BooleanTool {
     /// On success sets phase = Done; on failure stays in Configuring so the user can retry.
     /// Call `selection.clear()` yourself on success.
     fn apply(&mut self) -> anyhow::Result<()> {
-        let Some(target) = self.preview_target else {
+        let Some(target) = self.target.clone() else {
             return Ok(());
         };
-        let tools = self.preview_tools.clone();
-
         let options = self.construction_options.borrow().geometry_options.clone();
-
-        let mut doc = self.document.lock().unwrap();
-        execute_boolean(self.kind, target, &tools, &mut *doc, &options)?;
-        drop(doc);
+        {
+            let mut doc = self.document.lock().unwrap();
+            let result = build_boolean(&doc, &target, self.kind)?;
+            commit_boolean(&mut doc, &target, result, &options)?;
+        }
 
         // Remove the preview. The hidden sources it hands back were the boolean's
-        // inputs, already deleted by execute_boolean; on failure above the session
+        // inputs, already deleted by commit_boolean; on failure above the session
         // stays live so the preview and hidden sources survive for retry/cancel.
         let _ = self.preview.commit();
 
-        self.preview_target = None;
-        self.preview_tools.clear();
+        self.target = None;
         self.phase = BooleanPhase::Done;
         Ok(())
     }
@@ -104,57 +101,57 @@ impl BooleanTool {
     /// Abort the operation, restoring the visibility of all hidden original parts.
     pub fn cancel(&mut self) {
         self.preview.cancel();
-        self.preview_target = None;
-        self.preview_tools.clear();
+        self.target = None;
         self.phase = BooleanPhase::Cancelled;
     }
 
-    fn selection_snapshot(selection: &SelectionManager) -> (Option<NodeId>, Vec<NodeId>) {
+    /// The boolean the selection designates: the primary part as the target,
+    /// and the other selected parts as its tools.
+    fn selection_snapshot(selection: &SelectionManager) -> Option<BooleanTarget> {
         let primary = selection.primary();
-        let target = primary.and_then(|item| match item {
-            SelectionItem::Node(id) => Some(id),
-            _ => None,
-        });
-        let tools: Vec<_> = selection.iter()
+        let Some(SelectionItem::Node(target)) = primary else { return None };
+        let tools = selection
+            .iter()
             .filter(|&&item| Some(item) != primary)
             .filter_map(|item| match item {
                 SelectionItem::Node(id) => Some(*id),
                 _ => None,
             })
             .collect();
-        (target, tools)
+        Some(BooleanTarget { target, tools })
     }
 
     fn refresh_preview(&mut self, selection: &SelectionManager) {
         // Drop the old preview and re-show last pass's hidden sources.
         self.preview.clear_previews();
 
-        let (target, tools) = Self::selection_snapshot(selection);
-        self.preview_target = target;
-        self.preview_tools = tools.clone();
+        self.target = Self::selection_snapshot(selection);
         self.last_kind = self.kind;
+        let Some(target) = self.target.clone() else { return };
 
-        let Some(target_node) = target else { return };
-
-        let options = self.construction_options.borrow().preview_options();
         let result = {
             let doc = self.document.lock().unwrap();
-            preview_boolean(self.kind, target_node, &tools, &*doc, &options)
+            preview_boolean(&doc, &target, self.kind)
         };
-
-        match result {
-            Ok(preview) => {
-                self.preview.add_preview_node(preview.node);
-                self.preview.hide_source_node(target_node);
-                for &tool in &tools {
-                    self.preview.hide_source_node(tool);
-                }
-                self.show_removed(&tools, &preview.removed, &options);
-                // No preview is a part: picks must reach the hidden parts beneath.
-                self.preview.set_preview_flags(NodeFlags::DO_NOT_SELECT);
+        let preview = match result {
+            Ok(preview) => preview,
+            Err(e) => {
+                log::warn!("Boolean preview failed: {e}");
+                return;
             }
-            Err(e) => log::warn!("Boolean preview failed: {e}"),
+        };
+        let options = self.construction_options.borrow().preview_options();
+        if self.preview.add_preview_from_shape(&preview.shape, &options, "Boolean preview").is_none() {
+            log::warn!("Boolean preview could not be tessellated");
+            return;
         }
+        self.preview.hide_source_node(target.target);
+        for &tool in &target.tools {
+            self.preview.hide_source_node(tool);
+        }
+        self.show_removed(&target.tools, &preview.removed, &options);
+        // No preview is a part: picks must reach the hidden parts beneath.
+        self.preview.set_preview_flags(NodeFlags::DO_NOT_SELECT);
     }
 
     /// Show the `removed` material in translucent red.
@@ -216,10 +213,7 @@ impl BooleanTool {
 
         let (target_name, tool_entries) = {
             let doc = self.document.lock().unwrap();
-            let name_for = |node: NodeId| {
-                doc.part_for_node(node)
-                    .and_then(|p| doc.get_part(p).map(|part| part.name.clone()))
-            };
+            let name_for = |node: NodeId| doc.part_at(node).map(|part| part.name.clone());
             let target_name = target_node
                 .and_then(name_for)
                 .unwrap_or_else(|| "(none — click a part)".to_owned());
@@ -312,9 +306,9 @@ impl ModelingTool for BooleanTool {
     /// A picked target (with or without tools) is a configured operation, so
     /// leaving the tool runs it rather than dropping the configuration.
     fn finalize(&mut self, selection: &mut SelectionManager) -> anyhow::Result<()> {
-        if self.preview_target.is_some() {
+        if self.target.is_some() {
             self.apply()?;
-            // The sources `execute_boolean` consumed must not stay selected.
+            // The sources the boolean consumed must not stay selected.
             selection.clear();
         }
         Ok(())
@@ -344,9 +338,7 @@ impl Operator for BooleanTool {
         let Event::Device(event) = event else { return false };
         match event {
             DeviceEvent::Update { .. } => {
-                let (current_target, current_tools) = Self::selection_snapshot(ctx.selection);
-                let selection_changed = current_target != self.preview_target
-                    || current_tools != self.preview_tools;
+                let selection_changed = Self::selection_snapshot(ctx.selection) != self.target;
                 let kind_changed = self.kind != self.last_kind;
                 if selection_changed || kind_changed {
                     self.refresh_preview(ctx.selection);
@@ -355,7 +347,7 @@ impl Operator for BooleanTool {
             }
             // Right-click finalizes a configured operation.
             DeviceEvent::MouseClick { button: MouseButton::Right, .. } => {
-                if self.preview_target.is_none() {
+                if self.target.is_none() {
                     return false;
                 }
                 self.apply_and_clear(ctx.selection);

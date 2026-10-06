@@ -12,11 +12,11 @@ use duck_engine_viewer::{
     operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, Operator},
     selection::SelectionManager,
 };
-use glam::DVec3;
 use log::{error, warn};
-use opencascade::primitives::{Edge, Face, Shape, Wire};
+use opencascade::primitives::Shape;
 
-use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
+use crate::document::Document;
+use crate::ops::primitives::{circle, cylinder, region};
 use crate::preview::PreviewSession;
 use crate::tools::{ModelingTool, PanelContext, ToolInfo};
 use crate::ui::icons;
@@ -94,13 +94,8 @@ impl PrimitiveParams for CylinderParams {
         }
     }
 
-    fn build(&self) -> Option<Shape> {
-        Some(Shape::cylinder(
-            point3_to_dvec3(self.base),
-            f64::from(self.radius),
-            vec3_to_dvec3(self.plane.normal),
-            f64::from(self.height),
-        ))
+    fn build(&self) -> anyhow::Result<Shape> {
+        Ok(cylinder(self.base, self.plane.normal, self.radius, self.height))
     }
 }
 
@@ -216,17 +211,8 @@ impl CylinderTool {
     /// centered on the origin in local XY, so it reads as a sketch until the
     /// cursor gives the cylinder a height. Placed via the preview node transform
     /// ([`disk_transform`](Self::disk_transform)).
-    fn reference_disk() -> Option<Shape> {
-        let edge = Edge::circle(DVec3::ZERO, DVec3::Z, 1.0)
-            .map_err(|e| warn!("Failed to build base disk edge: {e}"))
-            .ok()?;
-        let wire = Wire::from_edges(&[edge])
-            .map_err(|e| warn!("Failed to build base disk wire: {e}"))
-            .ok()?;
-        Face::from_wire(&wire)
-            .map_err(|e| warn!("Failed to build base disk face: {e}"))
-            .map(Into::into)
-            .ok()
+    fn reference_disk() -> anyhow::Result<Shape> {
+        Ok(region(circle(Point3::new(0.0, 0.0, 0.0), Vector3::unit_z(), 1.0)?))
     }
 
     /// A radius is valid once it is non-degenerate.
@@ -262,8 +248,12 @@ impl CylinderTool {
         let plane = Plane::from_point(snap.direction.unwrap_or(cplane.normal), center);
 
         // A single unit disk, scaled each move; preview detail is irrelevant here.
-        let Some(preview_shape) = Self::reference_disk() else {
-            return false;
+        let preview_shape = match Self::reference_disk() {
+            Ok(shape) => shape,
+            Err(e) => {
+                warn!("Failed to build the base disk: {e:#}");
+                return false;
+            }
         };
         let options = self.construction_options.borrow().geometry_options.clone();
         if self.preview.add_preview_from_shape(&preview_shape, &options, "cylinder base preview").is_none() {
