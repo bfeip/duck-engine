@@ -224,7 +224,7 @@ impl ViewerState<'static> {
             target,
             up,
             aspect: size.0 as Real / size.1 as Real,
-            projection: Projection::Perspective { fovy: 35.0, znear: 1.0, zfar: 5_000.0 },
+            projection: Projection::Orthographic { half_height: 75., half_depth: 1000. },
         };
 
         let coptions = self.construction_options.borrow();
