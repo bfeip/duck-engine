@@ -1,6 +1,7 @@
 //! The modeler's panel UI: a thin orchestrator over docked egui panels.
 
 pub(crate) mod icons;
+mod lights_tab;
 mod menu_bar;
 mod right_panel;
 mod model_tab;
@@ -27,6 +28,8 @@ use right_panel::RightPanel;
 use tool_palette::ToolPalette;
 use tool_panel::ToolPanel;
 
+pub use lights_tab::Lighting;
+
 /// Widest a notice may get before its text wraps.
 const NOTICE_MAX_WIDTH: f32 = 380.0;
 
@@ -47,6 +50,7 @@ impl ModelerUi {
         ctx: &egui::Context,
         document: &Arc<Mutex<Document>>,
         camera: &mut PositionedCamera,
+        lighting: &mut Lighting,
         construction: &Rc<RefCell<ConstructionOptions>>,
         selection: &mut SelectionManager,
         tools: &ToolManager,
@@ -68,7 +72,15 @@ impl ModelerUi {
             // TODO: would be better to just pass the Arc instead of locking here.
             let mut document = document.lock().unwrap();
             let mut construction = construction.borrow_mut();
-            self.right.show(ctx, &mut document, camera, &mut construction, selection, &mut actions);
+            self.right.show(
+                ctx,
+                &mut document,
+                camera,
+                lighting,
+                &mut construction,
+                selection,
+                &mut actions,
+            );
         }
         self.tool_panel.show(ctx, tools, selection);
         show_notifications(ctx, notifications);

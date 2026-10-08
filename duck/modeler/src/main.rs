@@ -41,7 +41,7 @@ use crate::tools::{
 use crate::notifications::Notifications;
 use crate::platform::Host;
 use crate::shortcuts::Shortcuts;
-use crate::ui::ModelerUi;
+use crate::ui::{Lighting, ModelerUi};
 
 use document::Document;
 
@@ -66,6 +66,9 @@ pub enum AppAction {
     /// The camera settings changed; the edited camera must be written back to
     /// the view.
     CameraChanged,
+    /// The lighting changed; the edited lighting must be written back to the
+    /// view.
+    LightingChanged,
     /// The view snapped to look along an axis, from this unit offset of the
     /// eye from its target; the construction plane follows if set to.
     ViewSnapped(Vector3),
@@ -406,14 +409,16 @@ impl<'a> ViewerState<'a> {
         let mut viewport_rect = None;
         let mut ui_actions = Vec::new();
         let mut view = self.viewer.view_mut(self.view_id).expect("main view");
-        // The UI edits a copy of the camera; it is written back on
-        // `AppAction::CameraChanged` below.
+        // The UI edits copies of the camera and lighting; they are written
+        // back on `AppAction::CameraChanged` and `LightingChanged` below.
         let mut ui_camera = view.camera().clone();
+        let mut ui_lighting = Lighting::of(&view);
         let full_output = egui_ctx.run(raw_input, |ctx| {
             ui_actions = self.ui.show(
                 ctx,
                 &self.document,
                 &mut ui_camera,
+                &mut ui_lighting,
                 &self.construction_options,
                 view.selection_mut(),
                 &self.tools,
@@ -471,6 +476,10 @@ impl<'a> ViewerState<'a> {
                 AppAction::CameraChanged => {
                     let mut view = self.viewer.view_mut(self.view_id).expect("main view");
                     view.set_camera(ui_camera.clone());
+                }
+                AppAction::LightingChanged => {
+                    let mut view = self.viewer.view_mut(self.view_id).expect("main view");
+                    ui_lighting.apply(&mut view);
                 }
                 AppAction::ViewSnapped(toward_eye) => {
                     if self.construction_options.borrow_mut().face_view(toward_eye) {

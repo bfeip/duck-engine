@@ -1,11 +1,12 @@
-//! The right-hand tabbed panel: the Model tab (part list) and the Scene tab
-//! (camera, construction plane, grid, and snap settings).
+//! The right-hand tabbed panel: the Model tab (part list), the Scene tab
+//! (camera, construction plane, grid, and snap settings) and the Lights tab.
 
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::document::Document;
 use crate::construction::ConstructionOptions;
+use crate::ui::lights_tab::{self, Lighting};
 use crate::ui::model_tab::ModelTab;
 use crate::ui::scene_tab::SceneTab;
 use crate::AppAction;
@@ -15,18 +16,21 @@ enum RightTab {
     #[default]
     Model,
     Scene,
+    Lights,
 }
 
 impl RightTab {
-    const ALL: [RightTab; 2] = [
+    const ALL: [RightTab; 3] = [
         RightTab::Model,
         RightTab::Scene,
+        RightTab::Lights,
     ];
 
     fn label(self) -> &'static str {
         match self {
             RightTab::Model => "Model",
             RightTab::Scene => "Scene",
+            RightTab::Lights => "Lights",
         }
     }
 }
@@ -44,6 +48,7 @@ impl RightPanel {
         ctx: &egui::Context,
         document: &mut Document,
         camera: &mut PositionedCamera,
+        lighting: &mut Lighting,
         construction: &mut ConstructionOptions,
         selection: &mut SelectionManager,
         actions: &mut Vec<AppAction>,
@@ -63,6 +68,7 @@ impl RightPanel {
                 match self.active_tab {
                     RightTab::Model => self.model.show(ui, document, selection),
                     RightTab::Scene => self.scene.show(ui, camera, construction, actions),
+                    RightTab::Lights => lights_tab::show(ui, lighting, camera, actions),
                 }
             });
     }

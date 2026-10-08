@@ -149,7 +149,7 @@ pub enum HeadlightMode {
 ///
 /// Colors are linear. Intensities suit the Reinhard tonemap in the lit surface
 /// shader, which takes no 1/PI on incoming radiance.
-pub(crate) fn default_headlight_rig() -> Vec<PositionedLight> {
+pub fn default_headlight_rig() -> Vec<PositionedLight> {
     // Rotations aim the light's -Z axis in camera space, where +X is right, +Y
     // is up and -Z points away from the viewer.
     let directional = |color, intensity, rotation| {
