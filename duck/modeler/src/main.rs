@@ -50,7 +50,7 @@ const VIEWPORT_BACKGROUND: RgbaColor = RgbaColor { r: 0.035, g: 0.040, b: 0.047,
 
 /// What the app is asked to do, by the UI or a shortcut. Gathered over a frame
 /// and carried out once its UI is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AppAction {
     /// Switch to this tool, or with `None` back to selection.
     SwitchTool(Option<ToolId>),
@@ -66,6 +66,9 @@ pub enum AppAction {
     /// The camera settings changed; the edited camera must be written back to
     /// the view.
     CameraChanged,
+    /// The view snapped to look along an axis, from this unit offset of the
+    /// eye from its target; the construction plane follows if set to.
+    ViewSnapped(Vector3),
     /// The tessellation options changed; existing parts must be rebuilt to match.
     TessellationChanged,
     Quit,
@@ -254,6 +257,19 @@ impl<'a> ViewerState<'a> {
         let coptions = self.construction_options.borrow();
         self.grid =
             Some(grid::Grid::add_to_scene(&scene, &coptions.grid, &coptions.construction_plane));
+    }
+
+    /// Puts back the construction plane a view snap replaced once the camera
+    /// has settled outside the snapped view.
+    fn check_snapped_view(&mut self) {
+        let view = self.viewer.view(self.view_id).expect("main view");
+        if view.camera_in_transition() {
+            return;
+        }
+        let toward_eye = -view.camera().forward();
+        if self.construction_options.borrow_mut().leave_view(toward_eye) {
+            self.rebuild_grid();
+        }
     }
 
     /// Resize the window surface. The offscreen viewer is sized from the
@@ -456,9 +472,17 @@ impl<'a> ViewerState<'a> {
                     let mut view = self.viewer.view_mut(self.view_id).expect("main view");
                     view.set_camera(ui_camera.clone());
                 }
+                AppAction::ViewSnapped(toward_eye) => {
+                    if self.construction_options.borrow_mut().face_view(toward_eye) {
+                        self.rebuild_grid();
+                    }
+                }
                 AppAction::Quit => return true,
             }
         }
+        // After the actions, so a snap this frame is in place before its view
+        // is checked.
+        self.check_snapped_view();
 
         // After the UI and its actions, so a tool they finished — by a panel's
         // Apply, say — cedes back to selection in the same frame.

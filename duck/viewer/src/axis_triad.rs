@@ -249,6 +249,17 @@ pub(crate) fn build_triad(
     Arc::new(Mutex::new(AxisTriadOperator { handles, pending }))
 }
 
+/// The unit offset of the eye from the target that a snap request moves
+/// `current` to: the requested axis, or its opposite when the camera already
+/// looks along it.
+pub(crate) fn snap_direction(current: &PositionedCamera, request: &SnapRequest) -> Vector3 {
+    if current.forward().dot(-request.direction) > 1.0 - 1e-4 {
+        -request.direction
+    } else {
+        request.direction
+    }
+}
+
 /// The camera pose a snap request moves `current` to: looking along the
 /// requested axis from the preserved eye distance. Requesting the view the
 /// camera is already in flips to the opposite side.
@@ -258,10 +269,7 @@ pub(crate) fn snap_camera(
     bounds: Option<&Aabb>,
 ) -> PositionedCamera {
     let mut camera = current.clone();
-    let mut direction = request.direction;
-    if current.forward().dot(-direction) > 1.0 - 1e-4 {
-        direction = -direction;
-    }
+    let direction = snap_direction(current, request);
     camera.eye = camera.target + direction * current.length();
     camera.up = request.up;
     if let Some(bounds) = bounds {
@@ -347,6 +355,17 @@ mod tests {
 
         let snapped = snap_camera(&current, &request, None);
         assert!((snapped.eye - Point3::new(0.0, 0.0, -5.0)).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn snap_direction_is_the_exact_destination_axis() {
+        let request = SnapRequest { direction: Vector3::unit_z(), up: Vector3::unit_y() };
+
+        let elsewhere = camera(Point3::new(3.0, 4.0, 0.0), Vector3::unit_y());
+        assert_eq!(snap_direction(&elsewhere, &request), Vector3::unit_z());
+
+        let facing = camera(Point3::new(0.0, 0.0, 5.0), Vector3::unit_y());
+        assert_eq!(snap_direction(&facing, &request), -Vector3::unit_z());
     }
 
     #[test]

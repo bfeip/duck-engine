@@ -9,7 +9,7 @@ use crate::{
     axis_triad::{self, AxisTriad, AxisTriadConfig},
     camera_transition::CameraTransition,
     compositor::Compositor,
-    event::{DeviceEvent, Event, EventContext, EventDispatcher},
+    event::{AppEvent, DeviceEvent, Event, EventContext, EventDispatcher},
     input::{ElementState, TouchPhase},
     scene::{PositionedCamera, PositionedLight, Projection, common::RgbaColor},
     selection::SelectionManager,
@@ -284,8 +284,9 @@ impl Viewer {
     /// Add an axis-triad overlay mirroring `target`'s camera orientation.
     /// Clicking one of its six axis handles animates `target`'s camera to look
     /// down that axis; clicking the axis already faced flips to the opposite
-    /// side. The triad renders its own small scene in an anchored corner view
-    /// kept on top of the stack.
+    /// side. Each snap is reported to `target`'s operators as
+    /// [`AppEvent::ViewSnapped`]. The triad renders its own small scene in an
+    /// anchored corner view kept on top of the stack.
     ///
     /// The returned id is a normal view id: layout, visibility, and removal go
     /// through the usual view APIs. Removing `target` removes the triad too.
@@ -492,7 +493,7 @@ impl Viewer {
     }
 
     /// Start a camera transition on each triad's target view with a pending
-    /// handle click.
+    /// handle click, and tell the view's operators with [`AppEvent::ViewSnapped`].
     fn apply_triad_snaps(&mut self) {
         let snaps: Vec<_> = self
             .axis_triads
@@ -506,8 +507,11 @@ impl Viewer {
         for (target, duration, fit, request) in snaps {
             let Some(mut view) = self.view_mut(target) else { continue };
             let bounds = if fit { view.scene.lock().bounding().bounds } else { None };
+            let direction = axis_triad::snap_direction(&view.camera, &request);
             let camera = axis_triad::snap_camera(&view.camera, &request, bounds.as_ref());
             view.transition_camera_to(camera, duration);
+            drop(view);
+            self.dispatch_to(target, &Event::App(AppEvent::ViewSnapped { direction }));
         }
     }
 

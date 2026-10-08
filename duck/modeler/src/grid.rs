@@ -30,12 +30,6 @@ pub struct GridConfig {
     pub minor_color: RgbaColor,
     /// Color of the major (coarse) gridlines.
     pub major_color: RgbaColor,
-    /// Color of the first in-plane axis line (analogous to world X).
-    pub axis_u_color: RgbaColor,
-    /// Color of the second in-plane axis line (analogous to world Z).
-    pub axis_v_color: RgbaColor,
-    /// Color of the construction-plane normal indicator line.
-    pub axis_normal_color: RgbaColor,
     /// Length of the short normal-axis indicator line, in world units.
     pub normal_axis_length: Real,
 }
@@ -49,9 +43,6 @@ impl Default for GridConfig {
             major_every: 5,
             minor_color: RgbaColor { r: 0.145, g: 0.150, b: 0.165, a: 0.35 },
             major_color: RgbaColor { r: 0.26, g: 0.27, b: 0.29, a: 0.45 },
-            axis_u_color: Axis::X.color().with_alpha(AXIS_ALPHA),
-            axis_v_color: Axis::Z.color().with_alpha(AXIS_ALPHA),
-            axis_normal_color: Axis::Y.color().with_alpha(AXIS_ALPHA),
             normal_axis_length: 25.0,
         }
     }
@@ -65,13 +56,16 @@ pub struct Grid {
 
 impl Grid {
     /// Creates the grid meshes, materials, and inert instance nodes in `scene`,
-    /// oriented to lie on `plane`. When the config is not visible, creates
-    /// nothing (an empty grid).
+    /// oriented to lie on `plane`, each axis line in the color of the world
+    /// axis it runs along. When the config is not visible, creates nothing (an
+    /// empty grid).
     pub fn add_to_scene(scene: &Scene, config: &GridConfig, plane: &Plane) -> Self {
         if !config.visible {
             return Self { nodes: Vec::new() };
         }
         let transform = plane_to_transform(plane);
+        let (u, v) = plane.basis();
+        let axis_color = |direction| Axis::nearest(direction).color().with_alpha(AXIS_ALPHA);
 
         let minor = build_grid_mesh(config, GridLayer::Minor);
         let major = build_grid_mesh(config, GridLayer::Major);
@@ -83,9 +77,9 @@ impl Grid {
         let nodes = [
             ("Grid (minor)", minor, config.minor_color),
             ("Grid (major)", major, config.major_color),
-            ("Grid axis U", axis_u, config.axis_u_color),
-            ("Grid axis V", axis_v, config.axis_v_color),
-            ("Grid axis N", axis_n, config.axis_normal_color),
+            ("Grid axis U", axis_u, axis_color(u)),
+            ("Grid axis V", axis_v, axis_color(v)),
+            ("Grid axis N", axis_n, axis_color(plane.normal)),
         ]
         .into_iter()
         .map(|(name, mesh, color)| {

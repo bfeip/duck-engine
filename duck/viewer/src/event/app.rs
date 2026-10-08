@@ -1,3 +1,4 @@
+use crate::common::Vector3;
 use crate::selection::SelectionItem;
 
 /// A semantic, high-level event emitted by an operator to signal that *something
@@ -22,6 +23,11 @@ pub enum AppEvent {
     CameraInteractionStart,
     /// A camera navigation interaction ended.
     CameraInteractionEnd,
+    /// A snap began moving the view's camera to look along an axis.
+    ViewSnapped {
+        /// Unit offset of the eye from the target at the snap's destination.
+        direction: Vector3,
+    },
     /// A downstream-defined event.
     Custom(Box<dyn std::any::Any + Send>),
 }

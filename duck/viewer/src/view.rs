@@ -260,6 +260,12 @@ impl View {
         &self.camera
     }
 
+    /// Whether an animated camera move is in flight; see
+    /// [`ViewMut::transition_camera_to`](crate::ViewMut::transition_camera_to).
+    pub fn camera_in_transition(&self) -> bool {
+        self.transition.is_some()
+    }
+
     /// When this view's headlight rig contributes to rendering.
     pub fn headlight(&self) -> HeadlightMode {
         self.headlight

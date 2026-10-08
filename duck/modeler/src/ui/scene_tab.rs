@@ -143,8 +143,9 @@ fn camera_ui(
     }
 }
 
-/// Axis-aligned plane presets plus an offset along the plane normal.
-/// Returns true when the plane changed (grid must be rebuilt).
+/// Axis-aligned plane presets plus an offset along the plane normal, and
+/// whether view snaps turn the plane. Returns true when the plane changed
+/// (grid must be rebuilt).
 fn plane_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
     let mut changed = false;
     // The plane convention is normal·p + d = 0, so the offset of the plane
@@ -158,7 +159,8 @@ fn plane_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
             ("YZ", Vector3::unit_x()),
         ];
         for (label, normal) in presets {
-            let selected = construction.construction_plane.normal.dot(normal) > 0.999;
+            // Either facing: a view snap turns the normal toward the eye.
+            let selected = construction.construction_plane.normal.dot(normal).abs() > 0.999;
             if ui.selectable_label(selected, label).clicked() && !selected {
                 construction.construction_plane =
                     Plane::from_point(normal, Point3::origin() + normal * offset);
@@ -177,6 +179,9 @@ fn plane_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
         }
         ui.end_row();
     });
+
+    ui.checkbox(&mut construction.follow_view, "Follow view snaps")
+        .on_hover_text("Snapping the view to an axis turns the plane to face it until you orbit away");
 
     changed
 }

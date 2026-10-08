@@ -1,15 +1,17 @@
-//! Keyboard shortcuts for the app's own actions and for switching tools.
+//! Keyboard shortcuts for the app's own actions and for switching tools, and
+//! the viewer's view snaps.
 
 use duck_engine_viewer::bindings::{InputBinding, InputMap};
-use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
+use duck_engine_viewer::event::{AppEvent, DeviceEvent, Event, EventContext};
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, NamedKey};
 use duck_engine_viewer::operator::Operator;
 
 use crate::tools::{ToolId, ToolInfo};
 use crate::AppAction;
 
-/// Last-priority operator turning keys nothing else claimed into
-/// [`AppAction`]s, which the app takes once a frame.
+/// Last-priority operator turning keys nothing else claimed, and the view
+/// snaps the viewer reports, into [`AppAction`]s, which the app takes once a
+/// frame.
 ///
 /// Registered behind the tool host, so an active tool keeps any key it
 /// consumes, such as X for a transform's axis.
@@ -59,14 +61,28 @@ impl Shortcuts {
         self.pending.push(action);
         true
     }
+
+    /// Records the action `event` asks for, if any. Never consumes: app
+    /// events are for every operator to see.
+    fn on_app_event(&mut self, event: &AppEvent) {
+        if let AppEvent::ViewSnapped { direction } = event {
+            self.pending.push(AppAction::ViewSnapped(*direction));
+        }
+    }
 }
 
 impl Operator for Shortcuts {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(DeviceEvent::KeyboardInput { event: key_event, .. }) = event else {
-            return false;
-        };
-        self.on_key(key_event, ctx.modifiers)
+        match event {
+            Event::Device(DeviceEvent::KeyboardInput { event: key_event, .. }) => {
+                self.on_key(key_event, ctx.modifiers)
+            }
+            Event::App(app_event) => {
+                self.on_app_event(app_event);
+                false
+            }
+            _ => false,
+        }
     }
 
     fn name(&self) -> &str {
@@ -79,6 +95,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use duck_engine_scene::Scene;
+    use duck_engine_viewer::common::Vector3;
     use duck_engine_viewer::operator::SelectionOperator;
 
     use super::*;
@@ -132,6 +149,14 @@ mod tests {
         assert!(!shortcuts.on_key(&key('z'), Modifiers::default()));
         assert!(!shortcuts.on_key(&key('q'), Modifiers::default()));
         assert!(shortcuts.take().is_empty());
+    }
+
+    #[test]
+    fn a_view_snap_asks_the_plane_to_follow() {
+        let mut shortcuts = Shortcuts::new(&[]);
+        shortcuts.on_app_event(&AppEvent::ViewSnapped { direction: -Vector3::unit_x() });
+        shortcuts.on_app_event(&AppEvent::CameraInteractionStart);
+        assert_eq!(shortcuts.take(), [AppAction::ViewSnapped(-Vector3::unit_x())]);
     }
 
     #[test]
