@@ -293,6 +293,18 @@ impl Axis {
         }
     }
 
+    /// The axis most nearly parallel to `direction`, of either sign.
+    pub fn nearest(direction: Vector3) -> Axis {
+        Axis::ALL
+            .into_iter()
+            .max_by(|a, b| {
+                let a = a.direction().dot(direction).abs();
+                let b = b.direction().dot(direction).abs();
+                a.total_cmp(&b)
+            })
+            .unwrap()
+    }
+
     /// RGB color convention: X=red, Y=green, Z=blue.
     ///
     /// The single source of truth for axis coloring; anything drawing an axis
@@ -717,5 +729,12 @@ mod tests {
             assert!(hl.r > base.r && hl.g > base.g && hl.b > base.b, "{axis:?}: {hl:?} vs {base:?}");
             assert!((hl.a - base.a).abs() < COLOR_EPSILON);
         }
+    }
+
+    #[test]
+    fn test_axis_nearest_ignores_sign() {
+        assert_eq!(Axis::nearest(-Vector3::unit_z()), Axis::Z);
+        assert_eq!(Axis::nearest(Vector3::new(0.2, -0.9, 0.3)), Axis::Y);
+        assert_eq!(Axis::nearest(Vector3::new(-0.7, 0.1, 0.6)), Axis::X);
     }
 }
