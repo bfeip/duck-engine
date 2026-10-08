@@ -1,6 +1,46 @@
 //! Modeling tools: the palette entries that build and edit parts, the
 //! [`ToolManager`] that drives them, and the [`ModelingTool`] interface between
 //! the two.
+//!
+//! # Writing a tool
+//!
+//! Start from the family the tool belongs to:
+//!
+//! - It applies settings to what the selection picks: a `Feature`, run by
+//!   `FeatureTool` (`feature.rs`). See `fillet.rs`.
+//! - It places a new shape by picking points: a `Primitive`, run by
+//!   `PrimitiveTool` (`primitive.rs`). See `box.rs`.
+//! - It drags the selection with a gizmo: the viewer's `TransformDriver` over
+//!   a `TransformTarget`. See `duplicate.rs`.
+//! - Otherwise it implements [`ModelingTool`] itself, from the blocks below.
+//!   See `boolean.rs`.
+//!
+//! Its geometry goes in `crate::ops`, which never sees the viewer or egui.
+//! Re-export the tool here, register it in `main.rs`, and give it an icon in
+//! `ui::icons`.
+//!
+//! The blocks every family is built from:
+//!
+//! - [`Workspace`]: the document, construction settings and notices, and
+//!   snapping.
+//! - [`Gesture`]: what an event means under the standard bindings.
+//! - `PreviewSession`: preview geometry, and the parts it hides meanwhile.
+//! - `edit.rs`: settings a panel and grips edit live, and the panel's parts.
+//! - `targets.rs`: what the selection designates.
+//!
+//! The conventions every tool keeps:
+//!
+//! - Enter or right-click applies a complete result. Picks of the tool's own
+//!   that are not yet complete are dropped and the tool stays; with nothing to
+//!   finish, the gesture is left to others.
+//! - Escape discards and leaves the tool. A grip or gizmo drag in progress
+//!   takes it first, reverting only the drag.
+//! - Apply commits one undo step and returns to selection; Move, Rotate and
+//!   Scale stay until Escape. Switching tools commits what the tool holds
+//!   complete, through [`ModelingTool::finalize`].
+//! - A failed apply keeps the tool open and is reported through
+//!   [`Notifications::failure`](crate::notifications::Notifications::failure);
+//!   a preview that can't be built says why in the panel.
 
 mod boolean;
 mod r#box;
@@ -277,10 +317,10 @@ pub trait ModelingTool: 'static {
 
 #[cfg(test)]
 mod tests {
-    use duck_engine_viewer::input::{KeyEvent, PhysicalKey};
+    use duck_engine_viewer::input::KeyEvent;
 
     use super::*;
-    use crate::testing::key;
+    use crate::testing::{key, named_key};
 
     fn read(event: DeviceEvent, modifiers: Modifiers) -> Option<Gesture> {
         Gesture::read(&Event::Device(event), modifiers)
@@ -290,10 +330,6 @@ mod tests {
         DeviceEvent::KeyboardInput { event, is_synthetic: false }
     }
 
-    fn named(key: NamedKey) -> KeyEvent {
-        KeyEvent { physical_key: PhysicalKey::Unidentified, logical_key: Key::Named(key), state: ElementState::Pressed, repeat: false }
-    }
-
     fn click(button: MouseButton) -> DeviceEvent {
         DeviceEvent::MouseClick { button, position: (3.0, 4.0), duration_ms: 50 }
     }
@@ -301,8 +337,8 @@ mod tests {
     #[test]
     fn right_click_and_enter_finish_and_escape_cancels() {
         assert_eq!(read(click(MouseButton::Right), Modifiers::default()), Some(Gesture::Finish));
-        assert_eq!(read(press(named(NamedKey::Enter)), Modifiers::default()), Some(Gesture::Finish));
-        assert_eq!(read(press(named(NamedKey::Escape)), Modifiers::default()), Some(Gesture::Cancel));
+        assert_eq!(read(press(named_key(NamedKey::Enter)), Modifiers::default()), Some(Gesture::Finish));
+        assert_eq!(read(press(named_key(NamedKey::Escape)), Modifiers::default()), Some(Gesture::Cancel));
     }
 
     #[test]

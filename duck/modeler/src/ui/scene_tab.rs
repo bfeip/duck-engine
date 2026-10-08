@@ -6,7 +6,7 @@ use duck_engine_viewer::scene::{PositionedCamera, Projection};
 
 use crate::construction::ConstructionOptions;
 use crate::snap::SnapFlags;
-use crate::ui::UiAction;
+use crate::AppAction;
 
 /// The scene tab, owning the state local to it.
 pub struct SceneTab {
@@ -29,7 +29,7 @@ impl SceneTab {
         ui: &mut egui::Ui,
         camera: &mut PositionedCamera,
         construction: &mut ConstructionOptions,
-        actions: &mut Vec<UiAction>,
+        actions: &mut Vec<AppAction>,
     ) {
         egui::CollapsingHeader::new("Camera")
             .default_open(true)
@@ -39,7 +39,7 @@ impl SceneTab {
             .default_open(true)
             .show(ui, |ui| {
                 if plane_ui(ui, construction) {
-                    actions.push(UiAction::ConstructionChanged);
+                    actions.push(AppAction::ConstructionChanged);
                 }
             });
 
@@ -47,7 +47,7 @@ impl SceneTab {
             .default_open(true)
             .show(ui, |ui| {
                 if grid_ui(ui, construction) {
-                    actions.push(UiAction::ConstructionChanged);
+                    actions.push(AppAction::ConstructionChanged);
                 }
             });
 
@@ -59,7 +59,7 @@ impl SceneTab {
             .default_open(false)
             .show(ui, |ui| {
                 if debug_ui(ui, construction) {
-                    actions.push(UiAction::TessellationChanged);
+                    actions.push(AppAction::TessellationChanged);
                 }
             });
     }
@@ -75,7 +75,7 @@ fn camera_ui(
     ui: &mut egui::Ui,
     camera: &mut PositionedCamera,
     last_perspective: &mut Projection,
-    actions: &mut Vec<UiAction>,
+    actions: &mut Vec<AppAction>,
 ) {
     let mut changed = false;
     egui::Grid::new("camera_settings").num_columns(2).show(ui, |ui| {
@@ -139,7 +139,7 @@ fn camera_ui(
     });
 
     if changed {
-        actions.push(UiAction::CameraChanged);
+        actions.push(AppAction::CameraChanged);
     }
 }
 

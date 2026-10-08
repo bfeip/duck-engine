@@ -8,7 +8,7 @@ use crate::document::Document;
 use crate::construction::ConstructionOptions;
 use crate::ui::model_tab::ModelTab;
 use crate::ui::scene_tab::SceneTab;
-use crate::ui::UiAction;
+use crate::AppAction;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum RightTab {
@@ -46,7 +46,7 @@ impl RightPanel {
         camera: &mut PositionedCamera,
         construction: &mut ConstructionOptions,
         selection: &mut SelectionManager,
-        actions: &mut Vec<UiAction>,
+        actions: &mut Vec<AppAction>,
     ) {
         egui::SidePanel::right("right_panel")
             .resizable(true)

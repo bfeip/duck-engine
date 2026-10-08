@@ -10,12 +10,12 @@ mod notifications;
 mod ops;
 mod platform;
 mod preview;
+mod shortcuts;
 mod snap;
 #[cfg(test)]
 mod testing;
 mod tools;
 mod ui;
-mod undo;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -36,18 +36,40 @@ use crate::construction::ConstructionOptions;
 use crate::tools::{
     BooleanTool, BoxTool, CircleTool, CylinderTool, DraftTool, DuplicateTool, ExtrudeTool,
     FilletTool, HollowTool, LoftTool, PathKind, PathTool, RectangleTool, SphereTool, ThickenTool,
-    ToolManager, TransformTool, Workspace,
+    ToolId, ToolManager, TransformTool, Workspace,
 };
-use crate::delete::DeleteOperator;
 use crate::notifications::Notifications;
-use crate::undo::{UndoAction, UndoRedoOperator};
 use crate::platform::Host;
-use crate::ui::{ModelerUi, UiAction};
+use crate::shortcuts::Shortcuts;
+use crate::ui::ModelerUi;
 
 use document::Document;
 
 /// Viewport clear color. A cool dark grey.
 const VIEWPORT_BACKGROUND: RgbaColor = RgbaColor { r: 0.035, g: 0.040, b: 0.047, a: 1.0 };
+
+/// What the app is asked to do, by the UI or a shortcut. Gathered over a frame
+/// and carried out once its UI is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppAction {
+    /// Switch to this tool, or with `None` back to selection.
+    SwitchTool(Option<ToolId>),
+    /// Delete the selected parts.
+    Delete,
+    Undo,
+    Redo,
+    ImportCad,
+    ExportCad,
+    /// The construction plane or grid settings changed; the grid visuals must
+    /// be rebuilt to match.
+    ConstructionChanged,
+    /// The camera settings changed; the edited camera must be written back to
+    /// the view.
+    CameraChanged,
+    /// The tessellation options changed; existing parts must be rebuilt to match.
+    TessellationChanged,
+    Quit,
+}
 
 /// Owns all rendering state: egui context + GPU renderer, the window surface
 /// egui presents to, and the [`OffscreenViewer`] that renders the 3D scene into
@@ -80,9 +102,7 @@ struct ViewerState<'a> {
     document: Arc<Mutex<Document>>,
     notifications: Notifications,
     tools: ToolManager,
-
-    delete_op: Arc<Mutex<DeleteOperator>>,
-    undo_op: Arc<Mutex<UndoRedoOperator>>,
+    shortcuts: Arc<Mutex<Shortcuts>>,
 
     /// The construction grid currently installed in the scene; replaced when
     /// the construction plane or grid settings change.
@@ -127,25 +147,8 @@ impl ViewerState<'static> {
         let document = Arc::new(Mutex::new(Document::new(scene)));
         let notifications = Notifications::default();
 
-        let mut view = viewer.view_mut(view_id).expect("main view");
-        view.set_background_color(VIEWPORT_BACKGROUND);
-        let dispatcher = view.dispatcher_mut();
         let sel_op = Arc::new(Mutex::new(SelectionOperator::new()));
-        dispatcher.push_back(sel_op.clone());
-        dispatcher.push_back(Arc::new(Mutex::new(NavigationOperator::new())));
-
-        let mut tools = ToolManager::new(sel_op, notifications.clone());
-        tools.install(dispatcher);
-
-        // Behind the tool host so an active tool keeps any key it consumes.
-        let delete_op = Arc::new(Mutex::new(DeleteOperator::new()));
-        dispatcher.push_back(Arc::clone(&delete_op));
-        let undo_op = Arc::new(Mutex::new(UndoRedoOperator::new()));
-        dispatcher.push_back(Arc::clone(&undo_op));
-        drop(view);
-
-        viewer.add_axis_triad(view_id, AxisTriadConfig::default());
-
+        let mut tools = ToolManager::new(Arc::clone(&sel_op), notifications.clone());
         let workspace = Workspace {
             document: Arc::clone(&document),
             construction: Rc::clone(&construction_options),
@@ -169,6 +172,19 @@ impl ViewerState<'static> {
         tools.register(ThickenTool::new(&workspace));
         tools.register(HollowTool::new(&workspace));
         tools.register(LoftTool::new(&workspace));
+        let shortcuts = Arc::new(Mutex::new(Shortcuts::new(&tools.palette_entries())));
+
+        let mut view = viewer.view_mut(view_id).expect("main view");
+        view.set_background_color(VIEWPORT_BACKGROUND);
+        let dispatcher = view.dispatcher_mut();
+        dispatcher.push_back(sel_op);
+        dispatcher.push_back(Arc::new(Mutex::new(NavigationOperator::new())));
+        tools.install(dispatcher);
+        // Behind the tool host, so an active tool keeps any key it consumes.
+        dispatcher.push_back(Arc::clone(&shortcuts));
+        drop(view);
+
+        viewer.add_axis_triad(view_id, AxisTriadConfig::default());
 
         Self {
             egui_renderer,
@@ -186,8 +202,7 @@ impl ViewerState<'static> {
             document,
             notifications,
             tools,
-            delete_op,
-            undo_op,
+            shortcuts,
             grid: None,
         }
     }
@@ -326,29 +341,39 @@ impl<'a> ViewerState<'a> {
         }
     }
 
-    /// Applies a deferred undo/redo request: discards any in-progress tool
-    /// (deactivation tears down previews and restores hidden sources) rather
-    /// than committing it, so the step being undone is the one the user meant,
-    /// clears the selection — re-tessellation invalidates sub-geometry indices
-    /// and undo may remove selected nodes outright — then replays the step.
-    fn apply_undo(&mut self, action: UndoAction) {
+    /// Replays a step of history with `step`, undo or redo, reporting it as
+    /// `verb` and the step's label, or as `nothing` when there is no step. Any
+    /// in-progress tool is discarded and the selection cleared first.
+    fn replay(
+        &mut self,
+        step: fn(&mut Document) -> anyhow::Result<Option<String>>,
+        verb: &str,
+        nothing: &str,
+    ) {
+        // Discarded, not committed, so the step replayed is the one the user
+        // meant.
         self.tools.discard_active();
-        self.viewer
-            .view_mut(self.view_id)
-            .expect("main view")
-            .selection_mut()
-            .clear();
-        let (result, verb) = match action {
-            UndoAction::Undo => (self.document.lock().unwrap().undo(), "Undid"),
-            UndoAction::Redo => (self.document.lock().unwrap().redo(), "Redid"),
-        };
+        // Re-tessellation invalidates sub-geometry indices, and the step may
+        // remove selected nodes outright.
+        self.viewer.view_mut(self.view_id).expect("main view").selection_mut().clear();
+        let result = step(&mut self.document.lock().unwrap());
         match result {
             Ok(Some(label)) => self.notifications.info(format!("{verb} {label}")),
-            Ok(None) => {
-                let noun = if action == UndoAction::Undo { "undo" } else { "redo" };
-                self.notifications.info(format!("Nothing to {noun}"));
-            }
+            Ok(None) => self.notifications.info(nothing),
             Err(e) => self.notifications.failure(verb, &e),
+        }
+    }
+
+    /// Deletes the selected parts, discarding any in-progress tool first.
+    fn delete_selection(&mut self) {
+        // Deactivating the tool tears down its preview, showing again what it
+        // hid, before the parts go away.
+        self.tools.discard_active();
+        let mut view = self.viewer.view_mut(self.view_id).expect("main view");
+        let deleted = delete::delete_selected_parts(&self.document, view.selection_mut());
+        if deleted > 0 {
+            let plural = if deleted == 1 { "" } else { "s" };
+            self.notifications.info(format!("Deleted {deleted} part{plural}"));
         }
     }
 
@@ -366,7 +391,7 @@ impl<'a> ViewerState<'a> {
         let mut ui_actions = Vec::new();
         let mut view = self.viewer.view_mut(self.view_id).expect("main view");
         // The UI edits a copy of the camera; it is written back on
-        // `UiAction::CameraChanged` below.
+        // `AppAction::CameraChanged` below.
         let mut ui_camera = view.camera().clone();
         let full_output = egui_ctx.run(raw_input, |ctx| {
             ui_actions = self.ui.show(
@@ -375,7 +400,7 @@ impl<'a> ViewerState<'a> {
                 &mut ui_camera,
                 &self.construction_options,
                 view.selection_mut(),
-                &mut self.tools,
+                &self.tools,
                 &self.notifications,
             );
             egui::CentralPanel::default()
@@ -390,42 +415,28 @@ impl<'a> ViewerState<'a> {
         drop(view);
         self.host.handle_platform_output(full_output.platform_output.clone());
 
-        // A delete request aborts any in-progress tool (deactivate tears down
-        // its preview and restores hidden sources) before the parts go away.
-        if self.delete_op.lock().unwrap().take_pending() {
-            self.tools.discard_active();
-            let mut view = self.viewer.view_mut(self.view_id).expect("main view");
-            let n = delete::delete_selected_parts(&self.document, view.selection_mut());
-            if n > 0 {
-                let plural = if n == 1 { "" } else { "s" };
-                self.notifications.info(format!("Deleted {n} part{plural}"));
-            }
-        }
-
-        let pending_undo = self.undo_op.lock().unwrap().take_pending();
-        if let Some(action) = pending_undo {
-            self.apply_undo(action);
-        }
-
-        // After egui so a panel-driven finish (e.g. boolean Apply) cedes back
-        // to selection in the same frame.
-        let scene = self.scene();
-        let mut view = self.viewer.view_mut(self.view_id).expect("main view");
-        self.tools.update(&scene, view.selection_mut());
-        drop(view);
-
-        // UI actions run outside the frame closure: the file dialogs block.
-        for action in ui_actions {
+        // The shortcuts pressed since the last frame, then what the UI asked
+        // for, outside the frame closure: the file dialogs block.
+        let mut actions = self.shortcuts.lock().unwrap().take();
+        actions.extend(ui_actions);
+        for action in actions {
             match action {
+                AppAction::SwitchTool(tool) => {
+                    let mut view = self.viewer.view_mut(self.view_id).expect("main view");
+                    self.tools.activate(tool, view.selection_mut());
+                }
+                AppAction::Delete => self.delete_selection(),
+                AppAction::Undo => self.replay(Document::undo, "Undid", "Nothing to undo"),
+                AppAction::Redo => self.replay(Document::redo, "Redid", "Nothing to redo"),
                 #[cfg(not(target_arch = "wasm32"))]
-                UiAction::ImportCad => {
+                AppAction::ImportCad => {
                     let options = self.construction_options.borrow().geometry_options.clone();
                     if let Err(e) = io::import_cad_dialog(&self.document, &options) {
                         self.notifications.failure("CAD import", &e);
                     }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                UiAction::ExportCad => {
+                AppAction::ExportCad => {
                     if let Err(e) = io::export_cad_dialog(&self.document) {
                         self.notifications.failure("CAD export", &e);
                     }
@@ -433,23 +444,28 @@ impl<'a> ViewerState<'a> {
                 // STEP/IGES needs OCCT's TKDESTEP, which is excluded from the
                 // web build, and a file picker the canvas does not have yet.
                 #[cfg(target_arch = "wasm32")]
-                UiAction::ImportCad | UiAction::ExportCad => {
+                AppAction::ImportCad | AppAction::ExportCad => {
                     self.notifications.info("CAD file transfer is not available in the browser yet")
                 }
-                UiAction::Undo => self.apply_undo(UndoAction::Undo),
-                UiAction::Redo => self.apply_undo(UndoAction::Redo),
-                UiAction::ConstructionChanged => self.rebuild_grid(),
-                UiAction::TessellationChanged => {
+                AppAction::ConstructionChanged => self.rebuild_grid(),
+                AppAction::TessellationChanged => {
                     let show = self.construction_options.borrow().geometry_options.show_seam_edges;
                     self.document.lock().unwrap().set_seam_edges_visible(show);
                 }
-                UiAction::CameraChanged => {
+                AppAction::CameraChanged => {
                     let mut view = self.viewer.view_mut(self.view_id).expect("main view");
                     view.set_camera(ui_camera.clone());
                 }
-                UiAction::Quit => return true,
+                AppAction::Quit => return true,
             }
         }
+
+        // After the UI and its actions, so a tool they finished — by a panel's
+        // Apply, say — cedes back to selection in the same frame.
+        let scene = self.scene();
+        let mut view = self.viewer.view_mut(self.view_id).expect("main view");
+        self.tools.update(&scene, view.selection_mut());
+        drop(view);
 
         // Reconcile the offscreen texture size with the central panel, then
         // re-point the (stable) egui texture id at the new view.

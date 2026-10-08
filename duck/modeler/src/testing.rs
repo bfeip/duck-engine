@@ -8,7 +8,7 @@ use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::common::{InnerSpace, Plane, Point3, Vector3};
 use duck_engine_scene::resource::{NodeId, SubGeometryElement, SubGeometryKind, Visibility};
 use duck_engine_scene::Scene;
-use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, PhysicalKey};
+use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, NamedKey, PhysicalKey};
 use duck_engine_viewer::operator::{HandleDrag, HandleId};
 use duck_engine_viewer::selection::SelectionItem;
 use glam::DVec3;
@@ -75,7 +75,8 @@ pub fn doc_with_two_squares() -> (Document, [LoftProfile; 2]) {
         ])
         .expect("square builds");
         let face = Shape::from(Face::from_wire(&outline).expect("face builds"));
-        let part = doc.add_part(name, face, &CadTessellationOptions::default()).expect("tessellates");
+        let options = CadTessellationOptions::default();
+        let part = doc.add_part(name, face, &options).expect("square tessellates");
         LoftProfile { node: doc.node_for_part(part).expect("part has a node"), edge_index: 0 }
     };
     let profiles = [square("lower", 0.0), square("upper", 2.0)];
@@ -202,6 +203,16 @@ pub fn key(c: char) -> KeyEvent {
     KeyEvent {
         physical_key: PhysicalKey::Unidentified,
         logical_key: Key::Character(c),
+        state: ElementState::Pressed,
+        repeat: false,
+    }
+}
+
+/// A press of the named key `named`, such as Delete.
+pub fn named_key(named: NamedKey) -> KeyEvent {
+    KeyEvent {
+        physical_key: PhysicalKey::Unidentified,
+        logical_key: Key::Named(named),
         state: ElementState::Pressed,
         repeat: false,
     }

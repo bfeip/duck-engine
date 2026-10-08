@@ -1,27 +1,19 @@
 //! The left tool palette: a Select button plus one button per registered tool.
 
-use duck_engine_viewer::selection::SelectionManager;
-
-use crate::tools::{ToolId, ToolManager};
+use crate::tools::ToolManager;
 use crate::ui::icons;
+use crate::AppAction;
 
 /// The left icon strip. Stateless, tied to [`ToolManager`]
 #[derive(Default)]
 pub struct ToolPalette;
 
 impl ToolPalette {
-    /// Render the palette. Tool clicks are applied after the panel closure
-    /// returns so no tool lock is held while egui renders.
-    pub fn show(
-        &mut self,
-        ctx: &egui::Context,
-        tools: &mut ToolManager,
-        selection: &mut SelectionManager,
-    ) {
+    /// Render the palette, appending a tool switch to `actions` when a button
+    /// is clicked.
+    pub fn show(&mut self, ctx: &egui::Context, tools: &ToolManager, actions: &mut Vec<AppAction>) {
         let entries = tools.palette_entries();
         let active = tools.active_id();
-
-        let mut clicked: Option<Option<ToolId>> = None;
 
         egui::SidePanel::left("tool_palette")
             .resizable(false)
@@ -40,7 +32,7 @@ impl ToolPalette {
                     )
                     .on_hover_text("select");
                 if select_btn.clicked() {
-                    clicked = Some(None);
+                    actions.push(AppAction::SwitchTool(None));
                 }
 
                 for (id, info) in entries.iter() {
@@ -59,13 +51,9 @@ impl ToolPalette {
                             None => info.id.to_string(),
                         });
                     if btn.clicked() {
-                        clicked = Some(Some(*id));
+                        actions.push(AppAction::SwitchTool(Some(*id)));
                     }
                 }
             });
-
-        if let Some(index) = clicked {
-            tools.activate(index, selection);
-        }
     }
 }

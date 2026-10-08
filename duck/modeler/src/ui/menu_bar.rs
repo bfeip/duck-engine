@@ -1,6 +1,6 @@
-//! Top menu bar; selections are emitted as [`UiAction`]s.
+//! Top menu bar; selections are emitted as [`AppAction`]s.
 
-use super::UiAction;
+use crate::AppAction;
 
 #[derive(Default)]
 pub(crate) struct MenuBar;
@@ -14,28 +14,28 @@ impl MenuBar {
         ctx: &egui::Context,
         undo_label: Option<&str>,
         redo_label: Option<&str>,
-        actions: &mut Vec<UiAction>,
+        actions: &mut Vec<AppAction>,
     ) {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Import…").clicked() {
-                        actions.push(UiAction::ImportCad);
+                        actions.push(AppAction::ImportCad);
                     }
                     if ui.button("Export…").clicked() {
-                        actions.push(UiAction::ExportCad);
+                        actions.push(AppAction::ExportCad);
                     }
                     ui.separator();
                     if ui.button("Quit").clicked() {
-                        actions.push(UiAction::Quit);
+                        actions.push(AppAction::Quit);
                     }
                 });
                 ui.menu_button("Edit", |ui| {
                     if history_item(ui, "Undo", undo_label, "Ctrl+Z") {
-                        actions.push(UiAction::Undo);
+                        actions.push(AppAction::Undo);
                     }
                     if history_item(ui, "Redo", redo_label, "Ctrl+Shift+Z") {
-                        actions.push(UiAction::Redo);
+                        actions.push(AppAction::Redo);
                     }
                 });
             });

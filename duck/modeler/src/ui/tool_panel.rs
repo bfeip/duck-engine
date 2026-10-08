@@ -15,7 +15,7 @@ impl ToolPanel {
     pub fn show(
         &mut self,
         ctx: &egui::Context,
-        tools: &mut ToolManager,
+        tools: &ToolManager,
         selection: &mut SelectionManager,
     ) {
         let Some(mut tool) = tools.active_tool() else { return };

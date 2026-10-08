@@ -16,10 +16,11 @@ use std::sync::{Arc, Mutex};
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::selection::SelectionManager;
 
+use crate::construction::ConstructionOptions;
 use crate::document::Document;
 use crate::notifications::{Notifications, Severity};
-use crate::construction::ConstructionOptions;
 use crate::tools::ToolManager;
+use crate::AppAction;
 
 use menu_bar::MenuBar;
 use right_panel::RightPanel;
@@ -28,24 +29,6 @@ use tool_panel::ToolPanel;
 
 /// Widest a notice may get before its text wraps.
 const NOTICE_MAX_WIDTH: f32 = 380.0;
-
-/// An action requested from the UI, handled by the app shell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiAction {
-    ImportCad,
-    ExportCad,
-    Undo,
-    Redo,
-    /// The construction plane or grid settings changed; the grid visuals must
-    /// be rebuilt to match.
-    ConstructionChanged,
-    /// The camera settings changed; the edited camera must be written back to
-    /// the view.
-    CameraChanged,
-    /// The tessellation options changed; existing parts must be rebuilt to match.
-    TessellationChanged,
-    Quit,
-}
 
 /// Owns the modeler's persistent panel state.
 #[derive(Default)]
@@ -66,9 +49,9 @@ impl ModelerUi {
         camera: &mut PositionedCamera,
         construction: &Rc<RefCell<ConstructionOptions>>,
         selection: &mut SelectionManager,
-        tools: &mut ToolManager,
+        tools: &ToolManager,
         notifications: &Notifications,
-    ) -> Vec<UiAction> {
+    ) -> Vec<AppAction> {
         let mut actions = Vec::new();
         let (undo_label, redo_label) = {
             let document = document.lock().unwrap();
@@ -78,9 +61,7 @@ impl ModelerUi {
             )
         };
         self.menu.show(ctx, undo_label.as_deref(), redo_label.as_deref(), &mut actions);
-        // Before the document lock below: a palette click can commit the
-        // outgoing tool's pending shape, which locks the document itself.
-        self.palette.show(ctx, tools, selection);
+        self.palette.show(ctx, tools, &mut actions);
         {
             // The document lock must be released before drawing the tool panel,
             // which may also lock the document, causing a deadlock.
