@@ -51,6 +51,17 @@ impl RayHit {
             RayHit::Point { point_index, .. } => *point_index as u32,
         }
     }
+
+    /// World-space perpendicular distance from the ray to the hit primitive;
+    /// zero for triangles, which the ray strikes.
+    pub fn distance_to_ray(&self) -> Real {
+        match self {
+            RayHit::Triangle { .. } => 0.0,
+            RayHit::Segment { distance_to_ray, .. } | RayHit::Point { distance_to_ray, .. } => {
+                *distance_to_ray
+            }
+        }
+    }
 }
 
 /// Result of a ray pick query against a scene instance.
@@ -293,6 +304,20 @@ pub fn pick_all_from_ray_with_view(
     sort_by_distance(pick_all_with_view(query, scene, view))
 }
 
+/// Whether `point` is visible looking along `ray`: no face lies more than
+/// `slack` in front of it on the line of sight through it, parallel to `ray`.
+///
+/// Meant for segment and point hits, which lie off the ray: the faces the ray
+/// itself strikes say nothing about whether those are hidden. Across a pick
+/// tolerance the parallel line of sight stands in for a perspective one.
+pub fn is_visible_along(scene: &Scene, ray: &Ray, point: Point3, slack: Real) -> bool {
+    let depth = (point - ray.origin).dot(ray.direction);
+    let sight = Ray::new(point - ray.direction * depth, ray.direction);
+    pick_all_from_ray(&RayPickQuery::faces(sight), scene)
+        .first()
+        .is_none_or(|face| face.distance >= depth - slack)
+}
+
 /// Sorts pick results by world-space distance, closest first.
 fn sort_by_distance(mut results: Vec<RayPickResult>) -> Vec<RayPickResult> {
     results.sort_by(|a, b| {
@@ -313,8 +338,96 @@ mod tests {
     use crate::geom_query::PickView;
     use crate::PositionedCamera;
     use crate::resource::{
-        DisplayBehavior, FaceMaterial, Instance, Mesh, NodeFlags, PrimitiveType, RenderLayer,
+        DisplayBehavior, FaceMaterial, Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType,
+        RenderLayer, Vertex,
     };
+
+    type Corner = [f32; 3];
+
+    /// Adds a node whose mesh holds `quads` (each split into two triangles) and
+    /// `segments`.
+    fn add_part(scene: &Scene, quads: &[[Corner; 4]], segments: &[[Corner; 2]]) -> NodeId {
+        let vertex = |position: Corner| Vertex {
+            position,
+            tex_coords: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let mut vertices = Vec::new();
+        let mut triangles = Vec::new();
+        for quad in quads {
+            let base = vertices.len() as u32;
+            vertices.extend(quad.iter().copied().map(vertex));
+            triangles.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        let mut lines = Vec::new();
+        for segment in segments {
+            lines.extend([vertices.len() as u32, vertices.len() as u32 + 1]);
+            vertices.extend(segment.iter().copied().map(vertex));
+        }
+        let mesh = scene.add_mesh(Mesh::from_raw(
+            vertices,
+            vec![
+                MeshPrimitive { primitive_type: PrimitiveType::TriangleList, indices: triangles },
+                MeshPrimitive { primitive_type: PrimitiveType::LineList, indices: lines },
+            ],
+        ));
+        let material = scene.add_face_material(FaceMaterial::new());
+        scene
+            .add_instance_node(
+                None,
+                Instance::new(mesh).with_face_material(material),
+                None,
+                Transform::IDENTITY,
+                NodeFlags::NONE,
+            )
+            .unwrap()
+            .id()
+    }
+
+    /// The first segment hit along `ray`, with a generous tolerance.
+    fn segment_hit(scene: &Scene, ray: Ray) -> RayPickResult {
+        pick_all_from_ray(&RayPickQuery::all(ray, 0.1), scene)
+            .into_iter()
+            .find(|hit| matches!(hit.hit, RayHit::Segment { .. }))
+            .expect("a segment within tolerance")
+    }
+
+    /// Two faces meeting in a valley that opens toward the ray, with an edge along
+    /// the crease. A ray just off the crease strikes a face in front of the edge,
+    /// yet the edge itself is in plain view.
+    #[test]
+    fn concave_crease_is_visible_off_the_ray() {
+        let scene = Scene::default();
+        add_part(
+            &scene,
+            &[
+                [[-1.0, -1.0, 1.0], [0.0, -1.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 1.0, 1.0]],
+                [[0.0, -1.0, 0.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0]],
+            ],
+            &[[[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]]],
+        );
+        let ray = Ray::new(Point3::new(0.05, 0.0, 10.0), Vector3::new(0.0, 0.0, -1.0));
+
+        let nearest = &pick_all_from_ray(&RayPickQuery::all(ray, 0.1), &scene)[0];
+        assert!(matches!(nearest.hit, RayHit::Triangle { .. }), "a face is nearer than the crease");
+
+        let edge = segment_hit(&scene, ray);
+        assert!(is_visible_along(&scene, &ray, edge.hit_point, 0.01));
+    }
+
+    #[test]
+    fn edge_behind_a_face_is_hidden() {
+        let scene = Scene::default();
+        add_part(
+            &scene,
+            &[[[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]],
+            &[[[0.0, -1.0, -1.0], [0.0, 1.0, -1.0]]],
+        );
+        let ray = Ray::new(Point3::new(0.05, 0.0, 10.0), Vector3::new(0.0, 0.0, -1.0));
+
+        let edge = segment_hit(&scene, ray);
+        assert!(!is_visible_along(&scene, &ray, edge.hit_point, 0.01));
+    }
 
     fn camera() -> PositionedCamera {
         PositionedCamera {

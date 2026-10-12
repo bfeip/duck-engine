@@ -13,6 +13,8 @@
 //! 3. Call [`pick_all_from_ray`]. Results come back sorted nearest-first as
 //!    [`RayPickResult`]s: the node and instance hit, the distance, the hit
 //!    point, and per-primitive detail in [`RayHit`].
+//! 4. Segment and point hits lie off the ray, so depth order alone cannot say
+//!    whether a face hides them; [`is_visible_along`] answers that.
 //!
 //! [`pick_all_from_volume`] is the volume analogue — every instance touching a
 //! convex volume (a rubber-band selection frustum, say) — returning
@@ -49,6 +51,7 @@ pub use mesh_intersection::{
 pub use pick_query::{pick_all, pick_all_with_view, PickQuery, PickView};
 pub use spatial_index::MeshSpatialIndex;
 pub use ray_picking::{
-    pick_all_from_ray, pick_all_from_ray_with_view, RayHit, RayPickQuery, RayPickResult,
+    is_visible_along, pick_all_from_ray, pick_all_from_ray_with_view, RayHit, RayPickQuery,
+    RayPickResult,
 };
 pub use volume_picking::{pick_all_from_volume, VolumePickQuery, VolumePickResult};
