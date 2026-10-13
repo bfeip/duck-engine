@@ -54,6 +54,8 @@ pub enum SnapKind {
     Edge,
     /// The point halfway along an existing geometry edge, from its B-rep curve.
     Midpoint,
+    /// The centre of the flat face under the cursor, from its B-rep.
+    FaceCenter,
     /// A point on an existing geometry face (ray–surface hit under the cursor).
     Face,
     /// The start point of an in-progress wire, offered so the path can be
@@ -70,7 +72,7 @@ impl SnapKind {
             GridAxis => SnapTier::Axis,
             Face => SnapTier::Face,
             Edge => SnapTier::Edge,
-            Origin | Corner | Midpoint | WireStart => SnapTier::Feature,
+            Origin | Corner | Midpoint | FaceCenter | WireStart => SnapTier::Feature,
         }
     }
 
@@ -84,6 +86,7 @@ impl SnapKind {
             Corner => SnapFlags::CORNER,
             Edge => SnapFlags::EDGE,
             Midpoint => SnapFlags::MIDPOINT,
+            FaceCenter => SnapFlags::FACE_CENTER,
             Face => SnapFlags::FACE,
             WireStart => SnapFlags::WIRE_START,
         }
@@ -130,6 +133,7 @@ bitflags! {
         const WIRE_START         = 1 << 6;
         const FACE               = 1 << 7;
         const MIDPOINT           = 1 << 8;
+        const FACE_CENTER        = 1 << 9;
     }
 }
 
@@ -221,8 +225,8 @@ impl Default for SnapEngine {
 
 impl SnapEngine {
     /// An engine pre-populated with the built-in providers: construction plane,
-    /// origin, grid (axes + guides), and geometry corners, edges, midpoints and
-    /// faces.
+    /// origin, grid (axes + guides), and geometry corners, edges, midpoints,
+    /// faces and face centres.
     pub fn with_defaults() -> Self {
         let mut engine = Self {
             providers: Vec::new(),
@@ -318,6 +322,8 @@ mod tests {
     use super::*;
     use duck_engine_viewer::common::Real;
     use duck_engine_viewer::scene::{Projection, Scene};
+    use glam::DVec3;
+    use opencascade::primitives::Shape;
 
     /// A camera looking down −Z from (0, 0, 10) at the origin, 800×600 viewport.
     fn test_camera() -> PositionedCamera {
@@ -393,6 +399,7 @@ mod tests {
             SnapKind::Edge,
             SnapKind::Midpoint,
             SnapKind::Face,
+            SnapKind::FaceCenter,
         ] {
             assert!(SnapFlags::all().contains(kind.flag()));
         }
@@ -494,5 +501,26 @@ mod tests {
 
         assert_eq!(snap.kind, SnapKind::Midpoint);
         assert!((snap.position - Point3::new(1.0, 1.0, 0.0)).magnitude() < EPSILON, "{:?}", snap.position);
+    }
+
+    #[test]
+    fn face_center_beats_the_face_it_lies_on() {
+        const EPSILON: Real = 1e-6;
+        // Looking down on a 2-unit box off the origin (whose snap would otherwise
+        // tie with the centre on screen), with the cursor just off the middle of
+        // its top face y = 2.
+        let cam = top_down_camera();
+        let engine = SnapEngine::with_defaults();
+        let corners = (DVec3::new(2.0, 0.0, -1.0), DVec3::new(4.0, 2.0, 1.0));
+        let (document, _node) = crate::testing::doc_with_shape(Shape::box_from_corners(corners.0, corners.1));
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let cursor = screen_of(&cam, Point3::new(3.05, 2.0, 0.05));
+        let inp = input(&cam, &plane, &grid, cursor);
+
+        let snap = engine.snap(&inp, &document, &[]).unwrap();
+
+        assert_eq!(snap.kind, SnapKind::FaceCenter);
+        assert!((snap.position - Point3::new(3.0, 2.0, 0.0)).magnitude() < EPSILON, "{:?}", snap.position);
     }
 }
