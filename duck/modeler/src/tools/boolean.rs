@@ -7,7 +7,7 @@ use duck_engine_viewer::{
     operator::SelectionMode,
     selection::{SelectionItem, SelectionManager},
 };
-use opencascade::primitives::Shape;
+use opencascade::primitives::{Shape, ShapeElements};
 
 use crate::ops::boolean::{
     build_boolean, commit_boolean, preview_boolean, BooleanKind, BooleanTarget,
@@ -135,7 +135,7 @@ impl BooleanTool {
         }
         for piece in pieces {
             match tessellate_into_with_materials(
-                piece,
+                &ShapeElements::new(piece),
                 &scene,
                 options,
                 &face,

@@ -72,7 +72,7 @@ pub fn export_cad_dialog(document: &Arc<Mutex<Document>>) -> Result<()> {
         path.set_extension("step");
     }
 
-    cad::save_cad_shapes(&path, document.parts().map(|p| &p.shape), UNIT_SCALE)?;
+    cad::save_cad_shapes(&path, document.parts().map(|p| p.shape()), UNIT_SCALE)?;
     log::info!("Exported {} part(s) to {}", document.parts().count(), path.display());
     Ok(())
 }

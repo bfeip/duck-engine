@@ -6,7 +6,7 @@ use opencascade::primitives::{Face, JoinType, Shape, ShapeType};
 use opencascade::OffsetError;
 
 use crate::document::{
-    dvec3_to_point3, dvec3_to_vec3, has_solid, selected_face, unwrap_single_solid, Document,
+    dvec3_to_point3, dvec3_to_vec3, has_solid, unwrap_single_solid, Document,
 };
 
 /// A wall at or below this thickness is null to OCCT's offset.
@@ -40,9 +40,11 @@ pub struct HollowFrame {
 
 impl HollowFrame {
     pub fn new(doc: &Document, target: &HollowTarget) -> Result<Self> {
-        let shape = &doc.part_at(target.node).context("Hollow target is not a known CAD part")?.shape;
+        let part = doc.part_at(target.node).context("Hollow target is not a known CAD part")?;
+        let shape = part.shape();
         ensure!(has_solid(shape), "Only a solid can be hollowed");
-        let removed = target.faces.iter().map(|&index| selected_face(shape, index)).collect::<Result<Vec<_>>>()?;
+        let removed =
+            target.faces.iter().map(|&index| part.elements().face(index as usize)).collect::<Result<Vec<_>, _>>()?;
 
         let (anchor, normal) = match removed.first().and_then(|primary| rim(shape, primary, &removed)) {
             Some(rim) => rim,
@@ -54,7 +56,7 @@ impl HollowFrame {
 
 /// The middle of an edge `opening` shares with a face that stays, and that
 /// face's outward normal there.
-fn rim(shape: &Shape, opening: &Face, removed: &[Face]) -> Option<(DVec3, DVec3)> {
+fn rim(shape: &Shape, opening: &Face, removed: &[&Face]) -> Option<(DVec3, DVec3)> {
     opening.edges().find_map(|edge| {
         let kept = shape
             .adjacent_faces(&edge)
@@ -114,14 +116,16 @@ impl HollowParams {
 pub fn build_hollow(doc: &Document, target: &HollowTarget, params: &HollowParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to hollow without a wall thickness");
     let part = doc.part_at(target.node).context("Hollow target is not a known CAD part")?;
-    ensure!(has_solid(&part.shape), "Only a solid can be hollowed");
+    ensure!(has_solid(part.shape()), "Only a solid can be hollowed");
 
     // OCCT's offset may retouch its input, so the hollow works on a copy: an
     // abandoned preview must leave the part as it was.
-    let body = unwrap_single_solid(part.shape.deep_copy());
+    let copy = part.elements().deep_copy();
+    // Unwrapping keeps the copy's faces: the solid is the one they bound.
+    let body = unwrap_single_solid(copy.shape().clone());
     ensure!(body.shape_type() == ShapeType::Solid, "Only a single solid can be hollowed");
     ensure!(body.sub_shapes().count() == 1, "A part with a void inside can't be hollowed");
-    let faces = target.faces.iter().map(|&index| selected_face(&body, index)).collect::<Result<Vec<_>>>()?;
+    let faces = target.faces.iter().map(|&index| copy.face(index as usize)).collect::<Result<Vec<_>, _>>()?;
 
     body.hollow(-f64::from(params.thickness), &faces, JoinType::Intersection).map_err(explained)
 }

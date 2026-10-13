@@ -15,7 +15,7 @@ use glam::DVec3;
 use opencascade::primitives::{Face, Shape, Shell, Wire};
 
 use crate::construction::ConstructionOptions;
-use crate::document::{Document, PartId, SourceFate};
+use crate::document::{unify_same_domain, unwrap_single_solid, Document, PartId, SourceFate};
 use crate::notifications::Notifications;
 use crate::ops::loft::LoftProfile;
 use crate::tools::Workspace;
@@ -62,6 +62,23 @@ pub fn doc_with_box_and_sphere() -> (Document, NodeId, NodeId) {
     (doc, cube, sphere)
 }
 
+/// A document holding a radius-2 ball with a bite out of its side, as a boolean
+/// leaves it, and its node. The ball's seam runs through the bite and splits its
+/// rim, a circle, in two.
+pub fn doc_with_bitten_ball() -> (Document, NodeId) {
+    let ball = Shape::sphere(2.0).build();
+    let bite = Shape::sphere(1.0).at(DVec3::new(2.0, 0.0, 0.3)).build();
+    let bitten = ball.subtract(&bite).expect("the bite cuts").shape;
+    doc_with_shape(unify_same_domain(unwrap_single_solid(bitten)))
+}
+
+/// The selection index of the bitten ball's rim, the ball's one edge.
+pub fn bite_rim(doc: &Document, node: NodeId) -> u32 {
+    let edges = doc.elements(node).expect("the ball is a part").edges().len();
+    assert_eq!(edges, 1, "the ball has an edge besides its bite's rim");
+    0
+}
+
 /// A document holding two unit square faces, one 2 above the other, and an
 /// edge of each as a loft profile.
 pub fn doc_with_two_squares() -> (Document, [LoftProfile; 2]) {
@@ -106,7 +123,12 @@ pub fn skewed_plane(origin: Point3) -> Plane {
 
 /// The shape of the part at `node`.
 pub fn part_shape(doc: &Document, node: NodeId) -> &Shape {
-    &doc.part_at(node).expect("node is a part").shape
+    doc.part_at(node).expect("node is a part").shape()
+}
+
+/// The faces of the part at `node`, numbered as its selections number them.
+pub fn part_faces(doc: &Document, node: NodeId) -> &[Face] {
+    doc.elements(node).expect("node is a part").faces()
 }
 
 /// The volume of the part at `node`.
@@ -116,14 +138,14 @@ pub fn part_volume(doc: &Document, node: NodeId) -> f64 {
 
 /// The volume of every part, in document order.
 pub fn volumes(doc: &Document) -> Vec<f64> {
-    doc.parts().map(|part| part.shape.volume()).collect()
+    doc.parts().map(|part| part.shape().volume()).collect()
 }
 
 /// The index of the face of the part at `node` whose outward normal at its
 /// centre is `normal`.
 pub fn face_along(doc: &Document, node: NodeId, normal: DVec3) -> u32 {
-    part_shape(doc, node)
-        .faces()
+    part_faces(doc, node)
+        .iter()
         .position(|face| face.normal_at_center().is_ok_and(|n| n.normalize().distance(normal) < 1e-6))
         .expect("a face matches") as u32
 }

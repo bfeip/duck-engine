@@ -4,7 +4,7 @@ use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::Shape;
 use opencascade::FilletError;
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, selected_edge, unwrap_single_solid, Document};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, unwrap_single_solid, Document};
 
 /// A size at or below this is degenerate: there is nothing to round or bevel.
 const MIN_SIZE: Real = 1e-6;
@@ -58,8 +58,9 @@ impl FilletFrame {
     pub fn new(doc: &Document, target: &FilletTarget) -> Result<Self> {
         let part = doc.part_at(target.node).context("Fillet target is not a known CAD part")?;
         let primary = *target.edges.first().context("There are no edges to blend")?;
-        let edge = selected_edge(&part.shape, primary)?;
-        let faces = part.shape.adjacent_faces(&edge);
+        // A seam-split edge's pieces all border the same two faces.
+        let edge = &part.elements().edge(primary as usize)?.pieces()[0];
+        let faces = part.shape().adjacent_faces(edge);
         let [first, second] = faces.as_slice() else {
             bail!("Only an edge between two faces can be filleted or chamfered");
         };
@@ -129,13 +130,16 @@ pub fn build_fillet(doc: &Document, target: &FilletTarget, params: &FilletParams
 
     // OCCT's blend raises the tolerance of vertices it touches on its input, so
     // it works on a copy: an abandoned preview must leave the part as it was.
-    let body = part.shape.deep_copy();
-    let edges = target.edges.iter().map(|&index| selected_edge(&body, index)).collect::<Result<Vec<_>>>()?;
+    let body = part.elements().deep_copy();
+    let mut edges = Vec::new();
+    for &index in &target.edges {
+        edges.extend(body.edge(index as usize)?.pieces());
+    }
 
     let size = f64::from(params.size);
     let blended = match params.kind {
-        BlendKind::Fillet => body.fillet_edges(size, &edges),
-        BlendKind::Chamfer => body.chamfer_edges(size, &edges),
+        BlendKind::Fillet => body.shape().fillet_edges(size, &edges),
+        BlendKind::Chamfer => body.shape().chamfer_edges(size, &edges),
     }
     .map_err(|error| explained(params.kind, error))?;
 
@@ -170,7 +174,9 @@ mod tests {
     use opencascade::primitives::{Face, Wire};
 
     use crate::document::{PartKind, SourceFate};
-    use crate::testing::{commit, doc_with_box, doc_with_shape, part_shape, part_volume};
+    use crate::testing::{
+        bite_rim, commit, doc_with_bitten_ball, doc_with_box, doc_with_shape, part_volume,
+    };
 
     const EPSILON: Real = 1e-5;
 
@@ -184,11 +190,14 @@ mod tests {
         face.extrude(glam::dvec3(0.0, 0.0, 1.0)).into()
     }
 
-    /// The index of the first edge whose midpoint is `point`.
+    /// The index of the edge whose midpoint is `point`.
     fn edge_at_point(doc: &Document, node: NodeId, point: glam::DVec3) -> u32 {
-        let index = part_shape(doc, node)
+        let index = doc
+            .elements(node)
+            .expect("node is a part")
             .edges()
-            .position(|edge| edge.midpoint().distance(point) < 1e-9)
+            .iter()
+            .position(|edge| edge.curve().midpoint().distance(point) < 1e-9)
             .expect("an edge runs through the point");
         index as u32
     }
@@ -212,7 +221,7 @@ mod tests {
     #[test]
     fn a_box_edge_frame_sits_on_the_edge_and_points_out_of_the_corner() {
         let (doc, node) = doc_with_box();
-        let edge_count = part_shape(&doc, node).edges().count();
+        let edge_count = doc.elements(node).unwrap().edges().len();
 
         for edge in 0..edge_count as u32 {
             let frame = frame(&doc, node, edge).expect("box edge resolves");
@@ -301,23 +310,16 @@ mod tests {
         }
     }
 
-    /// Both occurrences of a shared edge (one per face) may be selected; the
-    /// edge is blended once.
     #[test]
-    fn both_occurrences_of_an_edge_blend_it_once() {
-        let (doc, node) = doc_with_box();
-        let first = 0;
-        let edge = doc.edge_subshape(node, first).unwrap();
-        let second = part_shape(&doc, node)
-            .edges()
-            .enumerate()
-            .find(|(index, other)| *index != first as usize && other.is_same(&edge))
-            .map(|(index, _)| index as u32)
-            .expect("a box edge borders two faces");
-
-        let params = params(&doc, node, first, BlendKind::Chamfer, 0.5);
-        let shape = build_fillet(&doc, &target(node, &[first, second]), &params).expect("the blend builds");
-        assert!((shape.volume() - (8.0 - 0.25)).abs() < 1e-5, "got {}", shape.volume());
+    fn a_seam_split_edge_blends_whole() {
+        let (doc, node) = doc_with_bitten_ball();
+        let rim = bite_rim(&doc, node);
+        for kind in [BlendKind::Fillet, BlendKind::Chamfer] {
+            let params = params(&doc, node, rim, kind, 0.1);
+            let shape = build_fillet(&doc, &target(node, &[rim]), &params).expect("the blend builds");
+            assert_eq!(shape.shape_type(), opencascade::primitives::ShapeType::Solid, "{kind:?}");
+            assert!(shape.volume() < part_volume(&doc, node), "{kind:?}: nothing was cut");
+        }
     }
 
     #[test]

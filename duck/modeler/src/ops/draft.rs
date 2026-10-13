@@ -5,7 +5,7 @@ use opencascade::primitives::{FaceType, Shape};
 use opencascade::DraftError;
 
 use crate::document::{
-    dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, selected_face, vec3_to_dvec3, Document,
+    dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, vec3_to_dvec3, Document,
 };
 
 /// A change of angle at or below this many radians drafts nothing; OCCT
@@ -56,10 +56,10 @@ impl DraftFrame {
     /// draft.
     pub fn new(doc: &Document, target: &DraftTarget) -> Result<Self> {
         let part = doc.part_at(target.node).context("Draft target is not a known CAD part")?;
-        let neutral = selected_face(&part.shape, target.neutral)?;
+        let neutral = part.elements().face(target.neutral as usize)?;
         ensure!(neutral.face_type() == FaceType::Plane, "The neutral face must be flat");
         let primary = *target.faces.first().context("There are no faces to draft")?;
-        let lever_face = selected_face(&part.shape, primary)?;
+        let lever_face = part.elements().face(primary as usize)?;
 
         // `normal_at_center` goes through `BRepGProp_Face::Normal`, which applies
         // each face's orientation: both normals point out of the material.
@@ -126,12 +126,12 @@ pub fn build_draft(doc: &Document, target: &DraftTarget, params: &DraftParams) -
 
     // OCCT's modifications may raise tolerances on their input, so the draft
     // works on a copy: an abandoned preview must leave the part as it was.
-    let body = part.shape.deep_copy();
-    let faces = target.faces.iter().map(|&index| selected_face(&body, index)).collect::<Result<Vec<_>>>()?;
+    let body = part.elements().deep_copy();
+    let faces = target.faces.iter().map(|&index| body.face(index as usize)).collect::<Result<Vec<_>, _>>()?;
 
     let pull = vec3_to_dvec3(params.frame.pull);
     let origin = point3_to_dvec3(params.frame.origin);
-    body.draft_faces(&faces, pull, f64::from(params.angle), origin, pull).map_err(explained)
+    body.shape().draft_faces(&faces, pull, f64::from(params.angle), origin, pull).map_err(explained)
 }
 
 /// `error`, led by a plain-language account of why the draft failed.
@@ -154,15 +154,15 @@ mod tests {
     use opencascade::primitives::{Edge, Face, ShapeType, Wire};
 
     use crate::document::{unwrap_single_solid, SourceFate};
-    use crate::testing::{commit, doc_with_box, doc_with_shape, face_along, part_shape, square_frustum};
+    use crate::testing::{commit, doc_with_box, doc_with_shape, face_along, part_faces, part_shape, square_frustum};
 
     const EPSILON: Real = 1e-5;
 
     /// The index of the face whose outward normal at its centre is `normal`
     /// and whose centre has `height` along it.
     fn face_at(doc: &Document, node: NodeId, normal: DVec3, height: f64) -> u32 {
-        part_shape(doc, node)
-            .faces()
+        part_faces(doc, node)
+            .iter()
             .position(|face| {
                 let centre = face.center_of_mass();
                 face.normal_at(centre).is_ok_and(|n| n.distance(normal) < 1e-6)
@@ -224,9 +224,9 @@ mod tests {
     #[test]
     fn a_curved_neutral_face_is_refused() {
         let (doc, node) = doc_with_shape(Shape::cylinder_centered(DVec3::ZERO, 1.0, DVec3::Y, 2.0));
-        let shape = part_shape(&doc, node);
-        let side = shape.faces().position(|f| f.face_type() == FaceType::Cylinder).unwrap() as u32;
-        let cap = shape.faces().position(|f| f.face_type() == FaceType::Plane).unwrap() as u32;
+        let faces = part_faces(&doc, node);
+        let side = faces.iter().position(|f| f.face_type() == FaceType::Cylinder).unwrap() as u32;
+        let cap = faces.iter().position(|f| f.face_type() == FaceType::Plane).unwrap() as u32;
 
         let Err(error) = DraftFrame::new(&doc, &target(node, side, &[cap])) else {
             panic!("a cylinder has no neutral plane");
@@ -278,8 +278,8 @@ mod tests {
         let shape = build_draft(&doc, &wall, &draft).expect("the wall drafts");
         commit(&mut doc, node, shape, SourceFate::Reshape).expect("the draft applies");
 
-        let leaning = part_shape(&doc, node)
-            .faces()
+        let leaning = part_faces(&doc, node)
+            .iter()
             .position(|face| face.normal_at_center().is_ok_and(|n| n.x > 0.5 && n.y > 0.1))
             .expect("the drafted wall") as u32;
         let floor = face_along(&doc, node, DVec3::NEG_Y);
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn a_standing_cylinder_drafts_into_a_cone() {
         let (doc, node) = doc_with_shape(Shape::cylinder_centered(DVec3::ZERO, 1.0, DVec3::Y, 2.0));
-        let side = part_shape(&doc, node).faces().position(|f| f.face_type() == FaceType::Cylinder).unwrap();
+        let side = part_faces(&doc, node).iter().position(|f| f.face_type() == FaceType::Cylinder).unwrap();
         let base = face_at(&doc, node, DVec3::NEG_Y, 1.0);
         let cylinder = target(node, base, &[side as u32]);
         let angle = degrees(10.0);
@@ -348,9 +348,8 @@ mod tests {
         let profile = Face::from_wire(&Wire::from_edges([&spline]).expect("wire builds")).expect("face builds");
         let (doc, node) = doc_with_shape(profile.extrude(DVec3::Y).into());
         let before = part_shape(&doc, node).volume();
-        let shape = part_shape(&doc, node);
         let floor = face_at(&doc, node, DVec3::NEG_Y, 0.0);
-        let side = shape.faces().position(|f| f.face_type() != FaceType::Plane).unwrap() as u32;
+        let side = part_faces(&doc, node).iter().position(|f| f.face_type() != FaceType::Plane).unwrap() as u32;
         let spline_wall = target(node, floor, &[side]);
 
         let Err(error) = build_draft(&doc, &spline_wall, &params(&doc, &spline_wall, degrees(5.0))) else {

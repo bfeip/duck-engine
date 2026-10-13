@@ -55,13 +55,11 @@ impl ExtrudeFrame {
     /// edge extrusion direction so a sketch edge grows out of its plane into a wall.
     pub fn new(doc: &Document, target: &ExtrudeTarget, sketch_normal: Vector3) -> Result<Self> {
         let source = doc.part_at(target.node()).context("Extrude target is not a known CAD part")?;
-        let source_is_solid = has_solid(&source.shape);
+        let source_is_solid = has_solid(source.shape());
 
         let (origin, normal) = match *target {
-            ExtrudeTarget::Face { node, face_index } => {
-                let face = doc
-                    .face_subshape(node, face_index)
-                    .context("Selected face is not part of a known CAD part")?;
+            ExtrudeTarget::Face { face_index, .. } => {
+                let face = source.elements().face(face_index as usize)?;
                 // `normal_at_center` goes through `BRepGProp_Face::Normal`, which already
                 // applies the face's orientation — the normal points out of the material
                 // for Reversed and Forward faces alike, so it needs no sign correction.
@@ -70,10 +68,8 @@ impl ExtrudeFrame {
                     .context("Selected face has no well-defined extrusion direction")?;
                 (dvec3_to_point3(face.center_of_mass()), dvec3_to_vec3(normal).normalize())
             }
-            ExtrudeTarget::Edge { node, edge_index } => {
-                let edge = doc
-                    .edge_subshape(node, edge_index)
-                    .context("Selected edge is not part of a known CAD part")?;
+            ExtrudeTarget::Edge { edge_index, .. } => {
+                let edge = source.elements().edge(edge_index as usize)?.curve();
                 let midpoint = (edge.start_point() + edge.end_point()) * 0.5;
                 (dvec3_to_point3(midpoint), sketch_normal.normalize())
             }
@@ -158,12 +154,11 @@ impl ExtrudeParams {
 pub fn build_extrusion(doc: &Document, target: &ExtrudeTarget, params: &ExtrudeParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to extrude at zero distance");
     let sweep = vec3_to_dvec3(params.direction * params.distance);
+    let elements = doc.elements(target.node()).context("Extrude target is not a known CAD part")?;
 
     match *target {
-        ExtrudeTarget::Face { node, face_index } => {
-            let face = doc
-                .face_subshape(node, face_index)
-                .context("Selected face is not part of a known CAD part")?;
+        ExtrudeTarget::Face { face_index, .. } => {
+            let face = elements.face(face_index as usize)?;
             let (prism, first, last) = face.extrude_with_caps(sweep);
             let mut prism = Shape::from(prism);
             let mut caps = vec![first, last];
@@ -193,10 +188,8 @@ pub fn build_extrusion(doc: &Document, target: &ExtrudeTarget, params: &ExtrudeP
             }
             Ok(prism)
         }
-        ExtrudeTarget::Edge { node, edge_index } => {
-            let edge = doc
-                .edge_subshape(node, edge_index)
-                .context("Selected edge is not part of a known CAD part")?;
+        ExtrudeTarget::Edge { edge_index, .. } => {
+            let edge = elements.edge(edge_index as usize)?.curve();
             let mut wall: Shape = edge.extrude(sweep).into();
 
             if params.has_draft() {
@@ -237,7 +230,7 @@ mod tests {
     use opencascade::primitives::{Edge, ShapeType, Wire};
 
     use crate::document::PartKind;
-    use crate::testing::{commit, doc_with_box, doc_with_shape, square_frustum};
+    use crate::testing::{bite_rim, commit, doc_with_bitten_ball, doc_with_box, doc_with_shape, square_frustum};
 
     const SKETCH_NORMAL: Vector3 = Vector3::new(0.0, 1.0, 0.0);
 
@@ -294,8 +287,8 @@ mod tests {
     fn extruded_volume(doc: &mut Document, target: &ExtrudeTarget, params: &ExtrudeParams) -> f64 {
         extrude(doc, target, params).expect("extrude succeeds");
         let part = doc.parts().last().expect("a part remains");
-        assert_eq!(part.shape.shape_type(), ShapeType::Solid, "the extrusion must be a solid");
-        part.shape.volume()
+        assert_eq!(part.shape().shape_type(), ShapeType::Solid, "the extrusion must be a solid");
+        part.shape().volume()
     }
 
     #[test]
@@ -323,7 +316,7 @@ mod tests {
 
         assert_eq!(doc.parts().count(), 1, "region is replaced by its extrusion");
         let part = doc.parts().next().expect("one part remains");
-        assert_eq!(part.shape.shape_type(), ShapeType::Solid, "extruded region must be a solid");
+        assert_eq!(part.shape().shape_type(), ShapeType::Solid, "extruded region must be a solid");
     }
 
     /// A pad fused into its source body must come back as a plain solid — an OCCT
@@ -339,15 +332,15 @@ mod tests {
 
             let part = doc.parts().next().expect("one part remains");
             assert_eq!(
-                part.shape.shape_type(),
+                part.shape().shape_type(),
                 ShapeType::Solid,
                 "a fused pad must be a solid, face {face_index}"
             );
             assert_eq!(part.kind(), PartKind::Solid);
             assert!(
-                (part.shape.volume() - (8.0 + 4.0)).abs() < 1e-6,
+                (part.shape().volume() - (8.0 + 4.0)).abs() < 1e-6,
                 "face {face_index}: expected a 2×2×2 box plus a 2×2×1 pad, got {}",
-                part.shape.volume()
+                part.shape().volume()
             );
         }
     }
@@ -427,8 +420,8 @@ mod tests {
         extrude(&mut doc, &face, &params).expect("a backwards region extrude succeeds");
 
         let part = doc.parts().next().expect("one part remains");
-        assert_eq!(part.shape.shape_type(), ShapeType::Solid);
-        assert!((part.shape.volume() - 2.0).abs() < 1e-6, "got {}", part.shape.volume());
+        assert_eq!(part.shape().shape_type(), ShapeType::Solid);
+        assert!((part.shape().volume() - 2.0).abs() < 1e-6, "got {}", part.shape().volume());
     }
 
     /// A tilted sweep shears the prism: its volume is the base area times the
@@ -447,9 +440,9 @@ mod tests {
         let part = doc.parts().next().expect("one part remains");
         let expected = 1.0 * f64::from(height);
         assert!(
-            (part.shape.volume() - expected).abs() < 1e-5,
+            (part.shape().volume() - expected).abs() < 1e-5,
             "expected {expected}, got {}",
-            part.shape.volume()
+            part.shape().volume()
         );
     }
 
@@ -532,6 +525,17 @@ mod tests {
         let expected = std::f64::consts::PI * (1.0 - 0.9 * 0.9);
         let volume = extruded_volume(&mut doc, &face, &params);
         assert!((volume - expected).abs() < 1e-4, "expected {expected}, got {volume}");
+    }
+
+    /// The bite's rim reads as one circle, so it sweeps into one wall rather
+    /// than a wall per piece the ball's seam split it into.
+    #[test]
+    fn a_seam_split_edge_extrudes_into_one_wall() {
+        let (doc, node) = doc_with_bitten_ball();
+        let rim = ExtrudeTarget::Edge { node, edge_index: bite_rim(&doc, node) };
+
+        let wall = build_extrusion(&doc, &rim, &params(&doc, &rim, 1.0)).expect("the rim extrudes");
+        assert_eq!(wall.shape_type(), ShapeType::Face);
     }
 
     /// A thick edge extrusion is a solid wall rather than a sheet.

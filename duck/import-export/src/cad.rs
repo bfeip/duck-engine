@@ -14,7 +14,7 @@ use duck_engine_scene::resource::{
     Vertex,
 };
 use duck_engine_scene::{PositionedCamera, SceneData};
-use opencascade::primitives::{Compound, Shape};
+use opencascade::primitives::{Compound, Shape, ShapeElements};
 use opencascade::xcaf::{XcafColorTool, XcafDimTolTool, XcafDocument, XcafLabel, XcafShapeTool};
 
 /// Options controlling how a CAD file is imported.
@@ -166,7 +166,7 @@ fn import_leaf_part(
     face_color: Option<RgbaColor>,
 ) -> Result<()> {
     let t = &options.tessellation;
-    let mesh = tessellate_occ_shape(shape, t)?;
+    let mesh = tessellate_occ_shape(&ShapeElements::new(shape), t)?;
     // Start from the configured material template; honor the file's per-part
     // color override when present, keeping the template's other PBR properties.
     let mut face_material = t.face_material.clone().with_fresh_id();
@@ -241,13 +241,10 @@ fn import_pmi(
         let mut verts: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
 
-        // Annotation presentations are wireframe, so seams are shown; edges with no
-        // 3D curve come back empty and are skipped by the length check.
-        for points in shape.edge_polylines(true) {
-            if points.len() < 2 {
-                continue;
-            }
-
+        // Annotation presentations are wireframe, so seams are shown too.
+        let elements = ShapeElements::new(&shape);
+        let curves = elements.edges().iter().map(|element| element.curve()).chain(elements.seams());
+        for points in curves.map(|edge| edge.polyline()) {
             for window in points.windows(2) {
                 let base = verts.len() as u32;
                 for p in window {
@@ -483,7 +480,7 @@ mod tests {
             include_points: false,
             ..CadTessellationOptions::default()
         };
-        let mesh = tessellate_occ_shape(&parts[0].shape, &options).unwrap();
+        let mesh = tessellate_occ_shape(&ShapeElements::new(&parts[0].shape), &options).unwrap();
         let mut min = [f32::MAX; 3];
         let mut max = [f32::MIN; 3];
         for v in mesh.vertices() {

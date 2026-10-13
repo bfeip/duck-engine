@@ -24,7 +24,7 @@ pub fn duplicate_parts(
             // Read the source out before `add_part` takes the document mutably.
             let (shape, options) = {
                 let part = doc.get_part(source).context("Duplicate: source part not found")?;
-                (part.shape.deep_copy(), part.options().clone())
+                (part.shape().deep_copy(), part.options().clone())
             };
             let name = doc.duplicate_name(source);
             let shape = place(&shape, placement);
@@ -89,7 +89,7 @@ mod tests {
         // `deep_copy`, not the shallow `Clone`: a shared TShape would let a later
         // destructive operation on one part corrupt the other.
         assert!(
-            !doc.get_part(copy).unwrap().shape.is_same(&doc.get_part(source).unwrap().shape),
+            !doc.get_part(copy).unwrap().shape().is_same(doc.get_part(source).unwrap().shape()),
             "the copy must share no B-Rep data with its source"
         );
     }

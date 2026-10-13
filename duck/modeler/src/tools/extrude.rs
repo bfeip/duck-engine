@@ -493,7 +493,7 @@ mod tests {
         let doc = ws.document.lock().unwrap();
         assert_eq!(doc.parts().count(), 1);
         let part = doc.part_for_node(node).expect("the part keeps its node");
-        assert!((doc.get_part(part).unwrap().shape.volume() - 12.0).abs() < 1e-6);
+        assert!((doc.get_part(part).unwrap().shape().volume() - 12.0).abs() < 1e-6);
         let scene = doc.scene().clone();
         assert_eq!(scene.lock().get_node(node).expect("node exists").visibility(), Visibility::Visible);
         assert_eq!(doc.undo_label(), Some("Extrude"));
@@ -543,6 +543,6 @@ mod tests {
 
         assert!(op.target().is_none());
         let error = op.error().expect("the failure is reported");
-        assert!(error.contains("not part of a known CAD part"), "got {error}");
+        assert!(error.contains("has no face 99"), "got {error}");
     }
 }

@@ -283,7 +283,7 @@ mod tests {
     /// The names and shape types of the document's parts.
     fn parts(ws: &Workspace) -> Vec<(String, ShapeType)> {
         let doc = ws.document.lock().unwrap();
-        doc.parts().map(|part| (part.name.clone(), part.shape.shape_type())).collect()
+        doc.parts().map(|part| (part.name.clone(), part.shape().shape_type())).collect()
     }
 
     #[test]

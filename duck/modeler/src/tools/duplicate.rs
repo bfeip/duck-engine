@@ -176,7 +176,7 @@ impl DuplicateTarget {
                 .filter_map(|part| document.get_part(part))
                 // A shallow clone is right here: the ghost is only tessellated,
                 // never modified. `duplicate_parts` deep-copies on commit.
-                .map(|part| (part.name.clone(), part.shape.clone()))
+                .map(|part| (part.name.clone(), part.shape().clone()))
                 .collect::<Vec<_>>();
             (shapes, document.scene().clone())
         };

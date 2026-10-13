@@ -1,8 +1,8 @@
 //! Tessellation of CAD (OpenCASCADE) shapes into scene geometry.
 //!
-//! A B-Rep [`Shape`] becomes a [`Mesh`] with triangle
-//! faces and, optionally, wireframe edges and B-Rep vertices, carrying the
-//! sub-geometry topology used for face/edge/point picking.
+//! A B-Rep [`Shape`], numbered by its [`ShapeElements`], becomes a [`Mesh`] with
+//! triangle faces and, optionally, wireframe edges and B-Rep vertices, carrying
+//! one sub-geometry range per element for face/edge/point picking.
 //! [`tessellate_into`] and [`tessellate_into_with_materials`] add the result to
 //! a scene as an instance node; [`retessellate_node`] replaces the geometry of
 //! an existing node in place (say, after a modeling operation);
@@ -13,7 +13,7 @@
 //! style the two classes differently.
 
 use anyhow::{Context, Result};
-use opencascade::primitives::{Shape, ShapeType};
+use opencascade::primitives::{Edge, Shape, ShapeElements, ShapeType};
 
 use crate::common::{RgbaColor, Transform};
 use crate::resource::{
@@ -122,12 +122,16 @@ impl CadTessellationOptions {
     }
 }
 
-/// Tessellates an OpenCASCADE B-Rep shape into a [`Mesh`] containing face triangles
-/// and, optionally, wireframe edge line segments.
+/// Tessellates an OpenCASCADE B-Rep shape, given as its [`ShapeElements`], into a
+/// [`Mesh`] containing face triangles and, optionally, wireframe edge line segments
+/// and B-Rep vertices.
 ///
-/// This is the shared tessellation kernel used by both the XCAF import path
-/// and the interactive authoring path ([`tessellate_into`]).
-pub fn tessellate_occ_shape(shape: &Shape, options: &CadTessellationOptions) -> Result<Mesh> {
+/// The mesh topology holds one range per element, so a picked sub-geometry index
+/// is the element's index in `elements`. This is the shared tessellation kernel
+/// used by both the XCAF import path and the interactive authoring path
+/// ([`tessellate_into`]).
+pub fn tessellate_occ_shape(elements: &ShapeElements, options: &CadTessellationOptions) -> Result<Mesh> {
+    let shape = elements.shape();
     let s = options.scale_factor;
 
     // --- Faces ---
@@ -149,64 +153,50 @@ pub fn tessellate_occ_shape(shape: &Shape, options: &CadTessellationOptions) -> 
         .collect();
 
     let face_indices: Vec<u32> = occt_mesh.indices.iter().map(|&i| i as u32).collect();
-    let face_ranges: Vec<SubMeshRange> = occt_face_ranges
-        .iter()
-        .map(|r| SubMeshRange { start: r.start, count: r.count })
-        .collect();
+    // OCCT ranges the triangles of each `shape.faces()` occurrence; a face element
+    // takes its face's first.
+    let mut face_ranges = vec![SubMeshRange { start: 0, count: 0 }; elements.faces().len()];
+    let mut ranged = vec![false; elements.faces().len()];
+    for (face, range) in shape.faces().zip(&occt_face_ranges) {
+        let Some(index) = elements.face_index(&face) else { continue };
+        if !std::mem::replace(&mut ranged[index], true) {
+            face_ranges[index] = SubMeshRange { start: range.start, count: range.count };
+        }
+    }
 
     // --- Edges ---
-    // Edge vertices are appended after face vertices; absolute vertex indices are used
-    // so the LineList primitive correctly references into the combined vertex buffer.
-    //
-    // One `edge_range` is emitted per `shape.edges()` entry, in iteration order —
-    // including a zero-length range for any edge that produces no segments. Seam
-    // edges (closed-surface parameterization artifacts, e.g. a sphere's meridian)
-    // and degenerate edges (no 3D curve, e.g. a sphere's poles) are suppressed but
-    // still get their zero-length range. This keeps `edge_ranges` index-aligned 1:1
-    // with `Shape::edges()` (mirroring how faces work), so an `edge_index` resolves
-    // back to its OCCT edge by plain position.
+    // One range per edge element, drawn as its curve. Shown seams follow every
+    // ranged segment, in no range: drawn, but no element to pick. Edge vertices are
+    // appended after face vertices and referenced by absolute index.
     let mut edge_indices: Vec<u32> = Vec::new();
     let mut edge_ranges: Vec<SubMeshRange> = Vec::new();
 
     if options.include_edges {
-        // Degenerate edges have no 3D curve to sample, so `edge_polylines` suppresses
-        // them even when seams are shown. Suppressed edges come back as empty
-        // polylines, keeping the result aligned with `shape.edges()`.
-        for points in shape.edge_polylines(options.show_seam_edges) {
-            let seg_start = (edge_indices.len() / 2) as u32;
-            let mut seg_count = 0u32;
-
-            for window in points.windows(2) {
-                let base = vertices.len() as u32;
-                for p in window {
-                    vertices.push(Vertex {
-                        position: (*p * s).as_vec3().to_array(),
-                        normal: [0.0, 0.0, 0.0],
-                        tex_coords: [0.0, 0.0, 0.0],
-                    });
-                }
-                edge_indices.push(base);
-                edge_indices.push(base + 1);
-                seg_count += 1;
+        let scaled = |edge: &Edge| -> Vec<[f32; 3]> {
+            edge.polyline().iter().map(|p| (*p * s).as_vec3().to_array()).collect()
+        };
+        for element in elements.edges() {
+            let range = push_polyline(&scaled(element.curve()), &mut vertices, &mut edge_indices);
+            edge_ranges.push(range);
+        }
+        if options.show_seam_edges {
+            for seam in elements.seams() {
+                push_polyline(&scaled(seam), &mut vertices, &mut edge_indices);
             }
-
-            edge_ranges.push(SubMeshRange { start: seg_start, count: seg_count });
         }
     }
 
     // --- Points ---
-    // One point is emitted per `shape.vertices()` entry, in iteration order, so a
-    // `point_index` resolves back to its OCCT vertex by plain position (mirroring
-    // how faces and edges work). Point vertices are appended after face/edge
+    // One range per vertex element. Point vertices are appended after face/edge
     // vertices and referenced by absolute index.
     let mut point_indices: Vec<u32> = Vec::new();
     let mut point_ranges: Vec<SubMeshRange> = Vec::new();
 
     if options.include_points {
-        for p in shape.vertex_points() {
+        for vertex in elements.vertices() {
             let base = vertices.len() as u32;
             vertices.push(Vertex {
-                position: (p * s).as_vec3().to_array(),
+                position: (vertex.point() * s).as_vec3().to_array(),
                 normal: [0.0, 0.0, 0.0],
                 tex_coords: [0.0, 0.0, 0.0],
             });
@@ -242,13 +232,28 @@ pub fn tessellate_occ_shape(shape: &Shape, options: &CadTessellationOptions) -> 
     Ok(mesh)
 }
 
-/// Tessellates `shape` and wires it into `scene` as a mesh + material + instance + node.
+/// Appends a polyline through `positions` as line segments, returning their range.
+fn push_polyline(positions: &[[f32; 3]], vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>) -> SubMeshRange {
+    let start = (indices.len() / 2) as u32;
+    for window in positions.windows(2) {
+        let base = vertices.len() as u32;
+        for &position in window {
+            vertices.push(Vertex { position, normal: [0.0, 0.0, 0.0], tex_coords: [0.0, 0.0, 0.0] });
+        }
+        indices.push(base);
+        indices.push(base + 1);
+    }
+    SubMeshRange { start, count: (indices.len() / 2) as u32 - start }
+}
+
+/// Tessellates a shape, given as its [`ShapeElements`], and wires it into `scene`
+/// as a mesh + material + instance + node.
 ///
 /// The material templates from `options` are instantiated fresh for the part.
 /// To share materials across parts — say, repeated preview tessellations — use
 /// [`tessellate_into_with_materials`].
 pub fn tessellate_into(
-    shape: &Shape,
+    elements: &ShapeElements,
     scene: &Scene,
     options: &CadTessellationOptions,
     parent: Option<NodeId>,
@@ -256,8 +261,8 @@ pub fn tessellate_into(
 ) -> Result<NodeHandle> {
     let mut scene = scene.lock();
 
-    let mesh = tessellate_occ_shape(shape, options)?;
-    let (face_template, line_template) = options.materials_for(shape);
+    let mesh = tessellate_occ_shape(elements, options)?;
+    let (face_template, line_template) = options.materials_for(elements.shape());
     let face_mat = scene.add_face_material(face_template.clone().with_fresh_id());
     let line_mat = scene.add_line_material(line_template.clone().with_fresh_id());
     tessellate_finish(&mut scene, mesh, face_mat, line_mat, parent, name)
@@ -266,7 +271,7 @@ pub fn tessellate_into(
 /// Like [`tessellate_into`], but the node shares the given materials instead of
 /// instantiating fresh ones from the option templates.
 pub fn tessellate_into_with_materials(
-    shape: &Shape,
+    elements: &ShapeElements,
     scene: &Scene,
     options: &CadTessellationOptions,
     face_material: &FaceMaterialHandle,
@@ -276,7 +281,7 @@ pub fn tessellate_into_with_materials(
 ) -> Result<NodeHandle> {
     let mut scene = scene.lock();
 
-    let mesh = tessellate_occ_shape(shape, options)?;
+    let mesh = tessellate_occ_shape(elements, options)?;
     tessellate_finish(&mut scene, mesh, face_material.clone(), line_material.clone(), parent, name)
 }
 
@@ -303,16 +308,17 @@ fn tessellate_finish(
     Ok(node)
 }
 
-/// Re-tessellates `shape` into an existing `node`, preserving its [`NodeId`] and
-/// reusing its material slots. The node must already carry an instance; the
-/// previous mesh and instance are released and removed unless shared.
+/// Re-tessellates a shape, given as its [`ShapeElements`], into an existing `node`,
+/// preserving its [`NodeId`] and reusing its material slots. The node must
+/// already carry an instance; the previous mesh and instance are released and
+/// removed unless shared.
 ///
 /// Because the material slots are reused verbatim, the node keeps whichever
 /// materials it was first tessellated with, even if the shape's
 /// [`GeometryClass`] has changed since. To re-classify, create a new node
 /// instead.
 pub fn retessellate_node(
-    shape: &Shape,
+    elements: &ShapeElements,
     scene: &Scene,
     options: &CadTessellationOptions,
     node: NodeId,
@@ -333,7 +339,7 @@ pub fn retessellate_node(
         (old.face_material_handle().cloned(), old.line_material_handle().cloned())
     };
 
-    let mesh = tessellate_occ_shape(shape, options)?;
+    let mesh = tessellate_occ_shape(elements, options)?;
     let mesh = scene.add_mesh(mesh);
 
     let mut instance = Instance::new(mesh);
@@ -365,7 +371,7 @@ mod tests {
     fn sphere_tessellates_to_nonempty_mesh() {
         let shape = opencascade::primitives::Shape::sphere(1.0).build();
         let mut scene = Scene::default();
-        tessellate_into(&shape, &mut scene, &default_options(), None, Some("sphere"))
+        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), None, Some("sphere"))
             .expect("tessellation failed");
         assert!(scene.mesh_count() > 0);
         assert!(scene.node_count() > 0);
@@ -375,7 +381,7 @@ mod tests {
     fn cuboid_tessellates_to_nonempty_mesh() {
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
         let mut scene = Scene::default();
-        tessellate_into(&shape, &mut scene, &default_options(), None, Some("box"))
+        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), None, Some("box"))
             .expect("tessellation failed");
         assert!(scene.mesh_count() > 0);
     }
@@ -386,7 +392,7 @@ mod tests {
         let b = opencascade::primitives::Shape::sphere(1.5).build();
         let combined = a.union(&b).expect("fuse succeeds").shape;
         let mut scene = Scene::default();
-        tessellate_into(&combined, &mut scene, &default_options(), None, None)
+        tessellate_into(&ShapeElements::new(&combined), &mut scene, &default_options(), None, None)
             .expect("union tessellation failed");
         assert!(scene.mesh_count() > 0);
     }
@@ -395,7 +401,7 @@ mod tests {
     fn cylinder_tessellates() {
         let shape = opencascade::primitives::Shape::cylinder_radius_height(0.5, 2.0);
         let mut scene = Scene::default();
-        tessellate_into(&shape, &mut scene, &default_options(), None, None).unwrap();
+        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), None, None).unwrap();
         assert!(scene.mesh_count() > 0);
     }
 
@@ -403,21 +409,19 @@ mod tests {
     fn torus_tessellates() {
         let shape = opencascade::primitives::Shape::torus().radius_1(2.0).radius_2(0.5).build();
         let mut scene = Scene::default();
-        tessellate_into(&shape, &mut scene, &default_options(), None, None).unwrap();
+        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), None, None).unwrap();
         assert!(scene.mesh_count() > 0);
     }
 
     #[test]
     fn sphere_renders_without_seam_or_pole_edges() {
         // All of a full sphere's edges are parameterization artifacts (one seam
-        // meridian + two degenerate poles): none may produce line segments, but
-        // each still gets its zero-length range for positional index alignment.
+        // meridian + two degenerate poles): it has no edge elements to draw.
         let shape = opencascade::primitives::Shape::sphere(1.0).build();
-        let mesh = tessellate_occ_shape(&shape, &edges_only_options()).unwrap();
+        let mesh = tessellate_occ_shape(&ShapeElements::new(&shape), &edges_only_options()).unwrap();
 
         let topology = mesh.topology().expect("topology");
-        assert_eq!(topology.edge_ranges.len(), shape.edges().count());
-        assert!(topology.edge_ranges.iter().all(|r| r.count == 0));
+        assert!(topology.edge_ranges.is_empty());
         assert!(!mesh
             .primitives()
             .iter()
@@ -425,47 +429,50 @@ mod tests {
     }
 
     #[test]
-    fn show_seam_edges_renders_the_seam_but_not_the_poles() {
-        // The debug toggle un-suppresses seams only: the sphere's two pole edges
-        // are degenerate and have no curve to sample.
+    fn show_seam_edges_renders_the_seam_as_no_element() {
+        // The debug toggle draws the seam, but outside every range: it is no
+        // element to pick.
         let shape = opencascade::primitives::Shape::sphere(1.0).build();
         let options =
             CadTessellationOptions { show_seam_edges: true, ..edges_only_options() };
-        let mesh = tessellate_occ_shape(&shape, &options).unwrap();
+        let mesh = tessellate_occ_shape(&ShapeElements::new(&shape), &options).unwrap();
 
         let topology = mesh.topology().expect("topology");
-        let edges: Vec<_> = shape.edges().collect();
-        assert_eq!(topology.edge_ranges.len(), edges.len());
-        for (edge, range) in edges.iter().zip(&topology.edge_ranges) {
-            assert_eq!(range.count == 0, edge.is_degenerated());
-        }
+        assert!(topology.edge_ranges.is_empty());
+        assert!(mesh
+            .primitives()
+            .iter()
+            .any(|p| p.primitive_type == PrimitiveType::LineList && !p.indices.is_empty()));
     }
 
     #[test]
-    fn cylinder_seam_suppressed_but_rims_kept_and_aligned() {
-        // Exactly the seam edge's ranges are empty; the two rim circles render.
-        // Alignment with `shape.edges()` positions is what edge picking relies on.
+    fn ranges_follow_the_elements() {
+        // A cylinder is three faces and two rims: its seam and the vertices only
+        // the seam needs are no elements.
         let shape = opencascade::primitives::Shape::cylinder_radius_height(0.5, 2.0);
-        let mesh = tessellate_occ_shape(&shape, &edges_only_options()).unwrap();
+        let elements = ShapeElements::new(&shape);
+        let mesh = tessellate_occ_shape(&elements, &default_options()).unwrap();
 
         let topology = mesh.topology().expect("topology");
-        let edges: Vec<_> = shape.edges().collect();
-        assert_eq!(topology.edge_ranges.len(), edges.len());
+        assert_eq!(topology.face_ranges.len(), elements.faces().len());
+        assert_eq!(topology.edge_ranges.len(), 2);
+        assert!(topology.pointset_ranges.is_empty());
+        let ranges = topology.face_ranges.iter().chain(&topology.edge_ranges);
+        assert!(ranges.into_iter().all(|r| r.count > 0), "every element draws");
+    }
 
-        let seams = shape.seam_edges();
-        assert_eq!(seams.len(), 1);
-        // The explorer yields an edge once per incident face, so rendered
-        // occurrences are deduped by topology to count the actual rim circles.
-        let mut rendered: Vec<&opencascade::primitives::Edge> = Vec::new();
-        for (edge, range) in edges.iter().zip(&topology.edge_ranges) {
-            let suppressed =
-                edge.is_degenerated() || seams.iter().any(|s| s.is_same(edge));
-            assert_eq!(range.count == 0, suppressed);
-            if range.count > 0 && !rendered.iter().any(|r| r.is_same(edge)) {
-                rendered.push(edge);
-            }
-        }
-        assert_eq!(rendered.len(), 2, "both rim circles must render");
+    #[test]
+    fn a_box_draws_each_element_once() {
+        let cube = opencascade::primitives::Shape::cube(1.0);
+        let mesh = tessellate_occ_shape(&ShapeElements::new(&cube), &default_options()).unwrap();
+
+        let topology = mesh.topology().expect("topology");
+        assert_eq!(topology.face_ranges.len(), 6);
+        // Each edge is one segment, though both of its faces list it.
+        assert_eq!(topology.edge_ranges.len(), 12);
+        assert!(topology.edge_ranges.iter().all(|r| r.count == 1));
+        assert_eq!(topology.pointset_ranges.len(), 8);
+        assert!(topology.pointset_ranges.iter().all(|r| r.count == 1));
     }
 
     #[test]
@@ -477,7 +484,7 @@ mod tests {
         let mut scene = Scene::default();
         for _ in 0..3 {
             let shape = opencascade::primitives::Shape::box_centered(1.0, 1.0, 1.0);
-            tessellate_into(&shape, &mut scene, &options, None, None).unwrap();
+            tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap();
         }
         let scene = scene.lock();
         assert_eq!(scene.face_material_count(), 3);
@@ -585,7 +592,7 @@ mod tests {
         let mut scene = Scene::default();
 
         for shape in [open_wire(), planar_face()] {
-            let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap().id();
+            let node = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap().id();
             let (face, line) = node_colors(&scene, node);
             assert_color_eq(face, FREE_FACE, "face");
             assert_color_eq(line, FREE_LINE, "line");
@@ -597,7 +604,7 @@ mod tests {
         let options = classified_options();
         let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::cube(2.0);
-        let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap().id();
+        let node = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap().id();
 
         let (face, line) = node_colors(&scene, node);
         assert_color_eq(face, options.face_material.base_color_factor(), "face");
@@ -609,7 +616,7 @@ mod tests {
         // Callers that never opt in (glTF/STEP import) must see no change.
         let options = default_options();
         let mut scene = Scene::default();
-        let node = tessellate_into(&open_wire(), &mut scene, &options, None, None).unwrap().id();
+        let node = tessellate_into(&ShapeElements::new(&open_wire()), &mut scene, &options, None, None).unwrap().id();
 
         let (face, line) = node_colors(&scene, node);
         assert_color_eq(face, options.face_material.base_color_factor(), "face");
@@ -629,7 +636,7 @@ mod tests {
         ]);
 
         let mut scene = Scene::default();
-        let node = tessellate_into(&scaled, &mut scene, &default_options(), None, None).unwrap().id();
+        let node = tessellate_into(&ShapeElements::new(&scaled), &mut scene, &default_options(), None, None).unwrap().id();
         let aabb = scene.nodes_bounding(node).bounds.expect("scaled box has bounds");
         let (sx, sy, sz) = aabb.size();
         assert!((sx - 6.0).abs() < 1e-3, "expected X extent ~6, got {sx}");
@@ -642,7 +649,7 @@ mod tests {
         let options = default_options();
         let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
-        let node = tessellate_into(&shape, &mut scene, &options, None, None).unwrap().id();
+        let node = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap().id();
 
         let before = scene.nodes_bounding(node).bounds.expect("box has bounds");
         let (bx, _, _) = before.size();
@@ -655,7 +662,7 @@ mod tests {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ]);
-        retessellate_node(&scaled, &mut scene, &options, node).unwrap();
+        retessellate_node(&ShapeElements::new(&scaled), &mut scene, &options, node).unwrap();
 
         // Same node id, geometry updated, and no leaked mesh/instance.
         assert!(scene.get_node(node).is_some(), "node id must be preserved");
@@ -671,7 +678,7 @@ mod tests {
         let options = default_options();
         let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
-        let node1 = tessellate_into(&shape, &mut scene, &options, None, None).unwrap().id();
+        let node1 = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap().id();
 
         // Capture the instance + mesh the part created.
         let instance = scene
@@ -693,7 +700,7 @@ mod tests {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ]);
-        retessellate_node(&scaled, &mut scene, &options, node1).unwrap();
+        retessellate_node(&ShapeElements::new(&scaled), &mut scene, &options, node1).unwrap();
 
         let scene = scene.lock();
         // The shared instance and mesh must survive — node2 still references them.

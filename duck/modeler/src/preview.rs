@@ -8,7 +8,7 @@ use duck_engine_scene::resource::{
     FaceMaterialHandle, Instance, LineMaterialHandle, NodeFlags, NodeId, Visibility,
 };
 use duck_engine_scene::{Scene, SceneData};
-use opencascade::primitives::Shape;
+use opencascade::primitives::{Shape, ShapeElements};
 
 use crate::document::Document;
 
@@ -109,7 +109,7 @@ impl PreviewSession {
         let scene = self.scene();
         let (face, line) = self.materials(&scene, shape, options);
         let node =
-            tessellate_into_with_materials(shape, &scene, options, &face, &line, None, Some(name))
+            tessellate_into_with_materials(&ShapeElements::new(shape), &scene, options, &face, &line, None, Some(name))
                 .ok()?
                 .id();
         self.previews.push(node);
@@ -133,7 +133,7 @@ impl PreviewSession {
         let scene = self.scene();
         let (face, line) = self.materials(&scene, shape, options);
         let node =
-            tessellate_into_with_materials(shape, &scene, options, &face, &line, None, Some(name))
+            tessellate_into_with_materials(&ShapeElements::new(shape), &scene, options, &face, &line, None, Some(name))
                 .ok()?
                 .id();
 
@@ -353,7 +353,7 @@ mod tests {
     fn add_source(document: &Arc<Mutex<Document>>) -> NodeId {
         let scene = document.lock().unwrap().scene().clone();
         duck_engine_scene::cad::tessellate_into(
-            &unit_shape(),
+            &ShapeElements::new(&unit_shape()),
             &scene,
             &CadTessellationOptions::default(),
             None,

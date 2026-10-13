@@ -57,12 +57,12 @@ fn compute_boolean(
         .tools
         .iter()
         .map(|&node| {
-            doc.part_at(node).map(|part| part.shape.deep_copy()).context("Tool node is not a known CAD part")
+            doc.part_at(node).map(|part| part.shape().deep_copy()).context("Tool node is not a known CAD part")
         })
         .collect::<Result<_>>()?;
 
-    let target_volume = target_part.shape.volume();
-    let mut shape = target_part.shape.deep_copy();
+    let target_volume = target_part.shape().volume();
+    let mut shape = target_part.shape().deep_copy();
     let fuzz = interactive_fuzz(std::iter::once(&shape).chain(&tool_shapes));
     let mut removed = Vec::new();
     for tool in &tool_shapes {
@@ -173,7 +173,7 @@ mod tests {
             .expect("subtract succeeds");
 
         for node in [box_node, sphere_node] {
-            let source = &doc.part_at(node).unwrap().shape;
+            let source = doc.part_at(node).unwrap().shape();
             for face in source.faces() {
                 assert!(
                     !result.faces().any(|f| f.is_same(&face)),

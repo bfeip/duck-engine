@@ -4,7 +4,7 @@ use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::{JoinType, Shape, Shell};
 use opencascade::OffsetError;
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, has_solid, selected_face, Document, SourceFate};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, has_solid, Document, SourceFate};
 
 /// A side at or below this thickness is none: OCCT's offset takes anything
 /// smaller as null.
@@ -35,15 +35,15 @@ pub struct ThickenFrame {
 
 impl ThickenFrame {
     pub fn new(doc: &Document, target: &ThickenTarget) -> Result<Self> {
-        let shape = &doc.part_at(target.node).context("Thicken target is not a known CAD part")?.shape;
-        let on_solid = has_solid(shape);
+        let part = doc.part_at(target.node).context("Thicken target is not a known CAD part")?;
+        let on_solid = has_solid(part.shape());
         ensure!(!on_solid || !target.faces.is_empty(), "Select faces of the solid to thicken");
-        let face_count = shape.faces().count() as u32;
+        let face_count = part.elements().faces().len() as u32;
         ensure!(face_count > 0, "Only faces can be thickened");
         let whole_sheet =
             !on_solid && (0..face_count).all(|index| target.faces.is_empty() || target.faces.contains(&index));
 
-        let primary = selected_face(shape, target.faces.first().copied().unwrap_or(0))?;
+        let primary = part.elements().face(target.faces.first().copied().unwrap_or(0) as usize)?;
         let origin = primary.midpoint();
         let normal = primary.normal_at(origin).context("The face to thicken has no well-defined normal")?;
         Ok(Self {
@@ -149,13 +149,13 @@ pub fn build_thicken(doc: &Document, target: &ThickenTarget, params: &ThickenPar
 
     // OCCT's offset reuses the faces it thickens and may retouch them, so the
     // slab grows from a copy: an abandoned preview must leave the part as it was.
-    let body = part.shape.deep_copy();
+    let body = part.elements().deep_copy();
     let sheet: Shape = if params.frame.whole_sheet {
-        body
+        body.shape().clone()
     } else {
-        let faces = target.faces.iter().map(|&index| selected_face(&body, index)).collect::<Result<Vec<_>>>()?;
+        let faces = target.faces.iter().map(|&index| body.face(index as usize)).collect::<Result<Vec<_>, _>>()?;
         match faces.as_slice() {
-            [face] => face.into(),
+            [face] => Shape::from(*face),
             faces => Shell::from_faces(faces).into(),
         }
     };
@@ -193,7 +193,7 @@ mod tests {
     use opencascade::primitives::{Face, FaceType, ShapeType, Wire};
 
     use crate::document::PartKind;
-    use crate::testing::{commit, doc_with_box, doc_with_shape, face_along, part_shape, tube, volumes};
+    use crate::testing::{commit, doc_with_box, doc_with_shape, face_along, part_faces, part_shape, tube, volumes};
 
     const EPSILON: Real = 1e-5;
 
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn a_cylinders_side_thickens_into_a_tube() {
         let (doc, node) = doc_with_shape(Shape::cylinder_centered(DVec3::ZERO, 1.0, DVec3::Y, 2.0));
-        let side = part_shape(&doc, node).faces().position(|face| face.face_type() == FaceType::Cylinder).unwrap();
+        let side = part_faces(&doc, node).iter().position(|face| face.face_type() == FaceType::Cylinder).unwrap();
         let side = target(node, &[side as u32]);
         let pi = std::f64::consts::PI;
 
@@ -327,8 +327,8 @@ mod tests {
             assert_eq!(parts.len(), 1, "the sheet was consumed");
             assert_eq!(parts[0].name, "part");
             assert_eq!(parts[0].kind(), PartKind::Solid);
-            assert!((parts[0].shape.volume() - 3.0).abs() < 1e-6, "{front}/{back}: got {}", parts[0].shape.volume());
-            let bounds = aabb(&parts[0].shape);
+            assert!((parts[0].shape().volume() - 3.0).abs() < 1e-6, "{front}/{back}: got {}", parts[0].shape().volume());
+            let bounds = aabb(&parts[0].shape());
             let (min, max) = (bounds.min().z * side, bounds.max().z * side);
             let (min, max) = (min.min(max), min.max(max));
             assert!((min - low).abs() < BOUNDS && (max - high).abs() < BOUNDS, "{front}/{back}: spans {min} to {max}");
@@ -364,8 +364,8 @@ mod tests {
         thicken(&mut doc, &target(node, &all), &walls);
         let parts: Vec<_> = doc.parts().collect();
         assert_eq!(parts.len(), 1);
-        assert_eq!(parts[0].shape.shape_type(), ShapeType::Solid);
-        assert!((parts[0].shape.volume() - expected).abs() < 1e-6, "got {}", parts[0].shape.volume());
+        assert_eq!(parts[0].shape().shape_type(), ShapeType::Solid);
+        assert!((parts[0].shape().volume() - expected).abs() < 1e-6, "got {}", parts[0].shape().volume());
     }
 
     #[test]

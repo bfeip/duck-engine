@@ -7,7 +7,7 @@ use duck_engine_scene::Scene;
 use duck_engine_scene::cad::{CadTessellationOptions, retessellate_node, tessellate_into};
 use duck_engine_scene::common::{matrix4_to_row_major_f64, Matrix4, Point3, Real, Transform, Vector3};
 use glam::DVec3;
-use opencascade::primitives::{Edge, Face, Shape, ShapeType, Wire};
+use opencascade::primitives::{Shape, ShapeElements, ShapeType, Wire};
 
 use crate::history::{Delta, History, PartSnapshot};
 
@@ -58,20 +58,6 @@ pub enum SourceFate {
 /// wires and points.
 pub fn has_solid(shape: &Shape) -> bool {
     shape.contains_type(ShapeType::Solid)
-}
-
-/// Face `index` of `shape`, numbered as the selection numbers them.
-pub fn selected_face(shape: &Shape, index: u32) -> Result<Face> {
-    shape
-        .face_at(index as usize)
-        .with_context(|| format!("Selected face {index} is not part of the part"))
-}
-
-/// Edge `index` of `shape`, numbered as the selection numbers them.
-pub fn selected_edge(shape: &Shape, index: u32) -> Result<Edge> {
-    shape
-        .edge_at(index as usize)
-        .with_context(|| format!("Selected edge {index} is not part of the part"))
 }
 
 /// Merges faces and edges left split across a shared surface or curve — chiefly
@@ -177,13 +163,23 @@ pub fn interactive_fuzz<'a>(shapes: impl Iterator<Item = &'a Shape>) -> f64 {
 pub struct CadPart {
     pub id: PartId,
     pub name: String,
-    pub shape: Shape,
+    elements: ShapeElements,
     /// Tessellation options the part was last (re)tessellated with, kept for
     /// history capture — `remove_part` receives none from its caller.
     options: CadTessellationOptions,
 }
 
 impl CadPart {
+    pub fn shape(&self) -> &Shape {
+        self.elements.shape()
+    }
+
+    /// The part's faces, edges and vertices, numbered as its selections number
+    /// them.
+    pub fn elements(&self) -> &ShapeElements {
+        &self.elements
+    }
+
     /// Tessellation options the part was last built with. Imported parts carry
     /// their own colors here, so a copy made with these keeps its appearance.
     pub fn options(&self) -> &CadTessellationOptions {
@@ -192,7 +188,7 @@ impl CadPart {
 
     /// Classify the part by its top-level B-Rep shape type.
     pub fn kind(&self) -> PartKind {
-        match self.shape.shape_type() {
+        match self.shape().shape_type() {
             ShapeType::Solid | ShapeType::CompoundSolid => PartKind::Solid,
             ShapeType::Shell => PartKind::Shell,
             ShapeType::Face => PartKind::Face,
@@ -258,11 +254,12 @@ impl Document {
         options: &CadTessellationOptions,
     ) -> Result<PartId> {
         let name = name.into();
-        let node = tessellate_into(&shape, &self.scene, options, None, Some(&name))
+        let elements = ShapeElements::new(&shape);
+        let node = tessellate_into(&elements, &self.scene, options, None, Some(&name))
             .context("Failed to tessellate part")?
             .id();
         let id = PartId::new();
-        self.parts.push(CadPart { id, name, shape, options: options.clone() });
+        self.parts.push(CadPart { id, name, elements, options: options.clone() });
         self.part_to_node.insert(id, node);
         self.node_to_part.insert(node, id);
         self.generation += 1;
@@ -395,7 +392,7 @@ impl Document {
     pub fn bake_transform(&mut self, part: PartId, transform: Matrix4) -> Result<()> {
         let baked = {
             let cad_part = self.get_part(part).context("bake_transform: part not found")?;
-            place(&cad_part.shape, &transform)
+            place(cad_part.shape(), &transform)
         };
         self.reshape_part(part, baked, "Transform")
     }
@@ -414,18 +411,12 @@ impl Document {
     ) -> Result<()> {
         let tweaked = {
             let cad_part = self.get_part(part).context("tweak_faces: part not found")?;
-            let faces: Vec<_> = face_indices
+            let faces = face_indices
                 .iter()
-                .map(|&index| {
-                    cad_part
-                        .shape
-                        .faces()
-                        .nth(index as usize)
-                        .with_context(|| format!("tweak_faces: no face at index {index}"))
-                })
-                .collect::<Result<_>>()?;
+                .map(|&index| cad_part.elements().face(index as usize))
+                .collect::<Result<Vec<_>, _>>()?;
             let mat = matrix4_to_row_major_f64(&transform);
-            cad_part.shape.tweak_faces(faces, mat)?
+            cad_part.shape().tweak_faces(faces, mat)?
         };
         self.reshape_part(part, tweaked, "Tweak face")
     }
@@ -438,7 +429,7 @@ impl Document {
     pub fn reshape_part(&mut self, part: PartId, shape: Shape, label: &str) -> Result<()> {
         let (before, options) = {
             let cad_part = self.get_part(part).context("reshape_part: part not found")?;
-            (cad_part.shape.clone(), cad_part.options.clone())
+            (cad_part.shape().clone(), cad_part.options.clone())
         };
         self.reshape(part, &shape, &options)?;
         self.history.record(label, Delta::Reshaped { part, before, after: shape, options });
@@ -461,7 +452,7 @@ impl Document {
         match fate {
             SourceFate::Reshape => self.reshape_part(source, result, label),
             SourceFate::Fuse => {
-                let fused = fuse(&source_part.shape, &result)
+                let fused = fuse(source_part.shape(), &result)
                     .context("Failed to fuse into the source part")?;
                 self.reshape_part(source, fused, label)
             }
@@ -574,7 +565,7 @@ impl Document {
             part: id,
             node,
             name: part.name.clone(),
-            shape: part.shape.clone(),
+            shape: part.shape().clone(),
             options: part.options.clone(),
         })
     }
@@ -592,7 +583,7 @@ impl Document {
         self.parts.push(CadPart {
             id: snapshot.part,
             name: snapshot.name.clone(),
-            shape: snapshot.shape.clone(),
+            elements: ShapeElements::new(&snapshot.shape),
             options: snapshot.options.clone(),
         });
         self.part_to_node.insert(snapshot.part, node);
@@ -613,11 +604,12 @@ impl Document {
         options: &CadTessellationOptions,
     ) -> Result<()> {
         let node = self.node_for_part(part).context("reshape: no node for part")?;
-        retessellate_node(shape, &self.scene, options, node)?;
+        let elements = ShapeElements::new(shape);
+        retessellate_node(&elements, &self.scene, options, node)?;
         self.scene.set_node_transform(node, Transform::IDENTITY);
 
         let cad_part = self.get_part_mut(part).context("reshape: part not found")?;
-        cad_part.shape = shape.clone();
+        cad_part.elements = elements;
         cad_part.options = options.clone();
         self.generation += 1;
         Ok(())
@@ -637,7 +629,7 @@ impl Document {
             let id = part.id;
             let Some(node) = self.node_for_part(id) else { continue };
             let part = &self.parts[index];
-            if let Err(e) = retessellate_node(&part.shape, &self.scene, &part.options, node) {
+            if let Err(e) = retessellate_node(&part.elements, &self.scene, &part.options, node) {
                 log::warn!("Failed to re-tessellate {}: {e:#}", part.name);
             }
         }
@@ -660,16 +652,10 @@ impl Document {
         self.part_for_node(node).and_then(|id| self.get_part(id))
     }
 
-    /// Resolve a picked face — identified by its tessellation order (`face_index`,
-    /// as carried by a `SubGeometryKind::Face` selection) — back to its OCCT [`Face`] sub-shape.
-    pub fn face_subshape(&self, node: NodeId, face_index: u32) -> Option<Face> {
-        self.part_at(node)?.shape.face_at(face_index as usize)
-    }
-
-    /// Resolve a picked edge — identified by its tessellation order (`edge_index`,
-    /// as carried by a `SubGeometryKind::Edge` selection) — back to its OCCT [`Edge`] sub-shape.
-    pub fn edge_subshape(&self, node: NodeId, edge_index: u32) -> Option<Edge> {
-        self.part_at(node)?.shape.edge_at(edge_index as usize)
+    /// The faces, edges and vertices of the part at `node`, numbered as its
+    /// selections number them.
+    pub fn elements(&self, node: NodeId) -> Option<&ShapeElements> {
+        Some(self.part_at(node)?.elements())
     }
 
     /// Resolve a picked edge to the [`Wire`] that contains it in the part's B-Rep.
@@ -680,8 +666,8 @@ impl Document {
     /// whole multi-edge profile.
     pub fn wire_for_edge(&self, node: NodeId, edge_index: u32) -> Option<Wire> {
         let part = self.part_at(node)?;
-        let target = part.shape.edge_at(edge_index as usize)?;
-        part.shape.wires().find(|wire| wire.edges().any(|e| e.is_same(&target)))
+        let target = &part.elements().edge(edge_index as usize).ok()?.pieces()[0];
+        part.shape().wires().find(|wire| wire.edges().any(|e| e.is_same(target)))
     }
 }
 
@@ -720,6 +706,7 @@ mod tests {
         Deg, EuclideanSpace, InnerSpace, Quaternion, RgbaColor, Rotation3, Vector3,
     };
     use duck_engine_scene::resource::FaceMaterial;
+    use opencascade::primitives::Face;
 
     fn doc_with_box() -> (Document, PartId, NodeId) {
         let scene = Scene::default();
@@ -731,11 +718,13 @@ mod tests {
         (doc, part, node)
     }
 
-    /// Tessellation index of the box face whose center has the largest y (the top).
+    /// Selection index of the box face whose center has the largest y (the top).
     fn top_face_index(doc: &Document, part: PartId) -> u32 {
-        let shape = &doc.get_part(part).unwrap().shape;
-        shape
+        doc.get_part(part)
+            .unwrap()
+            .elements()
             .faces()
+            .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.center_of_mass().y.total_cmp(&b.center_of_mass().y))
             .map(|(index, _)| index as u32)
@@ -743,7 +732,7 @@ mod tests {
     }
 
     fn max_y(doc: &Document, part: PartId) -> f64 {
-        let shape = &doc.get_part(part).unwrap().shape;
+        let shape = doc.get_part(part).unwrap().shape();
         shape
             .mesh()
             .unwrap()
@@ -806,8 +795,8 @@ mod tests {
         let (mut doc, part, _) = doc_with_box();
         let face = top_face_index(&doc, part);
         let pivot = {
-            let shape = &doc.get_part(part).unwrap().shape;
-            dvec3_to_point3(shape.faces().nth(face as usize).unwrap().center_of_mass())
+            let faces = doc.get_part(part).unwrap().elements().faces();
+            dvec3_to_point3(faces[face as usize].center_of_mass())
         };
         // Tilt the top face about a skewed in-plane axis, one drag step at a time.
         let axis = Vector3::new(1.0, 0.0, 2.0).normalize();
@@ -854,7 +843,7 @@ mod tests {
 
         let part = doc.parts().next().expect("boolean leaves one part").id;
         let node = doc.node_for_part(part).unwrap();
-        let faces_before = doc.get_part(part).unwrap().shape.faces().count();
+        let faces_before = doc.get_part(part).unwrap().shape().faces().count();
         let face = top_face_index(&doc, part);
         let transform = Matrix4::from_translation(Vector3::new(0.0, 0.5, 0.0));
 
@@ -863,7 +852,7 @@ mod tests {
 
         assert_eq!(doc.node_for_part(part), Some(node), "node id must be preserved");
         assert!((max_y(&doc, part) - 2.5).abs() < 1e-6, "top must land at y=2.5");
-        let faces_after = doc.get_part(part).unwrap().shape.faces().count();
+        let faces_after = doc.get_part(part).unwrap().shape().faces().count();
         assert_eq!(faces_after, faces_before, "the spherical cavity must survive the re-solve");
     }
 
@@ -1031,7 +1020,7 @@ mod tests {
     }
 
     fn part_volume(doc: &Document, part: PartId) -> f64 {
-        doc.get_part(part).unwrap().shape.volume()
+        doc.get_part(part).unwrap().shape().volume()
     }
 
     /// A fused result reshapes its source in place, keeping the part, its node
@@ -1290,5 +1279,18 @@ mod tests {
 
         assert!(result.is_err(), "non-uniform scale must be rejected");
         assert!((max_y(&doc, part) - 2.0).abs() < 1e-6, "failed tweak must not modify the shape");
+    }
+
+    /// A boolean leaves the bite's rim split where the ball's seam crosses it;
+    /// picking the rim resolves to both pieces, and to the whole circle.
+    #[test]
+    fn a_seam_split_edge_resolves_to_both_pieces() {
+        let (doc, node) = crate::testing::doc_with_bitten_ball();
+        let rim = doc.elements(node).unwrap().edge(crate::testing::bite_rim(&doc, node) as usize).unwrap();
+
+        assert_eq!(rim.pieces().len(), 2);
+        let length: f64 = rim.pieces().iter().map(|piece| piece.length()).sum();
+        assert_eq!(rim.curve().edge_type(), opencascade::primitives::EdgeType::Circle);
+        assert!((rim.curve().length() - length).abs() < 1e-6, "expected {length}, got {}", rim.curve().length());
     }
 }

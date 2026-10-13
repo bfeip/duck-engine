@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use duck_engine_viewer::common::{Aabb, Point3, Real, Vector3};
 use duck_engine_viewer::scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
-use opencascade::primitives::{Edge, EdgeType, Face, FaceType, Shape, ShapeType};
+use opencascade::primitives::{Edge, EdgeType, Face, FaceType, ShapeElements, ShapeType};
 
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartKind};
 use crate::ui::icons;
@@ -298,7 +298,7 @@ fn summarize(document: &Document, selection: &SelectionManager) -> SelectionSumm
         let Some(part) = document.part_for_node(node).and_then(|id| document.get_part(id)) else {
             continue;
         };
-        let Some(element) = measure(&part.shape, item) else { continue };
+        let Some(element) = measure(part.elements(), item) else { continue };
 
         match &element {
             Element::Part { area, volume, .. } => {
@@ -338,27 +338,29 @@ fn accumulate(total: &mut Option<Real>, value: Real) {
     *total = Some(total.unwrap_or(0.0) + value);
 }
 
-/// Measure one selected item of `shape`, or `None` if its index is out of range.
-fn measure(shape: &Shape, item: &SelectionItem) -> Option<Element> {
+/// Measure one selected item of a part's `elements`, or `None` if its index is
+/// out of range.
+fn measure(elements: &ShapeElements, item: &SelectionItem) -> Option<Element> {
     let SelectionItem::SubGeometry { element, .. } = item else {
-        return Some(part_element(shape));
+        return Some(part_element(elements));
     };
-    let index = element.index;
+    let index = element.index as usize;
     Some(match element.kind {
-        SubGeometryKind::Face => face_element(index, &shape.face_at(index as usize)?),
-        SubGeometryKind::Edge => edge_element(index, &shape.edge_at(index as usize)?),
+        SubGeometryKind::Face => face_element(element.index, elements.face(index).ok()?),
+        SubGeometryKind::Edge => edge_element(element.index, elements.edge(index).ok()?.curve()),
         SubGeometryKind::Pointset => Element::Vertex {
-            index,
-            position: dvec3_to_point3(shape.vertex_at(index as usize)?.point()),
+            index: element.index,
+            position: dvec3_to_point3(elements.vertex(index).ok()?.point()),
         },
     })
 }
 
-fn part_element(shape: &Shape) -> Element {
+fn part_element(elements: &ShapeElements) -> Element {
+    let shape = elements.shape();
     Element::Part {
-        faces: shape.unique_sub_shape_count(ShapeType::Face),
-        edges: shape.unique_sub_shape_count(ShapeType::Edge),
-        vertices: shape.unique_sub_shape_count(ShapeType::Vertex),
+        faces: elements.faces().len(),
+        edges: elements.edges().len(),
+        vertices: elements.vertices().len(),
         area: shape.surface_area() as Real,
         volume: shape.contains_type(ShapeType::Solid).then(|| shape.volume() as Real),
     }
@@ -403,6 +405,9 @@ mod tests {
     use duck_engine_scene::cad::CadTessellationOptions;
     use duck_engine_scene::resource::SubGeometryElement;
     use duck_engine_scene::Scene;
+    use opencascade::primitives::Shape;
+
+    use crate::testing::{bite_rim, doc_with_bitten_ball};
 
     const EPSILON: Real = 1e-6;
 
@@ -454,10 +459,27 @@ mod tests {
         assert_close(volume, 8.0);
     }
 
+    /// A sphere's seam and poles are no edges or vertices of it.
+    #[test]
+    fn a_sphere_counts_one_face_and_nothing_else() {
+        let (document, nodes) = document_with([Shape::sphere(1.0).build()]);
+        let summary = summarize(&document, &selecting([SelectionItem::Node(nodes[0])]));
+
+        let element = summary.primary.expect("a primary").element;
+        let Element::Part { faces, edges, vertices, .. } = element else {
+            panic!("expected a part, got {element:?}");
+        };
+        assert_eq!((faces, edges, vertices), (1, 0, 0));
+    }
+
     #[test]
     fn a_cylinder_side_face_reports_its_radius() {
         let cylinder = Shape::cylinder_radius_height(5.0, 3.0);
-        let side = cylinder.faces().position(|f| f.face_type() == FaceType::Cylinder).unwrap();
+        let side = ShapeElements::new(&cylinder)
+            .faces()
+            .iter()
+            .position(|f| f.face_type() == FaceType::Cylinder)
+            .unwrap();
         let (document, nodes) = document_with([cylinder]);
 
         let summary =
@@ -478,7 +500,11 @@ mod tests {
     #[test]
     fn a_circular_edge_reports_its_radius_and_length() {
         let cylinder = Shape::cylinder_radius_height(2.0, 3.0);
-        let rim = cylinder.edges().position(|e| e.edge_type() == EdgeType::Circle).unwrap();
+        let rim = ShapeElements::new(&cylinder)
+            .edges()
+            .iter()
+            .position(|e| e.curve().edge_type() == EdgeType::Circle)
+            .unwrap();
         let (document, nodes) = document_with([cylinder]);
 
         let summary =
@@ -494,6 +520,30 @@ mod tests {
         };
         assert_close(Some(radius), 2.0);
         assert_close(Some(length), 4.0 * std::f64::consts::PI as Real);
+    }
+
+    /// The bite's rim is two edges where the ball's seam crosses it, and reads as
+    /// one circle.
+    #[test]
+    fn a_seam_split_edge_reports_one_circle() {
+        let (document, node) = doc_with_bitten_ball();
+        let rim = bite_rim(&document, node);
+        let pieces = document.elements(node).unwrap().edge(rim as usize).unwrap().pieces();
+        let circumference: Real = pieces.iter().map(|piece| piece.length() as Real).sum();
+
+        let summary =
+            summarize(&document, &selecting([sub_item(node, SubGeometryKind::Edge, rim as usize)]));
+
+        let element = summary.primary.expect("a primary").element;
+        let Element::Edge { ty, dimensions, length, .. } = element else {
+            panic!("expected an edge, got {element:?}");
+        };
+        assert_eq!(ty, EdgeType::Circle);
+        let Some(Dimensions::Radius(radius)) = dimensions else {
+            panic!("expected a radius, got {dimensions:?}");
+        };
+        assert_close(Some(radius), circumference / (2.0 * std::f64::consts::PI as Real));
+        assert_close(Some(length), circumference);
     }
 
     #[test]

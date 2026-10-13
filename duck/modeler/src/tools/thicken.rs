@@ -312,7 +312,7 @@ mod tests {
         assert!(op.preview().is_empty());
         let doc = ws.document.lock().unwrap();
         let part = doc.part_for_node(node).expect("the solid keeps its node");
-        assert!((doc.get_part(part).unwrap().shape.volume() - 10.0).abs() < 1e-6);
+        assert!((doc.get_part(part).unwrap().shape().volume() - 10.0).abs() < 1e-6);
         assert_eq!(doc.undo_label(), Some("Thicken"));
     }
 
