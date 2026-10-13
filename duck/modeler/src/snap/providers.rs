@@ -1,17 +1,18 @@
 //! The built-in [`SnapProvider`]s. Each is a stateless strategy; all live
-//! context arrives through [`SnapInput`] and the [`SceneData`].
+//! context arrives through [`SnapInput`] and the [`Document`].
 
 use duck_engine_viewer::common::{
     array_to_point3, array_to_vec3, transform_normal, transform_point, Aabb, EuclideanSpace,
     InnerSpace, Matrix4, Point3, Ray, Real,
 };
 use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
-use duck_engine_viewer::scene::{PositionedCamera, Scene};
+use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::scene::resource::{
-    InstanceId, Mesh, Node, NodeId, PrimitiveType, Topology, Visibility,
+    InstanceId, Mesh, Node, NodeId, PrimitiveType, SubGeometryKind, Topology, Visibility,
 };
 
 use super::{Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, CadPart, Document};
 
 /// Free point on the active construction plane. The always-present, lowest-tier
 /// fallback so a plane-constrained operator always gets a position.
@@ -22,7 +23,7 @@ impl SnapProvider for ConstructionPlaneSnap {
         SnapFlags::CONSTRUCTION_PLANE
     }
 
-    fn collect(&self, input: &SnapInput, _scene: &Scene, _settings: &SnapSettings) -> Vec<Snap> {
+    fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
         if let Some((_, position)) = input.ray.intersect_plane(input.plane) {
             vec![Snap {
                 position,
@@ -44,7 +45,7 @@ impl SnapProvider for OriginSnap {
         SnapFlags::ORIGIN
     }
 
-    fn collect(&self, _input: &SnapInput, _scene: &Scene, _settings: &SnapSettings) -> Vec<Snap> {
+    fn collect(&self, _input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
          return vec![Snap {
             position: Point3::origin(),
             direction: None,
@@ -66,7 +67,7 @@ impl SnapProvider for WireStartSnap {
         SnapFlags::WIRE_START
     }
 
-    fn collect(&self, _input: &SnapInput, _scene: &Scene, _settings: &SnapSettings) -> Vec<Snap> {
+    fn collect(&self, _input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
         vec![Snap {
             position: self.start,
             direction: None,
@@ -84,7 +85,7 @@ impl SnapProvider for GridSnap {
         SnapFlags::GRID_AXIS | SnapFlags::GRID_GUIDE
     }
 
-    fn collect(&self, input: &SnapInput, _scene: &Scene, _settings: &SnapSettings) -> Vec<Snap> {
+    fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
         let (u, v) = input.plane.basis();
         let origin = input.plane.project_point(Point3::origin());
         let n = input.plane.normal.normalize();
@@ -127,7 +128,8 @@ impl SnapProvider for GridSnap {
 }
 
 /// Snaps to existing geometry: B-rep corners (vertices, [`SnapKind::Corner`]),
-/// points along edges/wires ([`SnapKind::Edge`]), and ray–surface hits on faces
+/// points along edges/wires ([`SnapKind::Edge`]), edge midpoints from the
+/// part's B-rep ([`SnapKind::Midpoint`]), and ray–surface hits on faces
 /// ([`SnapKind::Face`]). All kinds share one scene walk, the expensive part,
 /// so they cost a single traversal.
 ///
@@ -139,11 +141,12 @@ pub(crate) struct GeometrySnap;
 
 impl SnapProvider for GeometrySnap {
     fn produces(&self) -> SnapFlags {
-        SnapFlags::CORNER | SnapFlags::EDGE | SnapFlags::FACE
+        SnapFlags::CORNER | SnapFlags::EDGE | SnapFlags::MIDPOINT | SnapFlags::FACE
     }
 
-    fn collect(&self, input: &SnapInput, scene: &Scene, settings: &SnapSettings) -> Vec<Snap> {
+    fn collect(&self, input: &SnapInput, document: &Document, settings: &SnapSettings) -> Vec<Snap> {
         let query = GeometrySnapQuery {
+            document,
             ray: input.ray,
             camera: input.camera,
             cursor: input.cursor,
@@ -155,10 +158,11 @@ impl SnapProvider for GeometrySnap {
             // still drops anything globally disabled afterwards.
             want_corners: input.requested.contains(SnapFlags::CORNER),
             want_edges: input.requested.contains(SnapFlags::EDGE),
+            want_midpoints: input.requested.contains(SnapFlags::MIDPOINT),
             want_faces: input.requested.contains(SnapFlags::FACE),
         };
 
-        let mut snaps = pick_all(&query, scene);
+        let mut snaps = pick_all(&query, document.scene());
 
         // Every face hit lies on the cursor ray, so screen-space ranking cannot
         // tie-break between overlapping shapes: keep only the hit nearest along
@@ -195,6 +199,8 @@ impl SnapProvider for GeometrySnap {
 /// in local space and transforms results back to world.
 #[derive(Clone, Copy)]
 struct GeometrySnapQuery<'a> {
+    /// The parts whose B-rep refines snaps onto their meshes.
+    document: &'a Document,
     /// Cursor ray: world space at broad phase, local space after [`Self::transform`].
     ray: Ray,
     camera: &'a PositionedCamera,
@@ -207,6 +213,7 @@ struct GeometrySnapQuery<'a> {
     exclude_nodes: &'a [NodeId],
     want_corners: bool,
     want_edges: bool,
+    want_midpoints: bool,
     want_faces: bool,
 }
 
@@ -303,7 +310,7 @@ impl PickQuery for GeometrySnapQuery<'_> {
             }
         }
 
-        if !self.want_faces && !self.want_edges {
+        if !self.want_faces && !self.want_edges && !self.want_midpoints {
             return;
         }
         // Both narrow phases run in this mesh's local space (the ray is already
@@ -336,11 +343,21 @@ impl PickQuery for GeometrySnapQuery<'_> {
             }
         }
 
-        if self.want_edges {
+        if self.want_edges || self.want_midpoints {
             // Bounded by the pixel tolerance: any segment farther from the ray
             // can never rank, and the index skips subtrees outside the bound.
+            // An edge's midpoint lies on (or within tessellation deflection of)
+            // one of its segments, so the same bound finds every edge whose
+            // midpoint could rank.
             let local_tolerance = self.local_edge_tolerance(mesh, world_transform);
+            let mut near_edges = Vec::new();
             index.for_each_segment_within(mesh, &self.ray, local_tolerance, |i, approach| {
+                if self.want_midpoints {
+                    near_edges.extend(mesh.sub_geometry_for_primitive(SubGeometryKind::Edge, i as u32));
+                }
+                if !self.want_edges {
+                    return;
+                }
                 let Some([v0, v1]) = mesh.segment(i) else { return };
                 let w0 = transform_point(world_transform, array_to_point3(v0.position));
                 let w1 = transform_point(world_transform, array_to_point3(v1.position));
@@ -350,7 +367,37 @@ impl PickQuery for GeometrySnapQuery<'_> {
                     kind: SnapKind::Edge,
                 });
             });
+
+            if let Some(part) = self.document.part_at(node.id) {
+                near_edges.sort_unstable();
+                near_edges.dedup();
+                collect_edge_midpoints(part, &near_edges, world_transform, results);
+            }
         }
+    }
+}
+
+/// Pushes the midpoint of each of `part`'s `edges` (element indices) into `out`,
+/// taken on the B-rep curve and lifted to world space by `world`, with the
+/// curve's tangent there.
+fn collect_edge_midpoints(part: &CadPart, edges: &[u32], world: &Matrix4, out: &mut Vec<Snap>) {
+    // The mesh is the B-rep scaled at tessellation.
+    let scale = part.options().scale_factor;
+    for &index in edges {
+        let midpoint = part.elements().edge(index as usize).and_then(|edge| edge.curve().length_midpoint());
+        let (middle, tangent) = match midpoint {
+            Ok(midpoint) => midpoint,
+            Err(e) => {
+                log::debug!("No midpoint snap on edge {index} of {}: {e}", part.name);
+                continue;
+            }
+        };
+        let tangent = (world * dvec3_to_vec3(tangent).extend(0.0)).truncate();
+        out.push(Snap {
+            position: transform_point(world, dvec3_to_point3(middle * scale)),
+            direction: Some(tangent.normalize()),
+            kind: SnapKind::Midpoint,
+        });
     }
 }
 
@@ -425,12 +472,15 @@ fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4, out: 
 mod tests {
     use super::*;
     use duck_engine_viewer::common::{Plane, Ray, Transform, Vector3};
-    use duck_engine_viewer::scene::{PositionedCamera, Projection};
+    use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
     use duck_engine_viewer::scene::resource::{
         Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SubMeshRange, Topology, Vertex,
     };
+    use glam::DVec3;
+    use opencascade::primitives::Shape;
 
     use crate::grid::GridConfig;
+    use crate::testing::{doc_with_box, doc_with_shape};
 
     const EPSILON: Real = 1e-3;
 
@@ -485,7 +535,7 @@ mod tests {
         let ray = Ray::new(Point3::new(5.2, 10.0, -3.1), Vector3::new(0.0, -1.0, 0.0));
         let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
 
-        let snaps = GridSnap.collect(&inp, &Scene::default(), &SnapSettings::default());
+        let snaps = GridSnap.collect(&inp, &Document::new(Scene::default()), &SnapSettings::default());
 
         let guide = snaps
             .iter()
@@ -505,7 +555,7 @@ mod tests {
         let ray = Ray::new(Point3::new(7.0, 10.0, -1.5), Vector3::new(0.0, -1.0, 0.0));
         let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
 
-        let snaps = GridSnap.collect(&inp, &Scene::default(), &SnapSettings::default());
+        let snaps = GridSnap.collect(&inp, &Document::new(Scene::default()), &SnapSettings::default());
 
         // Three principal axes (U, V, N) should each yield a candidate.
         let axes: Vec<_> = snaps.iter().filter(|s| s.kind == SnapKind::GridAxis).collect();
@@ -528,7 +578,7 @@ mod tests {
         let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
 
         let start = Point3::new(2.0, 0.0, -3.0);
-        let snaps = WireStartSnap { start }.collect(&inp, &Scene::default(), &SnapSettings::default());
+        let snaps = WireStartSnap { start }.collect(&inp, &Document::new(Scene::default()), &SnapSettings::default());
 
         assert_eq!(snaps.len(), 1);
         assert_eq!(snaps[0].kind, SnapKind::WireStart);
@@ -550,7 +600,8 @@ mod tests {
             }],
         );
 
-        let scene = Scene::default();
+        let document = Document::new(Scene::default());
+        let scene = document.scene();
         let mesh_id = scene.add_mesh(mesh);
         scene
             .add_instance_node(
@@ -570,7 +621,7 @@ mod tests {
         let ray = Ray::new(Point3::new(3.0, 10.0, 2.0), Vector3::new(0.0, -1.0, 0.0));
         let inp = input_with_ray(ray, screen_of(&cam, hit), &cam, &plane, &grid);
 
-        let snaps = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
 
         let edge = snaps
             .iter()
@@ -648,9 +699,9 @@ mod tests {
     #[test]
     fn face_snaps_to_ray_hit_in_world_space() {
         // A triangle in the local XZ plane, on a node translated +2 in Z.
-        let scene = Scene::default();
+        let document = Document::new(Scene::default());
         add_triangle_node(
-            &scene,
+            document.scene(),
             [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 0.0, 10.0]],
             [[0.0, 1.0, 0.0]; 3],
             Vector3::new(0.0, 0.0, 2.0),
@@ -664,7 +715,7 @@ mod tests {
         let ray = Ray::new(Point3::new(3.0, 10.0, 4.0), Vector3::new(0.0, -1.0, 0.0));
         let inp = input_with_ray(ray, screen_of(&cam, hit), &cam, &plane, &grid);
 
-        let snaps = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
 
         let face = snaps
             .iter()
@@ -679,11 +730,11 @@ mod tests {
     fn face_snap_keeps_only_nearest_hit_along_ray() {
         // Two overlapping triangles: one at y=0, one at y=2. A downward ray from
         // y=10 sees the y=2 face first.
-        let mut scene = Scene::default();
+        let document = Document::new(Scene::default());
         let positions = [[-10.0, 0.0, -10.0], [10.0, 0.0, -10.0], [0.0, 0.0, 10.0]];
         let normals = [[0.0, 1.0, 0.0]; 3];
-        add_triangle_node(&mut scene, positions, normals, Vector3::new(0.0, 0.0, 0.0));
-        add_triangle_node(&mut scene, positions, normals, Vector3::new(0.0, 2.0, 0.0));
+        add_triangle_node(document.scene(), positions, normals, Vector3::new(0.0, 0.0, 0.0));
+        add_triangle_node(document.scene(), positions, normals, Vector3::new(0.0, 2.0, 0.0));
 
         let cam = dummy_camera();
         let plane = Plane::xz();
@@ -691,7 +742,7 @@ mod tests {
         let ray = Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
         let inp = input_with_ray(ray, screen_of(&cam, Point3::origin()), &cam, &plane, &grid);
 
-        let snaps = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
 
         let faces: Vec<_> = snaps.iter().filter(|s| s.kind == SnapKind::Face).collect();
         assert_eq!(faces.len(), 1, "only the nearest face hit survives");
@@ -702,9 +753,9 @@ mod tests {
     fn face_snap_interpolates_vertex_normals() {
         // Distinct vertex normals; the hit at local (2, 0, 2) has barycentric
         // weights (w, u, v) = (0.6, 0.2, 0.2), so the blend is (0.2, 0.6, 0.2).
-        let mut scene = Scene::default();
+        let document = Document::new(Scene::default());
         add_triangle_node(
-            &mut scene,
+            document.scene(),
             [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 0.0, 10.0]],
             [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
             Vector3::new(0.0, 0.0, 0.0),
@@ -717,7 +768,7 @@ mod tests {
         let ray = Ray::new(Point3::new(2.0, 10.0, 2.0), Vector3::new(0.0, -1.0, 0.0));
         let inp = input_with_ray(ray, screen_of(&cam, hit), &cam, &plane, &grid);
 
-        let snaps = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
 
         let face = snaps
             .iter()
@@ -728,9 +779,10 @@ mod tests {
         assert!((normal - expected).magnitude() < EPSILON, "{normal:?}");
     }
 
-    /// One identity-placed part: a straight edge (0,0,0)→(10,0,0) with B-rep
-    /// topology, so it yields both corner and edge snaps. Returns its node id.
-    fn scene_with_edge() -> (Scene, NodeId) {
+    /// One identity-placed mesh, not a part: a straight edge (0,0,0)→(10,0,0)
+    /// with B-rep topology, so it yields both corner and edge snaps. Returns its
+    /// node id.
+    fn scene_with_edge() -> (Document, NodeId) {
         let mut mesh = Mesh::from_raw(
             vec![
                 Vertex { position: [0.0, 0.0, 0.0], tex_coords: [0.0; 3], normal: [0.0; 3] },
@@ -746,9 +798,10 @@ mod tests {
             edge_ranges: vec![SubMeshRange { start: 0, count: 1 }],
             pointset_ranges: vec![],
         });
-        let scene = Scene::default();
-        let mesh_id = scene.add_mesh(mesh);
-        let node = scene
+        let document = Document::new(Scene::default());
+        let mesh_id = document.scene().add_mesh(mesh);
+        let node = document
+            .scene()
             .add_instance_node(
                 None,
                 Instance::new(mesh_id),
@@ -758,12 +811,12 @@ mod tests {
             )
             .expect("instance node");
         let node = node.id();
-        (scene, node)
+        (document, node)
     }
 
     #[test]
     fn far_cursor_culls_the_node() {
-        let (scene, _node) = scene_with_edge();
+        let (document, _node) = scene_with_edge();
         let cam = dummy_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
@@ -772,14 +825,16 @@ mod tests {
         let ray = Ray::new(Point3::new(5.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
         let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
 
-        let snaps = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
         assert!(snaps.is_empty(), "far cursor should cull the node: {snaps:?}");
     }
 
     #[test]
     fn might_intersect_bounds_tests_screen_proximity() {
         let cam = dummy_camera();
+        let document = Document::new(Scene::default());
         let query = GeometrySnapQuery {
+            document: &document,
             ray: Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0)),
             camera: &cam,
             cursor: screen_of(&cam, Point3::origin()),
@@ -789,6 +844,7 @@ mod tests {
             exclude_nodes: &[],
             want_corners: true,
             want_edges: true,
+            want_midpoints: true,
             want_faces: true,
         };
 
@@ -803,7 +859,7 @@ mod tests {
 
     #[test]
     fn requested_flags_gate_which_kinds_are_produced() {
-        let (scene, _node) = scene_with_edge();
+        let (document, _node) = scene_with_edge();
         let cam = dummy_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
@@ -812,19 +868,19 @@ mod tests {
         let mut inp = input_with_ray(ray, screen_of(&cam, mid), &cam, &plane, &grid);
 
         inp.requested = SnapFlags::CORNER;
-        let corners = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+        let corners = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
         assert!(!corners.is_empty());
         assert!(corners.iter().all(|s| s.kind == SnapKind::Corner));
 
         inp.requested = SnapFlags::EDGE;
-        let edges = GeometrySnap.collect(&inp, &scene, &SnapSettings::default());
+        let edges = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
         assert!(!edges.is_empty());
         assert!(edges.iter().all(|s| s.kind == SnapKind::Edge));
     }
 
     #[test]
     fn excluded_and_invisible_nodes_yield_no_snaps() {
-        let (scene, node) = scene_with_edge();
+        let (document, node) = scene_with_edge();
         let cam = dummy_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
@@ -834,17 +890,84 @@ mod tests {
 
         // Baseline: visible, not excluded → snaps present.
         let base = input_with_ray(ray, cursor, &cam, &plane, &grid);
-        assert!(!GeometrySnap.collect(&base, &scene, &SnapSettings::default()).is_empty());
+        assert!(!GeometrySnap.collect(&base, &document, &SnapSettings::default()).is_empty());
 
         // Excluded node → nothing.
         let excluded = [node];
         let mut inp = input_with_ray(ray, cursor, &cam, &plane, &grid);
         inp.exclude_nodes = &excluded;
-        assert!(GeometrySnap.collect(&inp, &scene, &SnapSettings::default()).is_empty());
+        assert!(GeometrySnap.collect(&inp, &document, &SnapSettings::default()).is_empty());
 
         // Invisible node → nothing (per-node visibility check in the narrow phase).
-        scene.set_node_visibility(node, Visibility::Invisible);
+        document.scene().set_node_visibility(node, Visibility::Invisible);
         let inp = input_with_ray(ray, cursor, &cam, &plane, &grid);
-        assert!(GeometrySnap.collect(&inp, &scene, &SnapSettings::default()).is_empty());
+        assert!(GeometrySnap.collect(&inp, &document, &SnapSettings::default()).is_empty());
+    }
+
+    #[test]
+    fn midpoint_snaps_to_the_middle_of_a_part_edge() {
+        // A 2-unit box centred on the origin; the ray drops onto its top edge
+        // x = 1, y = 1, off that edge's middle.
+        let (document, _node) = doc_with_box();
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let on_edge = Point3::new(1.0, 1.0, 0.5);
+        let ray = Ray::new(Point3::new(1.0, 10.0, 0.5), Vector3::new(0.0, -1.0, 0.0));
+        let mut inp = input_with_ray(ray, screen_of(&cam, on_edge), &cam, &plane, &grid);
+        inp.requested = SnapFlags::MIDPOINT;
+
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
+
+        assert!(snaps.iter().all(|s| s.kind == SnapKind::Midpoint), "{snaps:?}");
+        let midpoint = snaps
+            .iter()
+            .find(|s| close(s.position, Point3::new(1.0, 1.0, 0.0)))
+            .expect("expected the top edge's midpoint");
+        // Direction is the edge tangent (±Z).
+        assert!(midpoint.direction.map_or(false, |d| d.z.abs() > 0.9), "{:?}", midpoint.direction);
+    }
+
+    /// A chord of the tessellated rim sags inside the circle; the B-rep midpoint
+    /// lies on it.
+    #[test]
+    fn midpoint_lies_on_a_curved_edge() {
+        const ON_CURVE: Real = 1e-6;
+        // A radius-2 cylinder standing on the XZ plane; the ray drops onto both
+        // rims at x = 2.
+        let (document, _node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 2.0, DVec3::Y, 1.0));
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let on_rim = Point3::new(2.0, 1.0, 0.0);
+        let ray = Ray::new(Point3::new(2.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
+        let mut inp = input_with_ray(ray, screen_of(&cam, on_rim), &cam, &plane, &grid);
+        inp.requested = SnapFlags::MIDPOINT;
+
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
+
+        assert!(!snaps.is_empty(), "expected the rims' midpoints");
+        for snap in &snaps {
+            let radial = Vector3::new(snap.position.x, 0.0, snap.position.z);
+            assert!((radial.magnitude() - 2.0).abs() < ON_CURVE, "off the rim: {:?}", snap.position);
+            let tangent = snap.direction.expect("a midpoint carries the curve tangent");
+            assert!(tangent.y.abs() < ON_CURVE && tangent.dot(radial).abs() < ON_CURVE, "{tangent:?}");
+        }
+    }
+
+    #[test]
+    fn meshes_that_are_not_parts_have_no_midpoints() {
+        let (document, _node) = scene_with_edge();
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let mid = Point3::new(5.0, 0.0, 0.0);
+        let ray = Ray::new(Point3::new(5.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
+        let inp = input_with_ray(ray, screen_of(&cam, mid), &cam, &plane, &grid);
+
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
+
+        assert!(snaps.iter().any(|s| s.kind == SnapKind::Edge), "{snaps:?}");
+        assert!(snaps.iter().all(|s| s.kind != SnapKind::Midpoint), "{snaps:?}");
     }
 }

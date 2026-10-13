@@ -182,7 +182,8 @@ impl Workspace {
             requested: SnapFlags::all(),
             exclude_nodes: exclude,
         };
-        construction.snap.snap(&input, &ctx.scene, extra)
+        let document = self.document.lock().unwrap();
+        construction.snap.snap(&input, &document, extra)
     }
 }
 

@@ -5,8 +5,8 @@
 //! # Design
 //!
 //! A provider is a pure strategy: given a [`SnapInput`] (the cursor ray plus the
-//! active construction context) and the [`Scene`], it proposes candidate
-//! [`Snap`]s. The [`SnapEngine`] runs every enabled/requested provider, then
+//! active construction context) and the [`Document`] (its scene, and the B-rep
+//! behind each part), it proposes candidate [`Snap`]s. The [`SnapEngine`] runs every enabled/requested provider, then
 //! **ranks** the candidates by *tier first, then screen-space distance to the
 //! cursor*, returning the single best [`Snap`].
 //!
@@ -30,9 +30,10 @@ pub(crate) use providers::WireStartSnap;
 use bitflags::bitflags;
 
 use duck_engine_viewer::common::{InnerSpace, Plane, Point3, Ray, Vector3};
-use duck_engine_viewer::scene::{PositionedCamera, Scene};
+use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::scene::resource::NodeId;
 
+use crate::document::Document;
 use crate::grid::GridConfig;
 
 /// What a single snap locks onto. Maps to a ranking [`SnapTier`] and a
@@ -51,6 +52,8 @@ pub enum SnapKind {
     Corner,
     /// A point on an existing geometry edge/wire (smooth closest-point snap).
     Edge,
+    /// The point halfway along an existing geometry edge, from its B-rep curve.
+    Midpoint,
     /// A point on an existing geometry face (ray–surface hit under the cursor).
     Face,
     /// The start point of an in-progress wire, offered so the path can be
@@ -67,7 +70,7 @@ impl SnapKind {
             GridAxis => SnapTier::Axis,
             Face => SnapTier::Face,
             Edge => SnapTier::Edge,
-            Origin | Corner | WireStart => SnapTier::Feature,
+            Origin | Corner | Midpoint | WireStart => SnapTier::Feature,
         }
     }
 
@@ -80,6 +83,7 @@ impl SnapKind {
             GridAxis => SnapFlags::GRID_AXIS,
             Corner => SnapFlags::CORNER,
             Edge => SnapFlags::EDGE,
+            Midpoint => SnapFlags::MIDPOINT,
             Face => SnapFlags::FACE,
             WireStart => SnapFlags::WIRE_START,
         }
@@ -125,6 +129,7 @@ bitflags! {
         const EDGE               = 1 << 5;
         const WIRE_START         = 1 << 6;
         const FACE               = 1 << 7;
+        const MIDPOINT           = 1 << 8;
     }
 }
 
@@ -174,7 +179,7 @@ pub trait SnapProvider {
     fn produces(&self) -> SnapFlags;
 
     /// Candidate snaps found for `input`.
-    fn collect(&self, input: &SnapInput, scene: &Scene, settings: &SnapSettings) -> Vec<Snap>;
+    fn collect(&self, input: &SnapInput, document: &Document, settings: &SnapSettings) -> Vec<Snap>;
 }
 
 /// User-facing snap configuration.
@@ -216,7 +221,8 @@ impl Default for SnapEngine {
 
 impl SnapEngine {
     /// An engine pre-populated with the built-in providers: construction plane,
-    /// origin, grid (axes + guides), geometry corners, and geometry edges.
+    /// origin, grid (axes + guides), and geometry corners, edges, midpoints and
+    /// faces.
     pub fn with_defaults() -> Self {
         let mut engine = Self {
             providers: Vec::new(),
@@ -240,7 +246,7 @@ impl SnapEngine {
     pub fn snap(
         &self,
         input: &SnapInput,
-        scene: &Scene,
+        document: &Document,
         extra: &[&dyn SnapProvider],
     ) -> Option<Snap> {
         // Effective kinds = requested ∩ enabled, but the construction-plane
@@ -256,7 +262,7 @@ impl SnapEngine {
         let builtin = self.providers.iter().map(|p| p.as_ref());
         for provider in builtin.chain(extra.iter().copied()) {
             if provider.produces().intersects(active) {
-                let provider_candidates = provider.collect(input, &scene, &self.settings);
+                let provider_candidates = provider.collect(input, document, &self.settings);
                 candidates.extend(provider_candidates);
             }
         }
@@ -310,7 +316,8 @@ impl SnapEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_viewer::scene::Projection;
+    use duck_engine_viewer::common::Real;
+    use duck_engine_viewer::scene::{Projection, Scene};
 
     /// A camera looking down −Z from (0, 0, 10) at the origin, 800×600 viewport.
     fn test_camera() -> PositionedCamera {
@@ -347,6 +354,18 @@ mod tests {
         (s.x as f32, s.y as f32)
     }
 
+    /// A camera looking straight down −Y from (0, 10, 0), so cursor rays meet
+    /// the XZ plane.
+    fn top_down_camera() -> PositionedCamera {
+        PositionedCamera {
+            eye: Point3::new(0.0, 10.0, 0.0),
+            target: Point3::new(0.0, 0.0, 0.0),
+            up: Vector3::new(0.0, 0.0, -1.0),
+            aspect: 800.0 / 600.0,
+            projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 1000.0 },
+        }
+    }
+
     fn bare_engine() -> SnapEngine {
         SnapEngine {
             providers: Vec::new(),
@@ -372,6 +391,7 @@ mod tests {
             SnapKind::GridAxis,
             SnapKind::Corner,
             SnapKind::Edge,
+            SnapKind::Midpoint,
             SnapKind::Face,
         ] {
             assert!(SnapFlags::all().contains(kind.flag()));
@@ -441,25 +461,38 @@ mod tests {
     fn disabled_engine_returns_only_fallback() {
         // A top-down camera, so the cursor ray actually meets the XZ plane — the
         // default test camera looks parallel to it.
-        let cam = PositionedCamera {
-            eye: Point3::new(0.0, 10.0, 0.0),
-            target: Point3::new(0.0, 0.0, 0.0),
-            up: Vector3::new(0.0, 0.0, -1.0),
-            aspect: 800.0 / 600.0,
-            projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 1000.0 },
-        };
+        let cam = top_down_camera();
         let mut engine = SnapEngine::with_defaults();
         engine.settings.enabled = false;
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let scene = Scene::default();
+        let document = Document::new(Scene::default());
         // Aim straight at the origin; with snapping on this would be Origin, but
         // disabled it must fall through to the construction plane.
         let cursor = screen_of(&cam, Point3::new(0.0, 0.0, 0.0));
         let inp = input(&cam, &plane, &grid, cursor);
         assert_eq!(
-            engine.snap(&inp, &scene, &[]).unwrap().kind,
+            engine.snap(&inp, &document, &[]).unwrap().kind,
             SnapKind::ConstructionPlane
         );
+    }
+
+    #[test]
+    fn midpoint_beats_the_edge_it_lies_on() {
+        const EPSILON: Real = 1e-6;
+        // Looking down on a 2-unit box centred on the origin, with the cursor
+        // just off the middle of its top edge x = 1, y = 1.
+        let cam = top_down_camera();
+        let engine = SnapEngine::with_defaults();
+        let (document, _node) = crate::testing::doc_with_box();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let cursor = screen_of(&cam, Point3::new(1.0, 1.0, 0.05));
+        let inp = input(&cam, &plane, &grid, cursor);
+
+        let snap = engine.snap(&inp, &document, &[]).unwrap();
+
+        assert_eq!(snap.kind, SnapKind::Midpoint);
+        assert!((snap.position - Point3::new(1.0, 1.0, 0.0)).magnitude() < EPSILON, "{:?}", snap.position);
     }
 }
