@@ -1140,6 +1140,38 @@ mod tests {
         assert!(!draw_data.has_highlights() || !draw_data.highlighted_batches().is_empty());
     }
 
+    /// An outlined node with no faces keeps its line batch in the highlighted
+    /// batches, which is what the outline mask draws it from.
+    #[test]
+    fn test_outlined_line_only_node_highlights_its_lines() {
+        use crate::scene::resource::{LineMaterial, Mesh, MeshPrimitive, Vertex};
+
+        let vertex = Vertex {
+            position: [0.0, 0.0, 0.0],
+            tex_coords: [0.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let mesh = Mesh::from_raw(
+            vec![vertex, vertex],
+            vec![MeshPrimitive { primitive_type: PrimitiveType::LineList, indices: vec![0, 1] }],
+        );
+
+        let mut scene = SceneData::new();
+        let mesh_id = scene.add_mesh(mesh);
+        let material_id = scene.add_line_material(LineMaterial::new(common::RgbaColor::BLACK));
+        let node_id = scene
+            .add_instance_node(None, Instance::new(mesh_id).with_line_material(material_id), None, common::Transform::IDENTITY, NodeFlags::NONE)
+            .unwrap()
+            .id();
+
+        let highlight = MockHighlight { highlighted_nodes: vec![node_id] };
+        let draw_data = DrawData::new(&scene, &test_camera(), (256, 256), Some(&highlight));
+
+        assert!(draw_data.has_node_highlights());
+        let kinds: Vec<_> = draw_data.highlighted_batches().iter().map(|b| b.primitive_type).collect();
+        assert_eq!(kinds, vec![PrimitiveType::LineList]);
+    }
+
     /// Two instance nodes share the same mesh + material but differ in render
     /// layer; the overlay partition must split them per instance.
     #[test]

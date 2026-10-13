@@ -41,48 +41,28 @@ pub struct OutlineUniform {
     pub params: [f32; 4],
 }
 
-/// True when at least one tier has triangle geometry to mask. Both passes skip
-/// themselves together on this, so the composite never reads a stale mask.
-fn has_maskable_geometry(frame: &SceneFrame<'_>) -> bool {
-    frame
-        .draw
-        .highlighted_batches()
-        .iter()
-        .chain(frame.draw.secondary_highlighted_batches())
-        .any(|b| b.primitive_type == PrimitiveType::TriangleList)
-}
-
-/// Creates a pipeline that renders highlighted geometry into one channel of the
-/// mask texture. `write_mask` selects the tier's channel.
+/// Creates a pipeline that renders highlighted geometry of one topology into
+/// one channel of the mask texture. `write_mask` selects the tier's channel.
 fn build_mask_pipeline(
-    builder: &mut PassBuilder<'_>,
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
     write_mask: wgpu::ColorWrites,
+    topology: wgpu::PrimitiveTopology,
     label: &str,
 ) -> wgpu::RenderPipeline {
-    let sample_count = builder.sample_count();
-    let pipeline_layout = builder.device().create_pipeline_layout(
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("Outline Mask Pipeline Layout"),
-            bind_group_layouts: &[&builder.layouts().camera],
-            push_constant_ranges: &[],
-        },
-    );
-    let (shaders, device) = builder.shaders();
-    let shader = shaders
-        .generate_outline_mask_shader(device)
-        .expect("Failed to generate outline mask shader");
-
-    builder.device().create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
-        layout: Some(&pipeline_layout),
+        layout: Some(layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_mask"),
             buffers: &[vertex_buffer_layout(), instance_buffer_layout()],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_mask"),
             targets: &[Some(wgpu::ColorTargetState {
                 format: MASK_CHANNELS.format(),
@@ -92,7 +72,7 @@ fn build_mask_pipeline(
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
+            topology,
             // Deliberately unculled: double-sided materials draw their back faces
             // in the scene pass, and culling here would leave an open/sheet body
             // viewed from behind with an empty mask and no outline.
@@ -116,54 +96,94 @@ fn build_mask_pipeline(
     })
 }
 
-/// Renders highlighted triangle geometry into the two channels of the
-/// [`aux::OUTLINE_MASK`](super::aux::OUTLINE_MASK) attachment (red = primary
-/// tier, green = secondary), depth-tested against the scene depth buffer so
-/// occluded geometry is not outlined.
+/// One tier's mask pipelines, one per primitive kind, all writing the tier's
+/// channel.
+struct TierPipelines {
+    triangles: wgpu::RenderPipeline,
+    lines: wgpu::RenderPipeline,
+    points: wgpu::RenderPipeline,
+}
+
+impl TierPipelines {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        sample_count: u32,
+        write_mask: wgpu::ColorWrites,
+        tier: &str,
+    ) -> Self {
+        let make = |topology, kind: &str| {
+            let label = format!("Outline Mask {kind} Pipeline ({tier})");
+            build_mask_pipeline(device, layout, shader, sample_count, write_mask, topology, &label)
+        };
+        Self {
+            triangles: make(wgpu::PrimitiveTopology::TriangleList, "Triangle"),
+            lines: make(wgpu::PrimitiveTopology::LineList, "Line"),
+            points: make(wgpu::PrimitiveTopology::PointList, "Point"),
+        }
+    }
+
+    fn get(&self, primitive_type: PrimitiveType) -> &wgpu::RenderPipeline {
+        match primitive_type {
+            PrimitiveType::TriangleList => &self.triangles,
+            PrimitiveType::LineList => &self.lines,
+            PrimitiveType::PointList => &self.points,
+        }
+    }
+}
+
+/// Renders highlighted geometry — faces, lines and points — into the two
+/// channels of the [`aux::OUTLINE_MASK`](super::aux::OUTLINE_MASK) attachment
+/// (red = primary tier, green = secondary), depth-tested against the scene
+/// depth buffer so occluded geometry is not outlined. A node without faces,
+/// such as a wire, is thereby outlined as a stroke along its lines.
 ///
 /// Belongs between the face and line geometry passes: the mask must depth-test
 /// against faces only, since lines write unbiased depth that would punch holes
 /// in it.
 pub struct OutlineMaskPass {
-    primary_pipeline: wgpu::RenderPipeline,
-    secondary_pipeline: wgpu::RenderPipeline,
+    primary: TierPipelines,
+    secondary: TierPipelines,
 }
 
 impl OutlineMaskPass {
     #[must_use]
     pub fn new(builder: &mut PassBuilder<'_>) -> Self {
+        let sample_count = builder.sample_count();
+        let pipeline_layout = builder.device().create_pipeline_layout(
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("Outline Mask Pipeline Layout"),
+                bind_group_layouts: &[&builder.layouts().camera],
+                push_constant_ranges: &[],
+            },
+        );
+        let (shaders, device) = builder.shaders();
+        let shader = shaders
+            .generate_outline_mask_shader(device)
+            .expect("Failed to generate outline mask shader");
+
+        let tier = |write_mask, name| {
+            TierPipelines::new(device, &pipeline_layout, &shader, sample_count, write_mask, name)
+        };
         Self {
-            primary_pipeline: build_mask_pipeline(
-                builder,
-                wgpu::ColorWrites::RED,
-                "Outline Mask Pipeline (primary)",
-            ),
-            secondary_pipeline: build_mask_pipeline(
-                builder,
-                wgpu::ColorWrites::GREEN,
-                "Outline Mask Pipeline (secondary)",
-            ),
+            primary: tier(wgpu::ColorWrites::RED, "primary"),
+            secondary: tier(wgpu::ColorWrites::GREEN, "secondary"),
         }
     }
 }
 
-/// Draws one tier's highlighted triangles through `pipeline`.
+/// Draws one tier's highlighted batches, each through the pipeline for its
+/// primitive kind.
 fn draw_tier(
     gpu: &Gpu,
     rp: &mut wgpu::RenderPass<'_>,
     frame: &SceneFrame<'_>,
-    pipeline: &wgpu::RenderPipeline,
+    pipelines: &TierPipelines,
     batches: &[DrawBatch],
 ) {
-    let mut bound = false;
     for batch in batches {
-        if batch.primitive_type != PrimitiveType::TriangleList {
-            continue;
-        }
-        if !bound {
-            rp.set_pipeline(pipeline);
-            bound = true;
-        }
+        rp.set_pipeline(pipelines.get(batch.primitive_type));
         frame.draw_batch(gpu, rp, batch);
     }
 }
@@ -174,7 +194,7 @@ impl Pass<SceneFrames> for OutlineMaskPass {
     }
 
     fn is_active(&self, frame: &SceneFrame<'_>) -> bool {
-        has_maskable_geometry(frame)
+        frame.draw.has_node_highlights()
     }
 
     fn execute(
@@ -224,7 +244,7 @@ impl Pass<SceneFrames> for OutlineMaskPass {
                 gpu,
                 &mut rp,
                 frame,
-                &self.primary_pipeline,
+                &self.primary,
                 frame.draw.highlighted_batches(),
             );
         }
@@ -233,7 +253,7 @@ impl Pass<SceneFrames> for OutlineMaskPass {
                 gpu,
                 &mut rp,
                 frame,
-                &self.secondary_pipeline,
+                &self.secondary,
                 frame.draw.secondary_highlighted_batches(),
             );
         }
@@ -390,7 +410,8 @@ impl Pass<SceneFrames> for OutlineCompositePass {
     }
 
     fn is_active(&self, frame: &SceneFrame<'_>) -> bool {
-        has_maskable_geometry(frame)
+        // The mask pass's condition too, so the composite never reads a stale mask.
+        frame.draw.has_node_highlights()
     }
 
     fn resize(&mut self, _gpu: &Gpu, _targets: &FrameTargets) {
