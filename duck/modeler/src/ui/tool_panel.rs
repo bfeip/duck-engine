@@ -25,8 +25,11 @@ impl ToolPanel {
         };
 
         let mut panel = PanelContext { selection };
+        // The panels are already drawn, so this is the 3D viewport's rect.
+        let viewport = ctx.available_rect();
         egui::Window::new(title)
-            .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+            .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0])
+            .constrain_to(viewport)
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| tool.panel_ui(ui, &mut panel));

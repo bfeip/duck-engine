@@ -306,12 +306,20 @@ impl<'a> ViewerState<'a> {
         }
     }
 
-    /// Whether the latest cursor position sits inside the 3D viewport rect.
+    /// Whether the latest cursor position sits inside the 3D viewport rect and
+    /// no egui window or popup covers it.
     fn cursor_in_viewport(&self) -> bool {
-        match (self.viewport_rect, self.last_cursor) {
-            (Some(rect), Some((x, y))) => rect.contains(egui::pos2(x, y)),
-            _ => false,
-        }
+        let (Some(rect), Some((x, y))) = (self.viewport_rect, self.last_cursor) else {
+            return false;
+        };
+        let cursor = egui::pos2(x, y);
+        // Panels, the viewport's own included, are background layers; anything
+        // above them covers the viewport.
+        let covered = self
+            .egui_ctx
+            .layer_id_at(cursor / self.egui_ctx.pixels_per_point())
+            .is_some_and(|layer| layer.order != egui::Order::Background);
+        rect.contains(cursor) && !covered
     }
 
     /// Decide whether a converted event should be routed to the 3D viewer,
