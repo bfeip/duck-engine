@@ -5,11 +5,11 @@ use opencascade::primitives::Shape;
 
 use crate::ops::primitives::cylinder;
 use crate::snap::Snap;
-use crate::tools::ToolInfo;
+use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{dimension_field, grip_dimension, Params, MIN_DIMENSION};
 use super::primitive::{
-    flat, height_along, radius_to, seat, unit_disk, Next, Pointer, Primitive, PrimitiveTool, Track,
+    flat, height_along, radius_to, seat, unit_disk, Next, Primitive, PrimitiveTool, Track,
 };
 
 /// The cylinder's dimension grips.
@@ -161,7 +161,7 @@ mod tests {
     use duck_engine_common::InnerSpace;
 
     use crate::testing::skewed_plane;
-    use super::super::primitive::pointer_at;
+    use crate::testing::pointer_at;
 
     const EPSILON: Real = 1e-6;
 

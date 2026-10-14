@@ -29,7 +29,7 @@ use crate::ops::primitives::{circle, region};
 use crate::preview::PreviewSession;
 use crate::snap::Snap;
 use super::edit::{Edit, PanelAction, Params, MIN_DIMENSION};
-use super::{Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
+use super::{Gesture, ModelingTool, PanelContext, Pointer, ToolInfo, Workspace};
 
 /// A shape placed by picking points, run by [`PrimitiveTool`]. Implemented by
 /// the settings the panel and grips edit once it is placed.
@@ -57,14 +57,6 @@ pub trait Primitive: Params + 'static {
 
     /// The shape to add as a part.
     fn build(&self) -> Result<Shape>;
-}
-
-/// Where the cursor points: the snapped point under it, and the ray through
-/// it.
-#[derive(Clone, Copy, Debug)]
-pub struct Pointer {
-    pub snap: Option<Snap>,
-    pub ray: Ray,
 }
 
 /// What the pointer means at a stage.
@@ -231,10 +223,7 @@ impl<P: Primitive> PrimitiveTool<P> {
 
     /// What the cursor at `at` points at, looking through the preview.
     fn pointer(&self, at: (f32, f32), ctx: &EventContext) -> Pointer {
-        Pointer {
-            snap: self.workspace.snap(at, self.preview.preview_nodes(), ctx),
-            ray: ctx.camera.ray_from_screen_point(at.0, at.1, ctx.size.0, ctx.size.1),
-        }
+        self.workspace.pointer(at, self.preview.preview_nodes(), ctx)
     }
 }
 
@@ -362,18 +351,6 @@ pub(super) fn unit_disk() -> Result<Shape> {
     Ok(region(circle(Point3::new(0.0, 0.0, 0.0), Vector3::unit_z(), 1.0)?))
 }
 
-/// A pointer snapped to `at`, its ray passing level through it, for the
-/// primitives' tests.
-#[cfg(test)]
-pub(super) fn pointer_at(at: Point3) -> Pointer {
-    use crate::snap::SnapKind;
-
-    Pointer {
-        snap: Some(Snap { position: at, direction: None, kind: SnapKind::ConstructionPlane }),
-        ray: Ray::new(at + Vector3::unit_x() * 10.0, -Vector3::unit_x()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,7 +358,7 @@ mod tests {
     use duck_engine_scene::Scene;
 
     use crate::document::Document;
-    use crate::testing::{visibility, volumes, workspace};
+    use crate::testing::{pointer_at, visibility, volumes, workspace};
     use crate::tools::r#box::{BoxStage, BoxTool};
 
     fn origin() -> Point3 {

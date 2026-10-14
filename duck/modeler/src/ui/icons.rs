@@ -40,6 +40,7 @@ pub const DRAFT: Icon = icon!("draft.svg");
 pub const THICKEN: Icon = icon!("thicken.svg");
 pub const HOLLOW: Icon = icon!("hollow.svg");
 pub const LOFT: Icon = icon!("loft.svg");
+pub const REVOLVE: Icon = icon!("revolve.svg");
 pub const DUPLICATE: Icon = icon!("duplicate.svg");
 
 pub const KIND_SOLID: Icon = icon!("kind-solid.svg");

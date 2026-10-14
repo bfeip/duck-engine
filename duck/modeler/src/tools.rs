@@ -7,7 +7,9 @@
 //! Start from the family the tool belongs to:
 //!
 //! - It applies settings to what the selection picks: a `Feature`, run by
-//!   `FeatureTool` (`feature.rs`). See `fillet.rs`.
+//!   `FeatureTool` (`feature.rs`). See `fillet.rs`. One that also needs points
+//!   picked in the viewport, such as an axis, says so through
+//!   `Feature::picking`. See `revolve.rs`.
 //! - It places a new shape by picking points: a `Primitive`, run by
 //!   `PrimitiveTool` (`primitive.rs`). See `box.rs`.
 //! - It drags the selection with a gizmo: the viewer's `TransformDriver` over
@@ -22,7 +24,7 @@
 //! The blocks every family is built from:
 //!
 //! - [`Workspace`]: the document, construction settings and notices, and
-//!   snapping.
+//!   snapping, to a [`Pointer`].
 //! - [`Gesture`]: what an event means under the standard bindings.
 //! - `PreviewSession`: preview geometry, and the parts it hides meanwhile.
 //! - `edit.rs`: settings a panel and grips edit live, and the panel's parts.
@@ -58,6 +60,7 @@ mod manager;
 mod path;
 mod primitive;
 mod rectangle;
+mod revolve;
 mod sphere;
 mod targets;
 mod thicken;
@@ -76,6 +79,7 @@ pub use loft::LoftTool;
 pub use manager::{ToolId, ToolManager};
 pub use path::{PathKind, PathTool};
 pub use rectangle::RectangleTool;
+pub use revolve::RevolveTool;
 pub use sphere::SphereTool;
 pub use thicken::ThickenTool;
 pub use transform::TransformTool;
@@ -86,7 +90,7 @@ use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::NodeId;
-use duck_engine_viewer::common::Point3;
+use duck_engine_viewer::common::{Point3, Ray};
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
 use duck_engine_viewer::input::{ElementState, Key, Modifiers, MouseButton, NamedKey};
 use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionMode};
@@ -185,6 +189,23 @@ impl Workspace {
         let document = self.document.lock().unwrap();
         construction.snap.snap(&input, &document, extra)
     }
+
+    /// What the cursor at `cursor` points at, ignoring the `exclude` nodes for
+    /// snapping.
+    pub fn pointer(&self, cursor: (f32, f32), exclude: &[NodeId], ctx: &EventContext) -> Pointer {
+        Pointer {
+            snap: self.snap(cursor, exclude, ctx),
+            ray: ctx.camera.ray_from_screen_point(cursor.0, cursor.1, ctx.size.0, ctx.size.1),
+        }
+    }
+}
+
+/// Where the cursor points: the snapped point under it, and the ray through
+/// it.
+#[derive(Clone, Copy, Debug)]
+pub struct Pointer {
+    pub snap: Option<Snap>,
+    pub ray: Ray,
 }
 
 /// What an event means to a tool, under the modeler's standard bindings.

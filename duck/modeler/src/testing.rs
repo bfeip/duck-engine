@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::common::{InnerSpace, Plane, Point3, Vector3};
+use duck_engine_scene::common::{InnerSpace, Plane, Point3, Ray, Vector3};
 use duck_engine_scene::resource::{NodeId, SubGeometryElement, SubGeometryKind, Visibility};
 use duck_engine_scene::Scene;
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, NamedKey, PhysicalKey};
@@ -18,7 +18,8 @@ use crate::construction::ConstructionOptions;
 use crate::document::{unify_same_domain, unwrap_single_solid, Document, PartId, SourceFate};
 use crate::notifications::Notifications;
 use crate::ops::loft::LoftProfile;
-use crate::tools::Workspace;
+use crate::snap::{Snap, SnapKind};
+use crate::tools::{Pointer, Workspace};
 
 /// A document holding `shape` as a part named "part", and the part's node.
 pub fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
@@ -98,6 +99,13 @@ pub fn doc_with_two_squares() -> (Document, [LoftProfile; 2]) {
     };
     let profiles = [square("lower", 0.0), square("upper", 2.0)];
     (doc, profiles)
+}
+
+/// A flat region through `corners`, in the XY plane.
+pub fn xy_region(corners: &[(f64, f64)]) -> Shape {
+    let outline = Wire::from_ordered_points(corners.iter().map(|&(x, y)| DVec3::new(x, y, 0.0)))
+        .expect("outline builds");
+    Face::from_wire(&outline).expect("region builds").into()
 }
 
 /// An open square tube lofted between unit squares two apart: four faces of
@@ -237,6 +245,15 @@ pub fn named_key(named: NamedKey) -> KeyEvent {
         logical_key: Key::Named(named),
         state: ElementState::Pressed,
         repeat: false,
+    }
+}
+
+/// A pointer snapped to `at` on the construction plane, its ray passing level
+/// through it.
+pub fn pointer_at(at: Point3) -> Pointer {
+    Pointer {
+        snap: Some(Snap { position: at, direction: None, kind: SnapKind::ConstructionPlane }),
+        ray: Ray::new(at + Vector3::unit_x() * 10.0, -Vector3::unit_x()),
     }
 }
 

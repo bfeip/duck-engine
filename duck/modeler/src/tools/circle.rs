@@ -4,12 +4,10 @@ use opencascade::primitives::Shape;
 
 use crate::ops::primitives::{circle, region};
 use crate::snap::Snap;
-use crate::tools::ToolInfo;
+use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{dimension_field, Params};
-use super::primitive::{
-    flat, radius_to, seat, unit_disk, Next, Pointer, Primitive, PrimitiveTool, Track,
-};
+use super::primitive::{flat, radius_to, seat, unit_disk, Next, Primitive, PrimitiveTool, Track};
 
 /// The size of a placed circle, about its centre.
 #[derive(Clone, Copy)]
@@ -76,7 +74,7 @@ impl Primitive for CircleParams {
 mod tests {
     use super::*;
 
-    use super::super::primitive::pointer_at;
+    use crate::testing::pointer_at;
 
     const EPSILON: Real = 1e-6;
 

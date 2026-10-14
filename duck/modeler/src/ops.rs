@@ -10,4 +10,5 @@ pub mod fillet;
 pub mod hollow;
 pub mod loft;
 pub mod primitives;
+pub mod revolve;
 pub mod thicken;

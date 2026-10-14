@@ -4,12 +4,10 @@ use opencascade::primitives::Shape;
 
 use crate::ops::primitives::{closed_polyline, rectangle_corners, region};
 use crate::snap::Snap;
-use crate::tools::ToolInfo;
+use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{dimension_field, Params};
-use super::primitive::{
-    flat, footprint, seat, unit_square, Next, Pointer, Primitive, PrimitiveTool, Track,
-};
+use super::primitive::{flat, footprint, seat, unit_square, Next, Primitive, PrimitiveTool, Track};
 
 /// The size of a placed rectangle, about its centre.
 #[derive(Clone, Copy)]
@@ -81,7 +79,7 @@ impl Primitive for RectangleParams {
 mod tests {
     use super::*;
 
-    use super::super::primitive::pointer_at;
+    use crate::testing::pointer_at;
 
     const EPSILON: Real = 1e-6;
 

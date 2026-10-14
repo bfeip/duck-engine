@@ -1,5 +1,5 @@
 //! The driver for tools that apply a feature to part geometry the selection
-//! picks: fillet, draft, extrude, thicken and hollow.
+//! picks: fillet, draft, extrude, thicken, hollow and revolve.
 //!
 //! A [`Feature`] says what the selection designates, the settings that start
 //! from it, the result they build and what that result does to its part.
@@ -7,10 +7,15 @@
 //!
 //! - It follows the selection, resolving fresh settings whenever what the
 //!   selection designates changes.
-//! - The first edit — a grip grabbed, a field changed, a feature key — locks
-//!   the target as far as [`Feature::LOCK`] says. From then a plain click stops
-//!   at the tool; under [`EditLock::Part`] a shift-click still refines the
-//!   target, which keeps the edited settings.
+//! - The first edit — a grip grabbed, a field changed, a feature key, a pick —
+//!   locks the target as far as [`Feature::LOCK`] says. From then a plain click
+//!   stops at the tool; under [`EditLock::Part`] a shift-click still refines
+//!   the target, which keeps the edited settings.
+//! - While the settings want a point picked in the viewport, such as an axis,
+//!   a plain click is that pick, snapped, even before the first edit. The
+//!   preview follows what a click under the cursor would pick, and the part
+//!   stays visible so its geometry can be snapped to. Enter or right-click
+//!   drops the picks so far and starts the settings over.
 //! - While editing, the result is rebuilt whenever its target or settings
 //!   change, and previewed as its [`SourceFate`] says. A failed build keeps the
 //!   last good preview and says why in the panel.
@@ -22,6 +27,7 @@ use anyhow::{Context, Result};
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{NodeFlags, NodeId};
 use duck_engine_viewer::{
+    common::Point3,
     event::{Event, EventContext},
     input::Modifiers,
     operator::{Handle, HandleEvent, SelectionMode},
@@ -34,7 +40,7 @@ use crate::document::{Document, SourceFate};
 use crate::preview::PreviewSession;
 use super::edit::{error_line, Edit, PanelAction, Params};
 use super::targets::Selected;
-use super::{Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
+use super::{Gesture, ModelingTool, PanelContext, Pointer, ToolInfo, Workspace};
 
 /// How much of its target a feature holds once editing has begun.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +104,18 @@ pub trait Feature: 'static {
     fn on_char(&self, _c: char, _params: &Self::Params) -> Option<Self::Params> {
         None
     }
+
+    /// Whether `params` still want a point picked in the viewport. While they
+    /// do, a plain click is that pick and the 3D cursor marks the snap.
+    fn picking(&self, _params: &Self::Params) -> bool {
+        false
+    }
+
+    /// `params` with the point under `pointer` picked, or `None` where a pick
+    /// would leave them degenerate. Called only while [`picking`](Self::picking).
+    fn pick(&self, _params: &Self::Params, _pointer: &Pointer) -> Option<Self::Params> {
+        None
+    }
 }
 
 /// A tool that applies `F` to the geometry the selection picks, previewing it
@@ -114,6 +132,11 @@ pub struct FeatureTool<F: Feature> {
     /// Why the target or its result could not be resolved or built, shown in
     /// the panel.
     error: Option<String>,
+    /// While picking, the settings a click under the cursor would pick,
+    /// previewed in place of the edited ones.
+    hovered: Option<F::Params>,
+    /// While picking, the snapped point under the cursor.
+    cursor: Option<Point3>,
     /// Set once the result is applied or discarded, so the tool cedes back to
     /// selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
@@ -150,6 +173,8 @@ impl<F: Feature + Default> FeatureTool<F> {
             session: None,
             followed: None,
             error: None,
+            hovered: None,
+            cursor: None,
             finished: false,
         }
     }
@@ -166,6 +191,11 @@ impl<F: Feature> FeatureTool<F> {
         self.session.as_ref().is_some_and(|session| session.locked)
     }
 
+    /// Whether the settings want a point picked in the viewport.
+    pub(super) fn is_picking(&self) -> bool {
+        self.params().is_some_and(|params| self.feature.picking(params))
+    }
+
     /// Acts on `gesture`, returning whether it was consumed.
     pub(super) fn on_gesture(&mut self, gesture: Gesture, selection: &mut SelectionManager) -> bool {
         match gesture {
@@ -175,6 +205,10 @@ impl<F: Feature> FeatureTool<F> {
                 false
             }
             Gesture::Click { modifiers, .. } => self.swallows_click(modifiers),
+            Gesture::Finish if self.is_picking() && self.is_editing() => {
+                self.restart();
+                true
+            }
             Gesture::Finish if self.is_editing() => {
                 self.apply_and_report(selection);
                 true
@@ -245,7 +279,11 @@ impl<F: Feature> FeatureTool<F> {
     /// since it was last built.
     pub(super) fn refresh_preview(&mut self) {
         let Some(session) = self.session.as_ref().filter(|session| session.locked) else { return };
-        let (node, target, params) = (session.node, session.target.clone(), *session.edit.params());
+        let params = match self.hovered {
+            Some(hovered) if self.is_picking() => hovered,
+            _ => *session.edit.params(),
+        };
+        let (node, target) = (session.node, session.target.clone());
         if session.built.as_ref().is_some_and(|built| built.target == target && built.params == params) {
             return;
         }
@@ -286,6 +324,9 @@ impl<F: Feature> FeatureTool<F> {
         // shift-clicks toggle.
         self.preview.set_preview_flags(NodeFlags::DO_NOT_SELECT);
         match fate {
+            // Picks snap only to what is visible, and the part's own geometry
+            // is often what they are after.
+            _ if self.is_picking() => self.preview.show_sources(),
             SourceFate::Reshape | SourceFate::Replace => self.preview.hide_source_node(node),
             // A build with an earlier fate may have hidden it.
             SourceFate::Fuse | SourceFate::Keep => self.preview.show_sources(),
@@ -342,6 +383,7 @@ impl<F: Feature> FeatureTool<F> {
         selection.clear();
         self.session = None;
         self.error = None;
+        self.end_picking();
         self.finished = true;
         Ok(())
     }
@@ -362,6 +404,7 @@ impl<F: Feature> FeatureTool<F> {
         self.preview.cancel();
         self.session = None;
         self.error = None;
+        self.end_picking();
         self.finished = true;
     }
 
@@ -371,6 +414,46 @@ impl<F: Feature> FeatureTool<F> {
         self.preview.clear_previews();
         self.session = None;
         self.error = None;
+        self.end_picking();
+    }
+
+    /// Drops the picks and edits so far, keeping the target: fresh settings
+    /// are resolved for it on the next frame, as when it was first designated.
+    fn restart(&mut self) {
+        self.preview.clear_previews();
+        if let Some(session) = &mut self.session {
+            session.locked = false;
+        }
+        self.followed = None;
+        self.error = None;
+        self.end_picking();
+    }
+
+    /// Follows `pointer` with the cursor, and the preview with what a click
+    /// there would pick.
+    pub(super) fn hover(&mut self, pointer: &Pointer) {
+        let Some(params) = self.params() else { return };
+        self.hovered = self.feature.pick(params, pointer);
+        self.cursor = pointer.snap.map(|snap| snap.position);
+    }
+
+    /// Takes the pick at `pointer`, which begins the edit. A pick that would
+    /// leave the settings degenerate takes nothing.
+    pub(super) fn take_pick(&mut self, pointer: &Pointer) {
+        let Some(session) = &mut self.session else { return };
+        let Some(picked) = self.feature.pick(session.edit.params(), pointer) else { return };
+        session.edit.set(picked);
+        session.locked = true;
+        // The hover may have built these very settings, but kept the part
+        // visible for picking.
+        session.built = None;
+        self.hovered = None;
+    }
+
+    /// Forgets the cursor and what it hovered.
+    fn end_picking(&mut self) {
+        self.hovered = None;
+        self.cursor = None;
     }
 
     /// Whether a click with `modifiers` stops at the tool. Once editing, the
@@ -399,9 +482,23 @@ impl<F: Feature> ModelingTool for FeatureTool<F> {
         F::SELECTS
     }
 
+    /// While the settings want a pick, the cursor snaps and a plain click
+    /// picks; a shift-click still reaches the selection.
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
         let Some(gesture) = Gesture::read(event, ctx.modifiers) else { return false };
-        self.on_gesture(gesture, ctx.selection)
+        match gesture {
+            Gesture::Hover(at) if self.is_picking() => {
+                let pointer = self.workspace.pointer(at, self.preview.preview_nodes(), ctx);
+                self.hover(&pointer);
+                false
+            }
+            Gesture::Click { at, modifiers } if self.is_picking() && !modifiers.shift => {
+                let pointer = self.workspace.pointer(at, self.preview.preview_nodes(), ctx);
+                self.take_pick(&pointer);
+                true
+            }
+            gesture => self.on_gesture(gesture, ctx.selection),
+        }
     }
 
     fn handles(&self) -> Vec<Handle> {
@@ -415,6 +512,10 @@ impl<F: Feature> ModelingTool for FeatureTool<F> {
             session.locked = true;
         }
         session.edit.on_handle(event);
+    }
+
+    fn cursor_target(&self) -> Option<Point3> {
+        if self.is_picking() { self.cursor } else { None }
     }
 
     fn panel_title(&self) -> Option<&str> {
@@ -457,6 +558,7 @@ impl<F: Feature> ModelingTool for FeatureTool<F> {
         self.session = None;
         self.followed = None;
         self.error = None;
+        self.end_picking();
         self.finished = false;
     }
 

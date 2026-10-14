@@ -5,10 +5,10 @@ use opencascade::primitives::Shape;
 
 use crate::ops::primitives::sphere;
 use crate::snap::Snap;
-use crate::tools::ToolInfo;
+use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{dimension_field, grip_dimension, Params};
-use super::primitive::{radius_to, Next, Pointer, Primitive, PrimitiveTool, Track};
+use super::primitive::{radius_to, Next, Primitive, PrimitiveTool, Track};
 
 /// The sphere's one grip, on the pole.
 const RADIUS_HANDLE: HandleId = HandleId(0);
@@ -109,7 +109,7 @@ mod tests {
 
     use crate::snap::SnapKind;
     use crate::tools::edit::MIN_DIMENSION;
-    use super::super::primitive::pointer_at;
+    use crate::testing::pointer_at;
 
     const EPSILON: Real = 1e-6;
 
