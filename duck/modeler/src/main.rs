@@ -73,6 +73,7 @@ pub enum AppAction {
     ViewSnapped(Vector3),
     /// The tessellation options changed; existing parts must be rebuilt to match.
     TessellationChanged,
+    #[cfg(not(target_os = "emscripten"))]
     Quit,
 }
 
@@ -492,6 +493,7 @@ impl<'a> ViewerState<'a> {
                         self.rebuild_grid();
                     }
                 }
+                #[cfg(not(target_os = "emscripten"))]
                 AppAction::Quit => return true,
             }
         }

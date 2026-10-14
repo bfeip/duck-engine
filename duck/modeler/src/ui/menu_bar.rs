@@ -25,9 +25,13 @@ impl MenuBar {
                     if ui.button("Export…").clicked() {
                         actions.push(AppAction::ExportCad);
                     }
-                    ui.separator();
-                    if ui.button("Quit").clicked() {
-                        actions.push(AppAction::Quit);
+                    // A browser tab is closed by the browser, not the page.
+                    #[cfg(not(target_os = "emscripten"))]
+                    {
+                        ui.separator();
+                        if ui.button("Quit").clicked() {
+                            actions.push(AppAction::Quit);
+                        }
                     }
                 });
                 ui.menu_button("Edit", |ui| {
