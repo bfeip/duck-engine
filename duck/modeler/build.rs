@@ -19,5 +19,11 @@ fn main() {
         ] {
             println!("cargo::rustc-link-arg-bins={arg}");
         }
+
+        // The web Host's way into the DOM.
+        let library = "src/platform/web/library_host.js";
+        let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        println!("cargo::rustc-link-arg-bins=--js-library={dir}/{library}");
+        println!("cargo::rerun-if-changed={library}");
     }
 }

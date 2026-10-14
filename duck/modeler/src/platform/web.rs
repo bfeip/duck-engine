@@ -4,12 +4,15 @@
 mod egui_input;
 
 use std::cell::RefCell;
-use std::ffi::c_int;
+use std::ffi::{CString, c_char, c_int};
+use std::path::{Path, PathBuf};
 
+use anyhow::Result;
 use duck_engine_viewer::emscripten_support;
 use duck_engine_viewer::event::{DeviceEvent, Event};
 use duck_engine_viewer::{GpuOptions, WindowSurface};
 
+use super::FileFilter;
 use crate::ViewerState;
 use egui_input::EguiInput;
 
@@ -24,6 +27,13 @@ unsafe extern "C" {
         fps: c_int,
         simulate_infinite_loop: c_int,
     );
+}
+
+// `web/library_host.js`.
+unsafe extern "C" {
+    fn duck_pick_file(accept: *const c_char);
+    fn duck_take_picked_file(buf: *mut c_char, cap: usize) -> usize;
+    fn duck_download_file(path: *const c_char);
 }
 
 /// The canvas and the egui input accumulator built from its DOM events.
@@ -56,11 +66,53 @@ impl Host {
 
     pub(crate) fn handle_platform_output(&mut self, _output: egui::PlatformOutput) {
         // Cursor icon, clipboard, and IME all need DOM access that emscripten's
-        // HTML5 API does not wrap; a `--js-library` shim is the way in.
+        // HTML5 API does not wrap; `web/library_host.js` is the way in.
     }
 
     pub(crate) fn request_redraw(&self) {
         // The main loop already runs on `requestAnimationFrame`.
+    }
+
+    /// Open the browser's file picker. The pick arrives some frames later,
+    /// through [`Self::receive_opened_file`].
+    ///
+    /// Browsers open a picker only shortly after a user gesture. The click or
+    /// key press that asked for this happened within the last frame, well
+    /// inside that window.
+    pub(crate) fn open_file(&mut self, filter: &FileFilter) {
+        let accept: Vec<String> = filter.extensions.iter().map(|e| format!(".{e}")).collect();
+        let accept = CString::new(accept.join(",")).expect("extensions hold no NUL");
+        unsafe { duck_pick_file(accept.as_ptr()) };
+    }
+
+    /// Hand the oldest file picked and not yet received, if any, to `read`,
+    /// then drop its in-memory copy.
+    pub(crate) fn receive_opened_file(&mut self, read: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+        let mut buf = [0u8; 4096];
+        let len = unsafe { duck_take_picked_file(buf.as_mut_ptr().cast(), buf.len()) };
+        if len == 0 {
+            return Ok(());
+        }
+        let path = PathBuf::from(String::from_utf8_lossy(&buf[..len]).into_owned());
+        let result = read(&path);
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    /// Write `name` with `write` and hand it to the browser as a download.
+    /// There is no save dialog, so `filters` go unused and the file keeps
+    /// `name`.
+    pub(crate) fn save_file(
+        &self,
+        name: &str,
+        _filters: &[FileFilter],
+        write: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<()> {
+        let path = format!("/tmp/{name}");
+        write(Path::new(&path))?;
+        let path = CString::new(path).expect("file name holds no NUL");
+        unsafe { duck_download_file(path.as_ptr()) };
+        Ok(())
     }
 }
 

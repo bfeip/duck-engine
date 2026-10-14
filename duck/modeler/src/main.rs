@@ -4,7 +4,6 @@ mod delete;
 mod document;
 mod grid;
 mod history;
-#[cfg(not(target_arch = "wasm32"))]
 mod io;
 mod notifications;
 mod ops;
@@ -405,6 +404,17 @@ impl<'a> ViewerState<'a> {
         }
     }
 
+    /// Writes all parts to a STEP/IGES file wherever the host puts it.
+    fn export_cad(&self) -> anyhow::Result<()> {
+        if self.document.lock().unwrap().is_empty() {
+            log::warn!("Nothing to export: document has no parts");
+            return Ok(());
+        }
+        self.host.save_file("export.step", &io::EXPORT_FILTERS, |path| {
+            io::export_cad_file(&self.document, path)
+        })
+    }
+
     /// Returns true when the user asked to quit via the menu.
     fn handle_redraw(&mut self) -> bool {
         self.viewer.update();
@@ -458,24 +468,11 @@ impl<'a> ViewerState<'a> {
                 AppAction::Delete => self.delete_selection(),
                 AppAction::Undo => self.replay(Document::undo, "Undid", "Nothing to undo"),
                 AppAction::Redo => self.replay(Document::redo, "Redid", "Nothing to redo"),
-                #[cfg(not(target_arch = "wasm32"))]
-                AppAction::ImportCad => {
-                    let options = self.construction_options.borrow().geometry_options.clone();
-                    if let Err(e) = io::import_cad_dialog(&self.document, &options) {
-                        self.notifications.failure("CAD import", &e);
-                    }
-                }
-                #[cfg(not(target_arch = "wasm32"))]
+                AppAction::ImportCad => self.host.open_file(&io::IMPORT_FILTER),
                 AppAction::ExportCad => {
-                    if let Err(e) = io::export_cad_dialog(&self.document) {
+                    if let Err(e) = self.export_cad() {
                         self.notifications.failure("CAD export", &e);
                     }
-                }
-                // STEP/IGES needs OCCT's TKDESTEP, which is excluded from the
-                // web build, and a file picker the canvas does not have yet.
-                #[cfg(target_arch = "wasm32")]
-                AppAction::ImportCad | AppAction::ExportCad => {
-                    self.notifications.info("CAD file transfer is not available in the browser yet")
                 }
                 AppAction::ConstructionChanged => self.rebuild_grid(),
                 AppAction::TessellationChanged => {
@@ -497,6 +494,15 @@ impl<'a> ViewerState<'a> {
                 }
                 AppAction::Quit => return true,
             }
+        }
+        // A file opened through ImportCad: this frame on native, some frames
+        // later in the browser.
+        let imported = self.host.receive_opened_file(|path| {
+            let options = &self.construction_options.borrow().geometry_options;
+            io::import_cad_file(&self.document, path, options)
+        });
+        if let Err(e) = imported {
+            self.notifications.failure("CAD import", &e);
         }
         // After the actions, so a snap this frame is in place before its view
         // is checked.

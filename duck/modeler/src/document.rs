@@ -639,6 +639,11 @@ impl Document {
         self.parts.iter()
     }
 
+    /// True when the document holds no parts.
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+
     pub fn part_for_node(&self, node: NodeId) -> Option<PartId> {
         self.node_to_part.get(&node).copied()
     }

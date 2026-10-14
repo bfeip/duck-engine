@@ -1,7 +1,9 @@
 //! Native platform: a winit window driven by `egui_winit`.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Result;
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, WindowEvent},
@@ -13,6 +15,7 @@ use duck_engine_viewer::event::Event;
 use duck_engine_viewer::winit_support;
 use duck_engine_viewer::{GpuOptions, WindowSurface};
 
+use super::FileFilter;
 use crate::ViewerState;
 
 /// The winit window plus the egui integration that feeds off it.
@@ -21,6 +24,8 @@ pub(crate) struct Host {
     // display handle, and on Wayland runs a worker thread on that connection.
     egui_winit: egui_winit::State,
     window: Arc<Window>,
+    /// The file picked in `open_file`, until `receive_opened_file` takes it.
+    opened: Option<PathBuf>,
 }
 
 impl Host {
@@ -53,7 +58,7 @@ impl Host {
             None,
         );
 
-        (Self { egui_winit, window }, surface)
+        (Self { egui_winit, window, opened: None }, surface)
     }
 
     /// Surface size in physical pixels.
@@ -72,6 +77,40 @@ impl Host {
 
     pub(crate) fn request_redraw(&self) {
         self.window.request_redraw();
+    }
+
+    /// Ask the user for a file to open. The dialog blocks, so the file is
+    /// ready for [`Self::receive_opened_file`] in the same frame.
+    pub(crate) fn open_file(&mut self, filter: &FileFilter) {
+        self.opened = rfd::FileDialog::new().add_filter(filter.name, filter.extensions).pick_file();
+    }
+
+    /// Hand the file opened since the last call, if any, to `read`.
+    pub(crate) fn receive_opened_file(&mut self, read: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+        self.opened.take().map_or(Ok(()), |path| read(&path))
+    }
+
+    /// Ask the user where to save `name` and write it there with `write`. A
+    /// path without one of `filters`' extensions gets the first filter's.
+    pub(crate) fn save_file(
+        &self,
+        name: &str,
+        filters: &[FileFilter],
+        write: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<()> {
+        let dialog = filters.iter().fold(rfd::FileDialog::new().set_file_name(name), |dialog, f| {
+            dialog.add_filter(f.name, f.extensions)
+        });
+        let Some(mut path) = dialog.save_file() else {
+            return Ok(());
+        };
+        let known = path.extension().and_then(|e| e.to_str()).is_some_and(|ext| {
+            filters.iter().flat_map(|f| f.extensions).any(|e| e.eq_ignore_ascii_case(ext))
+        });
+        if !known && let Some(ext) = filters.first().and_then(|f| f.extensions.first()) {
+            path.set_extension(ext);
+        }
+        write(&path)
     }
 
     /// Let egui see a window event, then normalize it for the viewer.
