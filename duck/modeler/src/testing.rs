@@ -50,6 +50,23 @@ pub fn doc_with_boxes(count: usize) -> (Document, Vec<(PartId, NodeId)>) {
     (doc, parts)
 }
 
+/// A document holding the six faces of a 2-unit cube on the origin, each a
+/// part of its own named "Face-001"…, and their nodes.
+pub fn doc_with_box_faces() -> (Document, Vec<NodeId>) {
+    let mut doc = Document::new(Scene::default());
+    let nodes = Shape::cube(2.0)
+        .faces()
+        .map(|face| {
+            let face = Shape::from(face).deep_copy();
+            let part = doc
+                .add_numbered_part("Face", face, &CadTessellationOptions::default())
+                .expect("face tessellates");
+            doc.node_for_part(part).expect("part has a node")
+        })
+        .collect();
+    (doc, nodes)
+}
+
 /// A document holding a 2-unit cube on the origin and a unit sphere on its far
 /// corner, and their nodes.
 pub fn doc_with_box_and_sphere() -> (Document, NodeId, NodeId) {
