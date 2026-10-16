@@ -8,9 +8,7 @@ use opencascade::OffsetError;
 use crate::document::{
     dvec3_to_point3, dvec3_to_vec3, has_solid, unwrap_single_solid, Document,
 };
-
-/// A wall at or below this thickness is null to OCCT's offset.
-const MIN_THICKNESS: Real = 1e-3;
+use crate::ops::OFFSET_TOLERANCE;
 
 /// The solid being hollowed and the faces opened in it, identified the way the
 /// selection system reports them: by tessellation order within the part's mesh.
@@ -108,7 +106,7 @@ impl HollowParams {
 
     /// Whether the wall is too thin to build.
     pub fn is_degenerate(&self) -> bool {
-        self.thickness.abs() <= MIN_THICKNESS
+        self.thickness.abs() <= OFFSET_TOLERANCE
     }
 }
 
@@ -127,7 +125,8 @@ pub fn build_hollow(doc: &Document, target: &HollowTarget, params: &HollowParams
     ensure!(body.sub_shapes().count() == 1, "A part with a void inside can't be hollowed");
     let faces = target.faces.iter().map(|&index| copy.face(index as usize)).collect::<Result<Vec<_>, _>>()?;
 
-    body.hollow(-f64::from(params.thickness), &faces, JoinType::Intersection).map_err(explained)
+    let (thickness, tolerance) = (f64::from(params.thickness), f64::from(OFFSET_TOLERANCE));
+    body.hollow(-thickness, &faces, JoinType::Intersection, tolerance).map_err(explained)
 }
 
 /// `error`, led by a plain-language account of why the hollow failed.
@@ -202,6 +201,24 @@ mod tests {
         assert!((volume - expected).abs() < 1e-6, "expected {expected}, got {volume}");
     }
 
+    /// A wall just thicker than the offset tolerance builds, closed or open.
+    #[test]
+    fn a_wall_just_past_the_offset_tolerance_builds() {
+        let (doc, node) = doc_with_shape(Shape::box_centered(20.0, 20.0, 20.0));
+        let closed = target(node, &[]);
+        let top = target(node, &[face_along(&doc, node, DVec3::Y)]);
+        let wall = 10.0 * OFFSET_TOLERANCE;
+        let (t, solid) = (f64::from(wall), 20.0f64.powi(3));
+        let cases = [
+            (closed, solid - (20.0 - 2.0 * t).powi(3)),
+            (top, solid - (20.0 - 2.0 * t).powi(2) * (20.0 - t)),
+        ];
+        for (target, expected) in cases {
+            let volume = hollowed_volume(&doc, &target, wall);
+            assert!((volume - expected).abs() < 1e-6 * expected, "expected {expected}, got {volume}");
+        }
+    }
+
     /// A cylinder opened at one cap is a tube with a floor.
     #[test]
     fn a_cylinder_opened_at_one_cap_is_a_cup() {
@@ -274,7 +291,7 @@ mod tests {
     fn a_wall_too_thin_to_build_is_refused() {
         let (doc, node) = doc_with_box();
         let closed = target(node, &[]);
-        let thin = params(&doc, &closed, 1e-4);
+        let thin = params(&doc, &closed, 1e-7);
         assert!(thin.is_degenerate());
         assert!(build_hollow(&doc, &closed, &thin).is_err());
     }

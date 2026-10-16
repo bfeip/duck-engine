@@ -5,10 +5,7 @@ use opencascade::primitives::{JoinType, Shape, Shell};
 use opencascade::OffsetError;
 
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, has_solid, Document, SourceFate};
-
-/// A side at or below this thickness is none: OCCT's offset takes anything
-/// smaller as null.
-const MIN_THICKNESS: Real = 1e-3;
+use crate::ops::OFFSET_TOLERANCE;
 
 /// The faces being thickened, all on one part, identified the way the
 /// selection system reports them: by tessellation order within the part's mesh.
@@ -96,7 +93,7 @@ impl ThickenParams {
     /// The thicknesses to build each side with, zero where one doesn't count
     /// or is too thin to.
     fn sides(&self) -> (Real, Real) {
-        let side = |thickness: Real| if thickness > MIN_THICKNESS { thickness } else { 0.0 };
+        let side = |thickness: Real| if thickness > OFFSET_TOLERANCE { thickness } else { 0.0 };
         (side(self.front), if self.back_applies() { side(self.back) } else { 0.0 })
     }
 
@@ -162,11 +159,13 @@ pub fn build_thicken(doc: &Document, target: &ThickenTarget, params: &ThickenPar
 
     let (front, back) = params.sides();
     let (front, back) = (f64::from(front), f64::from(back));
-    let join = JoinType::Intersection;
+    let (join, tolerance) = (JoinType::Intersection, f64::from(OFFSET_TOLERANCE));
     let slab = match (front > 0.0, back > 0.0) {
-        (true, false) => sheet.thicken(front, join),
-        (false, true) => sheet.thicken(-back, join),
-        _ => sheet.offset_surface(-back, join).and_then(|base| base.thicken(front + back, join)),
+        (true, false) => sheet.thicken(front, join, tolerance),
+        (false, true) => sheet.thicken(-back, join, tolerance),
+        _ => sheet
+            .offset_surface(-back, join, tolerance)
+            .and_then(|base| base.thicken(front + back, join, tolerance)),
     };
     slab.map_err(explained)
 }
@@ -308,6 +307,21 @@ mod tests {
         let joined = params(&doc, &side, 0.1, 0.0);
         thicken(&mut doc, &side, &joined);
         assert!((part_shape(&doc, node).volume() - 2.42 * pi).abs() < 1e-4);
+    }
+
+    /// A slab just thicker than the offset tolerance builds to either side or
+    /// both.
+    #[test]
+    fn a_slab_just_past_the_offset_tolerance_builds() {
+        let (doc, node) = doc_with_shape(sheet());
+        let whole = target(node, &[]);
+        let thick = 10.0 * OFFSET_TOLERANCE;
+        for (front, back) in [(thick, 0.0), (0.0, thick), (thick / 2.0, thick / 2.0)] {
+            let slab = build_thicken(&doc, &whole, &params(&doc, &whole, front, back))
+                .expect("a thin slab builds");
+            let expected = 2.0 * 3.0 * f64::from(thick);
+            assert!((slab.volume() - expected).abs() < 1e-6 * expected, "got {}", slab.volume());
+        }
     }
 
     /// A sheet thickened whole is replaced by its slab, under its own name, to

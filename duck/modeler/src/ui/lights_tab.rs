@@ -2,14 +2,15 @@
 //! placed in the scene.
 
 use duck_engine_viewer::common::{
-    Deg, EuclideanSpace, Point3, Quaternion, Rad, Real, RgbaColor, Rotation, Rotation3, Transform,
-    Vector3,
+    Deg, EuclideanSpace, LengthDisplay, Point3, Quaternion, Rad, Real, RgbaColor, Rotation,
+    Rotation3, Transform, Vector3,
 };
 use duck_engine_viewer::scene::{
     Light, LightSpace, LightType, MAX_LIGHTS, PositionedCamera, PositionedLight,
 };
 use duck_engine_viewer::{HeadlightMode, ViewMut, default_headlight_rig};
 
+use crate::ui::length_value;
 use crate::AppAction;
 
 /// A copy of a view's lighting for the UI to edit, written back on
@@ -51,22 +52,24 @@ impl Lighting {
     }
 }
 
+/// The tab, lengths shown in `units`.
 pub fn show(
     ui: &mut egui::Ui,
     lighting: &mut Lighting,
     camera: &PositionedCamera,
+    units: LengthDisplay,
     actions: &mut Vec<AppAction>,
 ) {
     let mut changed = false;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::CollapsingHeader::new("Headlights")
             .default_open(true)
-            .show(ui, |ui| changed |= headlights_ui(ui, lighting, camera));
+            .show(ui, |ui| changed |= headlights_ui(ui, lighting, camera, units));
 
         egui::CollapsingHeader::new(format!("Scene lights ({}/{MAX_LIGHTS})", lighting.lights.len()))
             .id_salt("scene_lights")
             .default_open(true)
-            .show(ui, |ui| changed |= scene_lights_ui(ui, lighting, camera));
+            .show(ui, |ui| changed |= scene_lights_ui(ui, lighting, camera, units));
     });
     if changed {
         actions.push(AppAction::LightingChanged);
@@ -74,7 +77,12 @@ pub fn show(
 }
 
 /// Headlight mode and the rig itself. Returns true when anything changed.
-fn headlights_ui(ui: &mut egui::Ui, lighting: &mut Lighting, camera: &PositionedCamera) -> bool {
+fn headlights_ui(
+    ui: &mut egui::Ui,
+    lighting: &mut Lighting,
+    camera: &PositionedCamera,
+    units: LengthDisplay,
+) -> bool {
     let mut changed = false;
     egui::Grid::new("headlight_settings").num_columns(2).show(ui, |ui| {
         ui.label("Mode");
@@ -101,7 +109,8 @@ fn headlights_ui(ui: &mut egui::Ui, lighting: &mut Lighting, camera: &Positioned
     if lighting.headlight_rig.is_empty() {
         ui.weak("No headlights");
     }
-    changed |= light_list_ui(ui, "headlight_rig", &mut lighting.headlight_rig, camera, false);
+    changed |=
+        light_list_ui(ui, "headlight_rig", &mut lighting.headlight_rig, camera, units, false);
     if ui.button("Reset").on_hover_text("Restore the default headlights").clicked() {
         lighting.headlight_rig = default_headlight_rig();
         changed = true;
@@ -118,7 +127,12 @@ fn mode_label(mode: HeadlightMode) -> &'static str {
 }
 
 /// Add buttons and the scene's lights. Returns true when anything changed.
-fn scene_lights_ui(ui: &mut egui::Ui, lighting: &mut Lighting, camera: &PositionedCamera) -> bool {
+fn scene_lights_ui(
+    ui: &mut egui::Ui,
+    lighting: &mut Lighting,
+    camera: &PositionedCamera,
+    units: LengthDisplay,
+) -> bool {
     let mut changed = add_light_ui(ui, &mut lighting.lights, LightSpace::World, camera);
 
     // The rig follows the scene's lights, so it is what the cap drops.
@@ -134,7 +148,7 @@ fn scene_lights_ui(ui: &mut egui::Ui, lighting: &mut Lighting, camera: &Position
     if lighting.lights.is_empty() {
         ui.weak("No lights in the scene");
     }
-    changed |= light_list_ui(ui, "scene_lights", &mut lighting.lights, camera, true);
+    changed |= light_list_ui(ui, "scene_lights", &mut lighting.lights, camera, units, true);
     changed
 }
 
@@ -202,13 +216,14 @@ fn new_light(
 }
 
 /// One collapsible editor per light, with From view and remove buttons in its
-/// header. `show_space` offers the World/Camera toggle. Returns true when
-/// anything changed.
+/// header, lengths shown in `units`. `show_space` offers the World/Camera
+/// toggle. Returns true when anything changed.
 fn light_list_ui(
     ui: &mut egui::Ui,
     id_salt: &str,
     lights: &mut Vec<PositionedLight>,
     camera: &PositionedCamera,
+    units: LengthDisplay,
     show_space: bool,
 ) -> bool {
     let mut changed = false;
@@ -245,7 +260,7 @@ fn light_list_ui(
             if title_clicked {
                 header.toggle();
             }
-            header.body(|ui| changed |= light_ui(ui, posed, camera, show_space));
+            header.body(|ui| changed |= light_ui(ui, posed, camera, units, show_space));
         });
     }
     if let Some(index) = to_remove {
@@ -255,11 +270,13 @@ fn light_list_ui(
     changed
 }
 
-/// The parameters of one light. Returns true when anything changed.
+/// The parameters of one light, lengths shown in `units`. Returns true when
+/// anything changed.
 fn light_ui(
     ui: &mut egui::Ui,
     posed: &mut PositionedLight,
     camera: &PositionedCamera,
+    units: LengthDisplay,
     show_space: bool,
 ) -> bool {
     let mut changed = false;
@@ -268,7 +285,7 @@ fn light_ui(
             Light::Point { color, intensity, range } => {
                 changed |= color_row(ui, "Color", color);
                 changed |= intensity_row(ui, intensity);
-                changed |= range_row(ui, range);
+                changed |= range_row(ui, range, units);
             }
             Light::Directional { color, intensity } => {
                 changed |= color_row(ui, "Color", color);
@@ -277,7 +294,7 @@ fn light_ui(
             Light::Spot { color, intensity, range, inner_cone_angle, outer_cone_angle } => {
                 changed |= color_row(ui, "Color", color);
                 changed |= intensity_row(ui, intensity);
-                changed |= range_row(ui, range);
+                changed |= range_row(ui, range, units);
                 changed |= cone_rows(ui, inner_cone_angle, outer_cone_angle);
             }
             Light::Hemisphere { sky_color, ground_color, intensity } => {
@@ -292,7 +309,7 @@ fn light_ui(
         }
         let light_type = posed.light.light_type();
         if matches!(light_type, LightType::Point | LightType::Spot) {
-            changed |= position_row(ui, &mut posed.transform.position);
+            changed |= position_row(ui, &mut posed.transform.position, units);
         }
         match light_type {
             LightType::Point => {}
@@ -330,9 +347,9 @@ fn intensity_row(ui: &mut egui::Ui, intensity: &mut f32) -> bool {
     changed
 }
 
-fn range_row(ui: &mut egui::Ui, range: &mut f32) -> bool {
+fn range_row(ui: &mut egui::Ui, range: &mut f32, units: LengthDisplay) -> bool {
     ui.label("Range").on_hover_text("Distance at which the light fades out; 0 for no falloff");
-    let changed = ui.add(egui::DragValue::new(range).speed(1.0).range(0.0..=f32::MAX)).changed();
+    let changed = ui.add(length_value(range, units).range(0.0..=f32::MAX)).changed();
     ui.end_row();
     changed
 }
@@ -390,12 +407,12 @@ fn space_row(ui: &mut egui::Ui, posed: &mut PositionedLight, camera: &Positioned
     changed
 }
 
-fn position_row(ui: &mut egui::Ui, position: &mut Point3) -> bool {
+fn position_row(ui: &mut egui::Ui, position: &mut Point3, units: LengthDisplay) -> bool {
     let mut changed = false;
     ui.label("Position");
     ui.horizontal(|ui| {
         for (axis, value) in [("x ", &mut position.x), ("y ", &mut position.y), ("z ", &mut position.z)] {
-            changed |= ui.add(egui::DragValue::new(value).speed(1.0).prefix(axis)).changed();
+            changed |= ui.add(length_value(value, units).prefix(axis)).changed();
         }
     });
     ui.end_row();
@@ -608,7 +625,7 @@ mod tests {
         };
         let output = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                light_list_ui(ui, "lights", lights, &camera(), false);
+                light_list_ui(ui, "lights", lights, &camera(), LengthDisplay::default(), false);
             });
         });
         output

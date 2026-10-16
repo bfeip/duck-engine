@@ -2,7 +2,8 @@
 //! construction plane and grid, and snapping.
 
 use duck_engine_common::{
-    EuclideanSpace, InnerSpace, Plane, Point3, Real, RgbaColor, Vector3, EPSILON,
+    EuclideanSpace, InnerSpace, LengthDisplay, LengthUnit, Plane, Point3, Real, RgbaColor, Vector3,
+    EPSILON,
 };
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, MaterialFlags};
@@ -42,6 +43,10 @@ pub struct ConstructionOptions {
     pub grid: GridConfig,
     /// Shared snap engine (providers + user settings) consulted by every tool.
     pub snap: SnapEngine,
+    /// The unit lengths are shown and typed in. Presentation only: the
+    /// document models in [`DOCUMENT_UNITS`](crate::document::DOCUMENT_UNITS)
+    /// no matter what this is.
+    pub units: LengthDisplay,
 }
 
 impl ConstructionOptions {
@@ -82,7 +87,8 @@ impl ConstructionOptions {
             follow_view: true,
             view_plane: None,
             grid,
-            snap
+            snap,
+            units: LengthDisplay::new(LengthUnit::Millimeter, 2),
         }
     }
 

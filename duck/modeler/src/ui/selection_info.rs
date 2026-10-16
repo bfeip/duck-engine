@@ -3,12 +3,12 @@
 
 use std::collections::HashSet;
 
-use duck_engine_viewer::common::{Aabb, Point3, Real, Vector3};
+use duck_engine_viewer::common::{Aabb, LengthDisplay, Point3, Real, Vector3};
 use duck_engine_viewer::scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 use opencascade::primitives::{Edge, EdgeType, Face, FaceType, ShapeElements, ShapeType};
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartKind};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartKind, DOCUMENT_UNITS};
 use crate::ui::icons;
 
 /// The selection section, caching its measurements between frames.
@@ -79,7 +79,14 @@ enum Dimensions {
 }
 
 impl SelectionInfo {
-    pub fn show(&mut self, ui: &mut egui::Ui, document: &Document, selection: &SelectionManager) {
+    /// The section, measurements shown in `units`.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        document: &Document,
+        selection: &SelectionManager,
+        units: LengthDisplay,
+    ) {
         let stale = self.cache.as_ref().is_none_or(|cached| {
             cached.generation != document.generation()
                 || cached.items != selection.as_slice()
@@ -97,11 +104,16 @@ impl SelectionInfo {
 
         egui::CollapsingHeader::new("Selection")
             .default_open(true)
-            .show(ui, |ui| summary_ui(ui, summary, document));
+            .show(ui, |ui| summary_ui(ui, summary, document, units));
     }
 }
 
-fn summary_ui(ui: &mut egui::Ui, summary: &SelectionSummary, document: &Document) {
+fn summary_ui(
+    ui: &mut egui::Ui,
+    summary: &SelectionSummary,
+    document: &Document,
+    units: LengthDisplay,
+) {
     if summary.counts.total() == 0 {
         ui.add_space(4.0);
         ui.weak("Nothing selected");
@@ -109,7 +121,7 @@ fn summary_ui(ui: &mut egui::Ui, summary: &SelectionSummary, document: &Document
     }
 
     if let Some(primary) = &summary.primary {
-        primary_ui(ui, primary, document);
+        primary_ui(ui, primary, document, units);
     }
 
     if summary.counts.total() > 1 {
@@ -117,13 +129,13 @@ fn summary_ui(ui: &mut egui::Ui, summary: &SelectionSummary, document: &Document
         egui::Grid::new("selection_totals").num_columns(2).show(ui, |ui| {
             row(ui, "Selected", format!("{} ({})", summary.counts.total(), summary.counts.describe()));
             if let Some(area) = summary.surface_area {
-                row(ui, "Total area", number(area));
+                row(ui, "Total area", units.format_area(f64::from(area), DOCUMENT_UNITS));
             }
             if let Some(volume) = summary.volume {
-                row(ui, "Total volume", number(volume));
+                row(ui, "Total volume", units.format_volume(f64::from(volume), DOCUMENT_UNITS));
             }
             if let Some(length) = summary.edge_length {
-                row(ui, "Total length", number(length));
+                row(ui, "Total length", in_units(length, units));
             }
             let bounds = summary
                 .parts
@@ -131,13 +143,13 @@ fn summary_ui(ui: &mut egui::Ui, summary: &SelectionSummary, document: &Document
                 .filter_map(|&node| document.scene().nodes_bounding(node).bounds)
                 .reduce(|a, b| a.merge(&b));
             if let Some(bounds) = bounds {
-                row(ui, "Size", size(&bounds));
+                row(ui, "Size", size(&bounds, units));
             }
         });
     }
 }
 
-fn primary_ui(ui: &mut egui::Ui, primary: &Primary, document: &Document) {
+fn primary_ui(ui: &mut egui::Ui, primary: &Primary, document: &Document, units: LengthDisplay) {
     let accent = icons::kind_color(primary.part_kind);
     ui.horizontal(|ui| {
         let (uri, bytes) = icons::kind_icon(primary.part_kind);
@@ -164,43 +176,43 @@ fn primary_ui(ui: &mut egui::Ui, primary: &Primary, document: &Document) {
                 count_phrase(*vertices, "vertex", "vertices"),
             ];
             row(ui, "Topology", topology.join(" · "));
-            row(ui, "Area", number(*area));
+            row(ui, "Area", units.format_area(f64::from(*area), DOCUMENT_UNITS));
             if let Some(volume) = volume {
-                row(ui, "Volume", number(*volume));
+                row(ui, "Volume", units.format_volume(f64::from(*volume), DOCUMENT_UNITS));
             }
             if let Some(bounds) = document.scene().nodes_bounding(primary.node).bounds {
-                row(ui, "Size", size(&bounds));
+                row(ui, "Size", size(&bounds, units));
             }
         }
         Element::Face { index, ty, dimensions, normal, area } => {
             row(ui, "Element", format!("Face {index} · {}", face_type_name(*ty)));
-            dimensions_rows(ui, dimensions.as_ref());
+            dimensions_rows(ui, dimensions.as_ref(), units);
             if let Some(normal) = normal {
                 row(ui, "Normal", triple(normal.x, normal.y, normal.z));
             }
-            row(ui, "Area", number(*area));
+            row(ui, "Area", units.format_area(f64::from(*area), DOCUMENT_UNITS));
         }
         Element::Edge { index, ty, dimensions, length } => {
             row(ui, "Element", format!("Edge {index} · {}", edge_type_name(*ty)));
-            dimensions_rows(ui, dimensions.as_ref());
-            row(ui, "Length", number(*length));
+            dimensions_rows(ui, dimensions.as_ref(), units);
+            row(ui, "Length", in_units(*length, units));
         }
         Element::Vertex { index, position } => {
             row(ui, "Element", format!("Vertex {index}"));
-            row(ui, "Position", triple(position.x, position.y, position.z));
+            row(ui, "Position", point(*position, units));
         }
     });
 }
 
-fn dimensions_rows(ui: &mut egui::Ui, dimensions: Option<&Dimensions>) {
+fn dimensions_rows(ui: &mut egui::Ui, dimensions: Option<&Dimensions>, units: LengthDisplay) {
     match dimensions {
-        Some(Dimensions::Radius(radius)) => row(ui, "Radius", number(*radius)),
+        Some(Dimensions::Radius(radius)) => row(ui, "Radius", in_units(*radius, units)),
         Some(Dimensions::MajorMinor(major, minor)) => {
-            row(ui, "Major radius", number(*major));
-            row(ui, "Minor radius", number(*minor));
+            row(ui, "Major radius", in_units(*major, units));
+            row(ui, "Minor radius", in_units(*minor, units));
         }
         Some(Dimensions::Cone { radius, half_angle }) => {
-            row(ui, "Ref. radius", number(*radius));
+            row(ui, "Ref. radius", in_units(*radius, units));
             row(ui, "Half-angle", format!("{:.2}°", half_angle.to_degrees()));
         }
         None => {}
@@ -221,9 +233,24 @@ fn triple(x: Real, y: Real, z: Real) -> String {
     format!("({}, {}, {})", number(x), number(y), number(z))
 }
 
-fn size(bounds: &Aabb) -> String {
+fn in_units(value: Real, units: LengthDisplay) -> String {
+    units.format(f64::from(value), DOCUMENT_UNITS)
+}
+
+/// A length without its unit, for rows that name the unit once.
+fn bare(value: Real, units: LengthDisplay) -> String {
+    units.format_bare(f64::from(value), DOCUMENT_UNITS)
+}
+
+fn point(point: Point3, units: LengthDisplay) -> String {
+    let (x, y, z) = (bare(point.x, units), bare(point.y, units), bare(point.z, units));
+    format!("({x}, {y}, {z}) {}", units.unit.suffix())
+}
+
+fn size(bounds: &Aabb, units: LengthDisplay) -> String {
     let extent = bounds.max - bounds.min;
-    format!("{} × {} × {}", number(extent.x), number(extent.y), number(extent.z))
+    let (x, y, z) = (bare(extent.x, units), bare(extent.y, units), bare(extent.z, units));
+    format!("{x} × {y} × {z} {}", units.unit.suffix())
 }
 
 fn count_phrase(count: usize, singular: &str, plural: &str) -> String {

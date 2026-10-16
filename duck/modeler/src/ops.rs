@@ -13,3 +13,9 @@ pub mod loft;
 pub mod primitives;
 pub mod revolve;
 pub mod thicken;
+
+use duck_engine_scene::common::Real;
+
+/// Coincidence tolerance of offsets (hollow, thicken, extrude walls), in
+/// document units: 1 µm. An offset no larger than this is null.
+pub const OFFSET_TOLERANCE: Real = 1e-3;

@@ -206,6 +206,18 @@ impl LengthDisplay {
         format!("{:.*}", self.decimals, world.to_unit(world_value, self.unit))
     }
 
+    /// Formats a world-space area in the unit squared, with its suffix.
+    pub fn format_area(&self, world_value: f64, world: WorldUnits) -> String {
+        let factor = world.to_unit(1.0, self.unit);
+        format!("{:.*} {}²", self.decimals, world_value * factor.powi(2), self.unit.suffix())
+    }
+
+    /// Formats a world-space volume in the unit cubed, with its suffix.
+    pub fn format_volume(&self, world_value: f64, world: WorldUnits) -> String {
+        let factor = world.to_unit(1.0, self.unit);
+        format!("{:.*} {}³", self.decimals, world_value * factor.powi(3), self.unit.suffix())
+    }
+
     /// Parses text into a world-space length. A unit suffix in the text wins;
     /// a bare number is read as [`Self::unit`].
     pub fn parse(&self, text: &str, world: WorldUnits) -> Option<f64> {
@@ -317,6 +329,14 @@ mod tests {
         // 0.0125 world meters is 12.5 mm.
         let d = LengthDisplay::new(LengthUnit::Millimeter, 2);
         assert_eq!(d.format(0.0125, WorldUnits::METER), "12.50 mm");
+    }
+
+    #[test]
+    fn areas_and_volumes_convert_by_the_square_and_cube() {
+        // A 20 mm square and cube, in world meters.
+        let d = LengthDisplay::new(LengthUnit::Millimeter, 1);
+        assert_eq!(d.format_area(4e-4, WorldUnits::METER), "400.0 mm²");
+        assert_eq!(d.format_volume(8e-6, WorldUnits::METER), "8000.0 mm³");
     }
 
     #[test]

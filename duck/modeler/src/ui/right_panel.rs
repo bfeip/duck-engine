@@ -66,9 +66,11 @@ impl RightPanel {
                 ui.separator();
 
                 match self.active_tab {
-                    RightTab::Model => self.model.show(ui, document, selection),
+                    RightTab::Model => self.model.show(ui, document, selection, construction.units),
                     RightTab::Scene => self.scene.show(ui, camera, construction, actions),
-                    RightTab::Lights => lights_tab::show(ui, lighting, camera, actions),
+                    RightTab::Lights => {
+                        lights_tab::show(ui, lighting, camera, construction.units, actions)
+                    }
                 }
             });
     }

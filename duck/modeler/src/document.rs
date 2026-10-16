@@ -5,7 +5,9 @@ use anyhow::{Context, Result};
 use duck_engine_scene::resource::{Id, NodeId, Visibility};
 use duck_engine_scene::Scene;
 use duck_engine_scene::cad::{CadTessellationOptions, retessellate_node, tessellate_into};
-use duck_engine_scene::common::{matrix4_to_row_major_f64, Matrix4, Point3, Real, Transform, Vector3};
+use duck_engine_scene::common::{
+    matrix4_to_row_major_f64, Matrix4, Point3, Real, Transform, Vector3, WorldUnits,
+};
 use glam::DVec3;
 use opencascade::primitives::{Shape, ShapeElements, ShapeType, Wire};
 
@@ -210,6 +212,13 @@ fn numbering_base(name: &str) -> &str {
     }
 }
 
+/// The unit the document models in. Every coordinate of a part's shape, and
+/// of the scene it is drawn in, is in these; files in another unit convert on
+/// the way in and out.
+/// 
+/// This is separate from the units that are displayed to, and entered by the user.
+pub const DOCUMENT_UNITS: WorldUnits = WorldUnits::MILLIMETER;
+
 pub struct Document {
     parts: Vec<CadPart>,
     part_to_node: HashMap<PartId, NodeId>,
@@ -221,6 +230,7 @@ pub struct Document {
 
 impl Document {
     pub fn new(scene: Scene) -> Self {
+        scene.set_world_units(DOCUMENT_UNITS);
         Self {
             parts: Vec::new(),
             part_to_node: HashMap::new(),
@@ -232,6 +242,7 @@ impl Document {
     }
 
     pub fn set_scene(&mut self, scene: Scene) {
+        scene.set_world_units(DOCUMENT_UNITS);
         self.scene = scene;
         self.history.clear();
     }
@@ -712,6 +723,21 @@ mod tests {
     };
     use duck_engine_scene::resource::FaceMaterial;
     use opencascade::primitives::Face;
+
+    /// The document labels whatever scene it draws in with its own unit, over
+    /// the engine's default of metres.
+    #[test]
+    fn the_scene_is_labelled_in_document_units() {
+        let metres = || {
+            let scene = Scene::default();
+            scene.set_world_units(WorldUnits::METER);
+            scene
+        };
+        let mut doc = Document::new(metres());
+        assert_eq!(doc.scene().world_units(), DOCUMENT_UNITS);
+        doc.set_scene(metres());
+        assert_eq!(doc.scene().world_units(), DOCUMENT_UNITS);
+    }
 
     fn doc_with_box() -> (Document, PartId, NodeId) {
         let scene = Scene::default();

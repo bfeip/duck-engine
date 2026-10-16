@@ -244,7 +244,8 @@ fn import_pmi(
         // Annotation presentations are wireframe, so seams are shown too.
         let elements = ShapeElements::new(&shape);
         let curves = elements.edges().iter().map(|element| element.curve()).chain(elements.seams());
-        for points in curves.map(|edge| edge.polyline()) {
+        let deflection = options.tessellation.tessellation_tolerance;
+        for points in curves.map(|edge| edge.polyline(deflection)) {
             for window in points.windows(2) {
                 let base = verts.len() as u32;
                 for p in window {

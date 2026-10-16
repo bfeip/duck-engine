@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{Plane, Point3, Real, Transform, Vector3};
+use duck_engine_common::{LengthDisplay, Plane, Point3, Real, Transform, Vector3};
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape};
 use opencascade::primitives::Shape;
 
@@ -52,9 +52,9 @@ pub enum CylinderStage {
 }
 
 impl Params for CylinderParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
-        let mut changed = dimension_field(ui, "Radius", &mut self.radius);
-        changed |= dimension_field(ui, "Height", &mut self.height);
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool {
+        let mut changed = dimension_field(ui, "Radius", &mut self.radius, units);
+        changed |= dimension_field(ui, "Height", &mut self.height, units);
         changed
     }
 

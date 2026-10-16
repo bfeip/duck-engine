@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::Real;
+use duck_engine_common::{LengthDisplay, Real};
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
     operator::{
@@ -23,7 +23,7 @@ const FRONT_HANDLE: HandleId = HandleId(0);
 const BACK_HANDLE: HandleId = HandleId(1);
 
 impl Params for ThickenParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool {
         let mut changed = false;
         if self.frame.on_solid {
             ui.label("Result");
@@ -36,13 +36,13 @@ impl Params for ThickenParams {
 
         let mut front = self.front;
         let label = if self.back_applies() { "Front" } else { "Thickness" };
-        if length_field(ui, label, &mut front, 0.0..=Real::MAX) {
+        if length_field(ui, label, &mut front, 0.0..=Real::MAX, units) {
             self.set_front(front);
             changed = true;
         }
         if self.back_applies() {
             let mut back = self.back;
-            if length_field(ui, "Back", &mut back, 0.0..=Real::MAX) {
+            if length_field(ui, "Back", &mut back, 0.0..=Real::MAX, units) {
                 self.set_back(back);
                 changed = true;
             }

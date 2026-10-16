@@ -1,6 +1,7 @@
 //! The model tab: a filter box over the list of parts in the CAD document,
 //! with double-click-to-rename on each row, above a summary of the selection.
 
+use duck_engine_viewer::common::LengthDisplay;
 use duck_engine_viewer::scene::resource::{NodeId, Visibility};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 
@@ -47,12 +48,13 @@ impl ModelTab {
         ui: &mut egui::Ui,
         document: &mut Document,
         selection: &mut SelectionManager,
+        units: LengthDisplay,
     ) {
         // Claimed first so it stays pinned below however long the list grows.
         egui::TopBottomPanel::bottom("selection_info")
             .resizable(false)
             .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 4)))
-            .show_inside(ui, |ui| self.selection_info.show(ui, document, selection));
+            .show_inside(ui, |ui| self.selection_info.show(ui, document, selection, units));
 
         ui.horizontal(|ui| {
             ui.add(

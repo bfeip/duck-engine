@@ -4,7 +4,7 @@ use duck_engine_viewer::{
     operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds, SelectionMode},
     selection::SelectionManager,
 };
-use duck_engine_viewer::common::Real;
+use duck_engine_viewer::common::{LengthDisplay, Real};
 use opencascade::primitives::Shape;
 
 use crate::construction::ConstructionOptions;
@@ -20,7 +20,7 @@ use super::targets::{count_summary, selected_on_part, Selected};
 const SIZE_HANDLE: HandleId = HandleId(0);
 
 impl Params for FilletParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool {
         let mut changed = false;
         ui.label("Type");
         ui.horizontal(|ui| {
@@ -34,7 +34,7 @@ impl Params for FilletParams {
             BlendKind::Fillet => "Radius",
             BlendKind::Chamfer => "Distance",
         };
-        changed |= length_field(ui, label, &mut self.size, 0.0..=Real::MAX);
+        changed |= length_field(ui, label, &mut self.size, 0.0..=Real::MAX, units);
         changed
     }
 

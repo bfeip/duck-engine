@@ -7,6 +7,7 @@ use opencascade::primitives::{Face, JoinType, Shape};
 use crate::document::{
     dvec3_to_point3, dvec3_to_vec3, has_solid, vec3_to_dvec3, Document, SourceFate,
 };
+use crate::ops::OFFSET_TOLERANCE;
 
 /// A distance at or below this is degenerate: there is nothing to extrude.
 const MIN_DISTANCE: Real = 1e-6;
@@ -14,9 +15,6 @@ const MIN_DISTANCE: Real = 1e-6;
 /// A draft at or below this many radians leaves the walls straight; OCCT
 /// ignores anything smaller.
 const MIN_DRAFT: Real = 1e-4;
-
-/// A wall thickness at or below this is no wall at all.
-const MIN_THICKNESS: Real = 1e-6;
 
 /// The sub-geometry being extruded, identified the way the selection system reports
 /// it: by tessellation order within a part's mesh.
@@ -144,7 +142,7 @@ impl ExtrudeParams {
     /// Whether the extrusion is walls rather than a solid (a face) or a sheet
     /// (an edge).
     pub fn has_thickness(&self) -> bool {
-        self.thickness.abs() > MIN_THICKNESS
+        self.thickness.abs() > OFFSET_TOLERANCE
     }
 }
 
@@ -183,7 +181,12 @@ pub fn build_extrusion(doc: &Document, target: &ExtrudeTarget, params: &ExtrudeP
                 // Open at both caps, leaving only the walls. Intersection joins
                 // keep their corners sharp where a concave outline pulls them apart.
                 prism = prism
-                    .hollow(-f64::from(params.thickness), &caps, JoinType::Intersection)
+                    .hollow(
+                        -f64::from(params.thickness),
+                        &caps,
+                        JoinType::Intersection,
+                        f64::from(OFFSET_TOLERANCE),
+                    )
                     .context("Wall thickness failed")?;
             }
             Ok(prism)
@@ -198,7 +201,11 @@ pub fn build_extrusion(doc: &Document, target: &ExtrudeTarget, params: &ExtrudeP
             }
             if params.has_thickness() {
                 wall = wall
-                    .thicken(f64::from(params.thickness), JoinType::Intersection)
+                    .thicken(
+                        f64::from(params.thickness),
+                        JoinType::Intersection,
+                        f64::from(OFFSET_TOLERANCE),
+                    )
                     .context("Wall thickness failed")?;
             }
             Ok(wall)
@@ -536,6 +543,21 @@ mod tests {
 
         let wall = build_extrusion(&doc, &rim, &params(&doc, &rim, 1.0)).expect("the rim extrudes");
         assert_eq!(wall.shape_type(), ShapeType::Face);
+    }
+
+    /// Walls just thicker than the offset tolerance build into a tube.
+    #[test]
+    fn walls_just_past_the_offset_tolerance_build() {
+        let square = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)];
+        let (doc, node) = doc_with_shape(polygon_region(&square));
+        let face = first_face(node);
+        let mut params = params(&doc, &face, 10.0);
+        params.thickness = 10.0 * OFFSET_TOLERANCE;
+
+        let tube = build_extrusion(&doc, &face, &params).expect("thin walls build");
+        let inner = 20.0 - 2.0 * f64::from(params.thickness);
+        let expected = (20.0 * 20.0 - inner * inner) * 10.0;
+        assert!((tube.volume() - expected).abs() < 1e-6 * expected, "got {}", tube.volume());
     }
 
     /// A thick edge extrusion is a solid wall rather than a sheet.

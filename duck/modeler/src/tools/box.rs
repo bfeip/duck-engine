@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{Plane, Point3, Real, Transform, Vector3};
+use duck_engine_common::{LengthDisplay, Plane, Point3, Real, Transform, Vector3};
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape};
 use glam::dvec3;
 use opencascade::primitives::Shape;
@@ -73,10 +73,10 @@ pub enum BoxStage {
 }
 
 impl Params for BoxParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
-        let mut changed = dimension_field(ui, "Width", &mut self.width);
-        changed |= dimension_field(ui, "Length", &mut self.depth);
-        changed |= dimension_field(ui, "Height", &mut self.height);
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool {
+        let mut changed = dimension_field(ui, "Width", &mut self.width, units);
+        changed |= dimension_field(ui, "Length", &mut self.depth, units);
+        changed |= dimension_field(ui, "Height", &mut self.height, units);
         changed
     }
 

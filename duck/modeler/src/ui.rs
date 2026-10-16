@@ -14,11 +14,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use duck_engine_viewer::common::LengthDisplay;
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::selection::SelectionManager;
+use egui::emath::Numeric;
 
 use crate::construction::ConstructionOptions;
-use crate::document::Document;
+use crate::document::{Document, DOCUMENT_UNITS};
 use crate::notifications::{Notifications, Severity};
 use crate::tools::ToolManager;
 use crate::AppAction;
@@ -88,6 +90,17 @@ impl ModelerUi {
     }
 }
 
+/// A drag field over a document length, shown and typed in `units`: a field
+/// reading `12.50 mm` holds `0.0125`. Typed text may name its own unit, as in
+/// `1 in`.
+pub fn length_value<Num: Numeric>(value: &mut Num, units: LengthDisplay) -> egui::DragValue<'_> {
+    egui::DragValue::new(value)
+        .speed(units.step(DOCUMENT_UNITS))
+        .suffix(format!(" {}", units.unit.suffix()))
+        .custom_formatter(move |value, _| units.format_bare(value, DOCUMENT_UNITS))
+        .custom_parser(move |text| units.parse(text, DOCUMENT_UNITS))
+}
+
 /// egui's default fonts, with the monospace Hack as the proportional text's
 /// last fallback for the arrows and symbols Ubuntu lacks.
 pub fn install_fonts(ctx: &egui::Context) {
@@ -137,6 +150,8 @@ fn show_notifications(ctx: &egui::Context, notifications: &Notifications) {
 
 #[cfg(test)]
 mod tests {
+    use duck_engine_viewer::common::{LengthUnit, WorldUnits};
+
     use super::*;
 
     const LONG_NOTICE: &str =
@@ -156,6 +171,26 @@ mod tests {
             .and_then(|state| state.size)
             .expect("the notice area must have been laid out")
             .x
+    }
+
+    /// A field over 12.5 mm, held in document units, reads in the display unit.
+    #[test]
+    fn a_length_field_reads_in_the_display_unit() {
+        let ctx = egui::Context::default();
+        let mut value = 12.5 * WorldUnits::MILLIMETER.factor_to(DOCUMENT_UNITS);
+        let units = LengthDisplay::new(LengthUnit::Centimeter, 3);
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| ui.add(length_value(&mut value, units)));
+        });
+        let painted: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(painted.iter().any(|text| text == "1.250 cm"), "painted {painted:?}");
     }
 
     /// Every `.rs` file under `dir`.

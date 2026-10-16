@@ -62,8 +62,9 @@ pub fn classify_shape(shape: &Shape) -> GeometryClass {
 // still have to provide a material.
 #[derive(Clone)]
 pub struct CadTessellationOptions {
-    /// Tolerance used for OCCT incremental mesh tessellation. Lower values
-    /// produce finer meshes. Units match the file's unit system (typically mm).
+    /// Largest distance the faces' triangles and the edges' polylines may
+    /// stray from the B-Rep. Lower values produce finer meshes. In the shape's
+    /// own units, before [`scale_factor`](Self::scale_factor).
     pub tessellation_tolerance: f64,
     /// Uniform scale applied to all vertex positions. Use `0.001` to convert
     /// from millimeters (STEP default) to metres.
@@ -173,7 +174,10 @@ pub fn tessellate_occ_shape(elements: &ShapeElements, options: &CadTessellationO
 
     if options.include_edges {
         let scaled = |edge: &Edge| -> Vec<[f32; 3]> {
-            edge.polyline().iter().map(|p| (*p * s).as_vec3().to_array()).collect()
+            edge.polyline(options.tessellation_tolerance)
+                .iter()
+                .map(|p| (*p * s).as_vec3().to_array())
+                .collect()
         };
         for element in elements.edges() {
             let range = push_polyline(&scaled(element.curve()), &mut vertices, &mut edge_indices);

@@ -1,6 +1,6 @@
 use duck_engine_common::{
     Deg, InnerSpace, Matrix3, Matrix4, MetricSpace, Point3, Quaternion, Real, SquareMatrix, Vector3,
-    ortho, perspective,
+    EPSILON, ortho, perspective,
 };
 
 /// Matrix to convert from OpenGL clip-space depth [-1, 1] to WGPU depth [0, 1].
@@ -257,8 +257,8 @@ impl PositionedCamera {
         self.projection = match self.projection {
             Projection::Perspective { fovy, .. } => Projection::Perspective {
                 fovy,
-                // Near plane: at least 1/1000th of the distance, but not less than 0.001
-                znear: (distance * 0.001).max(0.001),
+                // Near plane: 1/1000th of the distance, kept off zero.
+                znear: (distance * 0.001).max(EPSILON),
                 // Far plane: generous enough for significant zoom-out
                 zfar: (distance + bounding_radius) * 10.0,
             },

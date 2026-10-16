@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{consts, InnerSpace, Plane, Point3, Real, Vector3};
+use duck_engine_common::{consts, InnerSpace, LengthDisplay, Plane, Point3, Real, Vector3};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     operator::{
@@ -25,7 +25,7 @@ use super::targets::{count_summary, selected_on_part, Selected};
 const ANGLE_HANDLE: HandleId = HandleId(0);
 
 impl Params for RevolveParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
+    fn ui(&mut self, ui: &mut egui::Ui, _units: LengthDisplay) -> bool {
         let mut changed = angle_field(ui, "Angle", &mut self.angle, consts::TAU);
 
         ui.label("Axis");

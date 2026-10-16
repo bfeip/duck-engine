@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{consts, Real};
+use duck_engine_common::{consts, LengthDisplay, Real};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     operator::{
@@ -27,7 +27,7 @@ const ANGLE_HANDLE: HandleId = HandleId(0);
 const MAX_DRAFT: Real = 85.0 * consts::PI / 180.0;
 
 impl Params for DraftParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
+    fn ui(&mut self, ui: &mut egui::Ui, _units: LengthDisplay) -> bool {
         angle_field(ui, "Angle", &mut self.angle, MAX_DRAFT)
     }
 

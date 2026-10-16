@@ -535,7 +535,7 @@ impl<F: Feature> ModelingTool for FeatureTool<F> {
         if let Some(summary) = self.feature.summary(&session.target, session.ignored) {
             ui.label(summary);
         }
-        match session.edit.panel(ui) {
+        match session.edit.panel(ui, self.workspace.display_units()) {
             // An edit begins the feature, which locks the target.
             PanelAction::Changed => session.locked = true,
             PanelAction::Apply => self.apply_and_report(panel.selection),

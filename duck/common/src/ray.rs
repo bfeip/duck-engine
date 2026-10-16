@@ -76,7 +76,7 @@ impl Ray {
 
         // b = dot(r, w) where w = origin - p0; the ray parameter at the projection of
         // p0 is -b (so degenerate/parallel cases use -b, not b).
-        if e < EPSILON {
+        if e < EPSILON * EPSILON {
             // Degenerate segment: both endpoints are the same point — project p0 onto the ray
             seg_t = 0.0;
             ray_t = -b;
@@ -85,7 +85,8 @@ impl Ray {
             let f = d.dot(w);
             let denom = e - c * c; // = a*e - c*c where a=1 (ray direction is unit)
 
-            if denom < EPSILON {
+            // denom = e·sin²θ, so this compares the angle alone, at any length.
+            if denom < EPSILON * e {
                 // Ray and segment are parallel — project p0 onto the ray
                 seg_t = 0.0;
                 ray_t = -b;
@@ -674,5 +675,17 @@ mod tests {
         let p0 = Point3::new(-1.0, 0.0, -5.0);
         let p1 = Point3::new(1.0, 0.0, -5.0);
         assert!(ray.closest_approach_to_segment(p0, p1).is_none());
+    }
+
+    #[test]
+    fn closest_approach_to_a_short_segment_is_no_degenerate_one() {
+        // Half a millimetre across, in metres: the ray crosses it a fifth of
+        // the way along.
+        let ray = Ray::new(Point3::new(0.0001, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0));
+        let p0 = Point3::new(0.0, 0.0, 0.05);
+        let p1 = Point3::new(0.0005, 0.0, 0.05);
+        let a = ray.closest_approach_to_segment(p0, p1).unwrap();
+        assert!((a.closest_on_segment.x - 0.0001).abs() < 1e-9, "got {:?}", a.closest_on_segment);
+        assert!(a.distance < 1e-9, "dist should be 0, got {}", a.distance);
     }
 }

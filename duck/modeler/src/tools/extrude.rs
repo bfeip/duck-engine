@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{consts, InnerSpace, Plane, Point3, Real, Vector3};
+use duck_engine_common::{consts, InnerSpace, LengthDisplay, Plane, Point3, Real, Vector3};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     operator::{
@@ -37,11 +37,11 @@ const MAX_TILT: Real = 85.0 * consts::PI / 180.0;
 const TILT_EPSILON: Real = 1e-4;
 
 impl Params for ExtrudeParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
-        let min_distance = self.min_distance();
-        let mut changed = length_field(ui, "Distance", &mut self.distance, min_distance..=Real::MAX);
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool {
+        let distance = self.min_distance()..=Real::MAX;
+        let mut changed = length_field(ui, "Distance", &mut self.distance, distance, units);
         changed |= angle_field(ui, "Draft", &mut self.draft, MAX_DRAFT);
-        changed |= length_field(ui, "Thickness", &mut self.thickness, Real::MIN..=Real::MAX);
+        changed |= length_field(ui, "Thickness", &mut self.thickness, Real::MIN..=Real::MAX, units);
 
         ui.label("Direction");
         ui.horizontal(|ui| {

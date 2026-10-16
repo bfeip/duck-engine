@@ -9,13 +9,13 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::{Compound, Edge, Shape, ShapeElements, ShapeType};
 
-use crate::document::Document;
+use crate::document::{Document, DOCUMENT_UNITS};
 use crate::ops::join::{
     build_join, can_unjoin, commit_join, default_tolerance, is_sheet, unjoin_parts, Join,
 };
 use crate::preview::PreviewSession;
 use crate::tools::{Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
-use crate::ui::icons;
+use crate::ui::{icons, length_value};
 use super::edit::{apply_row, error_line, PanelAction};
 use super::targets::{count_summary, selected_parts};
 
@@ -188,11 +188,15 @@ impl JoinTool {
     fn tolerance_field(&mut self, ui: &mut egui::Ui, nodes: &[NodeId]) {
         let mut tolerance = self.tolerance_for(&self.workspace.document.lock().unwrap(), nodes);
         let speed = tolerance * 0.05;
+        let units = self.workspace.display_units();
         ui.label("Tolerance");
-        let field = egui::DragValue::new(&mut tolerance)
+        // Tolerances span orders of magnitude, so they read in scientific notation.
+        let field = length_value(&mut tolerance, units)
             .speed(speed)
             .range(MIN_TOLERANCE..=Real::MAX)
-            .custom_formatter(|value, _| format!("{value:.2e}"));
+            .custom_formatter(move |value, _| {
+                format!("{:.2e}", DOCUMENT_UNITS.to_unit(value, units.unit))
+            });
         if ui.add(field).on_hover_text("How far apart edges may lie and still be sewn").changed() {
             self.tolerance = Some(tolerance);
         }

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::Real;
+use duck_engine_common::{LengthDisplay, Real};
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
     operator::{
@@ -22,8 +22,8 @@ use super::targets::{count_summary, selected_faces_or_part, Selected};
 const THICKNESS_HANDLE: HandleId = HandleId(0);
 
 impl Params for HollowParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
-        length_field(ui, "Thickness", &mut self.thickness, Real::MIN..=Real::MAX)
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool {
+        length_field(ui, "Thickness", &mut self.thickness, Real::MIN..=Real::MAX, units)
     }
 
     /// A grip on the far side of the wall, tied by a leader to the surface it

@@ -92,7 +92,7 @@ use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::NodeId;
-use duck_engine_viewer::common::{Point3, Ray};
+use duck_engine_viewer::common::{LengthDisplay, Point3, Ray};
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
 use duck_engine_viewer::input::{ElementState, Key, Modifiers, MouseButton, NamedKey};
 use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionMode};
@@ -147,6 +147,11 @@ impl Workspace {
     /// Coarser tessellation options for previews.
     pub fn preview_options(&self) -> CadTessellationOptions {
         self.construction.borrow().preview_options()
+    }
+
+    /// The unit lengths are shown and typed in.
+    pub fn display_units(&self) -> LengthDisplay {
+        self.construction.borrow().units
     }
 
     /// The name of the part at `node`, or "Unknown" if it is no part.

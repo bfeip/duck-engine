@@ -1,12 +1,29 @@
 //! The scene tab: settings that belong to the scene rather than any one part —
-//! camera projection, construction plane, grid, and snapping.
+//! display units, camera projection, construction plane, grid, and snapping.
 
-use duck_engine_viewer::common::{EuclideanSpace, InnerSpace, Plane, Point3, Real, Vector3};
+use duck_engine_viewer::common::{
+    EuclideanSpace, InnerSpace, LengthDisplay, LengthUnit, Plane, Point3, Real, Vector3,
+};
 use duck_engine_viewer::scene::{PositionedCamera, Projection};
 
 use crate::construction::ConstructionOptions;
+use crate::document::DOCUMENT_UNITS;
 use crate::snap::SnapFlags;
+use crate::ui::length_value;
 use crate::AppAction;
+
+/// Closest a clip plane may sit to the eye, and the least gap kept between
+/// near and far, in document units: 1 µm.
+const MIN_CLIP: Real = 1e-3;
+
+/// Floors on the grid's extent and ruling, in document units: 1 mm and 10 µm.
+/// The grid's line count is extent over spacing, so they bound its mesh.
+const MIN_GRID_SIZE: Real = 1.0;
+const MIN_GRID_SPACING: Real = 0.01;
+
+/// Display steps a pixel of drag moves the lengths that run to metres — far
+/// clip, clip depth, grid size — where the rest run to millimetres.
+const LONG_STEPS: f64 = 100.0;
 
 /// The scene tab, owning the state local to it.
 pub struct SceneTab {
@@ -31,9 +48,14 @@ impl SceneTab {
         construction: &mut ConstructionOptions,
         actions: &mut Vec<AppAction>,
     ) {
+        egui::CollapsingHeader::new("Units")
+            .default_open(true)
+            .show(ui, |ui| units_ui(ui, &mut construction.units));
+
+        let units = construction.units;
         egui::CollapsingHeader::new("Camera")
             .default_open(true)
-            .show(ui, |ui| camera_ui(ui, camera, &mut self.last_perspective, actions));
+            .show(ui, |ui| camera_ui(ui, camera, &mut self.last_perspective, units, actions));
 
         egui::CollapsingHeader::new("Construction plane")
             .default_open(true)
@@ -65,8 +87,33 @@ impl SceneTab {
     }
 }
 
-/// Projection controls for the view's camera. Pose is left to the navigation
-/// operator.
+/// The unit lengths are shown and typed in, and to how many decimals.
+/// Presentation only: the document models in [`DOCUMENT_UNITS`] whatever is
+/// picked here, so nothing is rebuilt.
+fn units_ui(ui: &mut egui::Ui, units: &mut LengthDisplay) {
+    egui::Grid::new("unit_settings").num_columns(2).show(ui, |ui| {
+        ui.label("Display unit");
+        egui::ComboBox::from_id_salt("display_unit")
+            .selected_text(units.unit.name())
+            .show_ui(ui, |ui| {
+                for unit in LengthUnit::ALL {
+                    ui.selectable_value(&mut units.unit, unit, unit.name());
+                }
+            });
+        ui.end_row();
+
+        ui.label("Decimals");
+        ui.add(egui::DragValue::new(&mut units.decimals).range(0..=6));
+        ui.end_row();
+    });
+
+    if let Some(unit) = DOCUMENT_UNITS.nearest_unit() {
+        ui.weak(format!("The model is stored in {}s.", unit.name().to_lowercase()));
+    }
+}
+
+/// Projection controls for the view's camera, lengths shown in `units`. Pose
+/// is left to the navigation operator.
 ///
 /// The two projections carry different parameters, so the grid swaps rows with
 /// the mode: orthographic has no near plane to set, and its extent is a world
@@ -75,8 +122,10 @@ fn camera_ui(
     ui: &mut egui::Ui,
     camera: &mut PositionedCamera,
     last_perspective: &mut Projection,
+    units: LengthDisplay,
     actions: &mut Vec<AppAction>,
 ) {
+    let long_speed = units.step(DOCUMENT_UNITS) * LONG_STEPS;
     let mut changed = false;
     egui::Grid::new("camera_settings").num_columns(2).show(ui, |ui| {
         match &mut camera.projection {
@@ -88,38 +137,28 @@ fn camera_ui(
 
                 let far = *zfar;
                 ui.label("Near clip");
-                changed |= ui
-                    .add(egui::DragValue::new(znear).speed(0.1).range(0.001..=far - 0.001))
-                    .changed();
+                changed |=
+                    ui.add(length_value(znear, units).range(MIN_CLIP..=far - MIN_CLIP)).changed();
                 ui.end_row();
 
                 let near = *znear;
                 ui.label("Far clip");
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(zfar).speed(10.0).range(near + 0.001..=Real::MAX),
-                    )
-                    .changed();
+                let far = length_value(zfar, units).speed(long_speed);
+                changed |= ui.add(far.range(near + MIN_CLIP..=Real::MAX)).changed();
                 ui.end_row();
             }
             Projection::Orthographic { half_height, half_depth } => {
                 let mut height = *half_height * 2.0;
                 ui.label("View height");
-                if ui
-                    .add(egui::DragValue::new(&mut height).speed(1.0).range(1e-3..=Real::MAX))
-                    .changed()
-                {
+                if ui.add(length_value(&mut height, units).range(MIN_CLIP..=Real::MAX)).changed() {
                     *half_height = height / 2.0;
                     changed = true;
                 }
                 ui.end_row();
 
                 ui.label("Clip depth");
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(half_depth).speed(10.0).range(1e-3..=Real::MAX),
-                    )
-                    .changed();
+                let depth = length_value(half_depth, units).speed(long_speed);
+                changed |= ui.add(depth.range(MIN_CLIP..=Real::MAX)).changed();
                 ui.end_row();
             }
         }
@@ -171,7 +210,7 @@ fn plane_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
 
     egui::Grid::new("plane_settings").num_columns(2).show(ui, |ui| {
         ui.label("Offset");
-        if ui.add(egui::DragValue::new(&mut offset).speed(0.5)).changed() {
+        if ui.add(length_value(&mut offset, construction.units)).changed() {
             let normal = construction.construction_plane.normal;
             construction.construction_plane =
                 Plane::from_point(normal, Point3::origin() + normal * offset);
@@ -188,6 +227,7 @@ fn plane_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
 
 /// Grid visibility and dimensions. Returns true when the grid must be rebuilt.
 fn grid_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
+    let units = construction.units;
     let grid = &mut construction.grid;
     let mut changed = false;
 
@@ -195,15 +235,14 @@ fn grid_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
 
     egui::Grid::new("grid_settings").num_columns(2).show(ui, |ui| {
         ui.label("Size");
-        changed |= ui
-            .add(egui::DragValue::new(&mut grid.size).speed(10.0).range(1.0..=Real::MAX))
-            .changed();
+        let long_speed = units.step(DOCUMENT_UNITS) * LONG_STEPS;
+        let size = length_value(&mut grid.size, units).speed(long_speed);
+        changed |= ui.add(size.range(MIN_GRID_SIZE..=Real::MAX)).changed();
         ui.end_row();
 
         ui.label("Minor spacing");
-        changed |= ui
-            .add(egui::DragValue::new(&mut grid.minor_spacing).speed(0.5).range(0.01..=Real::MAX))
-            .changed();
+        let spacing = length_value(&mut grid.minor_spacing, units);
+        changed |= ui.add(spacing.range(MIN_GRID_SPACING..=Real::MAX)).changed();
         ui.end_row();
 
         ui.label("Major every");

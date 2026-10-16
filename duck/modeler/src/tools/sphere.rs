@@ -1,5 +1,7 @@
 use anyhow::Result;
-use duck_engine_common::{InnerSpace, Plane, Point3, Quaternion, Real, Transform, Vector3};
+use duck_engine_common::{
+    InnerSpace, LengthDisplay, Plane, Point3, Quaternion, Real, Transform, Vector3,
+};
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape};
 use opencascade::primitives::Shape;
 
@@ -32,8 +34,8 @@ pub struct SphereStage {
 }
 
 impl Params for SphereParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
-        dimension_field(ui, "Radius", &mut self.radius)
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool {
+        dimension_field(ui, "Radius", &mut self.radius, units)
     }
 
     /// A radius grip on the pole, tied back to the center by a leader.

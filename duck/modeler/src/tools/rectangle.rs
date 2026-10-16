@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{Plane, Point3, Real, Transform};
+use duck_engine_common::{LengthDisplay, Plane, Point3, Real, Transform};
 use opencascade::primitives::Shape;
 
 use crate::ops::primitives::{closed_polyline, rectangle_corners, region};
@@ -27,9 +27,9 @@ pub struct RectangleStage {
 }
 
 impl Params for RectangleParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
-        let mut changed = dimension_field(ui, "Width", &mut self.width);
-        changed |= dimension_field(ui, "Length", &mut self.depth);
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool {
+        let mut changed = dimension_field(ui, "Width", &mut self.width, units);
+        changed |= dimension_field(ui, "Length", &mut self.depth, units);
         changed
     }
 }

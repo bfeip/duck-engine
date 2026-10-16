@@ -31,6 +31,11 @@ use crate::snap::Snap;
 use super::edit::{Edit, PanelAction, Params, MIN_DIMENSION};
 use super::{Gesture, ModelingTool, PanelContext, Pointer, ToolInfo, Workspace};
 
+/// Tessellation tolerance of the unit reference shapes, as a fraction of their
+/// unit size. The preview scales them to any size, so a tolerance in document
+/// units would set no fineness in particular.
+const REFERENCE_TOLERANCE: f64 = 1e-3;
+
 /// A shape placed by picking points, run by [`PrimitiveTool`]. Implemented by
 /// the settings the panel and grips edit once it is placed.
 pub trait Primitive: Params + 'static {
@@ -158,7 +163,8 @@ impl<P: Primitive> PrimitiveTool<P> {
     /// gives it a size.
     fn begin(&mut self, stage: P::Stage) -> Result<()> {
         let reference = P::reference(stage)?;
-        let options = self.workspace.geometry_options();
+        let mut options = self.workspace.geometry_options();
+        options.tessellation_tolerance = REFERENCE_TOLERANCE;
         self.preview
             .try_replace_preview(&reference, &options, &format!("{} preview", P::NAME))
             .context("The preview could not be tessellated")?;
@@ -282,8 +288,9 @@ impl<P: Primitive> ModelingTool for PrimitiveTool<P> {
     }
 
     fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
+        let units = self.workspace.display_units();
         let Placement::Placed(edit) = &mut self.placement else { return };
-        match edit.panel(ui) {
+        match edit.panel(ui, units) {
             PanelAction::Changed => {
                 self.preview.set_preview_transform(edit.params().preview_transform());
             }

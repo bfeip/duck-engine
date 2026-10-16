@@ -3,8 +3,10 @@
 
 use std::ops::RangeInclusive;
 
-use duck_engine_viewer::common::Real;
+use duck_engine_viewer::common::{LengthDisplay, Real};
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleEvent};
+
+use crate::ui::length_value;
 
 /// Smallest value a dimension field accepts. Anything at or below it is
 /// degenerate and can't be built.
@@ -18,9 +20,9 @@ pub(super) const MIN_DIMENSION: Real = 1e-6;
 ///
 /// `Copy` because a grip drag edits from a snapshot taken when it was grabbed.
 pub trait Params: Copy {
-    /// The fields, one row each of a two-column grid. Returns true when a
-    /// value changed.
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool;
+    /// The fields, one row each of a two-column grid, lengths shown in
+    /// `units`. Returns true when a value changed.
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool;
 
     /// The grips for these settings, or empty for none.
     fn handles(&self) -> Vec<Handle> {
@@ -93,11 +95,12 @@ impl<P: Params> Edit<P> {
         }
     }
 
-    /// The panel's body: the fields, then Cancel / Apply.
-    pub(super) fn panel(&mut self, ui: &mut egui::Ui) -> PanelAction {
+    /// The panel's body: the fields, lengths shown in `units`, then Cancel /
+    /// Apply.
+    pub(super) fn panel(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> PanelAction {
         let changed = egui::Grid::new("tool_params")
             .num_columns(2)
-            .show(ui, |ui| self.params.ui(ui))
+            .show(ui, |ui| self.params.ui(ui, units))
             .inner;
         ui.separator();
         match apply_row(ui) {
@@ -135,22 +138,28 @@ pub(super) fn error_line(ui: &mut egui::Ui, error: &str) {
     ui.colored_label(ui.visuals().error_fg_color, error);
 }
 
-/// One labelled dimension row of a panel's grid: a length that must stay
-/// above [`MIN_DIMENSION`]. Returns true when the value changed.
-pub(super) fn dimension_field(ui: &mut egui::Ui, label: &str, value: &mut Real) -> bool {
-    length_field(ui, label, value, MIN_DIMENSION..=Real::MAX)
+/// One labelled dimension row of a panel's grid: a length, shown in `units`,
+/// that must stay above [`MIN_DIMENSION`]. Returns true when the value changed.
+pub(super) fn dimension_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut Real,
+    units: LengthDisplay,
+) -> bool {
+    length_field(ui, label, value, MIN_DIMENSION..=Real::MAX, units)
 }
 
-/// One labelled length row of a panel's grid, held within `range`. Returns
-/// true when the value changed.
+/// One labelled length row of a panel's grid, held within `range` and shown in
+/// `units`. Returns true when the value changed.
 pub(super) fn length_field(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut Real,
     range: RangeInclusive<Real>,
+    units: LengthDisplay,
 ) -> bool {
     ui.label(label);
-    let changed = ui.add(egui::DragValue::new(value).speed(0.5).range(range)).changed();
+    let changed = ui.add(length_value(value, units).range(range)).changed();
     ui.end_row();
     changed
 }

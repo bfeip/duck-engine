@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{Plane, Point3, Real, Transform};
+use duck_engine_common::{LengthDisplay, Plane, Point3, Real, Transform};
 use opencascade::primitives::Shape;
 
 use crate::ops::primitives::{circle, region};
@@ -26,8 +26,8 @@ pub struct CircleStage {
 }
 
 impl Params for CircleParams {
-    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
-        dimension_field(ui, "Radius", &mut self.radius)
+    fn ui(&mut self, ui: &mut egui::Ui, units: LengthDisplay) -> bool {
+        dimension_field(ui, "Radius", &mut self.radius, units)
     }
 }
 
