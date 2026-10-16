@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::common::{InnerSpace, Plane, Point3, Ray, Vector3};
+use duck_engine_scene::common::{InnerSpace, Plane, Point3, Ray, RgbaColor, Vector3};
 use duck_engine_scene::resource::{NodeId, SubGeometryElement, SubGeometryKind, Visibility};
 use duck_engine_scene::Scene;
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, NamedKey, PhysicalKey};
@@ -222,6 +222,16 @@ pub fn visibility(ws: &Workspace, node: NodeId) -> Visibility {
     let scene = ws.document.lock().unwrap().scene().clone();
     let visibility = scene.lock().get_node(node).expect("node exists").visibility();
     visibility
+}
+
+/// Asserts `actual` matches `expected` in every channel.
+pub fn assert_color(actual: RgbaColor, expected: RgbaColor) {
+    const EPSILON: f32 = 1e-6;
+    let close = (actual.r - expected.r).abs() < EPSILON
+        && (actual.g - expected.g).abs() < EPSILON
+        && (actual.b - expected.b).abs() < EPSILON
+        && (actual.a - expected.a).abs() < EPSILON;
+    assert!(close, "expected color {expected:?}, got {actual:?}");
 }
 
 /// The volume of the part at `node` in the workspace's document.

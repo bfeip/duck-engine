@@ -1,5 +1,9 @@
 use anyhow::Result;
-use duck_engine_common::Point3;
+use duck_engine_common::{Point3, RgbaColor};
+use duck_engine_scene::cad::CadTessellationOptions;
+use duck_engine_scene::resource::{
+    DisplayBehavior, FaceMaterial, LineMaterial, MaterialFlags, NodeId, RenderLayer,
+};
 use duck_engine_viewer::{
     event::{Event, EventContext},
     selection::SelectionManager,
@@ -11,6 +15,9 @@ use crate::preview::PreviewSession;
 use crate::snap::{Snap, SnapKind, SnapProvider, WireStartSnap};
 use crate::ui::icons;
 use super::{Gesture, ModelingTool, ToolInfo, Workspace};
+
+/// The color of the path the next click makes.
+const CANDIDATE_COLOR: RgbaColor = RgbaColor { r: 0.72, g: 0.90, b: 0.25, a: 1.0 };
 
 /// How a path runs through its points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,13 +83,21 @@ enum Ending {
 
 /// Draws a line or curve through clicked points.
 ///
+/// The path through the points placed so far shows beneath the path the next
+/// click makes, so a point that reshapes the curve before it shows how.
+///
 /// Right-click or Enter ends the path at its last point; clicking its first
 /// point again closes it into a region. Either adds it as a part and leaves the
 /// tool. Escape discards it.
 pub struct PathTool {
     kind: PathKind,
     workspace: Workspace,
+    /// The path the next click makes: through the placed points and the
+    /// cursor, or closed back to the first. Drawn over everything, in the
+    /// candidate color.
     preview: PreviewSession,
+    /// The path through the points placed so far.
+    placed: PreviewSession,
     /// The points placed so far, none before the first click.
     points: Vec<Point3>,
     /// Where the 3D cursor marks.
@@ -98,6 +113,7 @@ impl PathTool {
             kind,
             workspace: workspace.clone(),
             preview: workspace.preview_session(),
+            placed: workspace.preview_session(),
             points: Vec::new(),
             cursor: None,
             finished: false,
@@ -110,12 +126,19 @@ impl PathTool {
         (self.points.len() >= 3).then(|| WireStartSnap { start: self.points[0] })
     }
 
-    /// The snapped point under the cursor at `at`, looking through the preview.
+    /// The snapped point under the cursor at `at`, looking through the
+    /// previews.
     fn snap(&self, at: (f32, f32), ctx: &EventContext) -> Option<Snap> {
         let start = self.closing_snap();
         let extra: Vec<&dyn SnapProvider> =
             start.iter().map(|start| start as &dyn SnapProvider).collect();
-        self.workspace.snap_with(at, self.preview.preview_nodes(), ctx, &extra)
+        let exclude: Vec<NodeId> =
+            self.preview.preview_nodes()
+            .iter()
+            .chain(self.placed.preview_nodes())
+            .copied()
+            .collect();
+        self.workspace.snap_with(at, &exclude, ctx, &extra)
     }
 
     /// Follows `snap` with the cursor and the path's loose end, or with the
@@ -129,7 +152,7 @@ impl PathTool {
             let points: Vec<Point3> = self.points.iter().copied().chain([snap.position]).collect();
             self.kind.open(&points)
         };
-        self.show(shape);
+        self.show_preview(shape);
     }
 
     /// Takes a click at `snap`: the next point, or the first point again, which
@@ -140,17 +163,42 @@ impl PathTool {
             self.apply_and_report(Ending::Closed);
         } else {
             self.points.push(snap.position);
+            self.show_placed();
             // The next hover adds the loose end.
-            self.show(self.kind.open(&self.points));
+            self.preview.clear_previews();
         }
     }
 
-    /// Previews `shape`, keeping the last preview when there is none to show.
-    fn show(&mut self, shape: Result<Shape>) {
+    /// Previews `shape` as the path the next click makes, keeping the last
+    /// preview when there is none to show.
+    fn show_preview(&mut self, shape: Result<Shape>) {
         let Ok(shape) = shape else { return };
-        let options = self.workspace.preview_options();
+        let options = self.candidate_options();
         let name = format!("{} preview", self.kind.name());
-        self.preview.try_replace_preview(&shape, &options, &name);
+        if self.preview.try_replace_preview(&shape, &options, &name).is_some() {
+            self.preview.set_preview_display(DisplayBehavior { layer: RenderLayer::Overlay, ..Default::default() });
+        }
+    }
+
+    /// Shows the path through the placed points, once there are enough for
+    /// one.
+    fn show_placed(&mut self) {
+        let Ok(shape) = self.kind.open(&self.points) else { return };
+        let options = self.workspace.preview_options();
+        let name = format!("{} so far", self.kind.name());
+        self.placed.try_replace_preview(&shape, &options, &name);
+    }
+
+    /// The preview options, in the candidate color.
+    fn candidate_options(&self) -> CadTessellationOptions {
+        let mut options = self.workspace.preview_options();
+        options.free_line_material = Some(LineMaterial::new(CANDIDATE_COLOR));
+        options.free_face_material = Some(
+            FaceMaterial::new()
+                .with_base_color_factor(RgbaColor { a: 0.3, ..CANDIDATE_COLOR })
+                .with_flags(MaterialFlags::DOUBLE_SIDED | MaterialFlags::DO_NOT_LIGHT),
+        );
+        options
     }
 
     /// Whether the path can end open where it is.
@@ -199,9 +247,10 @@ impl PathTool {
         self.finished = true;
     }
 
-    /// Drops the points and their preview, ready for a first click.
+    /// Drops the points and their previews, ready for a first click.
     fn reset(&mut self) {
         self.preview.cancel();
+        self.placed.cancel();
         self.points.clear();
     }
 }
@@ -261,7 +310,7 @@ mod tests {
     use opencascade::primitives::ShapeType;
 
     use crate::document::Document;
-    use crate::testing::workspace;
+    use crate::testing::{assert_color, workspace};
 
     fn tool(kind: PathKind) -> (PathTool, Workspace) {
         let ws = workspace(Document::new(Scene::default()));
@@ -286,6 +335,22 @@ mod tests {
         doc.parts().map(|part| (part.name.clone(), part.shape().shape_type())).collect()
     }
 
+    /// The layer and line color `session`'s sole preview draws with.
+    fn look(ws: &Workspace, session: &PreviewSession) -> (RenderLayer, RgbaColor) {
+        let node = session.preview_node().expect("one preview");
+        let scene = ws.document.lock().unwrap().scene().clone();
+        let scene = scene.lock();
+        let node = scene.get_node(node).expect("the preview exists");
+        let instance = scene.get_instance(node.instance().expect("the preview is drawn")).unwrap();
+        let line = instance.line_material().expect("the preview has lines");
+        (node.display().layer, scene.get_line_material(line).unwrap().color())
+    }
+
+    /// Whether neither preview holds anything.
+    fn previews_empty(tool: &PathTool) -> bool {
+        tool.preview.is_empty() && tool.placed.is_empty()
+    }
+
     #[test]
     fn finishing_adds_the_open_path_and_leaves() {
         let (mut tool, ws) = tool(PathKind::Polyline);
@@ -294,7 +359,7 @@ mod tests {
 
         assert!(tool.finish());
         assert!(tool.is_finished());
-        assert!(tool.preview.is_empty());
+        assert!(previews_empty(&tool));
         assert_eq!(parts(&ws), [("Line-001".to_owned(), ShapeType::Wire)]);
     }
 
@@ -308,7 +373,7 @@ mod tests {
         assert!(tool.finish());
         assert!(!tool.is_finished());
         assert!(tool.points.is_empty());
-        assert!(tool.preview.is_empty());
+        assert!(previews_empty(&tool));
         assert!(parts(&ws).is_empty());
         // Nothing placed is nothing to finish.
         assert!(!tool.finish());
@@ -328,15 +393,48 @@ mod tests {
     }
 
     #[test]
+    fn hovering_previews_the_candidate_over_the_placed_path() {
+        let (mut tool, ws) = tool(PathKind::Spline);
+        tool.click(at(0.0, 0.0));
+        tool.click(at(2.0, 0.0));
+        tool.click(at(1.0, 2.0));
+        tool.hover(at(3.0, 3.0));
+
+        let (layer, color) = look(&ws, &tool.preview);
+        assert_eq!(layer, RenderLayer::Overlay);
+        assert_color(color, CANDIDATE_COLOR);
+
+        let (layer, color) = look(&ws, &tool.placed);
+        assert_eq!(layer, RenderLayer::Scene);
+        let sketch = ws.preview_options().free_line_material.expect("sketches have their own lines");
+        assert_color(color, sketch.color());
+    }
+
+    #[test]
+    fn a_click_shows_the_placed_path_and_clears_the_candidate() {
+        let (mut tool, _ws) = tool(PathKind::Spline);
+        tool.click(at(0.0, 0.0));
+        assert!(tool.placed.is_empty(), "one point is no path");
+        tool.click(at(2.0, 0.0));
+        tool.hover(at(1.0, 2.0));
+        assert!(tool.preview.preview_node().is_some());
+
+        tool.click(at(1.0, 2.0));
+        assert!(tool.placed.preview_node().is_some());
+        assert!(tool.preview.is_empty());
+    }
+
+    #[test]
     fn cancelling_discards_the_path_and_leaves() {
         let (mut tool, ws) = tool(PathKind::Polyline);
         tool.click(at(0.0, 0.0));
-        tool.hover(at(1.0, 0.0));
-        assert!(!tool.preview.is_empty());
+        tool.click(at(1.0, 0.0));
+        tool.hover(at(2.0, 1.0));
+        assert!(!tool.preview.is_empty() && !tool.placed.is_empty());
 
         tool.cancel();
         assert!(tool.is_finished());
-        assert!(tool.preview.is_empty());
+        assert!(previews_empty(&tool));
         assert!(parts(&ws).is_empty());
     }
 

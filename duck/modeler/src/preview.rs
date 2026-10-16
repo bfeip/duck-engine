@@ -5,7 +5,7 @@ use duck_engine_scene::cad::{
 };
 use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{
-    FaceMaterialHandle, Instance, LineMaterialHandle, NodeFlags, NodeId, Visibility,
+    DisplayBehavior, FaceMaterialHandle, Instance, LineMaterialHandle, NodeFlags, NodeId, Visibility,
 };
 use duck_engine_scene::{Scene, SceneData};
 use opencascade::primitives::{Shape, ShapeElements};
@@ -183,6 +183,15 @@ impl PreviewSession {
         }
     }
 
+    /// Set the display behavior of every tracked preview.
+    pub fn set_preview_display(&self, display: DisplayBehavior) {
+        let scene = self.scene();
+        let mut scene = scene.lock();
+        for &node in &self.previews {
+            scene.set_node_display(node, display);
+        }
+    }
+
     /// Hide `node` for the preview's duration and track it for restoration on
     /// cancel or drop. Does nothing if it is already hidden by this session.
     pub fn hide_source_node(&mut self, node: NodeId) {
@@ -296,8 +305,10 @@ impl Drop for PreviewSession {
 mod tests {
     use super::*;
     use duck_engine_scene::common::RgbaColor;
-    use duck_engine_scene::resource::{FaceMaterial, LineMaterial};
+    use duck_engine_scene::resource::{FaceMaterial, LineMaterial, RenderLayer};
     use opencascade::primitives::{Face, Wire};
+
+    use crate::testing::assert_color;
 
     fn document() -> Arc<Mutex<Document>> {
         let scene = Scene::default();
@@ -323,16 +334,6 @@ mod tests {
             free_face_material: Some(FaceMaterial::new().with_base_color_factor(FREE_COLOR)),
             ..Default::default()
         }
-    }
-
-    const EPSILON: f32 = 1e-6;
-
-    fn assert_color(actual: RgbaColor, expected: RgbaColor) {
-        let close = (actual.r - expected.r).abs() < EPSILON
-            && (actual.g - expected.g).abs() < EPSILON
-            && (actual.b - expected.b).abs() < EPSILON
-            && (actual.a - expected.a).abs() < EPSILON;
-        assert!(close, "expected color {expected:?}, got {actual:?}");
     }
 
     /// The base color of the face material a preview node's instance is drawn with.
@@ -619,6 +620,24 @@ mod tests {
         with_scene(&document, |s| {
             for node in previews {
                 assert!(s.get_node(node).unwrap().flags().contains(NodeFlags::DO_NOT_SELECT));
+            }
+        });
+    }
+
+    #[test]
+    fn set_preview_display_moves_every_preview_to_the_layer() {
+        let document = document();
+        let options = CadTessellationOptions::default();
+        let mut session = PreviewSession::new(document.clone());
+        let previews = [
+            session.add_preview_from_shape(&unit_shape(), &options, "a").unwrap(),
+            session.add_preview_from_shape(&unit_shape(), &options, "b").unwrap(),
+        ];
+
+        session.set_preview_display(DisplayBehavior { layer: RenderLayer::Overlay, ..Default::default() });
+        with_scene(&document, |s| {
+            for node in previews {
+                assert_eq!(s.get_node(node).unwrap().display().layer, RenderLayer::Overlay);
             }
         });
     }
