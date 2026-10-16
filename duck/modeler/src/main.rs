@@ -131,6 +131,7 @@ impl ViewerState<'static> {
         );
 
         egui_extras::install_image_loaders(&egui_ctx);
+        ui::install_fonts(&egui_ctx);
 
         let mut egui_renderer = egui_wgpu::Renderer::new(
             viewer.device(),

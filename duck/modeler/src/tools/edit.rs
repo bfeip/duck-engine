@@ -123,7 +123,7 @@ pub(super) fn apply_row(ui: &mut egui::Ui) -> PanelAction {
         if ui.button("Cancel").clicked() {
             action = PanelAction::Cancel;
         }
-        if ui.button("Apply  ⏎").clicked() {
+        if ui.button("Apply  ↵").clicked() {
             action = PanelAction::Apply;
         }
     });

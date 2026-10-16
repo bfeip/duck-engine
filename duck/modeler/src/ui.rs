@@ -88,6 +88,19 @@ impl ModelerUi {
     }
 }
 
+/// egui's default fonts, with the monospace Hack as the proportional text's
+/// last fallback for the arrows and symbols Ubuntu lacks.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        // The Hack typeface: egui's bundled monospace font.
+        .push("Hack".to_owned());
+    ctx.set_fonts(fonts);
+}
+
 /// Bottom-anchored stack of transient notices; expires on its own.
 fn show_notifications(ctx: &egui::Context, notifications: &Notifications) {
     let live = notifications.live();
@@ -143,6 +156,44 @@ mod tests {
             .and_then(|state| state.size)
             .expect("the notice area must have been laid out")
             .x
+    }
+
+    /// Every `.rs` file under `dir`.
+    fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(rust_sources(&path));
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+        files
+    }
+
+    /// A glyph the fonts lack draws as an empty box, so every non-ASCII
+    /// character the code (not its comments) uses must have one.
+    #[test]
+    fn every_symbol_in_the_source_has_a_glyph() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let font = egui::FontId::proportional(14.0);
+
+        let mut missing = Vec::new();
+        for path in rust_sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
+            let source = std::fs::read_to_string(&path).unwrap();
+            for (number, line) in source.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or_default();
+                for c in code.chars().filter(|c| !c.is_ascii()) {
+                    if !ctx.fonts_mut(|fonts| fonts.has_glyph(&font, c)) {
+                        missing.push(format!("{c:?} at {}:{}", path.display(), number + 1));
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "no glyph for {missing:#?}");
     }
 
     #[test]
