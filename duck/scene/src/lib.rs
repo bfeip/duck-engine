@@ -65,7 +65,9 @@
 //!
 //! Node [`Visibility`](resource::Visibility) is what you author; what actually
 //! shows is the inherited
-//! [`EffectiveVisibility`](resource::EffectiveVisibility).
+//! [`EffectiveVisibility`](resource::EffectiveVisibility). Hiding a node hides
+//! its subtree from rendering and picking, while its descendants keep their own
+//! visibility.
 //! [`NodeFlags`](resource::NodeFlags) opt a node out of picking or bounds
 //! contribution, and [`DisplayBehavior`](resource::DisplayBehavior) — also
 //! inherited — requests screen-space rendering (constant pixel size,

@@ -15,6 +15,9 @@ use std::cell::Cell;
 pub type NodeId = super::Id<Node>;
 
 /// Explicit visibility state set by the user.
+///
+/// An invisible node hides its whole subtree; its descendants keep their own
+/// visibility, which applies again once it is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Visibility {
@@ -25,14 +28,14 @@ pub enum Visibility {
     Invisible,
 }
 
-/// Effective visibility state computed during tree traversal.
+/// Visibility a node actually shows with, after inheritance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectiveVisibility {
-    /// Node and all descendants are visible
+    /// Node shows, and so does its whole subtree
     Visible,
-    /// Node is explicitly invisible
+    /// Node or one of its ancestors is invisible
     Invisible,
-    /// Node is visible but has some invisible descendants
+    /// Node shows, but some of its descendants are invisible
     Mixed,
 }
 
@@ -82,10 +85,10 @@ pub struct Node {
     // the subtree; resolved by the renderer, so no cache is needed here.
     display: DisplayBehavior,
 
-    // Visibility
+    // Visibility; the cache covers this node's subtree, not its ancestors.
     visibility: Visibility,
     #[cfg_attr(feature = "serde", serde(skip))]
-    cached_effective_visibility: Cell<Option<EffectiveVisibility>>,
+    cached_subtree_visibility: Cell<Option<EffectiveVisibility>>,
 
     // Cached computed values
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -107,7 +110,7 @@ impl Node {
             instance: None,
             display: DisplayBehavior::default(),
             visibility: Visibility::default(),
-            cached_effective_visibility: Cell::new(None),
+            cached_subtree_visibility: Cell::new(None),
             cached_world_transform: Cell::new(None),
             cached_bounds: Cell::new(None),
         }
@@ -427,27 +430,28 @@ impl Node {
     /// Sets the explicit visibility state of this node.
     pub fn set_visibility(&mut self, visibility: Visibility) {
         self.visibility = visibility;
-        self.cached_effective_visibility.set(None);
+        self.cached_subtree_visibility.set(None);
     }
 
-    /// Gets the cached effective visibility if valid.
-    pub(crate) fn cached_effective_visibility(&self) -> Option<EffectiveVisibility> {
-        self.cached_effective_visibility.get()
+    /// Gets the cached visibility of this node's subtree, ignoring its
+    /// ancestors, if valid.
+    pub(crate) fn cached_subtree_visibility(&self) -> Option<EffectiveVisibility> {
+        self.cached_subtree_visibility.get()
     }
 
-    /// Sets the cached effective visibility.
-    pub(crate) fn set_cached_effective_visibility(&self, visibility: EffectiveVisibility) {
-        self.cached_effective_visibility.set(Some(visibility));
+    /// Sets the cached subtree visibility.
+    pub(crate) fn set_cached_subtree_visibility(&self, visibility: EffectiveVisibility) {
+        self.cached_subtree_visibility.set(Some(visibility));
     }
 
-    /// Returns true if effective visibility needs recomputation.
-    pub fn effective_visibility_dirty(&self) -> bool {
-        self.cached_effective_visibility.get().is_none()
+    /// Returns true if the subtree visibility needs recomputation.
+    pub fn subtree_visibility_dirty(&self) -> bool {
+        self.cached_subtree_visibility.get().is_none()
     }
 
     /// Marks visibility cache as dirty.
     pub fn mark_visibility_dirty(&self) {
-        self.cached_effective_visibility.set(None);
+        self.cached_subtree_visibility.set(None);
     }
 }
 
@@ -998,48 +1002,48 @@ mod tests {
         let mut node = Node::new_default();
 
         // Set some cached effective visibility
-        node.set_cached_effective_visibility(EffectiveVisibility::Visible);
-        assert!(!node.effective_visibility_dirty());
+        node.set_cached_subtree_visibility(EffectiveVisibility::Visible);
+        assert!(!node.subtree_visibility_dirty());
 
         // Setting visibility should invalidate cache
         node.set_visibility(Visibility::Invisible);
-        assert!(node.effective_visibility_dirty());
+        assert!(node.subtree_visibility_dirty());
     }
 
     #[test]
-    fn test_effective_visibility_dirty() {
+    fn test_subtree_visibility_dirty() {
         let node = Node::new_default();
 
         // Initially dirty (no cache)
-        assert!(node.effective_visibility_dirty());
+        assert!(node.subtree_visibility_dirty());
 
         // Set cache - no longer dirty
-        node.set_cached_effective_visibility(EffectiveVisibility::Visible);
-        assert!(!node.effective_visibility_dirty());
+        node.set_cached_subtree_visibility(EffectiveVisibility::Visible);
+        assert!(!node.subtree_visibility_dirty());
 
         // Mark dirty
         node.mark_visibility_dirty();
-        assert!(node.effective_visibility_dirty());
+        assert!(node.subtree_visibility_dirty());
     }
 
     #[test]
-    fn test_cached_effective_visibility() {
+    fn test_cached_subtree_visibility() {
         let node = Node::new_default();
 
         // Initially None
-        assert_eq!(node.cached_effective_visibility(), None);
+        assert_eq!(node.cached_subtree_visibility(), None);
 
         // Set to Visible
-        node.set_cached_effective_visibility(EffectiveVisibility::Visible);
-        assert_eq!(node.cached_effective_visibility(), Some(EffectiveVisibility::Visible));
+        node.set_cached_subtree_visibility(EffectiveVisibility::Visible);
+        assert_eq!(node.cached_subtree_visibility(), Some(EffectiveVisibility::Visible));
 
         // Set to Invisible
-        node.set_cached_effective_visibility(EffectiveVisibility::Invisible);
-        assert_eq!(node.cached_effective_visibility(), Some(EffectiveVisibility::Invisible));
+        node.set_cached_subtree_visibility(EffectiveVisibility::Invisible);
+        assert_eq!(node.cached_subtree_visibility(), Some(EffectiveVisibility::Invisible));
 
         // Set to Mixed
-        node.set_cached_effective_visibility(EffectiveVisibility::Mixed);
-        assert_eq!(node.cached_effective_visibility(), Some(EffectiveVisibility::Mixed));
+        node.set_cached_subtree_visibility(EffectiveVisibility::Mixed);
+        assert_eq!(node.cached_subtree_visibility(), Some(EffectiveVisibility::Mixed));
     }
 
     #[test]
@@ -1054,7 +1058,7 @@ mod tests {
         // Setting visibility should NOT invalidate transform cache
         node.set_visibility(Visibility::Invisible);
         assert!(!node.transform_dirty());
-        assert!(node.effective_visibility_dirty()); // but should invalidate visibility cache
+        assert!(node.subtree_visibility_dirty()); // but should invalidate visibility cache
     }
 
     #[test]
@@ -1062,15 +1066,15 @@ mod tests {
         let node = Node::new_default();
 
         // Set visibility cache
-        node.set_cached_effective_visibility(EffectiveVisibility::Visible);
-        assert!(!node.effective_visibility_dirty());
+        node.set_cached_subtree_visibility(EffectiveVisibility::Visible);
+        assert!(!node.subtree_visibility_dirty());
 
         // Mark transform/bounds dirty
         node.mark_bounds_dirty();
 
         // Visibility cache should still be valid
-        assert!(!node.effective_visibility_dirty());
-        assert_eq!(node.cached_effective_visibility(), Some(EffectiveVisibility::Visible));
+        assert!(!node.subtree_visibility_dirty());
+        assert_eq!(node.cached_subtree_visibility(), Some(EffectiveVisibility::Visible));
     }
 
     // ========================================================================

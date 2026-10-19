@@ -8,7 +8,7 @@ use duck_engine_viewer::common::{
 use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::scene::resource::{
-    InstanceId, Mesh, Node, NodeId, PrimitiveType, SubGeometryKind, Topology, Visibility,
+    InstanceId, Mesh, Node, NodeId, PrimitiveType, SubGeometryKind, Topology,
 };
 use opencascade::primitives::FaceType;
 
@@ -355,12 +355,9 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
         world_transform: &Matrix4,
         results: &mut Vec<GeometryHit<'a>>,
     ) {
-        // Per-node filters the broad phase doesn't apply. Visibility is checked per
-        // node (not propagated to descendants), matching the previous behavior.
+        // The one per-node filter the scene walk doesn't apply; it already
+        // skips invisible subtrees.
         if self.exclude_nodes.contains(&node.id) {
-            return;
-        }
-        if node.visibility() != Visibility::Visible {
             return;
         }
 
@@ -550,6 +547,7 @@ mod tests {
     use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
     use duck_engine_viewer::scene::resource::{
         Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SubMeshRange, Topology, Vertex,
+        Visibility,
     };
     use glam::DVec3;
     use opencascade::primitives::Shape;
@@ -974,7 +972,7 @@ mod tests {
         inp.exclude_nodes = &excluded;
         assert!(GeometrySnap.collect(&inp, &document, &SnapSettings::default()).is_empty());
 
-        // Invisible node → nothing (per-node visibility check in the narrow phase).
+        // Invisible node → nothing (the scene walk skips hidden subtrees).
         document.scene().set_node_visibility(node, Visibility::Invisible);
         let inp = input_with_ray(ray, cursor, &cam, &plane, &grid);
         assert!(GeometrySnap.collect(&inp, &document, &SnapSettings::default()).is_empty());

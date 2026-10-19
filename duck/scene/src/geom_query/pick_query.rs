@@ -2,7 +2,7 @@ use duck_engine_common::{Matrix4, SquareMatrix};
 
 use crate::common::Aabb;
 use crate::{PositionedCamera, Scene, SceneData};
-use crate::resource::{DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId};
+use crate::resource::{DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId, Visibility};
 
 /// A query that can pick objects by traversing the scene tree.
 ///
@@ -64,10 +64,11 @@ pub struct PickView<'a> {
 /// Picks all instances in the scene that match the given query.
 ///
 /// Walks the scene tree from all root nodes, using cached bounding boxes
-/// for efficient culling. The query is transformed to local space for each
-/// instance test. Screen-space nodes are tested at their authored world
-/// transform; use [`pick_all_with_view`] to test them at their on-screen
-/// (camera-dependent) placement instead.
+/// for efficient culling and skipping invisible and `DO_NOT_SELECT` subtrees.
+/// The query is transformed to local space for each instance test.
+/// Screen-space nodes are tested at their authored world transform; use
+/// [`pick_all_with_view`] to test them at their on-screen (camera-dependent)
+/// placement instead.
 pub fn pick_all<Q: PickQuery>(query: &Q, scene: &Scene) -> Vec<Q::Result> {
     pick_all_with_view(query, scene, None)
 }
@@ -101,7 +102,9 @@ fn pick_node<Q: PickQuery>(
 ) {
     let Some(node) = scene.get_node(node_id) else { return };
 
-    if node.flags().contains(NodeFlags::DO_NOT_SELECT) {
+    if node.flags().contains(NodeFlags::DO_NOT_SELECT)
+        || node.visibility() == Visibility::Invisible
+    {
         return;
     }
 
@@ -263,5 +266,17 @@ mod tests {
 
         let hits = pick_all(&AlwaysHitQuery, &scene);
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn invisible_parent_hides_its_visible_children_from_picks() {
+        let mut scene = Scene::default();
+        let parent = scene.add_node(None, None, Transform::IDENTITY, NodeFlags::NONE).unwrap().id();
+        let _hidden = make_geometry_node(&mut scene, Some(parent), NodeFlags::NONE);
+        let shown = make_geometry_node(&mut scene, None, NodeFlags::NONE);
+        scene.set_node_visibility(parent, Visibility::Invisible);
+
+        let hits = pick_all(&AlwaysHitQuery, &scene);
+        assert_eq!(hits, vec![shown]);
     }
 }

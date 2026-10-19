@@ -747,6 +747,7 @@ impl SceneData {
                 if let Some(parent_node) = self.nodes.get_mut(&parent_id) {
                     parent_node.add_child_unchecked(handle.clone());
                 }
+                self.invalidate_ancestor_visibility(parent_id);
             }
         }
         self.node_generation += 1;
@@ -773,6 +774,7 @@ impl SceneData {
                     node.set_parent_unchecked(None);
                 }
                 self.invalidate_ancestor_bounds(parent_id);
+                self.invalidate_ancestor_visibility(parent_id);
             }
             None => {
                 self.root_nodes.retain(|h| h.id() != node_id);
@@ -833,6 +835,7 @@ impl SceneData {
         .unwrap_or_else(|| self.mint(node_id, ResourceKind::Node));
         if let Some(parent_id) = old_parent {
             self.invalidate_ancestor_bounds(parent_id);
+            self.invalidate_ancestor_visibility(parent_id);
         }
 
         self.nodes.get_mut(&node_id).unwrap().set_parent_unchecked(new_parent);
@@ -840,6 +843,7 @@ impl SceneData {
             Some(parent_id) => {
                 self.nodes.get_mut(&parent_id).unwrap().add_child_unchecked(handle);
                 self.invalidate_ancestor_bounds(parent_id);
+                self.invalidate_ancestor_visibility(parent_id);
             }
             None => self.root_nodes.push(handle),
         }
@@ -995,42 +999,18 @@ impl SceneData {
 
     // ========== Visibility API ==========
 
-    /// Sets the visibility of a node and propagates invisibility to descendants.
-    ///
-    /// When setting to Invisible, all descendants are also marked invisible.
-    /// When setting to Visible, only this node is changed.
+    /// Sets a node's own visibility. An invisible node hides its subtree
+    /// without changing its descendants' visibility, so showing it again
+    /// restores them as they were. Does nothing if the node does not exist.
     pub fn set_node_visibility(&mut self, node_id: NodeId, visibility: Visibility) {
-        match visibility {
-            Visibility::Visible => {
-                let Some(node) = self.nodes.get_mut(&node_id) else { return };
-                node.set_visibility(Visibility::Visible);
-                self.invalidate_ancestor_effective_visibility(node_id);
-            }
-            Visibility::Invisible => {
-                self.set_subtree_visibility_recursive(node_id, Visibility::Invisible);
-                if let Some(node) = self.get_node(node_id)
-                    && let Some(parent_id) = node.parent() {
-                        self.invalidate_ancestor_effective_visibility(parent_id);
-                    }
-            }
-        }
-    }
-
-    /// Recursively sets visibility for a node and all descendants.
-    fn set_subtree_visibility_recursive(&mut self, node_id: NodeId, visibility: Visibility) {
-        let Some(node) = self.nodes.get_mut(&node_id) else {
-            return;
-        };
+        let Some(node) = self.nodes.get_mut(&node_id) else { return };
         node.set_visibility(visibility);
-        let children: Vec<NodeId> = node.children().collect();
-
-        for child_id in children {
-            self.set_subtree_visibility_recursive(child_id, visibility);
-        }
+        self.invalidate_ancestor_visibility(node_id);
+        self.node_generation += 1;
     }
 
-    /// Invalidates effective visibility cache for ancestors.
-    fn invalidate_ancestor_effective_visibility(&self, node_id: NodeId) {
+    /// Invalidates the cached subtree visibility of a node and its ancestors.
+    fn invalidate_ancestor_visibility(&self, node_id: NodeId) {
         let mut current_id = Some(node_id);
         while let Some(id) = current_id {
             let Some(node) = self.get_node(id) else {
@@ -1041,7 +1021,8 @@ impl SceneData {
         }
     }
 
-    /// Gets the effective visibility of a node with caching.
+    /// Gets the visibility a node shows with: `Invisible` if it or any
+    /// ancestor is, otherwise whether its whole subtree shows.
     /// A node that does not exist is `Invisible`.
     pub fn node_effective_visibility(
         &self,
@@ -1051,42 +1032,41 @@ impl SceneData {
             return EffectiveVisibility::Invisible;
         };
 
-        if let Some(cached) = node.cached_effective_visibility() {
-            return cached;
+        let mut ancestor = node.parent();
+        while let Some(id) = ancestor {
+            let Some(parent) = self.get_node(id) else { break };
+            if parent.visibility() == Visibility::Invisible {
+                return EffectiveVisibility::Invisible;
+            }
+            ancestor = parent.parent();
         }
 
-        let effective = self.compute_effective_visibility_recursive(node_id);
-        node.set_cached_effective_visibility(effective);
-        effective
+        self.subtree_visibility(node_id)
     }
 
-    /// Recursively computes effective visibility.
-    fn compute_effective_visibility_recursive(
-        &self,
-        node_id: NodeId,
-    ) -> EffectiveVisibility {
+    /// The visibility of a node's subtree, ignoring its ancestors, with
+    /// caching: `Invisible` if the node is, `Mixed` if any descendant is.
+    fn subtree_visibility(&self, node_id: NodeId) -> EffectiveVisibility {
         let Some(node) = self.get_node(node_id) else {
             return EffectiveVisibility::Invisible;
         };
 
-        if node.visibility() == Visibility::Invisible {
-            return EffectiveVisibility::Invisible;
+        if let Some(cached) = node.cached_subtree_visibility() {
+            return cached;
         }
 
-        let mut all_visible = true;
-        for child_id in node.children() {
-            let child_effective = self.node_effective_visibility(child_id);
-            if child_effective != EffectiveVisibility::Visible {
-                all_visible = false;
-                break;
-            }
-        }
-
-        if all_visible {
+        let subtree = if node.visibility() == Visibility::Invisible {
+            EffectiveVisibility::Invisible
+        } else if node
+            .children()
+            .all(|child_id| self.subtree_visibility(child_id) == EffectiveVisibility::Visible)
+        {
             EffectiveVisibility::Visible
         } else {
             EffectiveVisibility::Mixed
-        }
+        };
+        node.set_cached_subtree_visibility(subtree);
+        subtree
     }
 
     // ========== Transform & Bounding Box API ==========

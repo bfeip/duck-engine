@@ -528,53 +528,48 @@ fn test_set_node_visibility_to_visible() {
 }
 
 #[test]
-fn test_visibility_propagation_to_children() {
+fn test_hiding_a_node_keeps_descendants_own_visibility() {
     let mut scene = SceneData::new();
     let root = scene.add_default_node(None, None).unwrap().id();
     let child1 = scene.add_default_node(Some(root), None).unwrap().id();
     let child2 = scene.add_default_node(Some(child1), None).unwrap().id();
 
-    // All default to visible
-    assert_eq!(scene.get_node(root).unwrap().visibility(), Visibility::Visible);
+    scene.set_node_visibility(root, Visibility::Invisible);
+
+    // Descendants keep their own visibility but no longer show.
+    assert_eq!(scene.get_node(root).unwrap().visibility(), Visibility::Invisible);
     assert_eq!(scene.get_node(child1).unwrap().visibility(), Visibility::Visible);
     assert_eq!(scene.get_node(child2).unwrap().visibility(), Visibility::Visible);
-
-    // Set root to invisible - should propagate to all descendants
-    scene.set_node_visibility(root, Visibility::Invisible);
-    assert_eq!(scene.get_node(root).unwrap().visibility(), Visibility::Invisible);
-    assert_eq!(scene.get_node(child1).unwrap().visibility(), Visibility::Invisible);
-    assert_eq!(scene.get_node(child2).unwrap().visibility(), Visibility::Invisible);
+    assert_eq!(scene.node_effective_visibility(child1), EffectiveVisibility::Invisible);
+    assert_eq!(scene.node_effective_visibility(child2), EffectiveVisibility::Invisible);
 }
 
 #[test]
-fn test_visibility_propagation_to_multiple_children() {
+fn test_showing_a_node_restores_its_subtree() {
     let mut scene = SceneData::new();
     let root = scene.add_default_node(None, None).unwrap().id();
-    let child1 = scene.add_default_node(Some(root), None).unwrap().id();
-    let child2 = scene.add_default_node(Some(root), None).unwrap().id();
-    let child3 = scene.add_default_node(Some(root), None).unwrap().id();
+    let hidden = scene.add_default_node(Some(root), None).unwrap().id();
+    let shown = scene.add_default_node(Some(root), None).unwrap().id();
+    scene.set_node_visibility(hidden, Visibility::Invisible);
 
-    // Set root invisible - all children should become invisible
     scene.set_node_visibility(root, Visibility::Invisible);
-    assert_eq!(scene.get_node(child1).unwrap().visibility(), Visibility::Invisible);
-    assert_eq!(scene.get_node(child2).unwrap().visibility(), Visibility::Invisible);
-    assert_eq!(scene.get_node(child3).unwrap().visibility(), Visibility::Invisible);
-}
-
-#[test]
-fn test_visibility_no_propagation_when_setting_visible() {
-    let mut scene = SceneData::new();
-    let root = scene.add_default_node(None, None).unwrap().id();
-    let child = scene.add_default_node(Some(root), None).unwrap().id();
-
-    // Set root invisible (propagates to child)
-    scene.set_node_visibility(root, Visibility::Invisible);
-    assert_eq!(scene.get_node(child).unwrap().visibility(), Visibility::Invisible);
-
-    // Set root visible - child should stay invisible
+    assert_eq!(scene.node_effective_visibility(shown), EffectiveVisibility::Invisible);
     scene.set_node_visibility(root, Visibility::Visible);
-    assert_eq!(scene.get_node(root).unwrap().visibility(), Visibility::Visible);
-    assert_eq!(scene.get_node(child).unwrap().visibility(), Visibility::Invisible);
+
+    // The child hidden on its own stays hidden; its sibling shows again.
+    assert_eq!(scene.node_effective_visibility(root), EffectiveVisibility::Mixed);
+    assert_eq!(scene.node_effective_visibility(hidden), EffectiveVisibility::Invisible);
+    assert_eq!(scene.node_effective_visibility(shown), EffectiveVisibility::Visible);
+}
+
+#[test]
+fn test_set_node_visibility_bumps_node_generation() {
+    let mut scene = SceneData::new();
+    let node = scene.add_default_node(None, None).unwrap().id();
+    let generation = scene.node_generation();
+
+    scene.set_node_visibility(node, Visibility::Invisible);
+    assert!(scene.node_generation() > generation);
 }
 
 #[test]
@@ -628,7 +623,7 @@ fn test_effective_visibility_caching() {
     assert_eq!(effective1, EffectiveVisibility::Visible);
 
     // Node should have cached value
-    assert!(!scene.get_node(root).unwrap().effective_visibility_dirty());
+    assert!(!scene.get_node(root).unwrap().subtree_visibility_dirty());
 
     // Second call should use cache
     let effective2 = scene.node_effective_visibility(root);
@@ -643,18 +638,33 @@ fn test_effective_visibility_cache_invalidation_on_child_change() {
 
     // Compute and cache root's effective visibility
     assert_eq!(scene.node_effective_visibility(root), EffectiveVisibility::Visible);
-    assert!(!scene.get_node(root).unwrap().effective_visibility_dirty());
+    assert!(!scene.get_node(root).unwrap().subtree_visibility_dirty());
 
     // Change child visibility - should invalidate root's cache
     scene.set_node_visibility(child, Visibility::Invisible);
-    assert!(scene.get_node(root).unwrap().effective_visibility_dirty());
+    assert!(scene.get_node(root).unwrap().subtree_visibility_dirty());
 
     // Now root should have Mixed effective visibility
     assert_eq!(scene.node_effective_visibility(root), EffectiveVisibility::Mixed);
 }
 
 #[test]
-fn test_deep_hierarchy_visibility_propagation() {
+fn test_effective_visibility_follows_tree_edits() {
+    let mut scene = SceneData::new();
+    let root = scene.add_default_node(None, None).unwrap().id();
+    let hidden = scene.add_default_node(None, None).unwrap().id();
+    scene.set_node_visibility(hidden, Visibility::Invisible);
+    assert_eq!(scene.node_effective_visibility(root), EffectiveVisibility::Visible);
+
+    scene.reparent_node(hidden, Some(root)).unwrap();
+    assert_eq!(scene.node_effective_visibility(root), EffectiveVisibility::Mixed);
+
+    scene.remove_node(hidden);
+    assert_eq!(scene.node_effective_visibility(root), EffectiveVisibility::Visible);
+}
+
+#[test]
+fn test_deep_hierarchy_visibility_inheritance() {
     let mut scene = SceneData::new();
     let level0 = scene.add_default_node(None, None).unwrap().id();
     let level1 = scene.add_default_node(Some(level0), None).unwrap().id();
@@ -662,14 +672,14 @@ fn test_deep_hierarchy_visibility_propagation() {
     let level3 = scene.add_default_node(Some(level2), None).unwrap().id();
     let level4 = scene.add_default_node(Some(level3), None).unwrap().id();
 
-    // Set level2 invisible - should propagate to level3 and level4
+    // Hiding level2 hides level3 and level4 without changing their own visibility
     scene.set_node_visibility(level2, Visibility::Invisible);
 
     assert_eq!(scene.get_node(level0).unwrap().visibility(), Visibility::Visible);
     assert_eq!(scene.get_node(level1).unwrap().visibility(), Visibility::Visible);
     assert_eq!(scene.get_node(level2).unwrap().visibility(), Visibility::Invisible);
-    assert_eq!(scene.get_node(level3).unwrap().visibility(), Visibility::Invisible);
-    assert_eq!(scene.get_node(level4).unwrap().visibility(), Visibility::Invisible);
+    assert_eq!(scene.get_node(level3).unwrap().visibility(), Visibility::Visible);
+    assert_eq!(scene.get_node(level4).unwrap().visibility(), Visibility::Visible);
 
     // Effective visibility
     assert_eq!(scene.node_effective_visibility(level0), EffectiveVisibility::Mixed);
@@ -699,7 +709,7 @@ fn test_visibility_with_complex_tree() {
     let f = scene.add_default_node(Some(c), None).unwrap().id();
     let g = scene.add_default_node(Some(c), None).unwrap().id();
 
-    // Make 'a' invisible (affects d and e)
+    // Make 'a' invisible (hides d and e)
     scene.set_node_visibility(a, Visibility::Invisible);
 
     // Make 'f' invisible
@@ -710,8 +720,8 @@ fn test_visibility_with_complex_tree() {
     assert_eq!(scene.get_node(a).unwrap().visibility(), Visibility::Invisible);
     assert_eq!(scene.get_node(b).unwrap().visibility(), Visibility::Visible);
     assert_eq!(scene.get_node(c).unwrap().visibility(), Visibility::Visible);
-    assert_eq!(scene.get_node(d).unwrap().visibility(), Visibility::Invisible);
-    assert_eq!(scene.get_node(e).unwrap().visibility(), Visibility::Invisible);
+    assert_eq!(scene.get_node(d).unwrap().visibility(), Visibility::Visible);
+    assert_eq!(scene.get_node(e).unwrap().visibility(), Visibility::Visible);
     assert_eq!(scene.get_node(f).unwrap().visibility(), Visibility::Invisible);
     assert_eq!(scene.get_node(g).unwrap().visibility(), Visibility::Visible);
 

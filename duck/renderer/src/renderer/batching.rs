@@ -1096,6 +1096,17 @@ mod tests {
     }
 
     #[test]
+    fn test_invisible_parent_hides_its_visible_children() {
+        let (mut scene, child) = build_simple_scene();
+        let parent = scene.add_default_node(None, None).unwrap().id();
+        scene.reparent_node(child, Some(parent)).unwrap();
+        scene.set_node_visibility(parent, Visibility::Invisible);
+
+        assert_eq!(scene.get_node(child).unwrap().visibility(), Visibility::Visible);
+        assert!(collect_instance_transforms(&scene).is_empty());
+    }
+
+    #[test]
     fn test_draw_data_no_highlight() {
         let scene = SceneData::new();
         let draw_data = DrawData::new(&scene, &test_camera(), (256, 256), None);

@@ -297,7 +297,7 @@ impl Handle<super::Node> {
         }
     }
 
-    /// Sets the node's visibility, propagating to descendants as needed.
+    /// Sets the node's own visibility; an invisible node hides its subtree.
     pub fn set_visibility(&self, visibility: super::Visibility) {
         if let Some(scene) = self.scene() {
             scene.lock().set_node_visibility(self.id(), visibility);
