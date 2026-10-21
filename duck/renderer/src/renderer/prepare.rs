@@ -63,7 +63,7 @@ impl SceneResources {
         if let Some(env_id) = scene.active_environment_map()
             && let Some(env_map) = scene.get_environment_map(env_id)
         {
-            self.ibl_resources.process_environment(device, queue, env_map)?;
+            self.ibl_resources.process_environment(&ctx.gpu, env_map)?;
         }
 
         Ok(())

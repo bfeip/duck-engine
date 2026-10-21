@@ -3,14 +3,15 @@
 //! Indexed by N·V and roughness; holds the scale and bias applied to F0.
 //! Baked by `build.rs`.
 
-use crate::ibl::BRDF_LUT_SIZE;
-use crate::render_core::GpuTexture;
+use crate::render_core::{Gpu, GpuTexture};
+use crate::BRDF_LUT_SIZE;
 
 /// `BRDF_LUT_SIZE`² texels of RGBA f32, little-endian.
 const BAKED_BRDF_LUT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/brdf_lut.bin"));
 
 /// Upload the baked BRDF LUT as an Rgba16Float texture.
-pub(crate) fn brdf_lut(device: &wgpu::Device, queue: &wgpu::Queue) -> GpuTexture {
+pub fn brdf_lut(gpu: &Gpu) -> GpuTexture {
+    let (device, queue) = (&gpu.device, &gpu.queue);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("BRDF LUT Texture"),
         size: wgpu::Extent3d {

@@ -1,0 +1,15 @@
+[package]
+name = "duck-engine-ibl"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "duck_engine_ibl"
+path = "src/lib.rs"
+
+[dependencies]
+duck-engine-render-core = { path = "../render-core" }
+anyhow = "1.0"
+bytemuck = { version = "1.16", features = ["derive"] }
+half = "2.7"
+wgpu = "27.0"

@@ -4,11 +4,11 @@
 //! where each mip level represents a different roughness value.
 
 use super::storage_view;
-use crate::ibl::{cube_texture, CUBEMAP_FORMAT, PREFILTERED_CUBEMAP_SIZE, PREFILTERED_MIP_LEVELS};
+use crate::{cube_texture, CUBEMAP_FORMAT, PREFILTERED_CUBEMAP_SIZE, PREFILTERED_MIP_LEVELS};
 use crate::render_core::GpuTexture;
 
 /// Shader source for pre-filter convolution.
-const PREFILTER_SHADER: &str = include_str!("../../shaders/ibl/prefilter.wgsl");
+const PREFILTER_SHADER: &str = include_str!("../shaders/prefilter.wgsl");
 
 /// Uniform buffer for pre-filter parameters.
 #[repr(C)]

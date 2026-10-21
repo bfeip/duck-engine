@@ -1,11 +1,11 @@
 //! Equirectangular to cubemap conversion using a compute shader.
 
-use super::storage_view;
-use crate::ibl::{cube_texture, CUBEMAP_FORMAT, HdrImage, ENVIRONMENT_CUBEMAP_SIZE};
+use super::{storage_view, ENVIRONMENT_CUBEMAP_SIZE};
+use crate::{cube_texture, HdrImage, CUBEMAP_FORMAT};
 use crate::render_core::GpuTexture;
 
 /// Shader source for equirect to cube conversion.
-const EQUIRECT_TO_CUBE_SHADER: &str = include_str!("../../shaders/ibl/equirect_to_cube.wgsl");
+const EQUIRECT_TO_CUBE_SHADER: &str = include_str!("../shaders/equirect_to_cube.wgsl");
 
 /// Resources for converting equirectangular images to cubemaps.
 pub struct EquirectToCubePipeline {

@@ -183,13 +183,14 @@
 pub use duck_engine_scene as scene;
 /// The scene-agnostic rendering core this crate is built on.
 pub use duck_engine_render_core as render_core;
+/// Image-based lighting: HDR environments baked into the textures shading samples.
+pub use duck_engine_ibl as ibl;
 
 pub(crate) fn rgba_to_wgpu_color(c: scene::common::RgbaColor) -> wgpu::Color {
     wgpu::Color { r: c.r as f64, g: c.g as f64, b: c.b as f64, a: c.a as f64 }
 }
 
 pub mod abi;
-pub mod ibl;
 mod highlight_query;
 mod renderer;
 pub mod shaders;

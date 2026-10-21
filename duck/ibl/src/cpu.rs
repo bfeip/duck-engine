@@ -10,11 +10,11 @@ mod sampling;
 
 pub use cube::{CubeImage, Rgb};
 
-use crate::ibl::{
+use crate::render_core::{Gpu, GpuTexture};
+use crate::{
     cube_texture, HdrImage, IblTextures, IRRADIANCE_CUBEMAP_SIZE, PREFILTERED_CUBEMAP_SIZE,
     PREFILTERED_MIP_LEVELS,
 };
-use crate::render_core::GpuTexture;
 
 /// The cubemaps PBR shading samples, baked on the CPU.
 #[derive(Debug, Clone)]
@@ -38,7 +38,8 @@ impl IblMaps {
     }
 
     /// Upload the maps as the textures shading samples.
-    pub(crate) fn upload(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> IblTextures {
+    pub fn upload(&self, gpu: &Gpu) -> IblTextures {
+        let (device, queue) = (&gpu.device, &gpu.queue);
         IblTextures {
             irradiance: upload_cube(device, queue, &self.irradiance, "Irradiance Cubemap"),
             prefiltered: upload_cube(device, queue, &self.prefiltered, "Prefiltered Cubemap"),

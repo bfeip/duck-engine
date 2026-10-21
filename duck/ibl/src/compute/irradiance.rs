@@ -4,11 +4,11 @@
 //! convolving the environment cubemap with a cosine-weighted hemisphere.
 
 use super::storage_view;
-use crate::ibl::{cube_texture, CUBEMAP_FORMAT, IRRADIANCE_CUBEMAP_SIZE};
+use crate::{cube_texture, CUBEMAP_FORMAT, IRRADIANCE_CUBEMAP_SIZE};
 use crate::render_core::GpuTexture;
 
 /// Shader source for irradiance convolution.
-const IRRADIANCE_SHADER: &str = include_str!("../../shaders/ibl/irradiance.wgsl");
+const IRRADIANCE_SHADER: &str = include_str!("../shaders/irradiance.wgsl");
 
 /// Pipeline for generating irradiance cubemaps.
 pub struct IrradiancePipeline {

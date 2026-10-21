@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "render-core",
+    "ibl",
     "renderer",
     "viewer",
     "scene",
@@ -12,6 +13,10 @@ members = [
 ]
 default-members = ["viewer"]
 
+
+# CPU IBL baking and HDR decoding are pixel loops, too slow unoptimized.
+[profile.dev.package.duck-engine-ibl]
+opt-level = 3
 
 [profile.small]
 inherits = "release"

@@ -1,6 +1,7 @@
 mod batching;
 mod bind_group_layouts;
 mod custom_pipeline;
+mod environment;
 mod lights;
 mod material_cache;
 mod mesh;
@@ -29,7 +30,6 @@ use anyhow::Result;
 
 use crate::{
     highlight_query::HighlightQuery,
-    ibl::IblResources,
     render_core::{
         GenCache, Gpu, GpuCapabilities, GpuTexture, MaskChannels, RenderHost, TargetConfig,
         WorkflowGuard,
@@ -48,6 +48,7 @@ use crate::{
     shaders::ShaderGenerator
 };
 
+use environment::IblResources;
 use material_cache::MaterialCache;
 use mesh::MeshGpuResources;
 use pipeline::MaterialPipelineCache;
@@ -298,12 +299,7 @@ pub struct SceneResources {
 impl SceneResources {
     /// Creates the GPU caches for one scene, drawn through `ctx`.
     pub fn new(ctx: &RenderContext) -> Self {
-        let ibl_resources = IblResources::new(
-            &ctx.gpu.device,
-            &ctx.gpu.queue,
-            &ctx.layouts.ibl,
-            ctx.capabilities.has_compute,
-        );
+        let ibl_resources = IblResources::new(&ctx.gpu, ctx.capabilities, &ctx.layouts.ibl);
 
         Self {
             materials: MaterialCache::new(),

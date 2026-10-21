@@ -1054,6 +1054,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "duck-engine-ibl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "duck-engine-render-core",
+ "half",
+ "wgpu",
+]
+
+[[package]]
 name = "duck-engine-import-export"
 version = "0.1.0"
 dependencies = [
@@ -1095,9 +1106,9 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "duck-engine-common",
+ "duck-engine-ibl",
  "duck-engine-render-core",
  "duck-engine-scene",
- "half",
  "image",
  "log",
  "pollster 0.3.0",

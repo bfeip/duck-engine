@@ -2,7 +2,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use crate::ibl::HdrImage;
+use crate::HdrImage;
 
 use super::cube::{lerp, CubeImage, Rgb};
 use super::sampling::Vec3;
@@ -67,7 +67,7 @@ impl Panorama {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ibl::cpu::cube::{texel_direction, texels};
+    use crate::cpu::cube::{texel_direction, texels};
 
     const EPSILON: f32 = 2e-2;
 

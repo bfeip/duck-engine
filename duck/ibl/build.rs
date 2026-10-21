@@ -1,25 +1,25 @@
-//! Build script for the renderer crate.
+//! Build script for the IBL crate.
 //!
 //! Bakes the BRDF integration lookup table with the library's own
-//! `src/ibl/cpu/brdf.rs`: 512x512 texels of (scale, bias, 0, 1) as
-//! little-endian f32. The renderer converts it to Rgba16Float at upload.
+//! `src/cpu/brdf.rs`: 512x512 texels of (scale, bias, 0, 1) as little-endian
+//! f32. `brdf_lut` converts it to Rgba16Float at upload.
 
 use std::env;
 use std::fs;
 use std::path::Path;
 
 #[allow(dead_code)]
-#[path = "src/ibl/cpu/sampling.rs"]
+#[path = "src/cpu/sampling.rs"]
 mod sampling;
-#[path = "src/ibl/cpu/brdf.rs"]
+#[path = "src/cpu/brdf.rs"]
 mod brdf;
 
 const LUT_SIZE: u32 = 512;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/ibl/cpu/sampling.rs");
-    println!("cargo:rerun-if-changed=src/ibl/cpu/brdf.rs");
+    println!("cargo:rerun-if-changed=src/cpu/sampling.rs");
+    println!("cargo:rerun-if-changed=src/cpu/brdf.rs");
 
     let out_dir = env::var("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir).join("brdf_lut.bin");
