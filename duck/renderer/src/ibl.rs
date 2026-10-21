@@ -13,12 +13,14 @@
 //! and the sizes of the generated textures.
 
 mod brdf_lut;
+mod cpu;
 mod cubemap;
 mod equirect;
 mod hdr_loader;
 mod irradiance;
 mod prefilter;
 
+pub use cpu::{CubeImage, IblMaps, Rgb};
 pub use hdr_loader::{load_hdr_from_bytes, load_hdr_from_path, load_hdr_from_reader, HdrImage};
 
 pub(crate) use brdf_lut::{BrdfLut, BrdfLutPipeline};
