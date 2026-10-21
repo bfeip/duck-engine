@@ -19,8 +19,8 @@
 //!
 //! - [`RenderContext`] — one per device and target configuration. The GPU
 //!   handles, the bind group layouts, and the material pipeline cache with its
-//!   shader generator. The target format, MSAA sample count, and compute
-//!   availability are baked in at construction; nothing here is per-scene, so
+//!   shader generator. The target format, MSAA sample count, and adapter
+//!   capabilities are baked in at construction; nothing here is per-scene, so
 //!   every scene drawn at that configuration shares one set of pipelines.
 //! - [`SceneResources`] — one per scene. The GPU caches for meshes, textures,
 //!   material bind groups, and processed environment maps, generation-synced
@@ -129,9 +129,7 @@
 //!
 //! When the scene has an active environment map, `prepare` bakes its HDR
 //! source into the textures PBR shading samples, and lit materials pick it up
-//! automatically; see [`ibl`]. Baking runs in compute shaders when the
-//! [`GpuCapabilities`] passed to [`RenderContext::new`] allow it, and on the
-//! CPU otherwise (as on WebGL).
+//! automatically; see [`ibl`].
 //!
 //! # Example
 //!

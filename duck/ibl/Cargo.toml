@@ -10,6 +10,6 @@ path = "src/lib.rs"
 [dependencies]
 duck-engine-render-core = { path = "../render-core" }
 anyhow = "1.0"
-bytemuck = { version = "1.16", features = ["derive"] }
+bytemuck = "1.16"
 half = "2.7"
 wgpu = "27.0"

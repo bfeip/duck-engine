@@ -67,7 +67,7 @@ impl Panorama {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpu::cube::{texel_direction, texels};
+    use crate::cube::{texel_direction, texels};
 
     const EPSILON: f32 = 2e-2;
 

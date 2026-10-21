@@ -138,12 +138,6 @@ impl RenderContext {
         self.capabilities
     }
 
-    /// Whether the device supports compute shaders; without it environment maps
-    /// are baked on the CPU.
-    pub fn has_compute(&self) -> bool {
-        self.capabilities.has_compute
-    }
-
     /// Compile a user-supplied WESL shader with access to all engine shader modules.
     ///
     /// Engine modules available for import: `package::common`, `package::camera`,
@@ -299,7 +293,7 @@ pub struct SceneResources {
 impl SceneResources {
     /// Creates the GPU caches for one scene, drawn through `ctx`.
     pub fn new(ctx: &RenderContext) -> Self {
-        let ibl_resources = IblResources::new(&ctx.gpu, ctx.capabilities, &ctx.layouts.ibl);
+        let ibl_resources = IblResources::new(&ctx.gpu, &ctx.layouts.ibl);
 
         Self {
             materials: MaterialCache::new(),

@@ -2,8 +2,8 @@
 
 use wgpu::util::DeviceExt;
 
-use crate::ibl::{brdf_lut, load_hdr_from_bytes, load_hdr_from_path, IblBaker, IblTextures};
-use crate::render_core::{Gpu, GpuCapabilities, GpuTexture};
+use crate::ibl::{brdf_lut, load_hdr_from_bytes, load_hdr_from_path, IblMaps, IblTextures};
+use crate::render_core::{Gpu, GpuTexture};
 use crate::scene::{EnvironmentMap, EnvironmentMapId, EnvironmentSource};
 
 /// GPU uniform for environment map parameters (intensity, etc.).
@@ -31,7 +31,6 @@ pub(crate) struct ProcessedEnvironment {
 /// Bakes each environment map once, with the shared BRDF lookup table, into
 /// the bind group shading samples.
 pub(crate) struct IblResources {
-    baker: IblBaker,
     /// Shared BRDF lookup table, baked at build time.
     brdf_lut: GpuTexture,
     /// Cheap (ref-counted) clone of the IBL bind group layout, whose canonical
@@ -44,18 +43,13 @@ pub(crate) struct IblResources {
 }
 
 impl IblResources {
-    /// Create new IBL resources, baking in compute shaders where `capabilities`
-    /// allow it and on the CPU otherwise.
+    /// Create new IBL resources.
     ///
     /// `layout` is the canonical IBL bind group layout owned by the renderer's
     /// `BindGroupLayouts` registry; a cheap clone is retained for building
     /// per-environment bind groups.
-    pub fn new(gpu: &Gpu, capabilities: GpuCapabilities, layout: &wgpu::BindGroupLayout) -> Self {
-        if !capabilities.has_compute {
-            log::info!("Compute shaders unavailable — baking IBL environment maps on the CPU.");
-        }
+    pub fn new(gpu: &Gpu, layout: &wgpu::BindGroupLayout) -> Self {
         Self {
-            baker: IblBaker::new(gpu, capabilities),
             brdf_lut: brdf_lut(gpu),
             bind_group_layout: layout.clone(),
             processed_environments: std::collections::HashMap::new(),
@@ -78,7 +72,7 @@ impl IblResources {
             EnvironmentSource::EquirectangularPath(path) => load_hdr_from_path(path)?,
             EnvironmentSource::EquirectangularHdr(bytes) => load_hdr_from_bytes(bytes)?,
         };
-        let textures = self.baker.bake(gpu, &hdr_image);
+        let textures = IblMaps::from_equirect(&hdr_image).upload(gpu);
         self.store_processed(&gpu.device, env_map, &textures);
         Ok(())
     }
