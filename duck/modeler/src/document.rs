@@ -2,9 +2,14 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
 use anyhow::{Context, Result};
-use duck_engine_scene::resource::{Id, NodeId, Visibility};
+use duck_engine_scene::resource::{
+    FaceMaterialHandle, FaceMaterialId, Id, NodeHandle, NodeId, Visibility,
+};
 use duck_engine_scene::Scene;
-use duck_engine_scene::cad::{CadTessellationOptions, retessellate_node, tessellate_into};
+use duck_engine_scene::cad::{
+    classify_shape, retessellate_node, tessellate_into, tessellate_into_with_materials,
+    CadTessellationOptions, GeometryClass,
+};
 use duck_engine_scene::common::{
     matrix4_to_row_major_f64, Matrix4, Point3, Real, Transform, Vector3, WorldUnits,
 };
@@ -12,6 +17,7 @@ use glam::DVec3;
 use opencascade::primitives::{Shape, ShapeElements, ShapeType, Wire};
 
 use crate::history::{Delta, History, PartSnapshot};
+use crate::materials::{Finish, LibraryMaterial, MaterialLibrary, PRESETS};
 
 pub type PartId = Id;
 
@@ -60,6 +66,11 @@ pub enum SourceFate {
 /// wires and points.
 pub fn has_solid(shape: &Shape) -> bool {
     shape.contains_type(ShapeType::Solid)
+}
+
+/// Whether `shape` is a body — a solid or a shell
+fn is_body(shape: &Shape) -> bool {
+    classify_shape(shape) == GeometryClass::Solid
 }
 
 /// Merges faces and edges left split across a shared surface or curve — chiefly
@@ -212,6 +223,15 @@ fn numbering_base(name: &str) -> &str {
     }
 }
 
+/// The next free numbered name for `base` among `names` — `Box-001`,
+/// `Box-002`, … — one past the highest suffix in use.
+fn next_numbered_name<'a>(names: impl Iterator<Item = &'a str>, base: &str) -> String {
+    let highest = names
+        .filter_map(|name| name.strip_prefix(base)?.strip_prefix('-')?.parse::<u32>().ok())
+        .max();
+    format!("{base}-{:03}", highest.map_or(1, |n| n + 1))
+}
+
 /// The unit the document models in. Every coordinate of a part's shape, and
 /// of the scene it is drawn in, is in these; files in another unit convert on
 /// the way in and out.
@@ -225,6 +245,7 @@ pub struct Document {
     node_to_part: HashMap<NodeId, PartId>,
     scene: Scene,
     history: History,
+    materials: MaterialLibrary,
     generation: u64,
 }
 
@@ -237,14 +258,18 @@ impl Document {
             node_to_part: HashMap::new(),
             scene,
             history: History::default(),
+            materials: MaterialLibrary::default(),
             generation: 0,
         }
     }
 
+    /// Draws the document in `scene` from now on. The history and the
+    /// material library, whose materials live in the old scene, are cleared.
     pub fn set_scene(&mut self, scene: Scene) {
         scene.set_world_units(DOCUMENT_UNITS);
         self.scene = scene;
         self.history.clear();
+        self.materials.clear();
     }
 
     pub fn scene(&self) -> &Scene {
@@ -258,6 +283,9 @@ impl Document {
 
     /// Tessellate `shape`, add the resulting node to the scene, store the CAD part,
     /// and record the mapping — all atomically. If tessellation fails, nothing is modified.
+    ///
+    /// A face template that is a library material is shared rather than
+    /// copied, so a copy of a part keeps its source's material.
     pub fn add_part(
         &mut self,
         name: impl Into<String>,
@@ -266,9 +294,7 @@ impl Document {
     ) -> Result<PartId> {
         let name = name.into();
         let elements = ShapeElements::new(&shape);
-        let node = tessellate_into(&elements, &self.scene, options, None, Some(&name))
-            .context("Failed to tessellate part")?
-            .id();
+        let node = self.tessellate(&elements, options, &name).context("Failed to tessellate part")?.id();
         let id = PartId::new();
         self.parts.push(CadPart { id, name, elements, options: options.clone() });
         self.part_to_node.insert(id, node);
@@ -279,6 +305,31 @@ impl Document {
             self.history.record(&label, Delta::Added(snapshot));
         }
         Ok(id)
+    }
+
+    /// Tessellates `elements` as a new top-level node named `name`.
+    fn tessellate(
+        &self,
+        elements: &ShapeElements,
+        options: &CadTessellationOptions,
+        name: &str,
+    ) -> Result<NodeHandle> {
+        let (face, line) = options.materials_for(elements.shape());
+        match self.materials.get(face.id) {
+            Some(material) => {
+                let line = self.scene.add_line_material(line.clone().with_fresh_id());
+                tessellate_into_with_materials(
+                    elements,
+                    &self.scene,
+                    options,
+                    material.handle(),
+                    &line,
+                    None,
+                    Some(name),
+                )
+            }
+            None => tessellate_into(elements, &self.scene, options, None, Some(name)),
+        }
     }
 
     /// [`add_part`](Self::add_part) under an auto-numbered name derived from `base`.
@@ -298,14 +349,7 @@ impl Document {
     /// Derived from the live part names rather than a stored counter, so undo,
     /// redo, import, and [`set_scene`](Self::set_scene) cannot desync it.
     pub fn numbered_name(&self, base: &str) -> String {
-        let highest = self
-            .parts
-            .iter()
-            .filter_map(|part| {
-                part.name.strip_prefix(base)?.strip_prefix('-')?.parse::<u32>().ok()
-            })
-            .max();
-        format!("{base}-{:03}", highest.map_or(1, |n| n + 1))
+        next_numbered_name(self.parts.iter().map(|part| part.name.as_str()), base)
     }
 
     /// The next free numbered name in `source`'s series — `Box-003` yields
@@ -449,7 +493,8 @@ impl Document {
 
     /// Commits `result`, grown from part `source`, as `fate` says, as one undo
     /// step labelled `label`. A new part is named in `base`'s series and
-    /// tessellated with `options`; a reshaped source keeps its own.
+    /// tessellated with `options`; a reshaped source keeps its own, and a
+    /// replaced body passes its face material on.
     pub fn commit_result(
         &mut self,
         source: PartId,
@@ -471,9 +516,13 @@ impl Document {
             // materials, which retessellating in place would keep.
             SourceFate::Replace => {
                 let name = source_part.name.clone();
+                let mut options = options.clone();
+                if is_body(source_part.shape()) {
+                    options.face_material = source_part.options.face_material.clone();
+                }
                 let mut doc = self.undo_scope(label);
                 // Tessellates atomically — if this fails, nothing is changed.
-                doc.add_part(name, result, options).context("Failed to tessellate the result")?;
+                doc.add_part(name, result, &options).context("Failed to tessellate the result")?;
                 doc.remove_part(source);
                 Ok(())
             }
@@ -494,11 +543,11 @@ impl Document {
 
     /// Undo the most recent step. Returns its label, or `None` on an empty stack.
     pub fn undo(&mut self) -> Result<Option<String>> {
-        let Some(step) = self.history.pop_undo() else {
+        let Some(mut step) = self.history.pop_undo() else {
             return Ok(None);
         };
         let mut result = Ok(());
-        for delta in step.deltas.iter().rev() {
+        for delta in step.deltas.iter_mut().rev() {
             let applied = match delta {
                 Delta::Added(snapshot) => {
                     self.remove_part_inner(snapshot.part);
@@ -510,6 +559,18 @@ impl Document {
                 }
                 Delta::Renamed { part, before, .. } => {
                     self.set_part_name(*part, before);
+                    Ok(())
+                }
+                Delta::MaterialAdded { material, .. } => {
+                    self.unlist_material(material);
+                    Ok(())
+                }
+                Delta::MaterialRemoved { index, material } => {
+                    self.materials.insert(*index, material.clone());
+                    Ok(())
+                }
+                Delta::Restyled { part, before, .. } => {
+                    self.set_face_material(*part, before);
                     Ok(())
                 }
             };
@@ -525,11 +586,11 @@ impl Document {
     /// Redo the most recently undone step. Returns its label, or `None` on an
     /// empty stack. Replays captured results; no CAD operation is re-run.
     pub fn redo(&mut self) -> Result<Option<String>> {
-        let Some(step) = self.history.pop_redo() else {
+        let Some(mut step) = self.history.pop_redo() else {
             return Ok(None);
         };
         let mut result = Ok(());
-        for delta in &step.deltas {
+        for delta in &mut step.deltas {
             let applied = match delta {
                 Delta::Added(snapshot) => self.resurrect(snapshot),
                 Delta::Removed(snapshot) => {
@@ -541,6 +602,18 @@ impl Document {
                 }
                 Delta::Renamed { part, after, .. } => {
                     self.set_part_name(*part, after);
+                    Ok(())
+                }
+                Delta::MaterialAdded { index, material } => {
+                    self.materials.insert(*index, material.clone());
+                    Ok(())
+                }
+                Delta::MaterialRemoved { material, .. } => {
+                    self.unlist_material(material);
+                    Ok(())
+                }
+                Delta::Restyled { part, after, .. } => {
+                    self.set_face_material(*part, after);
                     Ok(())
                 }
             };
@@ -622,6 +695,8 @@ impl Document {
         let cad_part = self.get_part_mut(part).context("reshape: part not found")?;
         cad_part.elements = elements;
         cad_part.options = options.clone();
+        // Captured options carry a library material's finish from capture time.
+        self.refresh_templates(options.face_material.id);
         self.generation += 1;
         Ok(())
     }
@@ -685,6 +760,174 @@ impl Document {
         let target = &part.elements().edge(edge_index as usize).ok()?.pieces()[0];
         part.shape().wires().find(|wire| wire.edges().any(|e| e.is_same(target)))
     }
+
+    // ========== Materials ==========
+
+    pub fn materials(&self) -> &MaterialLibrary {
+        &self.materials
+    }
+
+    /// The current finish of a scene face material.
+    pub fn material_finish(&self, id: FaceMaterialId) -> Option<Finish> {
+        self.scene.lock().get_face_material(id).map(Finish::of)
+    }
+
+    /// Whether the part is a body, which library materials style.
+    pub fn takes_material(&self, part: PartId) -> bool {
+        self.get_part(part).is_some_and(|part| is_body(part.shape()))
+    }
+
+    /// The library material on the part's faces, or `None` for a part with
+    /// its own appearance.
+    pub fn part_material(&self, part: PartId) -> Option<FaceMaterialId> {
+        let id = self.face_material_handle(part)?.id();
+        self.materials.contains(id).then_some(id)
+    }
+
+    /// How many parts each library material is on. Unused materials are absent.
+    pub fn material_usage(&self) -> HashMap<FaceMaterialId, usize> {
+        let scene = self.scene.lock();
+        let mut usage = HashMap::new();
+        for node in self.part_to_node.values() {
+            let id = scene
+                .get_node(*node)
+                .and_then(|node| node.instance())
+                .and_then(|instance| scene.get_instance(instance))
+                .and_then(|instance| instance.face_material());
+            if let Some(id) = id.filter(|id| self.materials.contains(*id)) {
+                *usage.entry(id).or_insert(0) += 1;
+            }
+        }
+        usage
+    }
+
+    /// The next free numbered material name for `base`, as
+    /// [`numbered_name`](Self::numbered_name) numbers parts.
+    pub fn numbered_material_name(&self, base: &str) -> String {
+        next_numbered_name(self.materials.iter().map(|material| material.name.as_str()), base)
+    }
+
+    /// Lists the [`PRESETS`] in the library. Not recorded.
+    pub fn add_preset_materials(&mut self) {
+        for (name, finish) in PRESETS {
+            let handle = self.scene.add_face_material(finish.material());
+            self.materials.push(LibraryMaterial::new(name, handle));
+        }
+    }
+
+    /// Renames a library material. Not recorded; a blank name is ignored.
+    pub fn rename_material(&mut self, id: FaceMaterialId, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(material) = self.materials.get_mut(id) {
+            material.name = name.to_owned();
+        }
+    }
+
+    /// Restyles a library material, and with it every part it is on. Not
+    /// recorded.
+    pub fn set_material_finish(&mut self, id: FaceMaterialId, finish: Finish) {
+        if !self.materials.contains(id) {
+            return;
+        }
+        if let Some(material) = self.scene.lock().get_face_material_mut(id) {
+            finish.apply_to(material);
+        }
+        self.refresh_templates(id);
+    }
+
+    /// Lists a new material with `finish` in the library, as one undo step.
+    pub fn add_material(&mut self, name: impl Into<String>, finish: Finish) -> FaceMaterialId {
+        let material = LibraryMaterial::new(name, self.scene.add_face_material(finish.material()));
+        let (id, label) = (material.id(), format!("New {}", material.name));
+        let index = self.materials.len();
+        self.materials.push(material.clone());
+        self.history.record(&label, Delta::MaterialAdded { index, material });
+        id
+    }
+
+    /// Unlists a library material, as one undo step. A material still on any
+    /// part is refused.
+    pub fn remove_material(&mut self, id: FaceMaterialId) -> Result<()> {
+        let users = self.material_usage().get(&id).copied().unwrap_or(0);
+        let material = self.materials.get(id).context("Material is not in the library")?;
+        anyhow::ensure!(users == 0, "{} is on {users} part(s)", material.name);
+        let (index, material) = self.materials.remove(id).expect("listed");
+        let label = format!("Delete {}", material.name);
+        self.history.record(&label, Delta::MaterialRemoved { index, material });
+        Ok(())
+    }
+
+    /// Puts library material `id` on every body among `parts`, as one undo
+    /// step. Non-bodies, and parts already on it, are left alone.
+    pub fn assign_material(&mut self, parts: &[PartId], id: FaceMaterialId) {
+        let Some(material) = self.materials.get(id) else { return };
+        let (label, after) = (format!("Assign {}", material.name), material.handle().clone());
+        let mut doc = self.undo_scope(&label);
+        for &part in parts {
+            if !doc.takes_material(part) {
+                continue;
+            }
+            let Some(before) = doc.face_material_handle(part) else { continue };
+            if before.id() == id {
+                continue;
+            }
+            doc.set_face_material(part, &after);
+            doc.history.record(&label, Delta::Restyled { part, before, after: after.clone() });
+        }
+    }
+
+    /// The material on the part's faces.
+    fn face_material_handle(&self, part: PartId) -> Option<FaceMaterialHandle> {
+        let node = self.node_for_part(part)?;
+        let scene = self.scene.lock();
+        let instance = scene.get_node(node)?.instance()?;
+        scene.get_instance(instance)?.face_material_handle().cloned()
+    }
+
+    /// Puts `material` on the part's faces, and makes a copy of it, id and
+    /// all, the part's face template: a copy of the part then shares it if it
+    /// is a library material.
+    fn set_face_material(&mut self, part: PartId, material: &FaceMaterialHandle) {
+        let Some(node) = self.node_for_part(part) else { return };
+        let template = {
+            let mut scene = self.scene.lock();
+            let Some(instance) = scene.get_node(node).and_then(|node| node.instance()) else {
+                return;
+            };
+            if let Some(instance) = scene.get_instance_mut(instance) {
+                instance.set_face_material(Some(material.clone()));
+            }
+            scene.get_face_material(material.id()).cloned()
+        };
+        if let (Some(template), Some(part)) = (template, self.get_part_mut(part)) {
+            part.options.face_material = template;
+        }
+    }
+
+    /// Brings the face templates naming library material `id` up to date
+    /// with it.
+    fn refresh_templates(&mut self, id: FaceMaterialId) {
+        if !self.materials.contains(id) {
+            return;
+        }
+        let Some(live) = self.scene.get_face_material(id) else { return };
+        for part in &mut self.parts {
+            if part.options.face_material.id == id {
+                part.options.face_material = live.clone();
+            }
+        }
+    }
+
+    /// Takes a listed material out of the library into `material`, so the
+    /// entry a step holds keeps renames made while it was listed.
+    fn unlist_material(&mut self, material: &mut LibraryMaterial) {
+        if let Some((_, listed)) = self.materials.remove(material.id()) {
+            *material = listed;
+        }
+    }
 }
 
 /// Guard for [`Document::undo_scope`]: mutations made through it accumulate
@@ -723,6 +966,8 @@ mod tests {
     };
     use duck_engine_scene::resource::FaceMaterial;
     use opencascade::primitives::Face;
+
+    use crate::materials::Finish;
 
     /// The document labels whatever scene it draws in with its own unit, over
     /// the engine's default of metres.
@@ -1323,5 +1568,163 @@ mod tests {
         let length: f64 = rim.pieces().iter().map(|piece| piece.length()).sum();
         assert_eq!(rim.curve().edge_type(), opencascade::primitives::EdgeType::Circle);
         assert!((rim.curve().length() - length).abs() < 1e-6, "expected {length}, got {}", rim.curve().length());
+    }
+
+    /// `count` boxes in a document with the preset library.
+    fn library_doc(count: usize) -> (Document, Vec<PartId>) {
+        let (mut doc, parts) = crate::testing::doc_with_boxes(count);
+        doc.add_preset_materials();
+        (doc, parts.into_iter().map(|(part, _)| part).collect())
+    }
+
+    fn library_material(doc: &Document, name: &str) -> FaceMaterialId {
+        doc.materials().iter().find(|m| m.name == name).expect("listed").id()
+    }
+
+    /// The material on the part's faces, library or not.
+    fn face_material_on(doc: &Document, part: PartId) -> FaceMaterialId {
+        doc.face_material_handle(part).expect("the part has a face material").id()
+    }
+
+    fn face_color(doc: &Document, part: PartId) -> RgbaColor {
+        doc.scene().get_face_material(face_material_on(doc, part)).unwrap().base_color_factor()
+    }
+
+    const RED: RgbaColor = RgbaColor { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+
+    #[test]
+    fn assigning_shares_one_material_and_undo_restores_each_parts_own() {
+        let (mut doc, parts) = library_doc(2);
+        let steel = library_material(&doc, "Steel");
+        let own: Vec<_> = parts.iter().map(|&part| face_material_on(&doc, part)).collect();
+        assert_ne!(own[0], own[1]);
+
+        doc.assign_material(&parts, steel);
+        assert!(parts.iter().all(|&part| doc.part_material(part) == Some(steel)));
+        assert_eq!(doc.material_usage().get(&steel), Some(&2));
+        assert_eq!(doc.undo_label(), Some("Assign Steel"));
+
+        doc.undo().expect("undo the assignment");
+        let restored: Vec<_> = parts.iter().map(|&part| face_material_on(&doc, part)).collect();
+        assert_eq!(restored, own, "each part gets its own material back");
+        assert!(doc.material_usage().is_empty());
+
+        doc.redo().expect("redo the assignment");
+        assert!(parts.iter().all(|&part| doc.part_material(part) == Some(steel)));
+    }
+
+    #[test]
+    fn editing_a_material_restyles_every_part_on_it() {
+        let (mut doc, parts) = library_doc(2);
+        let steel = library_material(&doc, "Steel");
+        doc.assign_material(&parts, steel);
+
+        let finish = Finish { color: RED, ..doc.material_finish(steel).unwrap() };
+        doc.set_material_finish(steel, finish);
+        for &part in &parts {
+            assert_part_color(&doc, part, RED);
+            assert_eq!(face_color(&doc, part), RED);
+        }
+        assert_eq!(doc.undo_label(), Some("Assign Steel"), "edits are not recorded");
+    }
+
+    #[test]
+    fn only_bodies_take_a_material() {
+        let (mut doc, parts) = library_doc(1);
+        let sketch = doc.add_part("sketch", region(), &CadTessellationOptions::default()).unwrap();
+        let steel = library_material(&doc, "Steel");
+
+        doc.assign_material(&[parts[0], sketch], steel);
+        assert_eq!(doc.part_material(parts[0]), Some(steel));
+        assert_eq!(doc.part_material(sketch), None);
+
+        // Already on it: no second step.
+        doc.assign_material(&parts, steel);
+        doc.undo().expect("undo the assignment");
+        assert_eq!(doc.part_material(parts[0]), None);
+        assert_eq!(doc.undo_label(), Some("Add sketch"));
+    }
+
+    #[test]
+    fn a_copy_of_a_part_shares_its_material() {
+        let (mut doc, parts) = library_doc(1);
+        let steel = library_material(&doc, "Steel");
+        doc.assign_material(&parts, steel);
+
+        let up = Matrix4::from_translation(Vector3::new(0.0, 3.0, 0.0));
+        let copies = crate::ops::duplicate::duplicate_parts(&mut doc, &parts, &[up]).unwrap();
+        assert_eq!(doc.part_material(copies[0]), Some(steel));
+        assert_eq!(doc.material_usage().get(&steel), Some(&2));
+    }
+
+    #[test]
+    fn reshaping_keeps_the_material() {
+        let (mut doc, parts) = library_doc(1);
+        let steel = library_material(&doc, "Steel");
+        doc.assign_material(&parts, steel);
+
+        doc.bake_transform(parts[0], Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0))).unwrap();
+        assert_eq!(doc.part_material(parts[0]), Some(steel));
+        doc.undo().expect("undo the bake");
+        assert_eq!(doc.part_material(parts[0]), Some(steel));
+    }
+
+    #[test]
+    fn a_replaced_body_passes_its_material_on() {
+        let (mut doc, parts) = library_doc(1);
+        let steel = library_material(&doc, "Steel");
+        doc.assign_material(&parts, steel);
+
+        doc.commit_result(parts[0], Shape::cube(1.0), SourceFate::Replace, "Boolean", "Boolean", &CadTessellationOptions::default())
+            .expect("the result replaces the box");
+        let result = doc.parts().next().unwrap().id;
+        assert_eq!(doc.part_material(result), Some(steel));
+
+        // A body's own appearance passes on too.
+        let options = CadTessellationOptions {
+            face_material: FaceMaterial::new().with_base_color_factor(RED),
+            ..Default::default()
+        };
+        let imported = doc.add_part("imported", Shape::cube(2.0), &options).unwrap();
+        doc.commit_result(imported, Shape::cube(1.0), SourceFate::Replace, "Boolean", "Boolean", &CadTessellationOptions::default())
+            .expect("the result replaces the imported box");
+        let result = doc.parts().find(|part| part.name == "imported").unwrap().id;
+        assert_eq!(face_color(&doc, result), RED);
+        assert_eq!(doc.part_material(result), None);
+    }
+
+    #[test]
+    fn a_material_in_use_is_kept_and_a_deleted_one_relists_in_place() {
+        let (mut doc, parts) = library_doc(1);
+        let steel = library_material(&doc, "Steel");
+        doc.assign_material(&parts, steel);
+        assert!(doc.remove_material(steel).is_err());
+        assert!(doc.materials().contains(steel));
+
+        let brass = library_material(&doc, "Brass");
+        let position = |doc: &Document| doc.materials().iter().position(|m| m.id() == brass);
+        let index = position(&doc);
+        doc.remove_material(brass).expect("brass is unused");
+        assert_eq!(position(&doc), None);
+        assert_eq!(doc.undo_label(), Some("Delete Brass"));
+
+        doc.undo().expect("undo the delete");
+        assert_eq!(position(&doc), index);
+        doc.redo().expect("redo the delete");
+        assert_eq!(position(&doc), None);
+    }
+
+    #[test]
+    fn a_rename_survives_undoing_and_redoing_its_creation() {
+        let (mut doc, _) = library_doc(0);
+        assert_eq!(doc.numbered_material_name("Material"), "Material-001");
+        let id = doc.add_material("Material-001", crate::materials::DEFAULT_FINISH);
+        doc.rename_material(id, "  Mine  ");
+        doc.rename_material(id, " ");
+
+        doc.undo().expect("undo the creation");
+        assert!(!doc.materials().contains(id));
+        doc.redo().expect("redo the creation");
+        assert_eq!(doc.materials().get(id).map(|m| m.name.as_str()), Some("Mine"));
     }
 }

@@ -2,6 +2,7 @@
 
 pub(crate) mod icons;
 mod lights_tab;
+mod materials_tab;
 mod menu_bar;
 mod right_panel;
 mod model_tab;

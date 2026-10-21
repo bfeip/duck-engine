@@ -5,6 +5,7 @@ mod document;
 mod grid;
 mod history;
 mod io;
+mod materials;
 mod notifications;
 mod ops;
 mod platform;
@@ -244,7 +245,9 @@ impl ViewerState<'static> {
 
         self.viewer.set_view_scene(self.view_id, scene.clone());
         self.viewer.view_mut(self.view_id).expect("main view").set_camera(camera);
-        self.document.lock().unwrap().set_scene(scene);
+        let mut document = self.document.lock().unwrap();
+        document.set_scene(scene);
+        document.add_preset_materials();
     }
 }
 

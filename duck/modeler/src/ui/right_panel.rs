@@ -1,5 +1,6 @@
 //! The right-hand tabbed panel: the Model tab (part list), the Scene tab
-//! (camera, construction plane, grid, and snap settings) and the Lights tab.
+//! (camera, construction plane, grid, and snap settings), the Lights tab and
+//! the Materials tab (the material library).
 
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::selection::SelectionManager;
@@ -7,6 +8,7 @@ use duck_engine_viewer::selection::SelectionManager;
 use crate::document::Document;
 use crate::construction::ConstructionOptions;
 use crate::ui::lights_tab::{self, Lighting};
+use crate::ui::materials_tab::MaterialsTab;
 use crate::ui::model_tab::ModelTab;
 use crate::ui::scene_tab::SceneTab;
 use crate::AppAction;
@@ -17,13 +19,15 @@ enum RightTab {
     Model,
     Scene,
     Lights,
+    Materials,
 }
 
 impl RightTab {
-    const ALL: [RightTab; 3] = [
+    const ALL: [RightTab; 4] = [
         RightTab::Model,
         RightTab::Scene,
         RightTab::Lights,
+        RightTab::Materials,
     ];
 
     fn label(self) -> &'static str {
@@ -31,6 +35,7 @@ impl RightTab {
             RightTab::Model => "Model",
             RightTab::Scene => "Scene",
             RightTab::Lights => "Lights",
+            RightTab::Materials => "Materials",
         }
     }
 }
@@ -40,6 +45,7 @@ pub struct RightPanel {
     active_tab: RightTab,
     model: ModelTab,
     scene: SceneTab,
+    materials: MaterialsTab,
 }
 
 impl RightPanel {
@@ -71,6 +77,7 @@ impl RightPanel {
                     RightTab::Lights => {
                         lights_tab::show(ui, lighting, camera, construction.units, actions)
                     }
+                    RightTab::Materials => self.materials.show(ui, document, selection),
                 }
             });
     }

@@ -1,10 +1,11 @@
 use std::collections::VecDeque;
 
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::resource::NodeHandle;
+use duck_engine_scene::resource::{FaceMaterialHandle, NodeHandle};
 use opencascade::primitives::Shape;
 
 use crate::document::PartId;
+use crate::materials::LibraryMaterial;
 
 /// Maximum number of undoable steps retained; the oldest is evicted beyond this.
 const MAX_STEPS: usize = 64;
@@ -33,6 +34,18 @@ pub enum Delta {
         part: PartId,
         before: String,
         after: String,
+    },
+    /// A material was listed in the library at `index`. While the step is
+    /// undone, `material` holds the unlisted entry.
+    MaterialAdded { index: usize, material: LibraryMaterial },
+    /// A material was unlisted from `index` in the library. While the step is
+    /// done, `material` holds the unlisted entry.
+    MaterialRemoved { index: usize, material: LibraryMaterial },
+    /// A body's face material was swapped. The handles keep both alive.
+    Restyled {
+        part: PartId,
+        before: FaceMaterialHandle,
+        after: FaceMaterialHandle,
     },
 }
 

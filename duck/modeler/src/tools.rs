@@ -83,6 +83,7 @@ pub use path::{PathKind, PathTool};
 pub use rectangle::RectangleTool;
 pub use revolve::RevolveTool;
 pub use sphere::SphereTool;
+pub use targets::selected_parts;
 pub use thicken::ThickenTool;
 pub use transform::TransformTool;
 

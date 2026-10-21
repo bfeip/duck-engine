@@ -9,6 +9,7 @@ use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, MaterialFlags};
 
 use crate::grid::GridConfig;
+use crate::materials::DEFAULT_FINISH;
 use crate::snap::SnapEngine;
 
 /// How far a view may turn off the axis it snapped to, as `1 - cos θ` (about
@@ -54,11 +55,7 @@ impl ConstructionOptions {
         let geometry_options = CadTessellationOptions {
             tessellation_tolerance: 0.1,
             scale_factor: 1.0,
-            face_material: FaceMaterial::new()
-                .with_base_color_factor(RgbaColor { r: 0.34, g: 0.40, b: 0.52, a: 1.0 })
-                .with_roughness_factor(0.32)
-                // Double sided for now since regions are created with arbitrary orientation
-                .with_flags(MaterialFlags::DOUBLE_SIDED),
+            face_material: DEFAULT_FINISH.material(),
             line_material: LineMaterial::new(RgbaColor { r: 0.02, g: 0.025, b: 0.035, a: 1.0 }),
             // Sketch appearance for geometry that bounds no volume: free edges,
             // wires, and lone faces.
