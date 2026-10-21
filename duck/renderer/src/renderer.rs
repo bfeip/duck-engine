@@ -138,7 +138,7 @@ impl RenderContext {
     }
 
     /// Whether the device supports compute shaders; without it environment maps
-    /// are not processed.
+    /// are baked on the CPU.
     pub fn has_compute(&self) -> bool {
         self.capabilities.has_compute
     }

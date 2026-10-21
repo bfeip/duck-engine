@@ -1,9 +1,11 @@
 //! Equirectangular to cubemap conversion using a compute shader.
 
-use crate::ibl::{cubemap::GpuCubemap, HdrImage, ENVIRONMENT_CUBEMAP_SIZE};
+use super::storage_view;
+use crate::ibl::{cube_texture, CUBEMAP_FORMAT, HdrImage, ENVIRONMENT_CUBEMAP_SIZE};
+use crate::render_core::GpuTexture;
 
 /// Shader source for equirect to cube conversion.
-const EQUIRECT_TO_CUBE_SHADER: &str = include_str!("../shaders/ibl/equirect_to_cube.wgsl");
+const EQUIRECT_TO_CUBE_SHADER: &str = include_str!("../../shaders/ibl/equirect_to_cube.wgsl");
 
 /// Resources for converting equirectangular images to cubemaps.
 pub struct EquirectToCubePipeline {
@@ -47,7 +49,7 @@ impl EquirectToCubePipeline {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba16Float,
+                        format: CUBEMAP_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2Array,
                     },
                     count: None,
@@ -78,13 +80,13 @@ impl EquirectToCubePipeline {
 
     /// Convert an equirectangular HDR image to a cubemap.
     ///
-    /// Returns a GpuCubemap with the environment map.
+    /// Returns the environment cubemap.
     pub fn convert(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         hdr_image: &HdrImage,
-    ) -> GpuCubemap {
+    ) -> GpuTexture {
         // Create the input 2D texture from HDR data
         let input_texture = self.create_input_texture(device, queue, hdr_image);
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -101,17 +103,16 @@ impl EquirectToCubePipeline {
         });
 
         // Create output cubemap
-        let output_cubemap = GpuCubemap::new(
+        let output_cubemap = cube_texture(
             device,
             ENVIRONMENT_CUBEMAP_SIZE,
-            wgpu::TextureFormat::Rgba16Float,
             1, // No mipmaps for the environment cubemap itself
             wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             "Environment Cubemap",
         );
 
         // Create storage view for compute shader output
-        let output_view = output_cubemap.create_storage_view(0, wgpu::TextureFormat::Rgba16Float);
+        let output_view = storage_view(&output_cubemap, 0);
 
         // Create bind group
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

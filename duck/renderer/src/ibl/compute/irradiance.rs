@@ -3,10 +3,12 @@
 //! The irradiance map stores the diffuse component of IBL lighting by
 //! convolving the environment cubemap with a cosine-weighted hemisphere.
 
-use crate::ibl::{cubemap::GpuCubemap, IRRADIANCE_CUBEMAP_SIZE};
+use super::storage_view;
+use crate::ibl::{cube_texture, CUBEMAP_FORMAT, IRRADIANCE_CUBEMAP_SIZE};
+use crate::render_core::GpuTexture;
 
 /// Shader source for irradiance convolution.
-const IRRADIANCE_SHADER: &str = include_str!("../shaders/ibl/irradiance.wgsl");
+const IRRADIANCE_SHADER: &str = include_str!("../../shaders/ibl/irradiance.wgsl");
 
 /// Pipeline for generating irradiance cubemaps.
 pub struct IrradiancePipeline {
@@ -49,7 +51,7 @@ impl IrradiancePipeline {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba16Float,
+                        format: CUBEMAP_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2Array,
                     },
                     count: None,
@@ -83,20 +85,19 @@ impl IrradiancePipeline {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        environment: &GpuCubemap,
-    ) -> GpuCubemap {
+        environment: &GpuTexture,
+    ) -> GpuTexture {
         // Create output irradiance cubemap (small since irradiance is low-frequency)
-        let irradiance = GpuCubemap::new(
+        let irradiance = cube_texture(
             device,
             IRRADIANCE_CUBEMAP_SIZE,
-            wgpu::TextureFormat::Rgba16Float,
             1,
             wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
             "Irradiance Cubemap",
         );
 
         // Create storage view for compute output
-        let output_view = irradiance.create_storage_view(0, wgpu::TextureFormat::Rgba16Float);
+        let output_view = storage_view(&irradiance, 0);
 
         // Create bind group
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

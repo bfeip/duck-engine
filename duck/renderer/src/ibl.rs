@@ -2,34 +2,30 @@
 //!
 //! An [`EnvironmentMap`] is a scene resource naming an equirectangular HDR
 //! source ([`EnvironmentSource`]) plus an intensity. When a scene's active
-//! environment map is prepared for rendering, its HDR image is processed on
-//! the GPU into the textures PBR shading samples — an irradiance cubemap, a
+//! environment map is prepared for rendering, its HDR image is baked into the
+//! textures PBR shading samples — an irradiance cubemap, a
 //! roughness-prefiltered cubemap, and a BRDF lookup table — and lit materials
-//! pick it up automatically. Processing requires compute shaders; without them
-//! environment maps are skipped (with a log warning).
+//! pick it up automatically. Baking runs in compute shaders where the adapter
+//! has them, and on the CPU ([`IblMaps`]) otherwise.
 //!
 //! This module also exposes the Radiance HDR loader ([`HdrImage`],
 //! [`load_hdr_from_path`], [`load_hdr_from_bytes`], [`load_hdr_from_reader`])
 //! and the sizes of the generated textures.
 
 mod brdf_lut;
+mod compute;
 mod cpu;
-mod cubemap;
-mod equirect;
 mod hdr_loader;
-mod irradiance;
-mod prefilter;
 
 pub use cpu::{CubeImage, IblMaps, Rgb};
 pub use hdr_loader::{load_hdr_from_bytes, load_hdr_from_path, load_hdr_from_reader, HdrImage};
 
-pub(crate) use brdf_lut::{BrdfLut, BrdfLutPipeline};
-pub(crate) use cubemap::GpuCubemap;
-pub(crate) use equirect::EquirectToCubePipeline;
-pub(crate) use irradiance::IrradiancePipeline;
-pub(crate) use prefilter::PrefilterPipeline;
+use brdf_lut::brdf_lut;
+use compute::ComputeBaker;
 
 use wgpu::util::DeviceExt;
+
+use crate::render_core::GpuTexture;
 
 // Re-export EnvironmentMap types from scene crate
 pub use duck_engine_scene::{EnvironmentMap, EnvironmentMapId, EnvironmentSource};
@@ -45,7 +41,8 @@ struct EnvironmentUniform {
     _padding: [u32; 3],
 }
 
-/// Size of the environment cubemap (per face).
+/// Size of the environment cubemap (per face) the compute baker resamples the
+/// HDR onto.
 pub const ENVIRONMENT_CUBEMAP_SIZE: u32 = 512;
 
 /// Size of the irradiance cubemap (per face). Low resolution since irradiance is low-frequency.
@@ -60,6 +57,97 @@ pub const PREFILTERED_MIP_LEVELS: u32 = 5;
 /// Size of the BRDF integration LUT.
 pub const BRDF_LUT_SIZE: u32 = 512;
 
+/// Texel format of every IBL cubemap.
+const CUBEMAP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// A cubemap texture with `size`² faces and `mip_levels` levels, viewed as a
+/// cube and sampled linearly.
+fn cube_texture(
+    device: &wgpu::Device,
+    size: u32,
+    mip_levels: u32,
+    usage: wgpu::TextureUsages,
+    label: &str,
+) -> GpuTexture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: mip_levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: CUBEMAP_FORMAT,
+        usage,
+        view_formats: &[],
+    });
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some(&format!("{} Cube View", label)),
+        format: Some(CUBEMAP_FORMAT),
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        aspect: wgpu::TextureAspect::All,
+        base_mip_level: 0,
+        mip_level_count: Some(mip_levels),
+        base_array_layer: 0,
+        array_layer_count: Some(6),
+        ..Default::default()
+    });
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some(&format!("{} Sampler", label)),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: if mip_levels > 1 {
+            wgpu::FilterMode::Linear
+        } else {
+            wgpu::FilterMode::Nearest
+        },
+        ..Default::default()
+    });
+
+    GpuTexture { texture, view, sampler }
+}
+
+/// The baked cubemaps of one environment.
+pub(crate) struct IblTextures {
+    /// Diffuse irradiance over π, [`IRRADIANCE_CUBEMAP_SIZE`]² faces.
+    pub irradiance: GpuTexture,
+    /// Specular radiance, [`PREFILTERED_CUBEMAP_SIZE`]² faces, one mip per
+    /// roughness step over [`PREFILTERED_MIP_LEVELS`].
+    pub prefiltered: GpuTexture,
+}
+
+/// Bakes environments into [`IblTextures`]: in compute shaders where the
+/// adapter has them, on the CPU otherwise.
+pub(crate) enum IblBaker {
+    Compute(ComputeBaker),
+    Cpu,
+}
+
+impl IblBaker {
+    pub fn new(device: &wgpu::Device, has_compute: bool) -> Self {
+        if has_compute {
+            Self::Compute(ComputeBaker::new(device))
+        } else {
+            Self::Cpu
+        }
+    }
+
+    /// Bake the textures for an equirectangular environment.
+    pub fn bake(&self, device: &wgpu::Device, queue: &wgpu::Queue, hdr: &HdrImage) -> IblTextures {
+        match self {
+            Self::Compute(baker) => baker.bake(device, queue, hdr),
+            Self::Cpu => IblMaps::from_equirect(hdr).upload(device, queue),
+        }
+    }
+}
+
 /// Processed GPU resources for an environment map.
 #[derive(Debug)]
 pub(crate) struct ProcessedEnvironment {
@@ -69,31 +157,19 @@ pub(crate) struct ProcessedEnvironment {
     pub bind_group: wgpu::BindGroup,
 }
 
-/// GPU resources and pipelines for Image Based Lighting.
+/// GPU resources for Image Based Lighting.
 ///
-/// This struct manages all IBL-related GPU resources including compute pipelines
-/// for processing environment maps and the shared BRDF lookup table.
-/// When compute shaders are unavailable (e.g. WebGL backend), only the bind group
-/// layout is created and IBL processing is skipped.
+/// Bakes each environment map once, with the shared BRDF lookup table, into
+/// the bind group shading samples.
 pub(crate) struct IblResources {
-    /// Pipeline for converting equirectangular HDR to cubemap (None without compute).
-    equirect_pipeline: Option<EquirectToCubePipeline>,
-    /// Pipeline for generating irradiance maps (None without compute).
-    irradiance_pipeline: Option<IrradiancePipeline>,
-    /// Pipeline for generating pre-filtered environment maps (None without compute).
-    prefilter_pipeline: Option<PrefilterPipeline>,
-    /// Pipeline for generating the BRDF LUT (None without compute).
-    _brdf_lut_pipeline: Option<BrdfLutPipeline>,
-    /// Shared BRDF lookup table. Always available — either computed via GPU or loaded from
-    /// baked data generated by build.rs.
-    pub brdf_lut: BrdfLut,
+    baker: IblBaker,
+    /// Shared BRDF lookup table, baked at build time.
+    brdf_lut: GpuTexture,
     /// Cheap (ref-counted) clone of the IBL bind group layout, whose canonical
     /// owner is the renderer's `BindGroupLayouts` registry. Kept here so
     /// per-environment bind groups can be built without threading the layout
     /// through `process_environment`.
     bind_group_layout: wgpu::BindGroupLayout,
-    /// Whether compute shaders are available.
-    has_compute: bool,
     /// Processed environment maps by ID, with the generation they were synced at.
     processed_environments: std::collections::HashMap<EnvironmentMapId, (ProcessedEnvironment, u64)>,
 }
@@ -177,10 +253,8 @@ pub(crate) fn ibl_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLay
 }
 
 impl IblResources {
-    /// Create new IBL resources.
-    ///
-    /// When `has_compute` is true, initializes all compute pipelines and generates the
-    /// BRDF LUT. When false (e.g. WebGL backend), creates empty resources.
+    /// Create new IBL resources, baking in compute shaders when `has_compute`
+    /// and on the CPU otherwise.
     ///
     /// `layout` is the canonical IBL bind group layout owned by the renderer's
     /// `BindGroupLayouts` registry; a cheap clone is retained for building
@@ -191,40 +265,14 @@ impl IblResources {
         layout: &wgpu::BindGroupLayout,
         has_compute: bool,
     ) -> Self {
-        let bind_group_layout = layout.clone();
-
-        if has_compute {
-            let equirect_pipeline = EquirectToCubePipeline::new(device);
-            let irradiance_pipeline = IrradiancePipeline::new(device);
-            let prefilter_pipeline = PrefilterPipeline::new(device);
-            let brdf_lut_pipeline = BrdfLutPipeline::new(device);
-            let brdf_lut = brdf_lut_pipeline.generate(device, queue);
-
-            Self {
-                equirect_pipeline: Some(equirect_pipeline),
-                irradiance_pipeline: Some(irradiance_pipeline),
-                prefilter_pipeline: Some(prefilter_pipeline),
-                _brdf_lut_pipeline: Some(brdf_lut_pipeline),
-                brdf_lut,
-                bind_group_layout,
-                has_compute,
-                processed_environments: std::collections::HashMap::new(),
-            }
-        } else {
-            log::info!("Compute shaders unavailable — IBL environment maps will be skipped.");
-            // BRDF LUT is always available via baked data from build.rs
-            let brdf_lut = BrdfLut::from_baked(device, queue);
-
-            Self {
-                equirect_pipeline: None,
-                irradiance_pipeline: None,
-                prefilter_pipeline: None,
-                _brdf_lut_pipeline: None,
-                brdf_lut,
-                bind_group_layout,
-                has_compute,
-                processed_environments: std::collections::HashMap::new(),
-            }
+        if !has_compute {
+            log::info!("Compute shaders unavailable — baking IBL environment maps on the CPU.");
+        }
+        Self {
+            baker: IblBaker::new(device, has_compute),
+            brdf_lut: brdf_lut(device, queue),
+            bind_group_layout: layout.clone(),
+            processed_environments: std::collections::HashMap::new(),
         }
     }
 
@@ -233,8 +281,6 @@ impl IblResources {
     /// If the environment has already been processed (same ID), only updates
     /// the params buffer (intensity). Full texture reprocessing is skipped
     /// since the source cannot change on an existing environment map.
-    ///
-    /// Requires compute shader support; without it the environment is skipped.
     pub fn process_environment(
         &mut self,
         device: &wgpu::Device,
@@ -247,45 +293,12 @@ impl IblResources {
             return Ok(());
         }
 
-        if !self.has_compute {
-            log::warn!(
-                "Skipping environment map {} (no compute shader support).",
-                env_map.id
-            );
-            return Ok(());
-        }
-
-        self.process_from_hdr(device, queue, env_map)
-    }
-
-    /// Process an environment map from HDR source via GPU compute shaders.
-    fn process_from_hdr(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        env_map: &EnvironmentMap,
-    ) -> anyhow::Result<()> {
-        // Load HDR image from source
         let hdr_image = match env_map.source() {
             EnvironmentSource::EquirectangularPath(path) => load_hdr_from_path(path)?,
             EnvironmentSource::EquirectangularHdr(bytes) => load_hdr_from_bytes(bytes)?,
         };
-
-        // The unwraps below are safe: has_compute is true so pipelines were initialized
-        let equirect = self.equirect_pipeline.as_ref().unwrap();
-        let irradiance_pipeline = self.irradiance_pipeline.as_ref().unwrap();
-        let prefilter_pipeline = self.prefilter_pipeline.as_ref().unwrap();
-
-        // Convert equirectangular to cubemap
-        let environment = equirect.convert(device, queue, &hdr_image);
-
-        // Generate irradiance map
-        let irradiance = irradiance_pipeline.generate(device, queue, &environment);
-
-        // Generate pre-filtered map
-        let prefiltered = prefilter_pipeline.generate(device, queue, &environment);
-
-        self.store_processed(device, env_map, &irradiance, &prefiltered);
+        let textures = self.baker.bake(device, queue, &hdr_image);
+        self.store_processed(device, env_map, &textures);
         Ok(())
     }
 
@@ -294,8 +307,7 @@ impl IblResources {
         &mut self,
         device: &wgpu::Device,
         env_map: &EnvironmentMap,
-        irradiance: &GpuCubemap,
-        prefiltered: &GpuCubemap,
+        textures: &IblTextures,
     ) {
         // Create uniform buffer for environment parameters
         let env_uniform = EnvironmentUniform {
@@ -315,19 +327,19 @@ impl IblResources {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&irradiance.view),
+                    resource: wgpu::BindingResource::TextureView(&textures.irradiance.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&irradiance.sampler),
+                    resource: wgpu::BindingResource::Sampler(&textures.irradiance.sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&prefiltered.view),
+                    resource: wgpu::BindingResource::TextureView(&textures.prefiltered.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&prefiltered.sampler),
+                    resource: wgpu::BindingResource::Sampler(&textures.prefiltered.sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,

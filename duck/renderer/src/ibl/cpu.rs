@@ -10,7 +10,11 @@ mod sampling;
 
 pub use cube::{CubeImage, Rgb};
 
-use crate::ibl::{HdrImage, IRRADIANCE_CUBEMAP_SIZE, PREFILTERED_CUBEMAP_SIZE, PREFILTERED_MIP_LEVELS};
+use crate::ibl::{
+    cube_texture, HdrImage, IblTextures, IRRADIANCE_CUBEMAP_SIZE, PREFILTERED_CUBEMAP_SIZE,
+    PREFILTERED_MIP_LEVELS,
+};
+use crate::render_core::GpuTexture;
 
 /// The cubemaps PBR shading samples, baked on the CPU.
 #[derive(Debug, Clone)]
@@ -32,6 +36,54 @@ impl IblMaps {
             prefiltered: prefilter::prefilter(&environment, PREFILTERED_MIP_LEVELS),
         }
     }
+
+    /// Upload the maps as the textures shading samples.
+    pub(crate) fn upload(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> IblTextures {
+        IblTextures {
+            irradiance: upload_cube(device, queue, &self.irradiance, "Irradiance Cubemap"),
+            prefiltered: upload_cube(device, queue, &self.prefiltered, "Prefiltered Cubemap"),
+        }
+    }
+}
+
+/// `cube` as a cube texture with all its levels.
+fn upload_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cube: &CubeImage,
+    label: &str,
+) -> GpuTexture {
+    let texture = cube_texture(
+        device,
+        cube.size(),
+        cube.level_count(),
+        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        label,
+    );
+    for level in 0..cube.level_count() {
+        let size = cube.level_size(level);
+        let texels: Vec<[u16; 4]> = cube
+            .level(level)
+            .iter()
+            .map(|&[r, g, b]| [r, g, b, 1.0].map(|c| half::f16::from_f32(c).to_bits()))
+            .collect();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture.texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&texels),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * 8), // Rgba16Float = 4 * 2 bytes
+                rows_per_image: Some(size),
+            },
+            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 6 },
+        );
+    }
+    texture
 }
 
 #[cfg(test)]

@@ -3,10 +3,12 @@
 //! Uses GGX importance sampling to generate a pre-filtered environment cubemap
 //! where each mip level represents a different roughness value.
 
-use crate::ibl::{cubemap::GpuCubemap, PREFILTERED_CUBEMAP_SIZE, PREFILTERED_MIP_LEVELS};
+use super::storage_view;
+use crate::ibl::{cube_texture, CUBEMAP_FORMAT, PREFILTERED_CUBEMAP_SIZE, PREFILTERED_MIP_LEVELS};
+use crate::render_core::GpuTexture;
 
 /// Shader source for pre-filter convolution.
-const PREFILTER_SHADER: &str = include_str!("../shaders/ibl/prefilter.wgsl");
+const PREFILTER_SHADER: &str = include_str!("../../shaders/ibl/prefilter.wgsl");
 
 /// Uniform buffer for pre-filter parameters.
 #[repr(C)]
@@ -57,7 +59,7 @@ impl PrefilterPipeline {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba16Float,
+                        format: CUBEMAP_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2Array,
                     },
                     count: None,
@@ -106,13 +108,12 @@ impl PrefilterPipeline {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        environment: &GpuCubemap,
-    ) -> GpuCubemap {
+        environment: &GpuTexture,
+    ) -> GpuTexture {
         // Create output pre-filtered cubemap with mip chain
-        let prefiltered = GpuCubemap::new(
+        let prefiltered = cube_texture(
             device,
             PREFILTERED_CUBEMAP_SIZE,
-            wgpu::TextureFormat::Rgba16Float,
             PREFILTERED_MIP_LEVELS,
             wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
             "Prefiltered Cubemap",
@@ -139,7 +140,7 @@ impl PrefilterPipeline {
             queue.write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
 
             // Create storage view for this mip level
-            let output_view = prefiltered.create_storage_view(mip, wgpu::TextureFormat::Rgba16Float);
+            let output_view = storage_view(&prefiltered, mip);
 
             // Create bind group
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

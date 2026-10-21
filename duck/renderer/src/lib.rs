@@ -127,11 +127,11 @@
 //!
 //! # Image-based lighting
 //!
-//! When the scene has an active environment map, `prepare` processes its HDR
+//! When the scene has an active environment map, `prepare` bakes its HDR
 //! source into the textures PBR shading samples, and lit materials pick it up
-//! automatically; see [`ibl`]. Processing requires compute shader support
-//! (absent on WebGL), reported by [`Gpu`] at acquisition and passed to
-//! [`RenderContext::new`].
+//! automatically; see [`ibl`]. Baking runs in compute shaders when the
+//! [`GpuCapabilities`] passed to [`RenderContext::new`] allow it, and on the
+//! CPU otherwise (as on WebGL).
 //!
 //! # Example
 //!
