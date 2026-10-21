@@ -4,6 +4,7 @@
 //! Low-level tessellation is handled by [`duck_engine_scene::cad`].
 
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{bail, Context, Result};
 use duck_engine_common::{decompose_matrix, Matrix4, Real, RgbaColor};
@@ -16,6 +17,15 @@ use duck_engine_scene::resource::{
 use duck_engine_scene::{PositionedCamera, SceneData};
 use opencascade::primitives::{Compound, Shape, ShapeElements};
 use opencascade::xcaf::{XcafColorTool, XcafDimTolTool, XcafDocument, XcafLabel, XcafShapeTool};
+
+/// Serializes OCCT's STEP/IGES translators, which share process-wide state.
+static DATA_EXCHANGE: Mutex<()> = Mutex::new(());
+
+/// Run `f`, a STEP/IGES read or write, under [`DATA_EXCHANGE`].
+fn exchange<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = DATA_EXCHANGE.lock().unwrap_or_else(PoisonError::into_inner);
+    f()
+}
 
 /// Options controlling how a CAD file is imported.
 ///
@@ -61,7 +71,7 @@ pub fn load_step(
     scene: &mut SceneData,
     options: &CadImportOptions,
 ) -> Result<CadImportResult> {
-    let doc = XcafDocument::read_step(path.as_ref())
+    let doc = exchange(|| XcafDocument::read_step(path.as_ref()))
         .with_context(|| format!("Failed to read STEP file: {}", path.as_ref().display()))?;
     import_xcaf_document(&doc, scene, options)
 }
@@ -72,7 +82,7 @@ pub fn load_step_from_str(
     scene: &mut SceneData,
     options: &CadImportOptions,
 ) -> Result<CadImportResult> {
-    let doc = XcafDocument::read_step_from_str(s).context("Failed to read STEP data")?;
+    let doc = exchange(|| XcafDocument::read_step_from_str(s)).context("Failed to read STEP data")?;
     import_xcaf_document(&doc, scene, options)
 }
 
@@ -82,7 +92,7 @@ pub fn load_iges(
     scene: &mut SceneData,
     options: &CadImportOptions,
 ) -> Result<CadImportResult> {
-    let doc = XcafDocument::read_iges(path.as_ref())
+    let doc = exchange(|| XcafDocument::read_iges(path.as_ref()))
         .with_context(|| format!("Failed to read IGES file: {}", path.as_ref().display()))?;
     import_xcaf_document(&doc, scene, options)
 }
@@ -93,7 +103,7 @@ pub fn load_iges_from_str(
     scene: &mut SceneData,
     options: &CadImportOptions,
 ) -> Result<CadImportResult> {
-    let doc = XcafDocument::read_iges_from_str(s).context("Failed to read IGES data")?;
+    let doc = exchange(|| XcafDocument::read_iges_from_str(s)).context("Failed to read IGES data")?;
     import_xcaf_document(&doc, scene, options)
 }
 
@@ -331,10 +341,10 @@ pub fn load_cad_parts(path: impl AsRef<Path>, scale: f64) -> Result<Vec<Imported
     let path = path.as_ref();
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let doc = if is_step_extension(ext) {
-        XcafDocument::read_step(path)
+        exchange(|| XcafDocument::read_step(path))
             .with_context(|| format!("Failed to read STEP file: {}", path.display()))?
     } else if is_cad_extension(ext) {
-        XcafDocument::read_iges(path)
+        exchange(|| XcafDocument::read_iges(path))
             .with_context(|| format!("Failed to read IGES file: {}", path.display()))?
     } else {
         bail!("Unsupported CAD extension: {ext:?}");
@@ -365,12 +375,10 @@ pub fn save_cad_shapes<'a>(
         shapes.into_iter().map(|s| place_shape(s, uniform_scale(scale))).collect();
     let compound: Shape = Compound::from_shapes(&scaled).into();
     if is_step_extension(ext) {
-        compound
-            .write_step_to_file(path)
+        exchange(|| compound.write_step_to_file(path))
             .with_context(|| format!("Failed to write STEP file: {}", path.display()))
     } else {
-        compound
-            .write_iges_to_file(path)
+        exchange(|| compound.write_iges_to_file(path))
             .with_context(|| format!("Failed to write IGES file: {}", path.display()))
     }
 }
