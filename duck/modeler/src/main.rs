@@ -18,6 +18,7 @@ mod tools;
 mod ui;
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +31,7 @@ use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, Transf
 use duck_engine_viewer::common::{
     InnerSpace, Real, RgbaColor, Vector3
 };
+use duck_engine_viewer::renderer::ibl;
 use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
 use crate::construction::ConstructionOptions;
@@ -39,7 +41,7 @@ use crate::tools::{
     SphereTool, ThickenTool, ToolId, ToolManager, TransformTool, UnjoinTool, Workspace,
 };
 use crate::notifications::Notifications;
-use crate::platform::Host;
+use crate::platform::{FileFilter, Host};
 use crate::shortcuts::Shortcuts;
 use crate::ui::{Lighting, ModelerUi};
 
@@ -47,6 +49,9 @@ use document::Document;
 
 /// Viewport clear color. A cool dark grey.
 const VIEWPORT_BACKGROUND: RgbaColor = RgbaColor { r: 0.035, g: 0.040, b: 0.047, a: 1.0 };
+
+/// The images [`load_environment`] reads.
+const ENVIRONMENT_FILTER: FileFilter = FileFilter { name: "Radiance HDR", extensions: &["hdr"] };
 
 /// What the app is asked to do, by the UI or a shortcut. Gathered over a frame
 /// and carried out once its UI is drawn.
@@ -60,6 +65,8 @@ pub enum AppAction {
     Redo,
     ImportCad,
     ExportCad,
+    /// Ask for an HDR image to light the scene with.
+    LoadEnvironment,
     /// The construction plane or grid settings changed; the grid visuals must
     /// be rebuilt to match.
     ConstructionChanged,
@@ -76,6 +83,32 @@ pub enum AppAction {
     TessellationChanged,
     #[cfg(not(target_os = "emscripten"))]
     Quit,
+}
+
+/// What a file the user is asked to pick is for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FilePurpose {
+    /// STEP/IGES parts to import into the document.
+    CadImport,
+    /// An HDR image to light the scene with.
+    Environment,
+}
+
+/// Light `scene` with the HDR image at `path`, replacing its environment map if
+/// it had one.
+fn load_environment(scene: &Scene, path: &Path) -> anyhow::Result<()> {
+    // The bytes rather than the path: the browser's copy of a picked file is
+    // gone once it has been received. Decoded once here so a bad file is
+    // reported, not left to fail every render.
+    let bytes = std::fs::read(path)?;
+    ibl::load_hdr_from_bytes(&bytes)?;
+    let mut scene = scene.lock();
+    if let Some(previous) = scene.active_environment_map() {
+        scene.remove_environment_map(previous);
+    }
+    let id = scene.add_environment_map_from_hdr_data(bytes);
+    scene.set_active_environment_map(Some(id));
+    Ok(())
 }
 
 /// Owns all rendering state: egui context + GPU renderer, the window surface
@@ -475,11 +508,16 @@ impl<'a> ViewerState<'a> {
                 AppAction::Delete => self.delete_selection(),
                 AppAction::Undo => self.replay(Document::undo, "Undid", "Nothing to undo"),
                 AppAction::Redo => self.replay(Document::redo, "Redid", "Nothing to redo"),
-                AppAction::ImportCad => self.host.open_file(&io::IMPORT_FILTER),
+                AppAction::ImportCad => {
+                    self.host.open_file(&io::IMPORT_FILTER, FilePurpose::CadImport)
+                }
                 AppAction::ExportCad => {
                     if let Err(e) = self.export_cad() {
                         self.notifications.failure("CAD export", &e);
                     }
+                }
+                AppAction::LoadEnvironment => {
+                    self.host.open_file(&ENVIRONMENT_FILTER, FilePurpose::Environment)
                 }
                 AppAction::ConstructionChanged => self.rebuild_grid(),
                 AppAction::TessellationChanged => {
@@ -503,14 +541,25 @@ impl<'a> ViewerState<'a> {
                 AppAction::Quit => return true,
             }
         }
-        // A file opened through ImportCad: this frame on native, some frames
-        // later in the browser.
-        let imported = self.host.receive_opened_file(|path| {
-            let options = &self.construction_options.borrow().geometry_options;
-            io::import_cad_file(&self.document, path, options)
+        // A file opened through ImportCad or LoadEnvironment: this frame on
+        // native, some frames later in the browser.
+        let scene = self.scene();
+        let received = self.host.receive_opened_file(|purpose, path| match purpose {
+            FilePurpose::CadImport => {
+                let options = &self.construction_options.borrow().geometry_options;
+                ("CAD import", io::import_cad_file(&self.document, path, options))
+            }
+            FilePurpose::Environment => {
+                let loaded = load_environment(&scene, path);
+                if loaded.is_ok() {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    self.notifications.info(format!("Lit by {name}"));
+                }
+                ("Environment load", loaded)
+            }
         });
-        if let Err(e) = imported {
-            self.notifications.failure("CAD import", &e);
+        if let Some((what, Err(e))) = received {
+            self.notifications.failure(what, &e);
         }
         // After the actions, so a snap this frame is in place before its view
         // is checked.
@@ -637,4 +686,53 @@ impl<'a> ViewerState<'a> {
 
 fn main() {
     platform::run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write a one-pixel Radiance HDR image named `name` to the temp dir.
+    fn hdr_file(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n\x80\x80\x80\x81")
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn loading_an_environment_replaces_the_last() {
+        let path = hdr_file("duck_modeler_environment_replace.hdr");
+        let scene = Scene::default();
+        let first = load_environment(&scene, &path);
+        let first_id = scene.active_environment_map();
+        let second = load_environment(&scene, &path);
+        let _ = std::fs::remove_file(&path);
+        first.unwrap();
+        second.unwrap();
+
+        let scene = scene.lock();
+        assert_eq!(scene.environment_map_count(), 1);
+        assert!(scene.active_environment_map().is_some());
+        assert_ne!(scene.active_environment_map(), first_id);
+    }
+
+    #[test]
+    fn a_bad_environment_keeps_the_current_one() {
+        let good = hdr_file("duck_modeler_environment_good.hdr");
+        let bad = std::env::temp_dir().join("duck_modeler_environment_bad.hdr");
+        std::fs::write(&bad, b"not an HDR image").unwrap();
+        let scene = Scene::default();
+        let loaded = load_environment(&scene, &good);
+        let current = scene.active_environment_map();
+        let failed = load_environment(&scene, &bad);
+        let _ = std::fs::remove_file(&good);
+        let _ = std::fs::remove_file(&bad);
+
+        loaded.unwrap();
+        assert!(failed.is_err());
+        let scene = scene.lock();
+        assert_eq!(scene.environment_map_count(), 1);
+        assert_eq!(scene.active_environment_map(), current);
+    }
 }

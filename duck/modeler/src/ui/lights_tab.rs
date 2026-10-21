@@ -1,5 +1,5 @@
-//! The lights tab: the view's camera-following headlights and the lights
-//! placed in the scene.
+//! The lights tab: the view's camera-following headlights, the lights placed
+//! in the scene, and the scene's environment map.
 
 use duck_engine_viewer::common::{
     Deg, EuclideanSpace, LengthDisplay, Point3, Quaternion, Rad, Real, RgbaColor, Rotation,
@@ -21,15 +21,25 @@ pub struct Lighting {
     pub headlight_rig: Vec<PositionedLight>,
     /// The lights of the view's scene.
     pub lights: Vec<PositionedLight>,
+    /// The intensity of the scene's environment map, if it has one. Clearing
+    /// it removes the map.
+    pub environment: Option<f32>,
 }
 
 impl Lighting {
     /// The lighting `view` renders with.
     pub fn of(view: &ViewMut<'_>) -> Self {
+        let scene = view.scene();
+        let scene = scene.lock();
+        let environment = scene
+            .active_environment_map()
+            .and_then(|id| scene.get_environment_map(id))
+            .map(|map| map.intensity());
         Self {
             headlight: view.headlight(),
             headlight_rig: view.headlight_rig().to_vec(),
             lights: view.scene_lights().to_vec(),
+            environment,
         }
     }
 
@@ -38,16 +48,29 @@ impl Lighting {
         view.set_headlight(self.headlight);
         view.set_headlight_rig(self.headlight_rig.clone());
         *view.scene_lights_mut() = self.lights.clone();
+
+        let scene = view.scene();
+        let mut scene = scene.lock();
+        if let Some(id) = scene.active_environment_map() {
+            match self.environment {
+                Some(intensity) => {
+                    if let Some(map) = scene.get_environment_map_mut(id) {
+                        map.set_intensity(intensity);
+                    }
+                }
+                None => scene.remove_environment_map(id),
+            }
+        }
     }
 
     /// Whether the headlight rig renders. The modeler gives its view no lights
-    /// of its own and no environment map, so under Auto only scene lights turn
+    /// of its own, so under Auto the scene's lights and environment map turn
     /// the rig off.
     fn rig_active(&self) -> bool {
         match self.headlight {
             HeadlightMode::On => true,
             HeadlightMode::Off => false,
-            HeadlightMode::Auto => self.lights.is_empty(),
+            HeadlightMode::Auto => self.lights.is_empty() && self.environment.is_none(),
         }
     }
 }
@@ -70,6 +93,10 @@ pub fn show(
             .id_salt("scene_lights")
             .default_open(true)
             .show(ui, |ui| changed |= scene_lights_ui(ui, lighting, camera, units));
+
+        egui::CollapsingHeader::new("Environment")
+            .default_open(true)
+            .show(ui, |ui| changed |= environment_ui(ui, &mut lighting.environment, actions));
     });
     if changed {
         actions.push(AppAction::LightingChanged);
@@ -99,9 +126,9 @@ fn headlights_ui(
     });
     if lighting.headlight == HeadlightMode::Auto {
         ui.weak(if lighting.rig_active() {
-            "On while the scene has no lights"
+            "On while the scene has no lights or environment"
         } else {
-            "Off while the scene has lights"
+            "Off while the scene has lights or an environment"
         });
     }
 
@@ -149,6 +176,40 @@ fn scene_lights_ui(
         ui.weak("No lights in the scene");
     }
     changed |= light_list_ui(ui, "scene_lights", &mut lighting.lights, camera, units, true);
+    changed
+}
+
+/// The scene's environment map: load one, set its intensity, or remove it.
+/// Returns true when anything changed.
+fn environment_ui(
+    ui: &mut egui::Ui,
+    environment: &mut Option<f32>,
+    actions: &mut Vec<AppAction>,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        if ui
+            .button("Load HDR…")
+            .on_hover_text("Light the scene with an equirectangular HDR image")
+            .clicked()
+        {
+            actions.push(AppAction::LoadEnvironment);
+        }
+        if environment.is_some() && ui.button("Remove").clicked() {
+            *environment = None;
+            changed = true;
+        }
+    });
+    match environment {
+        Some(intensity) => {
+            egui::Grid::new("environment_settings")
+                .num_columns(2)
+                .show(ui, |ui| changed |= intensity_row(ui, intensity));
+        }
+        None => {
+            ui.weak("No environment map");
+        }
+    }
     changed
 }
 
@@ -611,12 +672,12 @@ mod tests {
         assert_close(shine(&hemisphere.transform), -Vector3::unit_y());
     }
 
-    /// Draw one frame of a light list and return the text it painted, with
-    /// where.
-    fn draw_list(
+    /// Draw one frame of `content` in a panel and return the text it painted,
+    /// with where.
+    fn draw(
         ctx: &egui::Context,
         event: Option<egui::Event>,
-        lights: &mut Vec<PositionedLight>,
+        mut content: impl FnMut(&mut egui::Ui),
     ) -> Vec<(String, egui::Rect)> {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 600.0))),
@@ -624,9 +685,7 @@ mod tests {
             ..Default::default()
         };
         let output = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                light_list_ui(ui, "lights", lights, &camera(), LengthDisplay::default(), false);
-            });
+            egui::CentralPanel::default().show(ctx, |ui| content(ui));
         });
         output
             .shapes
@@ -641,6 +700,46 @@ mod tests {
             .collect()
     }
 
+    /// Draw one frame of a light list and return the text it painted, with
+    /// where.
+    fn draw_list(
+        ctx: &egui::Context,
+        event: Option<egui::Event>,
+        lights: &mut Vec<PositionedLight>,
+    ) -> Vec<(String, egui::Rect)> {
+        draw(ctx, event, |ui| {
+            light_list_ui(ui, "lights", lights, &camera(), LengthDisplay::default(), false);
+        })
+    }
+
+    /// The events of a primary click at `at`, one per frame.
+    fn click(at: egui::Pos2) -> [egui::Event; 3] {
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        [egui::Event::PointerMoved(at), press(true), press(false)]
+    }
+
+    /// Click the text `label` in the environment section, returning whether it
+    /// reported a change.
+    fn click_environment(
+        ctx: &egui::Context,
+        label: &str,
+        environment: &mut Option<f32>,
+        actions: &mut Vec<AppAction>,
+    ) -> bool {
+        let mut changed = false;
+        let texts = draw(ctx, None, |ui| changed |= environment_ui(ui, environment, actions));
+        let (_, rect) = texts.iter().find(|(text, _)| text == label).expect("the label");
+        for event in click(rect.center()) {
+            draw(ctx, Some(event), |ui| changed |= environment_ui(ui, environment, actions));
+        }
+        changed
+    }
+
     #[test]
     fn clicking_a_lights_title_opens_its_editor() {
         let ctx = egui::Context::default();
@@ -650,14 +749,7 @@ mod tests {
         let texts = draw_list(&ctx, None, &mut lights);
         assert!(!texts.iter().any(|(text, _)| text == "Position"), "a light starts closed");
         let (_, title) = texts.iter().find(|(text, _)| text == "Spot 1").expect("the title");
-        let at = title.center();
-        let press = |pressed| egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: Default::default(),
-        };
-        for event in [egui::Event::PointerMoved(at), press(true), press(false)] {
+        for event in click(title.center()) {
             draw_list(&ctx, Some(event), &mut lights);
         }
 
@@ -673,5 +765,49 @@ mod tests {
         let resolved = respace(&spot.transform, spot.space, LightSpace::World, &camera);
         assert_close(resolved.position.to_vec(), camera.eye.to_vec());
         assert_close(shine(&resolved), camera.forward());
+    }
+
+    #[test]
+    fn loading_an_environment_asks_for_an_hdr_image() {
+        let ctx = egui::Context::default();
+        let mut environment = None;
+        let mut actions = Vec::new();
+
+        let texts = draw(&ctx, None, |ui| {
+            environment_ui(ui, &mut environment, &mut actions);
+        });
+        assert!(texts.iter().any(|(text, _)| text == "No environment map"));
+        assert!(!texts.iter().any(|(text, _)| text == "Remove"), "nothing to remove");
+
+        let changed = click_environment(&ctx, "Load HDR…", &mut environment, &mut actions);
+        assert_eq!(actions, vec![AppAction::LoadEnvironment]);
+        assert!(!changed, "the lighting changes only once the file arrives");
+    }
+
+    #[test]
+    fn removing_the_environment_clears_it() {
+        let ctx = egui::Context::default();
+        let mut environment = Some(1.5);
+        let mut actions = Vec::new();
+
+        let changed = click_environment(&ctx, "Remove", &mut environment, &mut actions);
+        assert_eq!(environment, None);
+        assert!(changed);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn an_environment_turns_auto_headlights_off() {
+        let mut lighting = Lighting {
+            headlight: HeadlightMode::Auto,
+            headlight_rig: default_headlight_rig(),
+            lights: Vec::new(),
+            environment: None,
+        };
+        assert!(lighting.rig_active());
+        lighting.environment = Some(1.0);
+        assert!(!lighting.rig_active());
+        lighting.headlight = HeadlightMode::On;
+        assert!(lighting.rig_active());
     }
 }

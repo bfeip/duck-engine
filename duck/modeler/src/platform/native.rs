@@ -16,7 +16,7 @@ use duck_engine_viewer::winit_support;
 use duck_engine_viewer::{GpuOptions, WindowSurface};
 
 use super::FileFilter;
-use crate::ViewerState;
+use crate::{FilePurpose, ViewerState};
 
 /// The winit window plus the egui integration that feeds off it.
 pub(crate) struct Host {
@@ -24,8 +24,9 @@ pub(crate) struct Host {
     // display handle, and on Wayland runs a worker thread on that connection.
     egui_winit: egui_winit::State,
     window: Arc<Window>,
-    /// The file picked in `open_file`, until `receive_opened_file` takes it.
-    opened: Option<PathBuf>,
+    /// The file picked in `open_file` and what for, until
+    /// `receive_opened_file` takes it.
+    opened: Option<(FilePurpose, PathBuf)>,
 }
 
 impl Host {
@@ -79,15 +80,22 @@ impl Host {
         self.window.request_redraw();
     }
 
-    /// Ask the user for a file to open. The dialog blocks, so the file is
-    /// ready for [`Self::receive_opened_file`] in the same frame.
-    pub(crate) fn open_file(&mut self, filter: &FileFilter) {
-        self.opened = rfd::FileDialog::new().add_filter(filter.name, filter.extensions).pick_file();
+    /// Ask the user for a file to open for `purpose`. The dialog blocks, so
+    /// the file is ready for [`Self::receive_opened_file`] in the same frame.
+    pub(crate) fn open_file(&mut self, filter: &FileFilter, purpose: FilePurpose) {
+        self.opened = rfd::FileDialog::new()
+            .add_filter(filter.name, filter.extensions)
+            .pick_file()
+            .map(|path| (purpose, path));
     }
 
-    /// Hand the file opened since the last call, if any, to `read`.
-    pub(crate) fn receive_opened_file(&mut self, read: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
-        self.opened.take().map_or(Ok(()), |path| read(&path))
+    /// Hand the file opened since the last call, if any, to `read` with what it
+    /// was opened for.
+    pub(crate) fn receive_opened_file<R>(
+        &mut self,
+        read: impl FnOnce(FilePurpose, &Path) -> R,
+    ) -> Option<R> {
+        self.opened.take().map(|(purpose, path)| read(purpose, &path))
     }
 
     /// Ask the user where to save `name` and write it there with `write`. A
