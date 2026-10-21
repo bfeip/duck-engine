@@ -35,6 +35,7 @@ impl SceneResources {
                 ResourceKind::FaceMaterial
                 | ResourceKind::LineMaterial
                 | ResourceKind::PointMaterial => self.materials.remove(kind, id),
+                ResourceKind::EnvironmentMap => self.ibl_resources.remove(id.cast()),
                 // No per-id GPU cache; lights are re-uploaded per view per frame.
                 ResourceKind::Instance | ResourceKind::Node => {}
             }

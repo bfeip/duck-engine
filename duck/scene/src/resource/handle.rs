@@ -23,6 +23,9 @@ pub enum ResourceKind {
     LineMaterial,
     PointMaterial,
     Texture,
+    /// Has no handles: removed only by
+    /// [`SceneData::remove_environment_map`](crate::SceneData::remove_environment_map).
+    EnvironmentMap,
 }
 
 // `SceneResource` must be public (it appears in `Handle` bounds), but only the

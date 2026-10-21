@@ -312,12 +312,14 @@ impl SceneResources {
     /// Clear all scene-specific GPU resources.
     ///
     /// Call this when the scene is cleared or replaced to ensure stale GPU
-    /// buffers (vertex data, textures, material bind groups) are not reused.
-    /// Pipelines are not scene state and are retained.
+    /// buffers (vertex data, textures, material and environment bind groups)
+    /// are not reused. Pipelines and the BRDF lookup table are not scene state
+    /// and are retained.
     pub fn clear(&mut self) {
         self.gpu_meshes.clear();
         self.gpu_textures.clear();
         self.materials.clear();
+        self.ibl_resources.clear();
     }
 }
 

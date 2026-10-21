@@ -330,6 +330,12 @@ impl Scene {
         self.lock().set_active_environment_map(id);
     }
 
+    /// Removes an environment map, deactivating it if it was active.
+    #[track_caller]
+    pub fn remove_environment_map(&self, id: EnvironmentMapId) {
+        self.lock().remove_environment_map(id);
+    }
+
     /// What one world unit of this scene means in the real world.
     #[track_caller]
     pub fn world_units(&self) -> WorldUnits {

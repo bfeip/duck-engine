@@ -235,6 +235,8 @@ impl SceneData {
                         self.point_materials.remove(&id.cast()).is_some()
                     }
                     ResourceKind::Texture => self.textures.remove(&id.cast()).is_some(),
+                    // Environment maps have no handles, so never reach the queue.
+                    ResourceKind::EnvironmentMap => false,
                     ResourceKind::Node => match self.nodes.remove(&id.cast()) {
                         Some(node) => {
                             // Children still alive through other handles are now
@@ -526,6 +528,16 @@ impl SceneData {
         let id = env_map.id;
         self.environment_maps.insert(id, env_map);
         id
+    }
+
+    /// Removes an environment map, deactivating it if it was active.
+    pub fn remove_environment_map(&mut self, id: EnvironmentMapId) {
+        if self.environment_maps.remove(&id).is_some() {
+            if self.active_environment_map == Some(id) {
+                self.active_environment_map = None;
+            }
+            self.removals.push((ResourceKind::EnvironmentMap, id.erased()));
+        }
     }
 
     /// Gets a reference to an environment map by ID.

@@ -424,7 +424,10 @@ impl<'a> App<'a> {
 
     fn clear_environment(&mut self) {
         if let Some(state) = self.state.as_mut() {
-            state.scene().set_active_environment_map(None);
+            let scene = state.scene();
+            if let Some(env_id) = scene.active_environment_map() {
+                scene.remove_environment_map(env_id);
+            }
             log::info!("Environment cleared");
         }
     }

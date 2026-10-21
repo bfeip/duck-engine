@@ -165,6 +165,16 @@ impl IblResources {
         }
     }
 
+    /// Evict the baked textures and bind group of a removed environment map.
+    pub fn remove(&mut self, id: EnvironmentMapId) {
+        self.processed_environments.remove(&id);
+    }
+
+    /// Evict every processed environment map.
+    pub fn clear(&mut self) {
+        self.processed_environments.clear();
+    }
+
     /// Get the processed environment for an ID, if available.
     pub fn get_processed(&self, id: EnvironmentMapId) -> Option<&ProcessedEnvironment> {
         self.processed_environments.get(&id).map(|(env, _)| env)

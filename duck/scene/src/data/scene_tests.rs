@@ -1164,3 +1164,24 @@ fn test_node_setters_ignore_missing_node() {
     assert_eq!(scene.node_generation(), generation);
     assert_eq!(scene.node_effective_visibility(missing), EffectiveVisibility::Invisible);
 }
+
+#[test]
+fn test_remove_environment_map_deactivates_and_logs_removal() {
+    let mut scene = SceneData::new();
+    let kept = scene.add_environment_map_from_hdr_data(Vec::new());
+    let removed = scene.add_environment_map_from_hdr_data(Vec::new());
+
+    scene.set_active_environment_map(Some(kept));
+    scene.remove_environment_map(removed);
+    assert!(scene.get_environment_map(removed).is_none());
+    assert_eq!(scene.active_environment_map(), Some(kept));
+    assert_eq!(scene.take_removals(), vec![(ResourceKind::EnvironmentMap, removed.erased())]);
+
+    scene.remove_environment_map(kept);
+    assert_eq!(scene.active_environment_map(), None);
+    assert_eq!(scene.take_removals(), vec![(ResourceKind::EnvironmentMap, kept.erased())]);
+
+    // Removing an unknown id logs nothing.
+    scene.remove_environment_map(kept);
+    assert!(scene.take_removals().is_empty());
+}

@@ -32,6 +32,9 @@ impl App<'_> {
         let path_str = path.display().to_string();
         let scene_arc = state.scene();
         let mut scene = scene_arc.lock();
+        if let Some(previous) = scene.active_environment_map() {
+            scene.remove_environment_map(previous);
+        }
         let env_id = scene.add_environment_map_from_hdr_path(&path);
         scene.set_active_environment_map(Some(env_id));
         log::info!("Loaded HDR environment: {}", path_str);
