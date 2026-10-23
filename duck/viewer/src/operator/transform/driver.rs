@@ -10,7 +10,7 @@
 use duck_engine_common::{Point3, Quaternion};
 
 use super::gizmo::{GizmoHandleId, GizmoState};
-use super::interaction::{TransformAction, TransformInteraction, TransformMode};
+use super::interaction::{ConstraintSpace, TransformAction, TransformInteraction, TransformMode};
 use crate::event::{DeviceEvent, Event, EventContext};
 use crate::input::{ElementState, Modifiers};
 use crate::operator::Operator;
@@ -128,6 +128,21 @@ impl<T: TransformTarget> TransformDriver<T> {
         self.gizmo_enabled = on;
     }
 
+    /// The space the gizmo is drawn and its handles constrain in, and the first
+    /// an axis or plane key picks. Takes effect from the next idle update.
+    pub fn set_orientation(&mut self, orientation: ConstraintSpace) {
+        self.interaction.set_orientation(orientation);
+    }
+
+    /// The rotation to draw the gizmo with for `frame_rotation`: the frame's
+    /// when the gizmo is in local space, none in world space.
+    fn gizmo_rotation(&self, frame_rotation: Quaternion) -> Quaternion {
+        match self.interaction.gizmo_space() {
+            ConstraintSpace::Local => frame_rotation,
+            ConstraintSpace::World => Quaternion::new(1.0, 0.0, 0.0, 0.0),
+        }
+    }
+
     /// Tears down all scene-side visuals owned by this driver (gizmo handles)
     /// and aborts any in-progress transform, reverting the target to its
     /// pre-transform state.
@@ -186,6 +201,10 @@ impl<T: TransformTarget> TransformDriver<T> {
         // rotation angle belongs to the axis it was swept about.
         self.interaction.reset_rotation();
         self.apply_preview(ctx);
+        // Turn the gizmo into the new constraint's space, so the highlighted
+        // handle lies along the constrained axis.
+        let rotation = self.gizmo_rotation(self.interaction.frame_rotation());
+        self.gizmo.update_placement(self.interaction.pivot(), rotation, &ctx.scene);
         let highlight = self.interaction.highlight_handle();
         self.gizmo.set_highlight(highlight, &ctx.scene);
     }
@@ -210,10 +229,12 @@ impl<T: TransformTarget> TransformDriver<T> {
         };
 
         let gizmo_type = self.interaction.mode().gizmo_type();
+        let frame_rotation = frame.frame_rotation.unwrap_or(self.interaction.frame_rotation());
+        let rotation = self.gizmo_rotation(frame_rotation);
         if self.gizmo.current_type() == Some(gizmo_type) {
-            self.gizmo.update_position(frame.pivot, &ctx.scene);
+            self.gizmo.update_placement(frame.pivot, rotation, &ctx.scene);
         } else {
-            self.gizmo.show(gizmo_type, frame.pivot, &ctx.scene);
+            self.gizmo.show(gizmo_type, frame.pivot, rotation, &ctx.scene);
         }
     }
 

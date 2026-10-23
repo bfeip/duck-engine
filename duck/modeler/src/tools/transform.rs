@@ -3,11 +3,13 @@ use std::sync::{Arc, Mutex};
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_scene::Scene;
-use duck_engine_viewer::common::{decompose_matrix, InnerSpace, Point3, Quaternion, Vector3};
+use duck_engine_viewer::common::{
+    decompose_matrix, InnerSpace, Point3, Quaternion, SquareMatrix, Vector3,
+};
 use duck_engine_viewer::event::{Event, EventContext};
 use duck_engine_viewer::operator::{
-    NodeTransformTarget, Operator, SelectionKinds, SelectionMode, TransformCaps, TransformDriver,
-    TransformFrame, TransformInteraction, TransformMode, TransformTarget,
+    ConstraintSpace, NodeTransformTarget, Operator, SelectionKinds, SelectionMode, TransformCaps,
+    TransformDriver, TransformFrame, TransformInteraction, TransformMode, TransformTarget,
 };
 use duck_engine_viewer::selection::SelectionItem;
 use opencascade::primitives::FaceOrientation;
@@ -15,7 +17,7 @@ use opencascade::primitives::FaceOrientation;
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartId};
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tools::{Gesture, ModelingTool, ToolInfo, Workspace};
+use crate::tools::{Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
 
 /// CAD-aware transform tool for one operation (move, rotate, *or* scale). Each
@@ -26,9 +28,9 @@ use crate::ui::icons;
 ///
 /// - **Whole parts** (node selection) transform through the viewer's
 ///   [`NodeTransformTarget`] — the drag previews by mutating the *scene node*
-///   transform, which moves the tessellated mesh but leaves the CAD B-Rep
-///   untouched. On commit the node's transform is baked into the part's
-///   geometry via [`Document::bake_transform`].
+///   transform, which rests at the part's frame, moving the tessellated mesh
+///   but leaving the CAD B-Rep untouched. On commit the node's move from the
+///   frame is baked into the part's geometry via [`Document::bake_transform`].
 /// - **Faces** (a face drilled into as the primary selection) transform
 ///   through [`FaceTweakTarget`]: the drag moves a ghost of the picked face,
 ///   and committing re-solves the B-Rep around the transformed face via
@@ -39,6 +41,10 @@ use crate::ui::icons;
 /// start an axis-constrained one; left-click or Enter confirms, right-click or
 /// Escape cancels. The tool stays for the next transform until Escape with
 /// none in progress, or another tool.
+///
+/// The gizmo runs along the part's own frame or the world's, per
+/// [`ConstructionOptions::transform_orientation`](crate::construction::ConstructionOptions::transform_orientation),
+/// which the tool's panel switches.
 pub struct TransformTool {
     mode: TransformMode,
     driver: TransformDriver<ModelerTarget>,
@@ -74,6 +80,8 @@ impl ModelingTool for TransformTool {
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
+        let orientation = self.driver.target().workspace.construction.borrow().transform_orientation;
+        self.driver.set_orientation(orientation);
         if self.driver.dispatch(event, ctx) {
             return true;
         }
@@ -84,6 +92,24 @@ impl ModelingTool for TransformTool {
             return true;
         }
         false
+    }
+
+    fn panel_title(&self) -> Option<&str> {
+        match self.mode {
+            TransformMode::Translate => Some("Move"),
+            TransformMode::Rotate => Some("Rotate"),
+            TransformMode::Scale => Some("Scale"),
+        }
+    }
+
+    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
+        let mut construction = self.driver.target().workspace.construction.borrow_mut();
+        ui.label("Axes");
+        ui.horizontal(|ui| {
+            let orientation = &mut construction.transform_orientation;
+            ui.selectable_value(orientation, ConstraintSpace::Local, "Local");
+            ui.selectable_value(orientation, ConstraintSpace::World, "Global");
+        });
     }
 
     fn activate(&mut self) {
@@ -148,20 +174,22 @@ impl ModelerTarget {
         Some(FaceTarget { node: node_id, part, face_index: element.index })
     }
 
-    /// Bake every committed node's transform into its CAD part.
+    /// Bake what each committed node shows into its CAD part: the move from
+    /// the part's frame, where the node rested, to the node's transform now.
     fn bake_nodes(&mut self, nodes: &[NodeId], ctx: &mut EventContext) {
         let mut doc = self.workspace.document.lock().unwrap();
         // One undo step covers a multi-select bake.
         let mut doc = doc.undo_scope("Transform");
         for &node in nodes {
             let Some(part) = doc.part_for_node(node) else { continue };
+            let Some(frame) = doc.get_part(part).map(|p| p.frame().to_matrix()) else { continue };
             // Stay in common's matrix type; the OCCT array conversion happens
             // inside bake_transform.
             let delta = ctx
                 .scene
-                
                 .get_node(node)
-                .map(|n| n.transform().to_matrix());
+                .zip(frame.invert())
+                .map(|(n, rest_inverse)| n.transform().to_matrix() * rest_inverse);
             if let Some(delta) = delta
                 && let Err(e) = doc.bake_transform(part, delta) {
                     self.workspace.notifications.failure("Transform", &e);

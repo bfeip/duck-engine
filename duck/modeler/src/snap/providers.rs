@@ -220,7 +220,8 @@ struct PartFace<'a> {
     part: &'a CadPart,
     /// The face's element index.
     index: u32,
-    /// The part's world transform.
+    /// Maps the part's B-rep into the world: into its mesh, then by its node's
+    /// world transform.
     world: Matrix4,
 }
 
@@ -243,10 +244,8 @@ impl PartFace<'_> {
                 return None;
             }
         };
-        // The mesh is the B-rep scaled at tessellation.
-        let scale = part.options().scale_factor;
         Some(Snap {
-            position: transform_point(world, dvec3_to_point3(center * scale)),
+            position: transform_point(world, dvec3_to_point3(center)),
             direction: Some(transform_normal(world, dvec3_to_vec3(normal))),
             kind: SnapKind::FaceCenter,
         })
@@ -400,7 +399,8 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
                         .and_then(|part| {
                             let triangle = hit.triangle_index as u32;
                             let index = mesh.sub_geometry_for_primitive(SubGeometryKind::Face, triangle)?;
-                            Some(PartFace { part, index, world: *world_transform })
+                            let world = world_transform * part.options().mesh_from_shape();
+                            Some(PartFace { part, index, world })
                         });
                     let snap = Snap {
                         position: transform_point(world_transform, hit.hit_point),
@@ -449,11 +449,10 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
 }
 
 /// Pushes the midpoint of each of `part`'s `edges` (element indices) into `out`,
-/// taken on the B-rep curve and lifted to world space by `world`, with the
-/// curve's tangent there.
+/// taken on the B-rep curve and lifted to world space through its mesh and by
+/// `world`, its node's world transform, with the curve's tangent there.
 fn collect_edge_midpoints(part: &CadPart, edges: &[u32], world: &Matrix4, out: &mut Vec<Snap>) {
-    // The mesh is the B-rep scaled at tessellation.
-    let scale = part.options().scale_factor;
+    let world = world * part.options().mesh_from_shape();
     for &index in edges {
         let midpoint = part.elements().edge(index as usize).and_then(|edge| edge.curve().length_midpoint());
         let (middle, tangent) = match midpoint {
@@ -465,7 +464,7 @@ fn collect_edge_midpoints(part: &CadPart, edges: &[u32], world: &Matrix4, out: &
         };
         let tangent = (world * dvec3_to_vec3(tangent).extend(0.0)).truncate();
         out.push(Snap {
-            position: transform_point(world, dvec3_to_point3(middle * scale)),
+            position: transform_point(&world, dvec3_to_point3(middle)),
             direction: Some(tangent.normalize()),
             kind: SnapKind::Midpoint,
         });
@@ -1058,6 +1057,38 @@ mod tests {
 
         assert!(snaps.iter().all(|s| s.kind == SnapKind::FaceCenter), "{snaps:?}");
         snaps
+    }
+
+    /// A moved part's mesh sits in its frame; its B-rep snaps still land on the
+    /// B-rep, not a second frame away.
+    #[test]
+    fn b_rep_snaps_follow_a_moved_part() {
+        use duck_engine_scene::common::{Deg, Matrix4};
+
+        let (mut document, node) = doc_with_box();
+        let part = document.part_for_node(node).expect("node is a part");
+        let moved = Matrix4::from_translation(Vector3::new(3.0, 0.0, 0.0)) * Matrix4::from_angle_y(Deg(90.0));
+        document.bake_transform(part, moved).expect("move bakes");
+
+        let centers = face_centers_below(&document, 3.2, 0.1);
+        let [center] = centers.as_slice() else { panic!("expected one centre: {centers:?}") };
+        assert!(close(center.position, Point3::new(3.0, 1.0, 0.0)), "{:?}", center.position);
+        let normal = center.direction.expect("a face centre carries the face normal");
+        assert!((normal - Vector3::new(0.0, 1.0, 0.0)).magnitude() < EPSILON, "{normal:?}");
+
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let on_edge = Point3::new(4.0, 1.0, 0.5);
+        let ray = Ray::new(Point3::new(4.0, 10.0, 0.5), Vector3::new(0.0, -1.0, 0.0));
+        let mut inp = input_with_ray(ray, screen_of(&cam, on_edge), &cam, &plane, &grid);
+        inp.requested = SnapFlags::MIDPOINT;
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
+        let midpoint = snaps
+            .iter()
+            .find(|s| close(s.position, Point3::new(4.0, 1.0, 0.0)))
+            .unwrap_or_else(|| panic!("expected the top edge's midpoint: {snaps:?}"));
+        assert!(midpoint.direction.is_some_and(|d| d.z.abs() > 0.9), "{:?}", midpoint.direction);
     }
 
     #[test]

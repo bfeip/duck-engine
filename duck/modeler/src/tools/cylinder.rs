@@ -9,7 +9,8 @@ use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{dimension_field, grip_dimension, Params, MIN_DIMENSION};
 use super::primitive::{
-    flat, height_along, radius_to, seat, unit_disk, Next, Primitive, PrimitiveTool, Track,
+    flat, height_along, radius_to, seat, seated, unit_disk, Next, Primitive, PrimitiveTool,
+    Track,
 };
 
 /// The cylinder's dimension grips.
@@ -152,6 +153,11 @@ impl Primitive for CylinderParams {
     fn build(&self) -> Result<Shape> {
         Ok(cylinder(self.base, self.plane.normal, self.radius, self.height))
     }
+
+    /// Seated at the base's centre, Y along the axis.
+    fn frame(&self) -> Transform {
+        seated(self.base, &self.plane)
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +223,22 @@ mod tests {
         // Scale stays non-negative after the flip.
         assert!(t.scale.x >= 0.0 && t.scale.y >= 0.0 && t.scale.z >= 0.0);
         assert!((t.position - base).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn the_frame_stands_on_the_base_along_the_axis() {
+        use duck_engine_common::{Quaternion, Rotation};
+
+        // Built on the ground, the cylinder is framed by the world.
+        let base = Point3::new(1.0, 2.0, 3.0);
+        let upright = CylinderParams::from_pick(base, 2.0, 3.0, Plane::xz()).frame();
+        assert!((upright.position - base).magnitude() < EPSILON);
+        assert!((upright.rotation - Quaternion::new(1.0, 0.0, 0.0, 0.0)).magnitude() < EPSILON);
+
+        // Seated on a tilted face, its Y runs along the axis.
+        let plane = skewed_plane(base);
+        let tilted = CylinderParams::from_pick(base, 2.0, 3.0, plane).frame();
+        assert!((tilted.rotation.rotate_vector(Vector3::unit_y()) - plane.normal).magnitude() < EPSILON);
     }
 
     #[test]

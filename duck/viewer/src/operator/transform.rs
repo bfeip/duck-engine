@@ -18,7 +18,8 @@ mod node_target;
 
 pub use driver::{TransformCaps, TransformDriver, TransformFrame, TransformTarget};
 pub use interaction::{
-    axis_from_constraint, AxisConstraint, TransformAction, TransformInteraction, TransformMode,
+    axis_from_constraint, AxisConstraint, ConstraintSpace, TransformAction, TransformInteraction,
+    TransformMode,
 };
 pub use node_target::NodeTransformTarget;
 

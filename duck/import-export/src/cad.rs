@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
 use anyhow::{bail, Context, Result};
-use duck_engine_common::{decompose_matrix, Matrix4, Real, RgbaColor};
+use duck_engine_common::{decompose_matrix, Matrix4, Real, RgbaColor, Vector3};
 use duck_engine_scene::cad::{tessellate_occ_shape, CadTessellationOptions};
 use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{
@@ -333,6 +333,9 @@ pub struct ImportedCadPart {
     pub name: Option<String>,
     pub shape: Shape,
     pub color: Option<RgbaColor>,
+    /// The part's own axes in the world: its placement in the assembly, scale
+    /// aside. The shape is already placed there.
+    pub frame: Transform,
 }
 
 /// Load a STEP or IGES file (chosen by extension) as a flat list of world-space
@@ -420,8 +423,11 @@ fn collect_xcaf_parts(
             .into_iter()
             .flatten()
             .find(|n| !n.starts_with("=>"));
-        let shape = place_shape(&shape, mat_mul(&uniform_scale(scale), &acc));
-        out.push(ImportedCadPart { name, shape, color });
+        let placement = mat_mul(&uniform_scale(scale), &acc);
+        let frame = matrix_to_transform(mat_mul(&placement, &shape.location_as_matrix()));
+        let frame = Transform { scale: Vector3::new(1.0, 1.0, 1.0), ..frame };
+        let shape = place_shape(&shape, placement);
+        out.push(ImportedCadPart { name, shape, color, frame });
     }
 }
 
@@ -466,6 +472,7 @@ fn uniform_scale(s: f64) -> [[f64; 4]; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duck_engine_common::InnerSpace;
     use opencascade::primitives::EdgeType;
 
     /// Saving with one scale and loading with its inverse must round-trip
@@ -484,6 +491,16 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(parts.len(), 1);
+        // An unplaced part sits in the world's frame; the unit scale is no part
+        // of a frame.
+        let frame = parts[0].frame;
+        let identity = Transform::IDENTITY;
+        assert!(
+            (frame.position - identity.position).magnitude() < 1e-9
+                && (frame.rotation - identity.rotation).magnitude() < 1e-9
+                && (frame.scale - identity.scale).magnitude() < 1e-9,
+            "{frame:?}"
+        );
         let options = CadTessellationOptions {
             include_edges: false,
             include_points: false,

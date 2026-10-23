@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use duck_engine_scene::cad::CadTessellationOptions;
+use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{FaceMaterialHandle, NodeHandle};
 use opencascade::primitives::Shape;
 
@@ -22,12 +23,20 @@ pub enum Delta {
     Added(PartSnapshot),
     /// A part was removed. Undo resurrects the snapshot; redo removes it.
     Removed(PartSnapshot),
-    /// A part's shape was replaced in place, its node preserved.
+    /// A part's geometry was replaced in place, its node preserved and its mesh
+    /// re-tessellated with `options` in the geometry's frame.
     Reshaped {
         part: PartId,
-        before: Shape,
-        after: Shape,
+        before: PartGeometry,
+        after: PartGeometry,
         options: CadTessellationOptions,
+    },
+    /// A part was moved rigidly: its shape and frame changed together, so its
+    /// frame-local mesh did not.
+    Moved {
+        part: PartId,
+        before: PartGeometry,
+        after: PartGeometry,
     },
     /// A part was renamed. Undo restores `before`; redo applies `after`.
     Renamed {
@@ -49,6 +58,14 @@ pub enum Delta {
     },
 }
 
+/// A part's world-space shape and the frame its mesh is expressed in. Shapes
+/// are shallow clones, exact snapshots for the reason [`PartSnapshot`] gives.
+#[derive(Clone)]
+pub struct PartGeometry {
+    pub shape: Shape,
+    pub frame: Transform,
+}
+
 /// Everything needed to remove or resurrect a part with stable ids.
 ///
 /// The node handle owns the part's whole scene chain (node → instance → mesh
@@ -56,7 +73,7 @@ pub enum Delta {
 /// it alive off-tree until resurrected or evicted from history. Shapes are
 /// shallow clones: committed shapes are never mutated in place, so a refcounted
 /// handle stays an exact snapshot. The options carry the retessellation
-/// parameters, which `remove_part` does not otherwise receive.
+/// parameters, frame included, which `remove_part` does not otherwise receive.
 pub struct PartSnapshot {
     pub part: PartId,
     pub node: NodeHandle,

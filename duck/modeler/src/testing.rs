@@ -5,7 +5,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
-use duck_engine_scene::common::{InnerSpace, Plane, Point3, Ray, RgbaColor, Vector3};
+use duck_engine_scene::common::{
+    InnerSpace, Matrix4, Plane, Point3, Ray, Real, RgbaColor, Transform, Vector3,
+};
 use duck_engine_scene::resource::{NodeId, SubGeometryElement, SubGeometryKind, Visibility};
 use duck_engine_scene::Scene;
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, NamedKey, PhysicalKey};
@@ -34,6 +36,30 @@ pub fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
 /// A document holding a 2×2×2 box centred on the origin, and its node.
 pub fn doc_with_box() -> (Document, NodeId) {
     doc_with_shape(Shape::box_centered(2.0, 2.0, 2.0))
+}
+
+/// A document holding a radius-1, height-4 cylinder standing on the origin
+/// along +Y, framed by the world, and its part and node.
+pub fn doc_with_cylinder() -> (Document, PartId, NodeId) {
+    let (doc, node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 1.0, DVec3::Y, 4.0));
+    let part = doc.part_for_node(node).expect("node is a part");
+    (doc, part, node)
+}
+
+/// Asserts the rigid frame `actual` is the placement `expected`.
+pub fn assert_frame(actual: Transform, expected: &Matrix4) {
+    const EPSILON: Real = 1e-6;
+    let actual = actual.to_matrix();
+    let close = (0..4).all(|c| (0..4).all(|r| (actual[c][r] - expected[c][r]).abs() < EPSILON));
+    assert!(close, "frame {actual:?} is not {expected:?}");
+}
+
+/// The extent of `shape`'s tessellation along each world axis.
+pub fn mesh_extents(shape: &Shape) -> DVec3 {
+    let vertices = shape.mesh().expect("shape meshes").vertices;
+    let min = vertices.iter().copied().reduce(DVec3::min).expect("mesh has vertices");
+    let max = vertices.iter().copied().reduce(DVec3::max).expect("mesh has vertices");
+    max - min
 }
 
 /// A document holding `count` 2-unit cubes named "box 0", "box 1", ….

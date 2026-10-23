@@ -74,12 +74,12 @@ impl TransformTarget for NodeTransformTarget {
             .collect();
         let pivot = centroid_of_slice(&positions)?;
 
-        // The primary selection's rotation orients local axis constraints.
+        // The primary selection's world rotation orients local axis constraints.
         let frame_rotation = ctx
             .selection
             .primary()
-            .and_then(|primary| scene.get_node(primary.node_id()))
-            .map(|node| node.rotation());
+            .and_then(|primary| scene.nodes_transform(primary.node_id()))
+            .map(|world| decompose_matrix(&world).rotation);
 
         Some(TransformFrame { pivot, frame_rotation })
     }
@@ -207,9 +207,9 @@ impl TransformTarget for NodeTransformTarget {
                             Point3::from_homogeneous(inv_parent * new_world_pos.to_homogeneous());
                         scene.set_node_position(orig.node_id, new_local_pos);
 
-                        // Convert world-axis scale to local space
-                        let pr_inv = orig.parent_world_transform.rotation.conjugate();
-                        let local_scale = world_scale_to_local(scale, pr_inv);
+                        // Convert world-axis scale to the node's own axes
+                        let node_rotation_inv = orig.world_transform.rotation.conjugate();
+                        let local_scale = world_scale_to_local(scale, node_rotation_inv);
                         let new_scale = apply_scale(orig.local_transform.scale, local_scale);
                         scene.set_node_scale(orig.node_id, new_scale);
                     }
@@ -234,12 +234,14 @@ impl TransformTarget for NodeTransformTarget {
     }
 }
 
-/// Converts a world-axis-constrained scale into the parent's local space.
+/// Converts a world-axis-constrained scale into per-axis scale along a node's
+/// own axes, given the inverse of its world rotation.
 ///
 /// For uniform scale (no constraint), returns as-is. For single-axis world
-/// constraints, rotates the scale axis into local space and decomposes it
-/// into per-axis scale contributions.
-fn world_scale_to_local(scale: Vector3, parent_rotation_inv: Quaternion) -> Vector3 {
+/// constraints, rotates the scale axis into the node's axes and decomposes it
+/// into per-axis scale contributions — exact when the axis is one of the
+/// node's, an approximation of the shear a TRS transform can't hold otherwise.
+fn world_scale_to_local(scale: Vector3, node_rotation_inv: Quaternion) -> Vector3 {
     use duck_engine_common::{InnerSpace, Rotation};
 
     // For uniform scale (no constraint), return as-is
@@ -255,7 +257,7 @@ fn world_scale_to_local(scale: Vector3, parent_rotation_inv: Quaternion) -> Vect
         (Vector3::unit_z(), scale.z)
     };
     // Rotate to local space
-    let local_axis = parent_rotation_inv.rotate_vector(world_axis).normalize();
+    let local_axis = node_rotation_inv.rotate_vector(world_axis).normalize();
     // Decompose into per-axis scale contributions
     let factor_minus_1 = factor - 1.0;
     Vector3::new(
@@ -263,4 +265,28 @@ fn world_scale_to_local(scale: Vector3, parent_rotation_inv: Quaternion) -> Vect
         1.0 + local_axis.y.abs() * factor_minus_1,
         1.0 + local_axis.z.abs() * factor_minus_1,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duck_engine_common::{consts::PI, quaternion_from_axis_angle_safe, InnerSpace, Real};
+
+    const EPSILON: Real = 1e-6;
+
+    #[test]
+    fn world_axis_scale_lands_on_the_nodes_own_axes() {
+        // A node turned a quarter about Z has its local Y along world -X, so a
+        // world-X stretch is a stretch of its local Y.
+        let rotation = quaternion_from_axis_angle_safe(Vector3::unit_z(), PI / 2.0);
+        let local = world_scale_to_local(Vector3::new(3.0, 1.0, 1.0), rotation.conjugate());
+        assert!((local - Vector3::new(1.0, 3.0, 1.0)).magnitude() < EPSILON, "{local:?}");
+    }
+
+    #[test]
+    fn uniform_scale_passes_through() {
+        let rotation = quaternion_from_axis_angle_safe(Vector3::new(1.0, 2.0, 3.0), 0.7);
+        let local = world_scale_to_local(Vector3::new(2.0, 2.0, 2.0), rotation.conjugate());
+        assert!((local - Vector3::new(2.0, 2.0, 2.0)).magnitude() < EPSILON, "{local:?}");
+    }
 }

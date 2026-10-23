@@ -1,9 +1,6 @@
 //! Construction grid: minor/major lines, axis cross, oriented to a construction plane.
 
-use duck_engine_viewer::common::{
-    Axis, EuclideanSpace, InnerSpace, Matrix3, Plane, Point3, Quaternion, Real, RgbaColor, Transform,
-    Vector3,
-};
+use duck_engine_viewer::common::{Axis, EuclideanSpace, Plane, Point3, Real, RgbaColor, Transform};
 use duck_engine_viewer::scene::resource::{
     Instance, LineMaterial, Mesh, MeshIndex, MeshPrimitive, NodeFlags, NodeId, PrimitiveType,
     Vertex,
@@ -188,9 +185,6 @@ fn build_axis_mesh(direction: [f32; 3], length: Real) -> Mesh {
 /// The translation is the plane point nearest the world origin, keeping the grid
 /// centred near the origin.
 fn plane_to_transform(plane: &Plane) -> Transform {
-    let (u, v) = plane.basis();
-    let n = plane.normal.normalize();
-    let rotation: Quaternion = Matrix3::from_cols(u, n, v).into();
     let position = plane.project_point(Point3::origin());
-    Transform { position, rotation, scale: Vector3::new(1.0, 1.0, 1.0) }
+    Transform { position, ..Transform::from_rotation(plane.basis_rotation()) }
 }

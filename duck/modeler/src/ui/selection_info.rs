@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use duck_engine_viewer::common::{Aabb, LengthDisplay, Point3, Real, Vector3};
 use duck_engine_viewer::scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
+use opencascade::bounding_box::aabb;
 use opencascade::primitives::{Edge, EdgeType, Face, FaceType, ShapeElements, ShapeType};
 
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartKind, DOCUMENT_UNITS};
@@ -137,12 +138,7 @@ fn summary_ui(
             if let Some(length) = summary.edge_length {
                 row(ui, "Total length", in_units(length, units));
             }
-            let bounds = summary
-                .parts
-                .iter()
-                .filter_map(|&node| document.scene().nodes_bounding(node).bounds)
-                .reduce(|a, b| a.merge(&b));
-            if let Some(bounds) = bounds {
+            if let Some(bounds) = world_bounds(document, &summary.parts) {
                 row(ui, "Size", size(&bounds, units));
             }
         });
@@ -180,7 +176,7 @@ fn primary_ui(ui: &mut egui::Ui, primary: &Primary, document: &Document, units: 
             if let Some(volume) = volume {
                 row(ui, "Volume", units.format_volume(f64::from(*volume), DOCUMENT_UNITS));
             }
-            if let Some(bounds) = document.scene().nodes_bounding(primary.node).bounds {
+            if let Some(bounds) = own_bounds(document, primary.node) {
                 row(ui, "Size", size(&bounds, units));
             }
         }
@@ -245,6 +241,27 @@ fn bare(value: Real, units: LengthDisplay) -> String {
 fn point(point: Point3, units: LengthDisplay) -> String {
     let (x, y, z) = (bare(point.x, units), bare(point.y, units), bare(point.z, units));
     format!("({x}, {y}, {z}) {}", units.unit.suffix())
+}
+
+/// The extents of the part at `node` along its own axes: the bounds of its
+/// mesh, which is expressed in the part's frame.
+fn own_bounds(document: &Document, node: NodeId) -> Option<Aabb> {
+    let scene = document.scene().lock();
+    let instance = scene.get_node(node)?.instance_handle()?.id();
+    let mesh = scene.get_instance(instance)?.mesh();
+    scene.get_mesh(mesh)?.bounding()
+}
+
+/// The world bounds of the parts at `nodes`, taken from their B-reps rather
+/// than the scene, whose box around a turned part's frame is loose.
+fn world_bounds(document: &Document, nodes: &[NodeId]) -> Option<Aabb> {
+    nodes
+        .iter()
+        .filter_map(|&node| document.part_at(node))
+        .map(|part| aabb(part.shape()))
+        .filter(|bounds| !bounds.is_void())
+        .map(|bounds| Aabb::new(dvec3_to_point3(bounds.min()), dvec3_to_point3(bounds.max())))
+        .reduce(|a, b| a.merge(&b))
 }
 
 fn size(bounds: &Aabb, units: LengthDisplay) -> String {

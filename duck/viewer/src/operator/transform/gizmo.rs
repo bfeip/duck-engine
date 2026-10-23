@@ -3,9 +3,10 @@
 //! The free builders produce a set of [`GizmoHandle`]s — one per axis —
 //! containing a mesh and material, built at the origin at unit size.
 //! [`GizmoState`] owns the gizmo's scene resources: it adds/removes the handle
-//! nodes, positions them at the pivot, hit-tests them, and drives highlights.
+//! nodes, places them at the pivot in the gizmo's orientation, hit-tests them,
+//! and drives highlights.
 
-use duck_engine_common::{Deg, Matrix4, Point3, Real, Vector3, Vector4};
+use duck_engine_common::{Deg, Matrix4, Point3, Quaternion, Real, Vector3, Vector4};
 use duck_engine_scene::{PositionedCamera, Scene, SceneData};
 use duck_engine_scene::resource::NodeFlags;
 
@@ -279,7 +280,7 @@ struct HandleResources {
 }
 
 /// Owns a gizmo's scene resources: handle nodes/meshes/materials, hover
-/// highlighting, picking, and repositioning at a pivot.
+/// highlighting, picking, and placement at a pivot and orientation.
 ///
 /// Gizmo nodes are parented under a root node drawn on the overlay layer so
 /// they are grouped with other overlay content.
@@ -313,15 +314,22 @@ impl GizmoState {
         self.current_type
     }
 
-    /// Build and add gizmo handles to the scene at the given pivot point.
+    /// Build and add gizmo handles to the scene at `pivot`, their axes turned by
+    /// `rotation`.
     ///
     /// Handles are built at a unit size and held at a constant on-screen size via
     /// [`DisplayBehavior::screen_size`] on the root, which the handles inherit.
-    pub fn show(&mut self, gizmo_type: GizmoType, pivot: Point3, scene: &Scene) {
-        self.show_in(gizmo_type, pivot, &mut scene.lock());
+    pub fn show(&mut self, gizmo_type: GizmoType, pivot: Point3, rotation: Quaternion, scene: &Scene) {
+        self.show_in(gizmo_type, pivot, rotation, &mut scene.lock());
     }
 
-    fn show_in(&mut self, gizmo_type: GizmoType, pivot: Point3, scene: &mut SceneData) {
+    fn show_in(
+        &mut self,
+        gizmo_type: GizmoType,
+        pivot: Point3,
+        rotation: Quaternion,
+        scene: &mut SceneData,
+    ) {
         self.hide_in(scene);
 
         // A held root from a previous scene (after set_scene) is stale; replace it.
@@ -346,7 +354,9 @@ impl GizmoState {
             .id();
 
         let handles = build_handles(gizmo_type, 1.0);
-        let pivot_transform = Transform::from_position(pivot);
+        // On each handle rather than the root, which carries no pivot to turn
+        // about.
+        let pivot_transform = Transform { position: pivot, rotation, ..Transform::IDENTITY };
 
         for handle in handles {
             let mesh = scene.add_mesh(handle.mesh);
@@ -387,12 +397,13 @@ impl GizmoState {
         self.current_type = None;
     }
 
-    /// Update the gizmo position (e.g. when pivot changes).
-    pub fn update_position(&self, pivot: Point3, scene: &Scene) {
+    /// Move the gizmo to `pivot`, its axes turned by `rotation`.
+    pub fn update_placement(&self, pivot: Point3, rotation: Quaternion, scene: &Scene) {
         let mut scene = scene.lock();
         for handle in &self.handles {
             if scene.has_node(handle.node.id()) {
                 scene.set_node_position(handle.node.id(), pivot);
+                scene.set_node_rotation(handle.node.id(), rotation);
             }
         }
     }
@@ -765,7 +776,7 @@ use crate::geom_query::RayPickQuery;
     }
 
     /// Test that picking works after gizmo position is updated
-    /// (simulates update_position path from sync_gizmo).
+    /// (simulates the update_placement path from sync_gizmo).
     #[test]
     fn translate_handles_pickable_after_position_update() {
         use crate::common::Ray;
@@ -800,7 +811,7 @@ use crate::geom_query::RayPickQuery;
         // Cache bounds (simulates a frame between show and pick)
         let _ = scene.bounding();
 
-        // Move gizmo to new position (simulates update_position)
+        // Move gizmo to new position (simulates update_placement)
         for &node_id in &node_ids {
             scene.set_node_position(node_id, new_pivot);
         }

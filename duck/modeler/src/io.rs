@@ -45,7 +45,7 @@ pub fn import_cad_file(
     // One undo step covers every part in the file.
     let mut document = document.undo_scope(format!("Import {stem}"));
     for (i, part) in parts.into_iter().enumerate() {
-        let mut options = options.clone();
+        let mut options = CadTessellationOptions { frame: part.frame, ..options.clone() };
         if let Some(color) = part.color {
             options.face_material.set_base_color_factor(color);
             // A part that carries its own color keeps it whatever its geometry

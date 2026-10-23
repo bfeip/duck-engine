@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{Point3, RgbaColor};
+use duck_engine_common::{Point3, RgbaColor, Transform};
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{
     DisplayBehavior, FaceMaterial, LineMaterial, MaterialFlags, NodeId, RenderLayer,
@@ -227,7 +227,7 @@ impl PathTool {
             Ending::Open => (self.kind.name(), self.kind.open(&self.points)?),
             Ending::Closed => ("Region", self.kind.closed(&self.points)?),
         };
-        self.workspace.add_numbered_part(name, shape)?;
+        self.workspace.add_numbered_part(name, shape, Transform::IDENTITY)?;
         self.reset();
         self.finished = true;
         Ok(())

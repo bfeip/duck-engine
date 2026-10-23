@@ -15,7 +15,10 @@
 use anyhow::{Context, Result};
 use opencascade::primitives::{Edge, Shape, ShapeElements, ShapeType};
 
-use crate::common::{RgbaColor, Transform};
+use crate::common::{
+    point3_to_array, transform_point, vec3_to_array, Matrix4, Point3, Real, RgbaColor, Rotation,
+    SquareMatrix, Transform, Vector3,
+};
 use crate::resource::{
     FaceMaterial, FaceMaterialHandle, Instance, LineMaterial, LineMaterialHandle, Mesh,
     MeshPrimitive, NodeFlags, NodeHandle, NodeId, PrimitiveType, SubMeshRange,
@@ -90,6 +93,10 @@ pub struct CadTessellationOptions {
     /// Whether to draw seam edges instead of suppressing them. A debugging aid;
     /// degenerate edges stay suppressed either way.
     pub show_seam_edges: bool,
+    /// The rigid frame the mesh is expressed in: vertices are the scaled shape
+    /// seen from this frame, and the node is placed at it. In scene units, after
+    /// [`scale_factor`](Self::scale_factor).
+    pub frame: Transform,
 }
 
 impl Default for CadTessellationOptions {
@@ -105,6 +112,7 @@ impl Default for CadTessellationOptions {
             include_edges: true,
             include_points: true,
             show_seam_edges: false,
+            frame: Transform::IDENTITY,
         }
     }
 }
@@ -121,6 +129,14 @@ impl CadTessellationOptions {
             ),
         }
     }
+
+    /// Maps the shape's coordinates to the mesh's: scaled by
+    /// [`scale_factor`](Self::scale_factor), then seen from
+    /// [`frame`](Self::frame).
+    pub fn mesh_from_shape(&self) -> Matrix4 {
+        let frame_inverse = self.frame.to_matrix().invert().unwrap_or(Matrix4::identity());
+        frame_inverse * Matrix4::from_scale(self.scale_factor as Real)
+    }
 }
 
 /// Tessellates an OpenCASCADE B-Rep shape, given as its [`ShapeElements`], into a
@@ -133,7 +149,14 @@ impl CadTessellationOptions {
 /// ([`tessellate_into`]).
 pub fn tessellate_occ_shape(elements: &ShapeElements, options: &CadTessellationOptions) -> Result<Mesh> {
     let shape = elements.shape();
-    let s = options.scale_factor;
+    let mesh_from_shape = options.mesh_from_shape();
+    let position = |[x, y, z]: [f64; 3]| {
+        point3_to_array(transform_point(&mesh_from_shape, Point3::new(x as Real, y as Real, z as Real)))
+    };
+    let unrotate = options.frame.rotation.conjugate();
+    let normal = |[x, y, z]: [f64; 3]| {
+        vec3_to_array(unrotate.rotate_vector(Vector3::new(x as Real, y as Real, z as Real)))
+    };
 
     // --- Faces ---
     let (occt_mesh, occt_face_ranges) = shape
@@ -146,8 +169,8 @@ pub fn tessellate_occ_shape(elements: &ShapeElements, options: &CadTessellationO
             let norm = occt_mesh.normals.get(i).copied().unwrap_or_default();
             let uv = occt_mesh.uvs.get(i).copied().unwrap_or_default();
             Vertex {
-                position: (pos * s).as_vec3().to_array(),
-                normal: norm.as_vec3().to_array(),
+                position: position(pos.to_array()),
+                normal: normal(norm.to_array()),
                 tex_coords: [uv.x as f32, uv.y as f32, 0.0],
             }
         })
@@ -174,10 +197,7 @@ pub fn tessellate_occ_shape(elements: &ShapeElements, options: &CadTessellationO
 
     if options.include_edges {
         let scaled = |edge: &Edge| -> Vec<[f32; 3]> {
-            edge.polyline(options.tessellation_tolerance)
-                .iter()
-                .map(|p| (*p * s).as_vec3().to_array())
-                .collect()
+            edge.polyline(options.tessellation_tolerance).iter().map(|p| position(p.to_array())).collect()
         };
         for element in elements.edges() {
             let range = push_polyline(&scaled(element.curve()), &mut vertices, &mut edge_indices);
@@ -200,7 +220,7 @@ pub fn tessellate_occ_shape(elements: &ShapeElements, options: &CadTessellationO
         for vertex in elements.vertices() {
             let base = vertices.len() as u32;
             vertices.push(Vertex {
-                position: (vertex.point() * s).as_vec3().to_array(),
+                position: position(vertex.point().to_array()),
                 normal: [0.0, 0.0, 0.0],
                 tex_coords: [0.0, 0.0, 0.0],
             });
@@ -269,7 +289,7 @@ pub fn tessellate_into(
     let (face_template, line_template) = options.materials_for(elements.shape());
     let face_mat = scene.add_face_material(face_template.clone().with_fresh_id());
     let line_mat = scene.add_line_material(line_template.clone().with_fresh_id());
-    tessellate_finish(&mut scene, mesh, face_mat, line_mat, parent, name)
+    tessellate_finish(&mut scene, mesh, face_mat, line_mat, options.frame, parent, name)
 }
 
 /// Like [`tessellate_into`], but the node shares the given materials instead of
@@ -286,7 +306,15 @@ pub fn tessellate_into_with_materials(
     let mut scene = scene.lock();
 
     let mesh = tessellate_occ_shape(elements, options)?;
-    tessellate_finish(&mut scene, mesh, face_material.clone(), line_material.clone(), parent, name)
+    tessellate_finish(
+        &mut scene,
+        mesh,
+        face_material.clone(),
+        line_material.clone(),
+        options.frame,
+        parent,
+        name,
+    )
 }
 
 fn tessellate_finish(
@@ -294,6 +322,7 @@ fn tessellate_finish(
     mesh: Mesh,
     face_material: FaceMaterialHandle,
     line_material: LineMaterialHandle,
+    frame: Transform,
     parent: Option<NodeId>,
     name: Option<&str>,
 ) -> Result<NodeHandle> {
@@ -305,7 +334,7 @@ fn tessellate_finish(
     );
 
     let node = scene
-        .add_node(parent, name.map(str::to_string), Transform::IDENTITY, NodeFlags::NONE)
+        .add_node(parent, name.map(str::to_string), frame, NodeFlags::NONE)
         .context("Failed to add shape node")?;
     scene.set_node_instance(node.id(), Some(instance));
 
@@ -313,7 +342,8 @@ fn tessellate_finish(
 }
 
 /// Re-tessellates a shape, given as its [`ShapeElements`], into an existing `node`,
-/// preserving its [`NodeId`] and reusing its material slots. The node must
+/// preserving its [`NodeId`] and reusing its material slots, and places the node
+/// at the options' [`frame`](CadTessellationOptions::frame). The node must
 /// already carry an instance; the previous mesh and instance are released and
 /// removed unless shared.
 ///
@@ -354,6 +384,7 @@ pub fn retessellate_node(
     // Replacing the instance releases the node's old one; it and its mesh are
     // reaped when the guard drops unless another node still shares them.
     scene.set_node_instance(node, Some(instance));
+    scene.set_node_transform(node, options.frame);
 
     Ok(())
 }
@@ -675,6 +706,49 @@ mod tests {
         let after = scene.nodes_bounding(node).bounds.expect("rescaled box has bounds");
         let (ax, _, _) = after.size();
         assert!((ax - 6.0).abs() < 1e-3, "expected X extent ~6 after retess, got {ax}");
+    }
+
+    #[test]
+    fn framed_tessellation_places_the_node_and_keeps_world_geometry() {
+        use crate::common::{array_to_point3, array_to_vec3, Deg, InnerSpace, Rotation3};
+        const EPSILON: Real = 1e-4;
+
+        let shape = opencascade::primitives::Shape::box_centered(2.0, 4.0, 6.0);
+        let elements = ShapeElements::new(&shape);
+        let frame = Transform {
+            position: Point3::new(5.0, -2.0, 1.0),
+            rotation: crate::common::Quaternion::from_axis_angle(
+                Vector3::new(1.0, 2.0, 3.0).normalize(),
+                Deg(40.0),
+            ),
+            ..Transform::IDENTITY
+        };
+        let framed = CadTessellationOptions { frame, ..default_options() };
+        let at_frame = |scene: &Scene, node: NodeId| {
+            let placed = scene.get_node(node).unwrap().transform().to_matrix();
+            let expected = frame.to_matrix();
+            (0..4).all(|c| (0..4).all(|r| (placed[c][r] - expected[c][r]).abs() < EPSILON))
+        };
+
+        let mut scene = Scene::default();
+        let node = tessellate_into(&elements, &mut scene, &framed, None, None).unwrap().id();
+        assert!(at_frame(&scene, node));
+
+        // Seen through the node, the framed mesh is the world mesh.
+        let world = tessellate_occ_shape(&elements, &default_options()).unwrap();
+        let local = tessellate_occ_shape(&elements, &framed).unwrap();
+        let to_world = frame.to_matrix();
+        for (w, l) in world.vertices().iter().zip(local.vertices()) {
+            let placed = transform_point(&to_world, array_to_point3(l.position));
+            assert!((placed - array_to_point3(w.position)).magnitude() < EPSILON);
+            let turned = frame.rotation.rotate_vector(array_to_vec3(l.normal));
+            assert!((turned - array_to_vec3(w.normal)).magnitude() < EPSILON);
+        }
+
+        // Re-tessellating in place keeps the node at the frame.
+        scene.set_node_transform(node, Transform::IDENTITY);
+        retessellate_node(&elements, &scene, &framed, node).unwrap();
+        assert!(at_frame(&scene, node));
     }
 
     #[test]

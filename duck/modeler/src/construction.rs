@@ -1,12 +1,13 @@
 //! The settings every construction tool builds with: tessellation, the
-//! construction plane and grid, and snapping.
+//! construction plane and grid, snapping, and the axes transforms run along.
 
 use duck_engine_common::{
-    EuclideanSpace, InnerSpace, LengthDisplay, LengthUnit, Plane, Point3, Real, RgbaColor, Vector3,
-    EPSILON,
+    EuclideanSpace, InnerSpace, LengthDisplay, LengthUnit, Plane, Point3, Real, RgbaColor,
+    Transform, Vector3, EPSILON,
 };
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, MaterialFlags};
+use duck_engine_viewer::operator::ConstraintSpace;
 
 use crate::grid::GridConfig;
 use crate::materials::DEFAULT_FINISH;
@@ -48,6 +49,9 @@ pub struct ConstructionOptions {
     /// document models in [`DOCUMENT_UNITS`](crate::document::DOCUMENT_UNITS)
     /// no matter what this is.
     pub units: LengthDisplay,
+    /// The axes the transform gizmo is drawn along: a part's own frame
+    /// ([`Local`](ConstraintSpace::Local)) or the world's.
+    pub transform_orientation: ConstraintSpace,
 }
 
 impl ConstructionOptions {
@@ -73,6 +77,7 @@ impl ConstructionOptions {
             include_edges: true,
             include_points: true,
             show_seam_edges: false,
+            frame: Transform::IDENTITY,
         };
         let construction_plane = Plane::xz();
         let grid = GridConfig::default();
@@ -86,6 +91,7 @@ impl ConstructionOptions {
             grid,
             snap,
             units: LengthDisplay::new(LengthUnit::Millimeter, 2),
+            transform_orientation: ConstraintSpace::Local,
         }
     }
 

@@ -1,14 +1,14 @@
 use anyhow::{Context, Result};
 use duck_engine_scene::common::Matrix4;
 
-use crate::document::{place, Document, PartId};
+use crate::document::{carry_frame, place, Document, PartId};
 
 /// Copy each of `sources` once per entry in `placements`, transforming each
 /// copy's B-Rep by its placement. Results are source-major: every placement of
 /// the first source, then of the second, and so on.
 ///
 /// Copies are added under the next free name in their source's series and carry
-/// the source's tessellation options.
+/// the source's tessellation options, its frame moved by the placement.
 ///
 /// Opens its own undo scope, which also covers the whole run when a caller
 /// wants a different label: nested scopes merge and the outermost label wins.
@@ -22,12 +22,13 @@ pub fn duplicate_parts(
     for &source in sources {
         for placement in placements {
             // Read the source out before `add_part` takes the document mutably.
-            let (shape, options) = {
+            let (shape, mut options) = {
                 let part = doc.get_part(source).context("Duplicate: source part not found")?;
                 (part.shape().deep_copy(), part.options().clone())
             };
             let name = doc.duplicate_name(source);
             let shape = place(&shape, placement);
+            options.frame = carry_frame(options.frame, placement);
             let id = doc
                 .add_part(name, shape, &options)
                 .context("Failed to tessellate the duplicated part")?;
@@ -42,7 +43,7 @@ mod tests {
     use super::*;
 
     use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::common::{Point3, Real, SquareMatrix, Vector3};
+    use duck_engine_scene::common::{Point3, Real, SquareMatrix, Transform, Vector3};
     use duck_engine_scene::Scene;
     use opencascade::primitives::Shape;
 
@@ -112,6 +113,27 @@ mod tests {
 
         assert_close(center(&doc, copies[0]), before + offset);
         assert_close(center(&doc, source), before);
+    }
+
+    #[test]
+    fn the_copy_frame_is_carried_by_its_placement() {
+        use duck_engine_scene::common::{Deg, Matrix3};
+
+        use crate::testing::assert_frame;
+
+        let turned = Transform {
+            position: Point3::new(1.0, 0.0, 0.0),
+            ..Transform::from_rotation(Matrix3::from_angle_z(Deg(30.0)).into())
+        };
+        let mut doc = Document::new(Scene::default());
+        let options = CadTessellationOptions { frame: turned, ..CadTessellationOptions::default() };
+        let source = doc.add_part("Box-001", Shape::cube_centered(1.0), &options).expect("tessellates");
+
+        let placement = Matrix4::from_translation(Vector3::new(0.0, 2.0, 0.0)) * Matrix4::from_angle_x(Deg(90.0));
+        let copies = duplicate_parts(&mut doc, &[source], &[placement]).expect("copies");
+
+        assert_frame(doc.get_part(copies[0]).unwrap().frame(), &(placement * turned.to_matrix()));
+        assert_frame(doc.get_part(source).unwrap().frame(), &turned.to_matrix());
     }
 
     #[test]

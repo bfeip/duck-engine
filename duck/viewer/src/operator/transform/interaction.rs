@@ -48,17 +48,23 @@ fn wrap_to_pi(angle: Real) -> Real {
 pub enum TransformAction {
     /// Begin a freeform transform in this interaction's mode.
     StartTransform,
-    /// Cycle the axis constraint to X (world then local on repeated press).
+    /// Cycle the axis constraint to X (the orientation's space, then the other,
+    /// on repeated press).
     ConstrainX,
-    /// Cycle the axis constraint to Y (world then local on repeated press).
+    /// Cycle the axis constraint to Y (the orientation's space, then the other,
+    /// on repeated press).
     ConstrainY,
-    /// Cycle the axis constraint to Z (world then local on repeated press).
+    /// Cycle the axis constraint to Z (the orientation's space, then the other,
+    /// on repeated press).
     ConstrainZ,
-    /// Cycle the plane constraint excluding X, i.e. the YZ plane (world then local).
+    /// Cycle the plane constraint excluding X, i.e. the YZ plane (the
+    /// orientation's space, then the other).
     ConstrainPlaneX,
-    /// Cycle the plane constraint excluding Y, i.e. the XZ plane (world then local).
+    /// Cycle the plane constraint excluding Y, i.e. the XZ plane (the
+    /// orientation's space, then the other).
     ConstrainPlaneY,
-    /// Cycle the plane constraint excluding Z, i.e. the XY plane (world then local).
+    /// Cycle the plane constraint excluding Z, i.e. the XY plane (the
+    /// orientation's space, then the other).
     ConstrainPlaneZ,
     /// Confirm the active transform via keyboard.
     KeyConfirm,
@@ -109,6 +115,16 @@ pub enum ConstraintSpace {
     Local,
 }
 
+impl ConstraintSpace {
+    /// The other space.
+    pub fn other(self) -> Self {
+        match self {
+            ConstraintSpace::World => ConstraintSpace::Local,
+            ConstraintSpace::Local => ConstraintSpace::World,
+        }
+    }
+}
+
 /// Axis constraint for the transform operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisConstraint {
@@ -135,11 +151,15 @@ impl AxisConstraint {
 
     /// Returns whether this constraint is expressed in local space.
     pub fn is_local(&self) -> bool {
-        matches!(
-            self,
-            AxisConstraint::Axis(_, ConstraintSpace::Local)
-                | AxisConstraint::Plane(_, ConstraintSpace::Local)
-        )
+        self.space() == Some(ConstraintSpace::Local)
+    }
+
+    /// The space the constraint is expressed in; `None` when unconstrained.
+    pub fn space(&self) -> Option<ConstraintSpace> {
+        match self {
+            AxisConstraint::None => None,
+            AxisConstraint::Axis(_, space) | AxisConstraint::Plane(_, space) => Some(*space),
+        }
     }
 }
 
@@ -170,6 +190,10 @@ pub struct TransformInteraction {
 
     /// Orientation of the local constraint axes.
     frame_rotation: Quaternion,
+
+    /// The space gizmo handles constrain in, and the first an axis or plane key
+    /// picks.
+    orientation: ConstraintSpace,
 
     /// Screen pixel the drag is anchored at: the grabbed handle's pixel, or the
     /// cursor when the transform was started from the keyboard.
@@ -265,6 +289,7 @@ impl TransformInteraction {
             axis_constraint: AxisConstraint::None,
             pivot_world: Point3::origin(),
             frame_rotation: Quaternion::new(1.0, 0.0, 0.0, 0.0),
+            orientation: ConstraintSpace::World,
             anchor_screen: (0.0, 0.0),
             cursor_screen: (0.0, 0.0),
             absolute_since_motion: false,
@@ -371,36 +396,59 @@ impl TransformInteraction {
         self.axis_constraint = constraint;
     }
 
-    /// Constrain to the axis or plane a gizmo handle represents.
+    /// The space gizmo handles constrain in, and the first an axis or plane key
+    /// picks.
+    pub fn orientation(&self) -> ConstraintSpace {
+        self.orientation
+    }
+
+    pub fn set_orientation(&mut self, orientation: ConstraintSpace) {
+        self.orientation = orientation;
+    }
+
+    /// The space the gizmo is drawn in: the active constraint's, else the
+    /// orientation.
+    pub fn gizmo_space(&self) -> ConstraintSpace {
+        self.axis_constraint.space().unwrap_or(self.orientation)
+    }
+
+    /// Constrain to the axis or plane a gizmo handle represents, in the
+    /// orientation's space.
     pub fn constrain_to_handle(&mut self, id: GizmoHandleId) {
         self.axis_constraint = match id {
-            GizmoHandleId::Axis(axis) => AxisConstraint::Axis(axis, ConstraintSpace::World),
-            GizmoHandleId::Plane(normal) => AxisConstraint::Plane(normal, ConstraintSpace::World),
+            GizmoHandleId::Axis(axis) => AxisConstraint::Axis(axis, self.orientation),
+            GizmoHandleId::Plane(normal) => AxisConstraint::Plane(normal, self.orientation),
             GizmoHandleId::Ball => AxisConstraint::None,
         };
     }
 
-    /// Cycles the single-axis constraint for a given axis key.
-    /// None → World → Local → None (switching from another constraint jumps to World).
+    /// Cycles the single-axis constraint for a given axis key: None → the
+    /// orientation's space → the other space → None (switching from another
+    /// constraint jumps to the orientation's space).
     pub fn cycle_axis_constraint(&mut self, axis: char) {
         let Some(a) = Axis::from_char(axis) else { return };
-        use ConstraintSpace::{Local, World};
+        let (first, second) = (self.orientation, self.orientation.other());
         self.axis_constraint = match self.axis_constraint {
-            AxisConstraint::Axis(cur, World) if cur == a => AxisConstraint::Axis(a, Local),
-            AxisConstraint::Axis(cur, Local) if cur == a => AxisConstraint::None,
-            _ => AxisConstraint::Axis(a, World),
+            AxisConstraint::Axis(cur, space) if cur == a && space == first => {
+                AxisConstraint::Axis(a, second)
+            }
+            AxisConstraint::Axis(cur, _) if cur == a => AxisConstraint::None,
+            _ => AxisConstraint::Axis(a, first),
         };
     }
 
-    /// Cycles the plane constraint excluding the given axis key (Blender Shift+axis).
-    /// None → World → Local → None (switching from another constraint jumps to World).
+    /// Cycles the plane constraint excluding the given axis key (Blender
+    /// Shift+axis): None → the orientation's space → the other space → None
+    /// (switching from another constraint jumps to the orientation's space).
     pub fn cycle_plane_constraint(&mut self, axis: char) {
         let Some(a) = Axis::from_char(axis) else { return };
-        use ConstraintSpace::{Local, World};
+        let (first, second) = (self.orientation, self.orientation.other());
         self.axis_constraint = match self.axis_constraint {
-            AxisConstraint::Plane(cur, World) if cur == a => AxisConstraint::Plane(a, Local),
-            AxisConstraint::Plane(cur, Local) if cur == a => AxisConstraint::None,
-            _ => AxisConstraint::Plane(a, World),
+            AxisConstraint::Plane(cur, space) if cur == a && space == first => {
+                AxisConstraint::Plane(a, second)
+            }
+            AxisConstraint::Plane(cur, _) if cur == a => AxisConstraint::None,
+            _ => AxisConstraint::Plane(a, first),
         };
     }
 
@@ -1027,6 +1075,42 @@ mod tests {
             translation.normalize().cross(local_x).magnitude() < 1e-4,
             "{translation:?} should lie along the rotated X axis {local_x:?}"
         );
+    }
+
+    #[test]
+    fn axis_keys_cycle_through_the_orientation_first() {
+        use ConstraintSpace::{Local, World};
+        let mut interaction = started(TransformMode::Scale, CENTER, AxisConstraint::None);
+        interaction.set_orientation(Local);
+
+        interaction.cycle_axis_constraint('y');
+        assert_eq!(interaction.axis_constraint(), AxisConstraint::Axis(Axis::Y, Local));
+        interaction.cycle_axis_constraint('y');
+        assert_eq!(interaction.axis_constraint(), AxisConstraint::Axis(Axis::Y, World));
+        interaction.cycle_axis_constraint('y');
+        assert_eq!(interaction.axis_constraint(), AxisConstraint::None);
+
+        interaction.cycle_plane_constraint('z');
+        assert_eq!(interaction.axis_constraint(), AxisConstraint::Plane(Axis::Z, Local));
+        interaction.cycle_plane_constraint('z');
+        assert_eq!(interaction.axis_constraint(), AxisConstraint::Plane(Axis::Z, World));
+    }
+
+    #[test]
+    fn handles_constrain_in_the_orientation_and_the_gizmo_follows_the_constraint() {
+        use ConstraintSpace::{Local, World};
+        let mut interaction = started(TransformMode::Scale, CENTER, AxisConstraint::None);
+        interaction.set_orientation(Local);
+        assert_eq!(interaction.gizmo_space(), Local);
+
+        interaction.constrain_to_handle(GizmoHandleId::Axis(Axis::Y));
+        assert_eq!(interaction.axis_constraint(), AxisConstraint::Axis(Axis::Y, Local));
+        interaction.constrain_to_handle(GizmoHandleId::Plane(Axis::X));
+        assert_eq!(interaction.axis_constraint(), AxisConstraint::Plane(Axis::X, Local));
+
+        // A key cycled into the other space turns the gizmo with it.
+        interaction.set_axis_constraint(AxisConstraint::Axis(Axis::X, World));
+        assert_eq!(interaction.gizmo_space(), World);
     }
 
     // ── Cursor tracking ──────────────────────────────────────────────────────

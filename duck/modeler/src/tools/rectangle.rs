@@ -7,7 +7,9 @@ use crate::snap::Snap;
 use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{dimension_field, Params};
-use super::primitive::{flat, footprint, seat, unit_square, Next, Primitive, PrimitiveTool, Track};
+use super::primitive::{
+    flat, footprint, seat, seated, unit_square, Next, Primitive, PrimitiveTool, Track,
+};
 
 /// The size of a placed rectangle, about its centre.
 #[derive(Clone, Copy)]
@@ -66,6 +68,10 @@ impl Primitive for RectangleParams {
 
     fn preview_transform(&self) -> Transform {
         flat(self.center, &self.plane, self.width, self.depth)
+    }
+
+    fn frame(&self) -> Transform {
+        seated(self.center, &self.plane)
     }
 
     /// World-space face with an analytic planar surface.

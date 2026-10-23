@@ -62,6 +62,10 @@ pub trait Primitive: Params + 'static {
 
     /// The shape to add as a part.
     fn build(&self) -> Result<Shape>;
+
+    /// The added part's own axes: local Y along the direction it was built
+    /// up, so a part built on the ground is framed by the world.
+    fn frame(&self) -> Transform;
 }
 
 /// What the pointer means at a stage.
@@ -189,7 +193,7 @@ impl<P: Primitive> PrimitiveTool<P> {
     fn apply(&mut self) -> Result<()> {
         let Placement::Placed(edit) = &self.placement else { return Ok(()) };
         let shape = edit.params().build()?;
-        self.workspace.add_numbered_part(P::NAME, shape)?;
+        self.workspace.add_numbered_part(P::NAME, shape, edit.params().frame())?;
         self.reset();
         self.finished = true;
         Ok(())
@@ -340,6 +344,12 @@ pub(super) fn radius_to(center: Point3, rim: Point3) -> Option<Real> {
 /// where the ray runs along the axis.
 pub(super) fn height_along(base: Point3, axis: Vector3, ray: &Ray) -> Real {
     ray.closest_param_on_axis(base, axis).unwrap_or(0.0)
+}
+
+/// A part's frame seated on `plane` at `origin`: local Y along the plane's
+/// normal, X and Z along its basis.
+pub(super) fn seated(origin: Point3, plane: &Plane) -> Transform {
+    Transform { position: origin, ..Transform::from_rotation(plane.basis_rotation()) }
 }
 
 /// Lays a flat unit reference shape (local XY, facing +Z) on `plane` at

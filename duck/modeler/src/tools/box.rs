@@ -10,7 +10,8 @@ use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{dimension_field, grip_dimension, Params, MIN_DIMENSION};
 use super::primitive::{
-    flat, footprint, height_along, seat, unit_square, Next, Primitive, PrimitiveTool, Track,
+    flat, footprint, height_along, seat, seated, unit_square, Next, Primitive, PrimitiveTool,
+    Track,
 };
 
 /// The box's dimension grips, one per axis of [`BoxParams`].
@@ -181,6 +182,11 @@ impl Primitive for BoxParams {
             rotation: self.plane.rotation(),
             scale: Vector3::new(self.width, self.depth, self.height),
         }
+    }
+
+    /// Seated at the footprint's centre.
+    fn frame(&self) -> Transform {
+        seated(self.preview_transform().position, &self.plane)
     }
 
     /// World-space box with analytic planar faces: the footprint rectangle on

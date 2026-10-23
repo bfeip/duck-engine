@@ -7,7 +7,9 @@ use crate::snap::Snap;
 use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{dimension_field, Params};
-use super::primitive::{flat, radius_to, seat, unit_disk, Next, Primitive, PrimitiveTool, Track};
+use super::primitive::{
+    flat, radius_to, seat, seated, unit_disk, Next, Primitive, PrimitiveTool, Track,
+};
 
 /// The size of a placed circle, about its centre.
 #[derive(Clone, Copy)]
@@ -67,6 +69,10 @@ impl Primitive for CircleParams {
 
     fn build(&self) -> Result<Shape> {
         Ok(region(circle(self.center, self.plane.normal, self.radius)?))
+    }
+
+    fn frame(&self) -> Transform {
+        seated(self.center, &self.plane)
     }
 }
 

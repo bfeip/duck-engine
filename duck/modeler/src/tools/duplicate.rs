@@ -82,6 +82,8 @@ impl ModelingTool for DuplicateTool {
         if gesture == Some(Gesture::Frame) {
             self.driver.target_mut().sync_sources(ctx);
         }
+        let orientation = self.driver.target().workspace.construction.borrow().transform_orientation;
+        self.driver.set_orientation(orientation);
 
         // A drag takes its own confirm and cancel.
         if self.driver.dispatch(event, ctx) {

@@ -93,7 +93,7 @@ use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::NodeId;
-use duck_engine_viewer::common::{LengthDisplay, Point3, Ray};
+use duck_engine_viewer::common::{LengthDisplay, Point3, Ray, Transform};
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
 use duck_engine_viewer::input::{ElementState, Key, Modifiers, MouseButton, NamedKey};
 use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionMode};
@@ -162,9 +162,9 @@ impl Workspace {
     }
 
     /// Adds `shape` as a new part numbered in `base`'s series, tessellated for
-    /// committed geometry.
-    pub fn add_numbered_part(&self, base: &str, shape: Shape) -> anyhow::Result<PartId> {
-        let options = self.geometry_options();
+    /// committed geometry, with `frame` as its own axes.
+    pub fn add_numbered_part(&self, base: &str, shape: Shape, frame: Transform) -> anyhow::Result<PartId> {
+        let options = CadTessellationOptions { frame, ..self.geometry_options() };
         self.document.lock().unwrap().add_numbered_part(base, shape, &options)
     }
 

@@ -10,7 +10,7 @@ use crate::snap::Snap;
 use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{dimension_field, grip_dimension, Params};
-use super::primitive::{radius_to, Next, Primitive, PrimitiveTool, Track};
+use super::primitive::{radius_to, seated, Next, Primitive, PrimitiveTool, Track};
 
 /// The sphere's one grip, on the pole.
 const RADIUS_HANDLE: HandleId = HandleId(0);
@@ -22,6 +22,8 @@ pub struct SphereParams {
     center: Point3,
     /// Polar axis, chosen at placement (see [`SphereParams::start`]).
     axis: Vector3,
+    /// The way the sphere was built up, which its frame's Y runs along.
+    up: Vector3,
     radius: Real,
 }
 
@@ -31,6 +33,7 @@ pub struct SphereParams {
 pub struct SphereStage {
     center: Point3,
     axis: Vector3,
+    up: Vector3,
 }
 
 impl Params for SphereParams {
@@ -66,20 +69,21 @@ impl Primitive for SphereParams {
     const NAME: &'static str = "Sphere";
 
     /// The polar axis is the snapped direction, such as a face normal, where
-    /// there is one.
-    fn start(first: &Snap, _construction: &Plane) -> SphereStage {
+    /// there is one. So is up, which otherwise is the construction plane's.
+    fn start(first: &Snap, construction: &Plane) -> SphereStage {
         // Otherwise a skewed axis keeps the seam and poles off every world axis,
         // so a later boolean's cutting plane isn't near-coincident with them.
         let axis = first.direction.unwrap_or_else(|| Vector3::new(1.0, 2.0, 3.0).normalize());
-        SphereStage { center: first.position, axis }
+        let up = first.direction.unwrap_or(construction.normal);
+        SphereStage { center: first.position, axis, up }
     }
 
     fn track(stage: SphereStage, pointer: &Pointer) -> Track<Self> {
-        let SphereStage { center, axis } = stage;
+        let SphereStage { center, axis, up } = stage;
         let rim = pointer.snap.map(|snap| snap.position);
         let placed = rim
             .and_then(|rim| radius_to(center, rim))
-            .map(|radius| SphereParams { center, axis, radius });
+            .map(|radius| SphereParams { center, axis, up, radius });
         Track {
             cursor: rim,
             preview: placed.map(|params| params.preview_transform()),
@@ -103,6 +107,11 @@ impl Primitive for SphereParams {
     fn build(&self) -> Result<Shape> {
         Ok(sphere(self.center, self.axis, self.radius))
     }
+
+    /// Seated at the centre, Y up.
+    fn frame(&self) -> Transform {
+        seated(self.center, &Plane::from_point(self.up, self.center))
+    }
 }
 
 #[cfg(test)]
@@ -121,6 +130,7 @@ mod tests {
         SphereParams {
             center: Point3::new(-1.0, 0.5, 2.0),
             axis: Vector3::new(1.0, 2.0, 3.0).normalize(),
+            up: Vector3::unit_y(),
             radius: 4.0,
         }
     }
@@ -152,7 +162,7 @@ mod tests {
     #[test]
     fn a_point_on_the_surface_places_the_sphere() {
         let center = Point3::new(1.0, 2.0, 3.0);
-        let stage = SphereStage { center, axis: Vector3::unit_y() };
+        let stage = SphereStage { center, axis: Vector3::unit_y(), up: Vector3::unit_y() };
         let track = SphereParams::track(stage, &pointer_at(center + Vector3::new(3.0, 0.0, 4.0)));
         let Some(Next::Placed(params)) = track.click else { panic!("the point places the sphere") };
         assert!((params.radius - 5.0).abs() < EPSILON);
@@ -162,7 +172,7 @@ mod tests {
     #[test]
     fn a_point_on_the_centre_cannot_be_clicked() {
         let center = Point3::new(1.0, 2.0, 3.0);
-        let stage = SphereStage { center, axis: Vector3::unit_y() };
+        let stage = SphereStage { center, axis: Vector3::unit_y(), up: Vector3::unit_y() };
         let track = SphereParams::track(stage, &pointer_at(center));
         assert!(track.click.is_none());
         assert!(track.preview.is_none());
@@ -199,6 +209,7 @@ mod tests {
         let grabbed = SphereParams {
             center: Point3::new(0.0, 0.0, 0.0),
             axis: Vector3::unit_z(),
+            up: Vector3::unit_y(),
             radius: 2.0,
         };
         let mut params = grabbed;
