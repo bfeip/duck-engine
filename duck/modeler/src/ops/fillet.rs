@@ -1,7 +1,7 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use duck_engine_scene::common::{Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
-use opencascade::primitives::{Shape, ShapeType};
+use opencascade::primitives::Shape;
 use opencascade::FilletError;
 
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, unwrap_single_solid, Document};
@@ -30,14 +30,6 @@ impl BlendKind {
             BlendKind::Chamfer => "Chamfer",
         }
     }
-
-    /// What its size measures.
-    fn size_name(self) -> &'static str {
-        match self {
-            BlendKind::Fillet => "radius",
-            BlendKind::Chamfer => "distance",
-        }
-    }
 }
 
 /// The edges being blended, all on one part, identified the way the selection
@@ -53,7 +45,7 @@ pub struct FilletTarget {
 /// corner there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FilletFrame {
-    /// Halfway along the primary edge.
+    /// The primary edge's parametric midpoint.
     pub apex: Point3,
     /// Unit bisector of the two faces' outward normals at the apex, pointing out
     /// of the corner into the space beside it — for a concave edge as for a
@@ -68,15 +60,18 @@ impl FilletFrame {
         let primary = *target.edges.first().context("There are no edges to blend")?;
         // A seam-split edge's pieces all border the same two faces.
         let edge = &part.elements().edge(primary as usize)?.pieces()[0];
-        let corner = part
-            .elements()
-            .corner(edge)
-            .context("Only an edge between two faces can be filleted or chamfered")?;
+        let faces = part.shape().adjacent_faces(edge);
+        let [first, second] = faces.as_slice() else {
+            bail!("Only an edge between two faces can be filleted or chamfered");
+        };
 
-        let sum = corner.normals[0] + corner.normals[1];
+        let apex = edge.midpoint();
+        // `normal_at` goes through `BRepGProp_Face::Normal`, which applies each
+        // face's orientation: both normals point out of the material.
+        let sum = first.normal_at(apex)? + second.normal_at(apex)?;
         ensure!(sum.length() > MIN_NORMAL_SUM, "The faces at this edge fold back onto each other");
 
-        Ok(Self { apex: dvec3_to_point3(corner.point), outward: dvec3_to_vec3(sum.normalize()) })
+        Ok(Self { apex: dvec3_to_point3(apex), outward: dvec3_to_vec3(sum.normalize()) })
     }
 }
 
@@ -128,60 +123,36 @@ impl FilletParams {
 }
 
 /// The target's part with its edges rounded or bevelled, to reshape the part
-/// with. Straight edges between planes blend over their faces' extensions,
-/// across holes and past the faces' far bounds.
+/// with.
 pub fn build_fillet(doc: &Document, target: &FilletTarget, params: &FilletParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to {} at zero size", params.kind.name().to_lowercase());
     let part = doc.part_at(target.node).context("Fillet target is not a known CAD part")?;
 
-    let size = f64::from(params.size);
-    let blend = |extended: bool| -> Result<Shape, opencascade::Error> {
-        // OCCT's blend raises the tolerance of vertices it touches on its
-        // input, so it works on a copy: an abandoned preview must leave the
-        // part as it was.
-        let body = part.elements().deep_copy();
-        let mut edges = Vec::new();
-        for &index in &target.edges {
-            edges.extend(body.edge(index as usize)?.pieces());
-        }
-        let shape = body.shape();
-        match (params.kind, extended) {
-            (BlendKind::Fillet, true) => shape.fillet_edges_extended(size, &edges),
-            (BlendKind::Fillet, false) => shape.fillet_edges(size, &edges),
-            (BlendKind::Chamfer, true) => shape.chamfer_edges_extended(size, &edges),
-            (BlendKind::Chamfer, false) => shape.chamfer_edges(size, &edges),
-        }
-    };
+    // OCCT's blend raises the tolerance of vertices it touches on its input, so
+    // it works on a copy: an abandoned preview must leave the part as it was.
+    let body = part.elements().deep_copy();
+    let mut edges = Vec::new();
+    for &index in &target.edges {
+        edges.extend(body.edge(index as usize)?.pieces());
+    }
 
-    let blended = blend(true)
-        .or_else(|error| match error {
-            // The blend itself failed; over the faces as they are it would fail again.
-            opencascade::Error::FilletFailed(_) => Err(error),
-            error => {
-                log::warn!("Could not extend the faces to blend over them, blending them as they are: {error}");
-                blend(false)
-            },
-        })
-        .map_err(|error| explained(params.kind, error))?;
+    let size = f64::from(params.size);
+    let blended = match params.kind {
+        BlendKind::Fillet => body.shape().fillet_edges(size, &edges),
+        BlendKind::Chamfer => body.shape().chamfer_edges(size, &edges),
+    }
+    .map_err(|error| explained(params.kind, error))?;
 
     // The blend comes back wrapped in a compound; a lone solid stays a solid.
-    let blended = unwrap_single_solid(blended);
-
-    // Carried on past its faces, a blend can take the whole part, or cut
-    // through it.
-    let (size, kind) = (params.kind.size_name(), params.kind.name().to_lowercase());
-    ensure!(blended.contains_type(ShapeType::Face), "The {size} is too large: the {kind} takes the whole part");
-    let solids = |shape: &Shape| shape.unique_sub_shape_count(ShapeType::Solid);
-    ensure!(
-        solids(&blended) <= solids(part.shape()),
-        "The {size} is too large: the {kind} cuts the part apart"
-    );
-    Ok(blended)
+    Ok(unwrap_single_solid(blended))
 }
 
 /// `error`, led by a plain-language account of why the blend failed.
 fn explained(kind: BlendKind, error: opencascade::Error) -> anyhow::Error {
-    let size = kind.size_name();
+    let size = match kind {
+        BlendKind::Fillet => "radius",
+        BlendKind::Chamfer => "distance",
+    };
     let hint = match &error {
         opencascade::Error::FilletFailed(FilletError::NoSuitableEdges) => {
             "Only an edge between two faces can be filleted or chamfered".to_owned()
@@ -200,7 +171,7 @@ mod tests {
 
     use duck_engine_scene::common::consts;
     use duck_engine_scene::common::{EuclideanSpace, InnerSpace};
-    use opencascade::primitives::{Face, FaceType, Wire};
+    use opencascade::primitives::{Face, Wire};
 
     use crate::document::{PartKind, SourceFate};
     use crate::testing::{
@@ -351,52 +322,16 @@ mod tests {
         }
     }
 
-    /// A concave edge blends over its faces as they are, so a radius wider
-    /// than the notch's unit-wide walls cannot be built.
     #[test]
     fn an_oversized_fillet_is_an_error_and_leaves_the_part_alone() {
-        let (doc, node) = doc_with_shape(l_prism());
-        let edge = edge_at_point(&doc, node, glam::dvec3(1.0, 1.0, 0.5));
-        let params = params(&doc, node, edge, BlendKind::Fillet, 5.0);
+        let (doc, node) = doc_with_box();
+        let params = params(&doc, node, 0, BlendKind::Fillet, 5.0);
 
-        let Err(error) = build_fillet(&doc, &target(node, &[edge]), &params) else {
+        let Err(error) = build_fillet(&doc, &target(node, &[0]), &params) else {
             panic!("a radius wider than the faces cannot be built");
         };
         assert!(format!("{error:#}").contains("too large"), "got {error:#}");
-        assert!((part_volume(&doc, node) - 3.0).abs() < 1e-9);
-    }
-
-    /// A round as wide as both faces takes them whole, leaving a quarter
-    /// cylinder of the box's length.
-    #[test]
-    fn a_fillet_as_wide_as_its_faces_replaces_them() {
-        let (doc, node) = doc_with_box();
-        let params = params(&doc, node, 0, BlendKind::Fillet, 2.0);
-
-        let shape = build_fillet(&doc, &target(node, &[0]), &params).expect("the fillet builds");
-        assert_eq!(shape.shape_type(), opencascade::primitives::ShapeType::Solid);
-        assert!((shape.volume() - 2.0 * std::f64::consts::PI).abs() < 1e-5, "got {}", shape.volume());
-    }
-
-    /// A bore whose rim the round's contact line crosses: the round carries on
-    /// over it as if it were not there, and the bore is cut back through.
-    #[test]
-    fn a_fillet_runs_over_a_hole_in_its_face() {
-        let bore = || Shape::cylinder(glam::dvec3(0.0, -0.4, -2.0), 0.3, glam::DVec3::Z, 4.0);
-        let bored = Shape::box_centered(2.0, 2.0, 2.0).subtract(&bore()).expect("the bore cuts").shape;
-        let (doc, node) = doc_with_shape(bored);
-        let edge = edge_at_point(&doc, node, glam::dvec3(0.0, -1.0, 1.0));
-        let params = params(&doc, node, edge, BlendKind::Fillet, 0.6);
-
-        let shape = build_fillet(&doc, &target(node, &[edge]), &params).expect("the fillet builds");
-        assert!(
-            shape.faces().all(|face| matches!(face.face_type(), FaceType::Plane | FaceType::Cylinder)),
-            "the round rode the bore's rim"
-        );
-        let plain = Shape::box_centered(2.0, 2.0, 2.0);
-        let top_front = plain.edges().find(|e| e.midpoint().distance(glam::dvec3(0.0, -1.0, 1.0)) < 1e-9).unwrap();
-        let expected = plain.fillet_edges(0.6, [&top_front]).unwrap().subtract(&bore()).unwrap().shape.volume();
-        assert!((shape.volume() - expected).abs() < 1e-5 * expected, "{} vs {expected}", shape.volume());
+        assert!((part_volume(&doc, node) - 8.0).abs() < 1e-9);
     }
 
     #[test]
