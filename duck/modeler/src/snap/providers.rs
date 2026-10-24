@@ -215,21 +215,18 @@ enum GeometryHit<'a> {
     Face { snap: Snap, face: Option<PartFace<'a>> },
 }
 
-/// A face of a part, placed in the world.
+/// A face of a part.
 struct PartFace<'a> {
     part: &'a CadPart,
     /// The face's element index.
     index: u32,
-    /// Maps the part's B-rep into the world: into its mesh, then by its node's
-    /// world transform.
-    world: Matrix4,
 }
 
 impl PartFace<'_> {
     /// The face's centre if it is flat: the centroid of its area, in world
     /// space, with the face's outward normal.
     fn center(&self) -> Option<Snap> {
-        let Self { part, index, world } = self;
+        let Self { part, index } = self;
         let center = part.elements().face(*index as usize).and_then(|face| {
             if face.face_type() != FaceType::Plane {
                 return Ok(None);
@@ -244,9 +241,11 @@ impl PartFace<'_> {
                 return None;
             }
         };
+        // The B-rep is in the world, scaled into the scene at tessellation.
+        let scale = part.options().scale_factor;
         Some(Snap {
-            position: transform_point(world, dvec3_to_point3(center)),
-            direction: Some(transform_normal(world, dvec3_to_vec3(normal))),
+            position: dvec3_to_point3(center * scale),
+            direction: Some(dvec3_to_vec3(normal)),
             kind: SnapKind::FaceCenter,
         })
     }
@@ -399,8 +398,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
                         .and_then(|part| {
                             let triangle = hit.triangle_index as u32;
                             let index = mesh.sub_geometry_for_primitive(SubGeometryKind::Face, triangle)?;
-                            let world = world_transform * part.options().mesh_from_shape();
-                            Some(PartFace { part, index, world })
+                            Some(PartFace { part, index })
                         });
                     let snap = Snap {
                         position: transform_point(world_transform, hit.hit_point),
@@ -441,7 +439,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
                 near_edges.sort_unstable();
                 near_edges.dedup();
                 let mut midpoints = Vec::new();
-                collect_edge_midpoints(part, &near_edges, world_transform, &mut midpoints);
+                collect_edge_midpoints(part, &near_edges, &mut midpoints);
                 results.extend(midpoints.into_iter().map(GeometryHit::Snap));
             }
         }
@@ -449,10 +447,10 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
 }
 
 /// Pushes the midpoint of each of `part`'s `edges` (element indices) into `out`,
-/// taken on the B-rep curve and lifted to world space through its mesh and by
-/// `world`, its node's world transform, with the curve's tangent there.
-fn collect_edge_midpoints(part: &CadPart, edges: &[u32], world: &Matrix4, out: &mut Vec<Snap>) {
-    let world = world * part.options().mesh_from_shape();
+/// taken on the B-rep curve, with the curve's tangent there.
+fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Snap>) {
+    // The B-rep is in the world, scaled into the scene at tessellation.
+    let scale = part.options().scale_factor;
     for &index in edges {
         let midpoint = part.elements().edge(index as usize).and_then(|edge| edge.curve().length_midpoint());
         let (middle, tangent) = match midpoint {
@@ -462,10 +460,9 @@ fn collect_edge_midpoints(part: &CadPart, edges: &[u32], world: &Matrix4, out: &
                 continue;
             }
         };
-        let tangent = (world * dvec3_to_vec3(tangent).extend(0.0)).truncate();
         out.push(Snap {
-            position: transform_point(&world, dvec3_to_point3(middle)),
-            direction: Some(tangent.normalize()),
+            position: dvec3_to_point3(middle * scale),
+            direction: Some(dvec3_to_vec3(tangent).normalize()),
             kind: SnapKind::Midpoint,
         });
     }
@@ -1135,7 +1132,7 @@ mod tests {
         // y = 5.
         let (mut document, _node) = doc_with_box();
         let upper = Shape::box_from_corners(DVec3::new(-1.0, 3.0, -1.0), DVec3::new(1.0, 5.0, 1.0));
-        document.add_part("upper", upper, &CadTessellationOptions::default()).expect("box tessellates");
+        document.add_part("upper", upper, Transform::IDENTITY, &CadTessellationOptions::default()).expect("box tessellates");
 
         let centers = face_centers_below(&document, 0.3, 0.2);
 

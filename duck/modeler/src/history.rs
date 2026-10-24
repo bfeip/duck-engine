@@ -23,20 +23,21 @@ pub enum Delta {
     Added(PartSnapshot),
     /// A part was removed. Undo resurrects the snapshot; redo removes it.
     Removed(PartSnapshot),
-    /// A part's geometry was replaced in place, its node preserved and its mesh
-    /// re-tessellated with `options` in the geometry's frame.
+    /// A part's shape was replaced in place, its node and frame preserved.
     Reshaped {
         part: PartId,
-        before: PartGeometry,
-        after: PartGeometry,
+        before: Shape,
+        after: Shape,
         options: CadTessellationOptions,
     },
     /// A part was moved rigidly: its shape and frame changed together, so its
-    /// frame-local mesh did not.
+    /// mesh, expressed in the frame, did not.
     Moved {
         part: PartId,
-        before: PartGeometry,
-        after: PartGeometry,
+        before: Shape,
+        after: Shape,
+        before_frame: Transform,
+        after_frame: Transform,
     },
     /// A part was renamed. Undo restores `before`; redo applies `after`.
     Renamed {
@@ -58,14 +59,6 @@ pub enum Delta {
     },
 }
 
-/// A part's world-space shape and the frame its mesh is expressed in. Shapes
-/// are shallow clones, exact snapshots for the reason [`PartSnapshot`] gives.
-#[derive(Clone)]
-pub struct PartGeometry {
-    pub shape: Shape,
-    pub frame: Transform,
-}
-
 /// Everything needed to remove or resurrect a part with stable ids.
 ///
 /// The node handle owns the part's whole scene chain (node → instance → mesh
@@ -73,12 +66,13 @@ pub struct PartGeometry {
 /// it alive off-tree until resurrected or evicted from history. Shapes are
 /// shallow clones: committed shapes are never mutated in place, so a refcounted
 /// handle stays an exact snapshot. The options carry the retessellation
-/// parameters, frame included, which `remove_part` does not otherwise receive.
+/// parameters, which `remove_part` does not otherwise receive.
 pub struct PartSnapshot {
     pub part: PartId,
     pub node: NodeHandle,
     pub name: String,
     pub shape: Shape,
+    pub frame: Transform,
     pub options: CadTessellationOptions,
 }
 
@@ -174,6 +168,7 @@ mod tests {
             node: NodeHandle::unbound(duck_engine_scene::resource::NodeId::new()),
             name: name.to_string(),
             shape: Shape::cube(1.0),
+            frame: Transform::IDENTITY,
             options: CadTessellationOptions::default(),
         }
     }

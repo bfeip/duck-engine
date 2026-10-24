@@ -1,13 +1,12 @@
 //! The settings every construction tool builds with: tessellation, the
-//! construction plane and grid, snapping, and the axes transforms run along.
+//! construction plane and grid, and snapping.
 
 use duck_engine_common::{
-    EuclideanSpace, InnerSpace, LengthDisplay, LengthUnit, Plane, Point3, Real, RgbaColor,
-    Transform, Vector3, EPSILON,
+    EuclideanSpace, InnerSpace, LengthDisplay, LengthUnit, Matrix3, Plane, Point3, Quaternion, Real,
+    RgbaColor, Vector3, EPSILON,
 };
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, MaterialFlags};
-use duck_engine_viewer::operator::ConstraintSpace;
 
 use crate::grid::GridConfig;
 use crate::materials::DEFAULT_FINISH;
@@ -49,9 +48,6 @@ pub struct ConstructionOptions {
     /// document models in [`DOCUMENT_UNITS`](crate::document::DOCUMENT_UNITS)
     /// no matter what this is.
     pub units: LengthDisplay,
-    /// The axes the transform gizmo is drawn along: a part's own frame
-    /// ([`Local`](ConstraintSpace::Local)) or the world's.
-    pub transform_orientation: ConstraintSpace,
 }
 
 impl ConstructionOptions {
@@ -77,7 +73,6 @@ impl ConstructionOptions {
             include_edges: true,
             include_points: true,
             show_seam_edges: false,
-            frame: Transform::IDENTITY,
         };
         let construction_plane = Plane::xz();
         let grid = GridConfig::default();
@@ -91,7 +86,6 @@ impl ConstructionOptions {
             grid,
             snap,
             units: LengthDisplay::new(LengthUnit::Millimeter, 2),
-            transform_orientation: ConstraintSpace::Local,
         }
     }
 
@@ -153,6 +147,14 @@ impl ConstructionOptions {
     }
 }
 
+/// The rotation standing the modeler's up axis, local Y, on `plane`'s normal,
+/// with local X and Z along its [`basis`](Plane::basis): the world's axes for
+/// the ground plane.
+pub fn upright(plane: &Plane) -> Quaternion {
+    let (u, v) = plane.basis();
+    Quaternion::from(Matrix3::from_cols(u, plane.normal.normalize(), v))
+}
+
 fn same_plane(a: &Plane, b: &Plane) -> bool {
     (a.normal - b.normal).magnitude() < EPSILON && (a.d - b.d).abs() < EPSILON
 }
@@ -164,6 +166,19 @@ mod tests {
     /// Whether `plane` has `normal` and passes through `point`.
     fn is_plane(plane: &Plane, normal: Vector3, point: Point3) -> bool {
         (plane.normal - normal).magnitude() < EPSILON && plane.signed_distance(point).abs() < EPSILON
+    }
+
+    #[test]
+    fn upright_stands_y_on_the_normal() {
+        let ground = upright(&Plane::xz());
+        assert!((ground - Quaternion::new(1.0, 0.0, 0.0, 0.0)).magnitude() < EPSILON);
+
+        let plane = Plane::from_point(Vector3::new(1.0, 2.0, 3.0), Point3::origin());
+        let (u, v) = plane.basis();
+        let rotation = upright(&plane);
+        assert!((rotation * Vector3::unit_y() - plane.normal).magnitude() < EPSILON);
+        assert!((rotation * Vector3::unit_x() - u).magnitude() < EPSILON);
+        assert!((rotation * Vector3::unit_z() - v).magnitude() < EPSILON);
     }
 
     #[test]

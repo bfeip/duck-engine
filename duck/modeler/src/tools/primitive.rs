@@ -25,6 +25,7 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::{Shape, Wire};
 
+use crate::construction::upright;
 use crate::ops::primitives::{circle, region};
 use crate::preview::PreviewSession;
 use crate::snap::Snap;
@@ -349,7 +350,7 @@ pub(super) fn height_along(base: Point3, axis: Vector3, ray: &Ray) -> Real {
 /// A part's frame seated on `plane` at `origin`: local Y along the plane's
 /// normal, X and Z along its basis.
 pub(super) fn seated(origin: Point3, plane: &Plane) -> Transform {
-    Transform { position: origin, ..Transform::from_rotation(plane.basis_rotation()) }
+    Transform { position: origin, ..Transform::from_rotation(upright(plane)) }
 }
 
 /// Lays a flat unit reference shape (local XY, facing +Z) on `plane` at

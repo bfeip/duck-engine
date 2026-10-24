@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{SubGeometryElement, SubGeometryKind};
 use duck_engine_viewer::{
     event::{Event, EventContext},
@@ -104,7 +105,7 @@ impl LoftTool {
             let mut doc = self.workspace.document.lock().unwrap();
             let loft = build_loft(&doc, &self.previewed)?;
             doc.undo_scope("Loft")
-                .add_numbered_part("Loft", loft, &self.workspace.geometry_options())
+                .add_numbered_part("Loft", loft, Transform::IDENTITY, &self.workspace.geometry_options())
                 .context("Failed to tessellate the loft")?;
         }
         // The profiles stand; only the preview goes.

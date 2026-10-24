@@ -42,9 +42,8 @@ use crate::ui::icons;
 /// Escape cancels. The tool stays for the next transform until Escape with
 /// none in progress, or another tool.
 ///
-/// The gizmo runs along the part's own frame or the world's, per
-/// [`ConstructionOptions::transform_orientation`](crate::construction::ConstructionOptions::transform_orientation),
-/// which the tool's panel switches.
+/// The gizmo runs along the part's own frame, or the world's when the tool's
+/// panel switches it; each activation starts on the part's.
 pub struct TransformTool {
     mode: TransformMode,
     driver: TransformDriver<ModelerTarget>,
@@ -80,8 +79,6 @@ impl ModelingTool for TransformTool {
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let orientation = self.driver.target().workspace.construction.borrow().transform_orientation;
-        self.driver.set_orientation(orientation);
         if self.driver.dispatch(event, ctx) {
             return true;
         }
@@ -103,19 +100,20 @@ impl ModelingTool for TransformTool {
     }
 
     fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let mut construction = self.driver.target().workspace.construction.borrow_mut();
+        let mut orientation = self.driver.orientation();
         ui.label("Axes");
         ui.horizontal(|ui| {
-            let orientation = &mut construction.transform_orientation;
-            ui.selectable_value(orientation, ConstraintSpace::Local, "Local");
-            ui.selectable_value(orientation, ConstraintSpace::World, "Global");
+            ui.selectable_value(&mut orientation, ConstraintSpace::Local, "Local");
+            ui.selectable_value(&mut orientation, ConstraintSpace::World, "Global");
         });
+        self.driver.set_orientation(orientation);
     }
 
     fn activate(&mut self) {
         // Show this mode's handle set as soon as the tool is selected; the next
         // frame syncs it onto the current selection.
         self.driver.set_gizmo_enabled(true);
+        self.driver.set_orientation(ConstraintSpace::Local);
     }
 
     fn deactivate(&mut self) {

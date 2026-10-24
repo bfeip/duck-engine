@@ -45,7 +45,7 @@ pub fn import_cad_file(
     // One undo step covers every part in the file.
     let mut document = document.undo_scope(format!("Import {stem}"));
     for (i, part) in parts.into_iter().enumerate() {
-        let mut options = CadTessellationOptions { frame: part.frame, ..options.clone() };
+        let mut options = options.clone();
         if let Some(color) = part.color {
             options.face_material.set_base_color_factor(color);
             // A part that carries its own color keeps it whatever its geometry
@@ -54,7 +54,7 @@ pub fn import_cad_file(
             options.free_line_material = None;
         }
         let name = part.name.unwrap_or_else(|| format!("{stem} {}", i + 1));
-        document.add_part(name, part.shape, &options)?;
+        document.add_part(name, part.shape, part.frame, &options)?;
     }
     Ok(())
 }
@@ -71,6 +71,7 @@ pub fn export_cad_file(document: &Arc<Mutex<Document>>, path: &Path) -> Result<(
 
 #[cfg(test)]
 mod tests {
+    use duck_engine_scene::common::Transform;
     use duck_engine_scene::Scene;
     use opencascade::primitives::Shape;
 
@@ -104,7 +105,7 @@ mod tests {
         // 100 mm, in document units.
         let side = 100.0 * FILE_UNITS.factor_to(DOCUMENT_UNITS);
         let cube = Shape::box_centered(side, side, side);
-        document.lock().unwrap().add_part("Box", cube, &options).unwrap();
+        document.lock().unwrap().add_part("Box", cube, Transform::IDENTITY, &options).unwrap();
         export_cad_file(&document, &path).unwrap();
 
         let in_file = cad::load_cad_parts(&path, 1.0);

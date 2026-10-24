@@ -27,7 +27,7 @@ use crate::tools::{Pointer, Workspace};
 pub fn doc_with_shape(shape: Shape) -> (Document, NodeId) {
     let mut doc = Document::new(Scene::default());
     let part = doc
-        .add_part("part", shape, &CadTessellationOptions::default())
+        .add_part("part", shape, Transform::IDENTITY, &CadTessellationOptions::default())
         .expect("shape tessellates");
     let node = doc.node_for_part(part).expect("part has a node");
     (doc, node)
@@ -68,7 +68,7 @@ pub fn doc_with_boxes(count: usize) -> (Document, Vec<(PartId, NodeId)>) {
     let parts = (0..count)
         .map(|i| {
             let part = doc
-                .add_part(format!("box {i}"), Shape::cube(2.0), &CadTessellationOptions::default())
+                .add_part(format!("box {i}"), Shape::cube(2.0), Transform::IDENTITY, &CadTessellationOptions::default())
                 .expect("box tessellates");
             (part, doc.node_for_part(part).expect("part has a node"))
         })
@@ -85,7 +85,7 @@ pub fn doc_with_box_faces() -> (Document, Vec<NodeId>) {
         .map(|face| {
             let face = Shape::from(face).deep_copy();
             let part = doc
-                .add_numbered_part("Face", face, &CadTessellationOptions::default())
+                .add_numbered_part("Face", face, Transform::IDENTITY, &CadTessellationOptions::default())
                 .expect("face tessellates");
             doc.node_for_part(part).expect("part has a node")
         })
@@ -98,9 +98,9 @@ pub fn doc_with_box_faces() -> (Document, Vec<NodeId>) {
 pub fn doc_with_box_and_sphere() -> (Document, NodeId, NodeId) {
     let mut doc = Document::new(Scene::default());
     let options = CadTessellationOptions::default();
-    let cube = doc.add_part("box", Shape::cube(2.0), &options).expect("box tessellates");
+    let cube = doc.add_part("box", Shape::cube(2.0), Transform::IDENTITY, &options).expect("box tessellates");
     let sphere = Shape::sphere(1.0).at(DVec3::splat(2.0)).build();
-    let sphere = doc.add_part("sphere", sphere, &options).expect("sphere tessellates");
+    let sphere = doc.add_part("sphere", sphere, Transform::IDENTITY, &options).expect("sphere tessellates");
     let cube = doc.node_for_part(cube).expect("part has a node");
     let sphere = doc.node_for_part(sphere).expect("part has a node");
     (doc, cube, sphere)
@@ -137,7 +137,7 @@ pub fn doc_with_two_squares() -> (Document, [LoftProfile; 2]) {
         .expect("square builds");
         let face = Shape::from(Face::from_wire(&outline).expect("face builds"));
         let options = CadTessellationOptions::default();
-        let part = doc.add_part(name, face, &options).expect("square tessellates");
+        let part = doc.add_part(name, face, Transform::IDENTITY, &options).expect("square tessellates");
         LoftProfile { node: doc.node_for_part(part).expect("part has a node"), edge_index: 0 }
     };
     let profiles = [square("lower", 0.0), square("upper", 2.0)];
@@ -238,7 +238,7 @@ pub fn workspace_with_box() -> (Workspace, NodeId) {
 pub fn workspace_with_box_and_cube() -> (Workspace, NodeId, NodeId) {
     let (mut doc, main) = doc_with_box();
     let cube = Shape::box_from_corners(DVec3::splat(3.0), DVec3::splat(4.0));
-    let part = doc.add_part("cube", cube, &CadTessellationOptions::default()).expect("cube tessellates");
+    let part = doc.add_part("cube", cube, Transform::IDENTITY, &CadTessellationOptions::default()).expect("cube tessellates");
     let other = doc.node_for_part(part).expect("part has a node");
     (workspace(doc), main, other)
 }

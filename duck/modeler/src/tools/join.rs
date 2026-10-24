@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions};
-use duck_engine_scene::common::{Real, RgbaColor};
+use duck_engine_scene::common::{Real, RgbaColor, Transform};
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, NodeFlags, NodeId};
 use duck_engine_viewer::{
     event::{Event, EventContext},
@@ -142,6 +142,7 @@ impl JoinTool {
             options,
             &face,
             &line,
+            Transform::IDENTITY,
             None,
             Some("Open edges"),
         ) {

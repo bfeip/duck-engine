@@ -144,6 +144,7 @@ pub fn commit_boolean(
 
 #[cfg(test)]
 mod tests {
+    use duck_engine_scene::common::Transform;
     use duck_engine_scene::Scene;
     use glam::dvec3;
 
@@ -191,9 +192,9 @@ mod tests {
         let scene = Scene::default();
         let mut doc = Document::new(scene);
         let options = CadTessellationOptions::default();
-        let box_part = doc.add_part("box", Shape::cube(2.0), &options).expect("box tessellates");
+        let box_part = doc.add_part("box", Shape::cube(2.0), Transform::IDENTITY, &options).expect("box tessellates");
         let sphere = Shape::sphere(2.0).at(dvec3(0.5, 1.0, 0.5)).build();
-        let sphere_part = doc.add_part("sphere", sphere, &options).expect("sphere tessellates");
+        let sphere_part = doc.add_part("sphere", sphere, Transform::IDENTITY, &options).expect("sphere tessellates");
         let (box_node, sphere_node) =
             (doc.node_for_part(box_part).unwrap(), doc.node_for_part(sphere_part).unwrap());
 
@@ -229,11 +230,12 @@ mod tests {
         let world_box: Shape =
             Face::from_wire(&wire).expect("rectangle face").extrude(dvec3(0.0, 50.0, 0.0)).into();
         let box_volume = world_box.volume();
-        let box_part = doc.add_part("box", world_box, &options).expect("box tessellates");
+        let box_part = doc.add_part("box", world_box, Transform::IDENTITY, &options).expect("box tessellates");
         let sphere_part = doc
             .add_part(
                 "sphere",
                 Shape::sphere(20.0).at(dvec3(40.0, 50.0 + 4e-6, 60.0)).build(),
+                Transform::IDENTITY,
                 &options,
             )
             .expect("sphere tessellates");
@@ -256,7 +258,7 @@ mod tests {
         let (mut doc, box_node, _) = doc_with_box_and_sphere();
         let options = CadTessellationOptions::default();
         let far_part = doc
-            .add_part("far sphere", Shape::sphere(1.0).at(dvec3(10.0, 10.0, 10.0)).build(), &options)
+            .add_part("far sphere", Shape::sphere(1.0).at(dvec3(10.0, 10.0, 10.0)).build(), Transform::IDENTITY, &options)
             .expect("sphere tessellates");
         let far_node = doc.node_for_part(far_part).unwrap();
 

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions};
-use duck_engine_scene::common::RgbaColor;
+use duck_engine_scene::common::{RgbaColor, Transform};
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, NodeFlags, NodeId};
 use duck_engine_viewer::{
     event::{Event, EventContext},
@@ -140,6 +140,7 @@ impl BooleanTool {
                 options,
                 &face,
                 &line,
+                Transform::IDENTITY,
                 None,
                 Some("Boolean removed"),
             ) {
@@ -369,7 +370,7 @@ mod tests {
         let far = {
             let mut doc = ws.document.lock().unwrap();
             let sphere = Shape::sphere(1.0).at(glam::DVec3::splat(10.0)).build();
-            let part = doc.add_part("far", sphere, &ws.geometry_options()).expect("tessellates");
+            let part = doc.add_part("far", sphere, Transform::IDENTITY, &ws.geometry_options()).expect("tessellates");
             doc.node_for_part(part).expect("part has a node")
         };
         selection.clear();

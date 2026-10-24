@@ -1,14 +1,15 @@
 use anyhow::{Context, Result};
-use duck_engine_scene::common::Matrix4;
+use duck_engine_scene::common::{decompose_matrix, Matrix4, Transform, Vector3};
 
-use crate::document::{carry_frame, place, Document, PartId};
+use crate::document::{place, Document, PartId};
 
 /// Copy each of `sources` once per entry in `placements`, transforming each
 /// copy's B-Rep by its placement. Results are source-major: every placement of
 /// the first source, then of the second, and so on.
 ///
 /// Copies are added under the next free name in their source's series and carry
-/// the source's tessellation options, its frame moved by the placement.
+/// the source's tessellation options. Its frame goes where the placement takes
+/// the source's.
 ///
 /// Opens its own undo scope, which also covers the whole run when a caller
 /// wants a different label: nested scopes merge and the outermost label wins.
@@ -22,15 +23,16 @@ pub fn duplicate_parts(
     for &source in sources {
         for placement in placements {
             // Read the source out before `add_part` takes the document mutably.
-            let (shape, mut options) = {
+            let (shape, frame, options) = {
                 let part = doc.get_part(source).context("Duplicate: source part not found")?;
-                (part.shape().deep_copy(), part.options().clone())
+                (part.shape().deep_copy(), part.frame(), part.options().clone())
             };
             let name = doc.duplicate_name(source);
             let shape = place(&shape, placement);
-            options.frame = carry_frame(options.frame, placement);
+            let placed = decompose_matrix(&(placement * frame.to_matrix()));
+            let frame = Transform { scale: Vector3::new(1.0, 1.0, 1.0), ..placed };
             let id = doc
-                .add_part(name, shape, &options)
+                .add_part(name, shape, frame, &options)
                 .context("Failed to tessellate the duplicated part")?;
             copies.push(id);
         }
@@ -53,7 +55,7 @@ mod tests {
     fn doc_with_box() -> (Document, PartId) {
         let mut doc = Document::new(Scene::default());
         let part = doc
-            .add_part("Box-001", Shape::cube_centered(1.0), &CadTessellationOptions::default())
+            .add_part("Box-001", Shape::cube_centered(1.0), Transform::IDENTITY, &CadTessellationOptions::default())
             .expect("tessellates");
         (doc, part)
     }
@@ -126,8 +128,8 @@ mod tests {
             ..Transform::from_rotation(Matrix3::from_angle_z(Deg(30.0)).into())
         };
         let mut doc = Document::new(Scene::default());
-        let options = CadTessellationOptions { frame: turned, ..CadTessellationOptions::default() };
-        let source = doc.add_part("Box-001", Shape::cube_centered(1.0), &options).expect("tessellates");
+        let options = CadTessellationOptions::default();
+        let source = doc.add_part("Box-001", Shape::cube_centered(1.0), turned, &options).expect("tessellates");
 
         let placement = Matrix4::from_translation(Vector3::new(0.0, 2.0, 0.0)) * Matrix4::from_angle_x(Deg(90.0));
         let copies = duplicate_parts(&mut doc, &[source], &[placement]).expect("copies");
@@ -140,7 +142,7 @@ mod tests {
     fn every_source_is_copied_once_per_placement() {
         let (mut doc, first) = doc_with_box();
         let second = doc
-            .add_part("Box-002", Shape::cube_centered(1.0), &CadTessellationOptions::default())
+            .add_part("Box-002", Shape::cube_centered(1.0), Transform::IDENTITY, &CadTessellationOptions::default())
             .expect("tessellates");
         let placements = [
             Matrix4::from_translation(Vector3::new(2.0, 0.0, 0.0)),

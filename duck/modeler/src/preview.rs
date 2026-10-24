@@ -109,7 +109,16 @@ impl PreviewSession {
         let scene = self.scene();
         let (face, line) = self.materials(&scene, shape, options);
         let node =
-            tessellate_into_with_materials(&ShapeElements::new(shape), &scene, options, &face, &line, None, Some(name))
+            tessellate_into_with_materials(
+                &ShapeElements::new(shape),
+                &scene,
+                options,
+                &face,
+                &line,
+                Transform::IDENTITY,
+                None,
+                Some(name),
+            )
                 .ok()?
                 .id();
         self.previews.push(node);
@@ -133,7 +142,16 @@ impl PreviewSession {
         let scene = self.scene();
         let (face, line) = self.materials(&scene, shape, options);
         let node =
-            tessellate_into_with_materials(&ShapeElements::new(shape), &scene, options, &face, &line, None, Some(name))
+            tessellate_into_with_materials(
+                &ShapeElements::new(shape),
+                &scene,
+                options,
+                &face,
+                &line,
+                Transform::IDENTITY,
+                None,
+                Some(name),
+            )
                 .ok()?
                 .id();
 
@@ -357,6 +375,7 @@ mod tests {
             &ShapeElements::new(&unit_shape()),
             &scene,
             &CadTessellationOptions::default(),
+            Transform::IDENTITY,
             None,
             Some("src"),
         )

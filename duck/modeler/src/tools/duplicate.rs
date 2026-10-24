@@ -4,8 +4,8 @@ use duck_engine_viewer::{
     common::{decompose_matrix, Matrix4, SquareMatrix, Transform},
     event::{Event, EventContext},
     operator::{
-        NodeTransformTarget, Operator, SelectionMode, TransformDriver, TransformFrame,
-        TransformInteraction, TransformMode, TransformTarget,
+        ConstraintSpace, NodeTransformTarget, Operator, SelectionMode, TransformDriver,
+        TransformFrame, TransformInteraction, TransformMode, TransformTarget,
     },
     selection::SelectionItem,
 };
@@ -82,8 +82,6 @@ impl ModelingTool for DuplicateTool {
         if gesture == Some(Gesture::Frame) {
             self.driver.target_mut().sync_sources(ctx);
         }
-        let orientation = self.driver.target().workspace.construction.borrow().transform_orientation;
-        self.driver.set_orientation(orientation);
 
         // A drag takes its own confirm and cancel.
         if self.driver.dispatch(event, ctx) {
@@ -104,6 +102,8 @@ impl ModelingTool for DuplicateTool {
 
     fn activate(&mut self) {
         self.driver.set_gizmo_enabled(true);
+        // Carry the copies along their sources' own axes.
+        self.driver.set_orientation(ConstraintSpace::Local);
         self.driver.target_mut().pending_spawn = true;
     }
 

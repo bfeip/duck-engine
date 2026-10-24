@@ -171,13 +171,6 @@ impl Plane {
         Quaternion::from(self.frame())
     }
 
-    /// The [`basis`](Self::basis) frame `(u, normal, v)` as a rotation: local +Y
-    /// maps to the normal, local X and Z to `u` and `v`. The Y-up counterpart of
-    /// [`rotation`](Self::rotation), and the identity for [`xz`](Self::xz).
-    pub fn basis_rotation(&self) -> Quaternion {
-        let (u, v) = self.basis();
-        Quaternion::from(Matrix3::from_cols(u, self.normal.normalize(), v))
-    }
 }
 
 #[cfg(test)]
@@ -204,19 +197,6 @@ mod tests {
             // Local +Z maps onto the plane normal.
             assert!((plane.rotation() * Vector3::unit_z() - plane.normal).magnitude() < 1e-5);
         }
-    }
-
-    #[test]
-    fn basis_rotation_maps_y_to_normal() {
-        let identity = Plane::xz().basis_rotation();
-        assert!((identity - Quaternion::new(1.0, 0.0, 0.0, 0.0)).magnitude() < 1e-5);
-
-        let plane = Plane::from_point(Vector3::new(1.0, 2.0, 3.0), Point3::new(0.0, 0.0, 0.0));
-        let (u, v) = plane.basis();
-        let rotation = plane.basis_rotation();
-        assert!((rotation * Vector3::unit_y() - plane.normal).magnitude() < 1e-5);
-        assert!((rotation * Vector3::unit_x() - u).magnitude() < 1e-5);
-        assert!((rotation * Vector3::unit_z() - v).magnitude() < 1e-5);
     }
 
     #[test]

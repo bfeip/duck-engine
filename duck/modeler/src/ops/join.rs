@@ -153,15 +153,16 @@ pub fn commit_join(doc: &mut Document, join: &Join) -> Result<Vec<PartId>> {
     for group in &join.groups {
         let first = group.sources.first().and_then(|&node| doc.part_for_node(node));
         let source = first.context("A joined group has no source part")?;
-        let (name, options) = {
+        let (name, frame, options) = {
             let part = doc.get_part(source).context("Join source part not found")?;
             let name = if named.contains(&source) { doc.duplicate_name(source) } else { part.name.clone() };
-            (name, part.options().clone())
+            (name, part.frame(), part.options().clone())
         };
         named.push(source);
         // A new part rather than a reshape: a sheet's node carries sketch
         // materials, which retessellating in place would keep.
-        joined.push(doc.add_part(name, group.shape.clone(), &options).context("Failed to tessellate the joined part")?);
+        let shape = group.shape.clone();
+        joined.push(doc.add_part(name, shape, frame, &options).context("Failed to tessellate the joined part")?);
     }
     for part in consumed {
         doc.remove_part(part);
@@ -188,15 +189,16 @@ pub fn unjoin_parts(doc: &mut Document, nodes: &[NodeId]) -> Result<Vec<PartId>>
     let mut doc = doc.undo_scope("Unjoin");
     let mut faces = Vec::new();
     for source in sources {
-        let (pieces, options) = {
+        let (pieces, frame, options) = {
             let part = doc.get_part(source).context("Unjoin source part not found")?;
             // Each face copied on its own, so no two share an edge.
             let pieces: Vec<Shape> =
                 part.elements().faces().iter().map(|face| Shape::from(face).deep_copy()).collect();
-            (pieces, part.options().clone())
+            (pieces, part.frame(), part.options().clone())
         };
         for piece in pieces {
-            faces.push(doc.add_numbered_part("Face", piece, &options).context("Failed to tessellate a face")?);
+            let face = doc.add_numbered_part("Face", piece, frame, &options).context("Failed to tessellate a face")?;
+            faces.push(face);
         }
         doc.remove_part(source);
     }
@@ -208,6 +210,7 @@ mod tests {
     use super::*;
 
     use duck_engine_scene::cad::CadTessellationOptions;
+    use duck_engine_scene::common::Transform;
     use glam::DVec3;
 
     use crate::document::PartKind;
@@ -237,7 +240,7 @@ mod tests {
 
     /// Adds `shape` as a part named `name`, returning its node.
     fn add(doc: &mut Document, name: &str, shape: Shape) -> NodeId {
-        let part = doc.add_part(name, shape, &CadTessellationOptions::default()).expect("shape tessellates");
+        let part = doc.add_part(name, shape, Transform::IDENTITY, &CadTessellationOptions::default()).expect("shape tessellates");
         doc.node_for_part(part).expect("part has a node")
     }
 

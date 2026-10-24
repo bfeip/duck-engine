@@ -164,8 +164,7 @@ impl Workspace {
     /// Adds `shape` as a new part numbered in `base`'s series, tessellated for
     /// committed geometry, with `frame` as its own axes.
     pub fn add_numbered_part(&self, base: &str, shape: Shape, frame: Transform) -> anyhow::Result<PartId> {
-        let options = CadTessellationOptions { frame, ..self.geometry_options() };
-        self.document.lock().unwrap().add_numbered_part(base, shape, &options)
+        self.document.lock().unwrap().add_numbered_part(base, shape, frame, &self.geometry_options())
     }
 
     /// The snapped world point under `cursor`, ignoring the `exclude` nodes,

@@ -7,6 +7,8 @@ use duck_engine_viewer::scene::resource::{
 };
 use duck_engine_viewer::scene::Scene;
 
+use crate::construction::upright;
+
 const GRID_NORMAL: [f32; 3] = [0.0, 1.0, 0.0];
 
 /// Alpha applied to the axis colors so the lines sit into the grid rather than
@@ -179,12 +181,11 @@ fn build_axis_mesh(direction: [f32; 3], length: Real) -> Mesh {
 /// construction plane, so the very same meshes can be reused for any plane
 /// orientation instead of rebuilding them per plane.
 ///
-/// The rotation's columns are the plane's frame `(u, normal, v)`: `normal` is the
-/// middle column because the grid's local up axis is +Y, and `u`/`v` are the
-/// in-plane axes that the grid's local X and Z map onto (see [`Plane::basis`]).
+/// The rotation is [`upright`]: the grid's local up axis, +Y, stands on the
+/// normal, and its local X and Z lie along the plane's in-plane basis.
 /// The translation is the plane point nearest the world origin, keeping the grid
 /// centred near the origin.
 fn plane_to_transform(plane: &Plane) -> Transform {
     let position = plane.project_point(Point3::origin());
-    Transform { position, ..Transform::from_rotation(plane.basis_rotation()) }
+    Transform { position, ..Transform::from_rotation(upright(plane)) }
 }

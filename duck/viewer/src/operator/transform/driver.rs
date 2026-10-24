@@ -129,7 +129,12 @@ impl<T: TransformTarget> TransformDriver<T> {
     }
 
     /// The space the gizmo is drawn and its handles constrain in, and the first
-    /// an axis or plane key picks. Takes effect from the next idle update.
+    /// an axis or plane key picks.
+    pub fn orientation(&self) -> ConstraintSpace {
+        self.interaction.orientation()
+    }
+
+    /// Sets [`orientation`](Self::orientation), from the next idle update.
     pub fn set_orientation(&mut self, orientation: ConstraintSpace) {
         self.interaction.set_orientation(orientation);
     }

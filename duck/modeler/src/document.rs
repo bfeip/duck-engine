@@ -17,7 +17,7 @@ use duck_engine_scene::common::{
 use glam::DVec3;
 use opencascade::primitives::{Shape, ShapeElements, ShapeType, Wire};
 
-use crate::history::{Delta, History, PartGeometry, PartSnapshot};
+use crate::history::{Delta, History, PartSnapshot};
 use crate::materials::{Finish, LibraryMaterial, MaterialLibrary, PRESETS};
 
 pub type PartId = Id;
@@ -136,13 +136,6 @@ pub fn place(shape: &Shape, placement: &Matrix4) -> Shape {
     }
 }
 
-/// `frame` carried along by `transform`: where it lands, any scale left out, as
-/// a frame is rigid.
-pub fn carry_frame(frame: Transform, transform: &Matrix4) -> Transform {
-    let carried = decompose_matrix(&(transform * frame.to_matrix()));
-    Transform { scale: Vector3::new(1.0, 1.0, 1.0), ..carried }
-}
-
 /// An engine point as an OCCT point.
 pub fn point3_to_dvec3(p: Point3) -> DVec3 {
     DVec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z))
@@ -185,6 +178,10 @@ pub struct CadPart {
     pub id: PartId,
     pub name: String,
     elements: ShapeElements,
+    /// The part's own rigid frame in the world: the axes it is modeled along,
+    /// which moving it carries along. Its mesh is expressed in it and its scene
+    /// node sits at it.
+    frame: Transform,
     /// Tessellation options the part was last (re)tessellated with, kept for
     /// history capture — `remove_part` receives none from its caller.
     options: CadTessellationOptions,
@@ -207,15 +204,9 @@ impl CadPart {
         &self.options
     }
 
-    /// The part's own rigid frame, in world space: the axes it is modeled
-    /// along, which transforms carry with it. Its scene node sits here.
+    /// The part's own rigid frame in the world: the axes it is modeled along.
     pub fn frame(&self) -> Transform {
-        self.options.frame
-    }
-
-    /// The part's shape and frame.
-    fn geometry(&self) -> PartGeometry {
-        PartGeometry { shape: self.shape().clone(), frame: self.frame() }
+        self.frame
     }
 
     /// Classify the part by its top-level B-Rep shape type.
@@ -300,8 +291,9 @@ impl Document {
         self.generation
     }
 
-    /// Tessellate `shape`, add the resulting node to the scene, store the CAD part,
-    /// and record the mapping — all atomically. If tessellation fails, nothing is modified.
+    /// Tessellate `shape` in `frame`, add the resulting node to the scene, store
+    /// the CAD part, and record the mapping — all atomically. If tessellation
+    /// fails, nothing is modified.
     ///
     /// A face template that is a library material is shared rather than
     /// copied, so a copy of a part keeps its source's material.
@@ -309,13 +301,15 @@ impl Document {
         &mut self,
         name: impl Into<String>,
         shape: Shape,
+        frame: Transform,
         options: &CadTessellationOptions,
     ) -> Result<PartId> {
         let name = name.into();
         let elements = ShapeElements::new(&shape);
-        let node = self.tessellate(&elements, options, &name).context("Failed to tessellate part")?.id();
+        let node =
+            self.tessellate(&elements, options, frame, &name).context("Failed to tessellate part")?.id();
         let id = PartId::new();
-        self.parts.push(CadPart { id, name, elements, options: options.clone() });
+        self.parts.push(CadPart { id, name, elements, frame, options: options.clone() });
         self.part_to_node.insert(id, node);
         self.node_to_part.insert(node, id);
         self.generation += 1;
@@ -326,11 +320,12 @@ impl Document {
         Ok(id)
     }
 
-    /// Tessellates `elements` as a new top-level node named `name`.
+    /// Tessellates `elements` in `frame` as a new top-level node named `name`.
     fn tessellate(
         &self,
         elements: &ShapeElements,
         options: &CadTessellationOptions,
+        frame: Transform,
         name: &str,
     ) -> Result<NodeHandle> {
         let (face, line) = options.materials_for(elements.shape());
@@ -343,11 +338,12 @@ impl Document {
                     options,
                     material.handle(),
                     &line,
+                    frame,
                     None,
                     Some(name),
                 )
             }
-            None => tessellate_into(elements, &self.scene, options, None, Some(name)),
+            None => tessellate_into(elements, &self.scene, options, frame, None, Some(name)),
         }
     }
 
@@ -356,10 +352,11 @@ impl Document {
         &mut self,
         base: &str,
         shape: Shape,
+        frame: Transform,
         options: &CadTessellationOptions,
     ) -> Result<PartId> {
         let name = self.numbered_name(base);
-        self.add_part(name, shape, options)
+        self.add_part(name, shape, frame, options)
     }
 
     /// The next free numbered name for `base` — `Box-001`, `Box-002`, … — one
@@ -461,31 +458,25 @@ impl Document {
     }
 
     /// Bake a world-space transform into the part's CAD geometry, as one undo
-    /// step. The part's frame follows the transform's rigid part; any scale
-    /// stays in the shape.
+    /// step. The part is untouched on error.
     ///
-    /// A rigid transform only moves the part's node, as its frame-local mesh is
-    /// unchanged; anything else re-tessellates it in place (preserving its
-    /// `NodeId`). The part is untouched on error.
+    /// A rigid transform moves the part, frame and all, so its mesh is kept and
+    /// only its node moves. Anything else reshapes it in its frame.
     pub fn bake_transform(&mut self, part: PartId, transform: Matrix4) -> Result<()> {
-        let (before, options) = {
+        let (shape, frame) = {
             let cad_part = self.get_part(part).context("bake_transform: part not found")?;
-            (cad_part.geometry(), cad_part.options.clone())
+            (place(cad_part.shape(), &transform), cad_part.frame)
         };
-        let after = PartGeometry {
-            shape: place(&before.shape, &transform),
-            frame: carry_frame(before.frame, &transform),
-        };
-        let scale = decompose_matrix(&(transform * before.frame.to_matrix())).scale;
-        let rigid = [scale.x, scale.y, scale.z].iter().all(|s| (s - 1.0).abs() < EPSILON);
+        let moved = decompose_matrix(&(transform * frame.to_matrix()));
+        let rigid = [moved.scale.x, moved.scale.y, moved.scale.z]
+            .iter()
+            .all(|s| (s - 1.0).abs() < EPSILON);
         if rigid {
-            self.relocate(part, &after)?;
-            self.history.record("Transform", Delta::Moved { part, before, after });
+            let frame = Transform { scale: Vector3::new(1.0, 1.0, 1.0), ..moved };
+            self.move_part(part, shape, frame, "Transform")
         } else {
-            self.reshape(part, &after, &options)?;
-            self.history.record("Transform", Delta::Reshaped { part, before, after, options });
+            self.reshape_part(part, shape, "Transform")
         }
-        Ok(())
     }
 
     /// Transform the given faces (by tessellation index) of a part's B-Rep and
@@ -521,11 +512,24 @@ impl Document {
     pub fn reshape_part(&mut self, part: PartId, shape: Shape, label: &str) -> Result<()> {
         let (before, options) = {
             let cad_part = self.get_part(part).context("reshape_part: part not found")?;
-            (cad_part.geometry(), cad_part.options.clone())
+            (cad_part.shape().clone(), cad_part.options.clone())
         };
-        let after = PartGeometry { shape, frame: before.frame };
-        self.reshape(part, &after, &options)?;
-        self.history.record(label, Delta::Reshaped { part, before, after, options });
+        self.reshape(part, &shape, &options)?;
+        self.history.record(label, Delta::Reshaped { part, before, after: shape, options });
+        Ok(())
+    }
+
+    /// Replace a part's shape with `shape`, the same shape rigidly moved, and its
+    /// frame with `frame`, the frame moved alike, as one undo step labelled
+    /// `label`.
+    fn move_part(&mut self, part: PartId, shape: Shape, frame: Transform, label: &str) -> Result<()> {
+        let (before, before_frame) = {
+            let cad_part = self.get_part(part).context("move_part: part not found")?;
+            (cad_part.shape().clone(), cad_part.frame)
+        };
+        self.relocate(part, &shape, frame)?;
+        let delta = Delta::Moved { part, before, after: shape, before_frame, after_frame: frame };
+        self.history.record(label, delta);
         Ok(())
     }
 
@@ -533,7 +537,7 @@ impl Document {
     /// step labelled `label`. A new part is named in `base`'s series and
     /// tessellated with `options`; a reshaped source keeps its own, and a
     /// replaced body passes its face material on. Whatever part holds the
-    /// result keeps the source's frame.
+    /// result has the source's frame.
     pub fn commit_result(
         &mut self,
         source: PartId,
@@ -554,22 +558,22 @@ impl Document {
             // A new part rather than a reshape: a sheet's node carries sketch
             // materials, which retessellating in place would keep.
             SourceFate::Replace => {
-                let name = source_part.name.clone();
+                let (name, frame) = (source_part.name.clone(), source_part.frame);
                 let mut options = options.clone();
-                options.frame = source_part.frame();
                 if is_body(source_part.shape()) {
                     options.face_material = source_part.options.face_material.clone();
                 }
                 let mut doc = self.undo_scope(label);
                 // Tessellates atomically — if this fails, nothing is changed.
-                doc.add_part(name, result, &options).context("Failed to tessellate the result")?;
+                doc.add_part(name, result, frame, &options).context("Failed to tessellate the result")?;
                 doc.remove_part(source);
                 Ok(())
             }
             SourceFate::Keep => {
-                let options = CadTessellationOptions { frame: source_part.frame(), ..options.clone() };
+                let frame = source_part.frame;
                 let mut doc = self.undo_scope(label);
-                doc.add_numbered_part(base, result, &options).context("Failed to tessellate the result")?;
+                doc.add_numbered_part(base, result, frame, options)
+                    .context("Failed to tessellate the result")?;
                 Ok(())
             }
         }
@@ -598,7 +602,9 @@ impl Document {
                 Delta::Reshaped { part, before, options, .. } => {
                     self.reshape(*part, before, options)
                 }
-                Delta::Moved { part, before, .. } => self.relocate(*part, before),
+                Delta::Moved { part, before, before_frame, .. } => {
+                    self.relocate(*part, before, *before_frame)
+                }
                 Delta::Renamed { part, before, .. } => {
                     self.set_part_name(*part, before);
                     Ok(())
@@ -642,7 +648,9 @@ impl Document {
                 Delta::Reshaped { part, after, options, .. } => {
                     self.reshape(*part, after, options)
                 }
-                Delta::Moved { part, after, .. } => self.relocate(*part, after),
+                Delta::Moved { part, after, after_frame, .. } => {
+                    self.relocate(*part, after, *after_frame)
+                }
                 Delta::Renamed { part, after, .. } => {
                     self.set_part_name(*part, after);
                     Ok(())
@@ -693,6 +701,7 @@ impl Document {
             node,
             name: part.name.clone(),
             shape: part.shape().clone(),
+            frame: part.frame,
             options: part.options.clone(),
         })
     }
@@ -711,6 +720,7 @@ impl Document {
             id: snapshot.part,
             name: snapshot.name.clone(),
             elements: ShapeElements::new(&snapshot.shape),
+            frame: snapshot.frame,
             options: snapshot.options.clone(),
         });
         self.part_to_node.insert(snapshot.part, node);
@@ -722,18 +732,18 @@ impl Document {
         Ok(())
     }
 
-    /// Swaps a part's geometry to a captured snapshot and re-tessellates in
-    /// place in its frame, preserving its node. `options` apply frame aside.
+    /// Swaps a part's shape to a captured snapshot and re-tessellates in place
+    /// in its frame, preserving its node.
     fn reshape(
         &mut self,
         part: PartId,
-        geometry: &PartGeometry,
+        shape: &Shape,
         options: &CadTessellationOptions,
     ) -> Result<()> {
         let node = self.node_for_part(part).context("reshape: no node for part")?;
-        let options = CadTessellationOptions { frame: geometry.frame, ..options.clone() };
-        let elements = ShapeElements::new(&geometry.shape);
-        retessellate_node(&elements, &self.scene, &options, node)?;
+        let frame = self.get_part(part).context("reshape: part not found")?.frame;
+        let elements = ShapeElements::new(shape);
+        retessellate_node(&elements, &self.scene, options, frame, node)?;
 
         let cad_part = self.get_part_mut(part).context("reshape: part not found")?;
         cad_part.elements = elements;
@@ -744,14 +754,15 @@ impl Document {
         Ok(())
     }
 
-    /// Swaps a part's geometry to one rigidly moved from it, and its node to the
-    /// new frame. The frame-local mesh stays as it is.
-    fn relocate(&mut self, part: PartId, geometry: &PartGeometry) -> Result<()> {
+    /// Swaps a part's shape and frame to `shape` and `frame`, the two moved
+    /// alike, and its node to the frame. The mesh, expressed in the frame,
+    /// stays as it is.
+    fn relocate(&mut self, part: PartId, shape: &Shape, frame: Transform) -> Result<()> {
         let node = self.node_for_part(part).context("relocate: no node for part")?;
         let cad_part = self.get_part_mut(part).context("relocate: part not found")?;
-        cad_part.elements = ShapeElements::new(&geometry.shape);
-        cad_part.options.frame = geometry.frame;
-        self.scene.set_node_transform(node, geometry.frame);
+        cad_part.elements = ShapeElements::new(shape);
+        cad_part.frame = frame;
+        self.scene.set_node_transform(node, frame);
         self.generation += 1;
         Ok(())
     }
@@ -770,7 +781,9 @@ impl Document {
             let id = part.id;
             let Some(node) = self.node_for_part(id) else { continue };
             let part = &self.parts[index];
-            if let Err(e) = retessellate_node(&part.elements, &self.scene, &part.options, node) {
+            let retessellated =
+                retessellate_node(&part.elements, &self.scene, &part.options, part.frame, node);
+            if let Err(e) = retessellated {
                 log::warn!("Failed to re-tessellate {}: {e:#}", part.name);
             }
         }
@@ -1043,7 +1056,7 @@ mod tests {
         let scene = Scene::default();
         let mut doc = Document::new(scene);
         let part = doc
-            .add_part("box", opencascade::primitives::Shape::cube(2.0), &CadTessellationOptions::default())
+            .add_part("box", opencascade::primitives::Shape::cube(2.0), Transform::IDENTITY, &CadTessellationOptions::default())
             .expect("box tessellates");
         let node = doc.node_for_part(part).expect("part has a node");
         (doc, part, node)
@@ -1162,6 +1175,7 @@ mod tests {
             .add_part(
                 "sphere",
                 opencascade::primitives::Shape::sphere(1.0).at(glam::dvec3(2.0, 2.0, 2.0)).build(),
+                Transform::IDENTITY,
                 &CadTessellationOptions::default(),
             )
             .expect("sphere tessellates");
@@ -1274,7 +1288,8 @@ mod tests {
     }
 
     /// A cylinder laid on its side still lengthens along its own axis: the
-    /// turn carries its frame, and a scale along the frame's Y stretches it.
+    /// turn carries its frame, and a scale along the frame's Y stretches it,
+    /// leaving the frame be.
     #[test]
     fn a_turned_part_scales_along_its_own_axis() {
         use duck_engine_scene::common::SquareMatrix;
@@ -1290,14 +1305,14 @@ mod tests {
             let instance = scene.get_node(node).unwrap().instance_handle().unwrap().id();
             scene.get_instance(instance).unwrap().mesh()
         };
-        let upright_mesh = mesh(&doc);
+        let standing_mesh = mesh(&doc);
 
         // A quarter turn about Z lays the axis along -X; only the node moves.
         let turn = Matrix4::from(Quaternion::from_angle_z(Deg(90.0)));
         doc.bake_transform(part, turn).expect("turn bakes");
         assert_frame(frame(&doc), &turn);
         assert_frame(node_transform(&doc), &turn);
-        assert_eq!(mesh(&doc), upright_mesh, "a rigid move keeps the mesh");
+        assert_eq!(mesh(&doc), standing_mesh, "a rigid move keeps the mesh");
         assert!((extents(&doc).x - 4.0).abs() < TOLERANCE);
 
         // Double it along its own Y about its centre.
@@ -1311,10 +1326,8 @@ mod tests {
         let stretched = extents(&doc);
         assert!((stretched.x - 8.0).abs() < TOLERANCE, "lengthened along its axis: {stretched:?}");
         assert!((stretched.y - 2.0).abs() < TOLERANCE && (stretched.z - 2.0).abs() < TOLERANCE);
-        // The base, 2 from the centre along the axis, moved out to 4.
-        let placed = Matrix4::from_translation(Vector3::new(2.0, 0.0, 0.0)) * turn;
-        assert_frame(frame(&doc), &placed);
-        assert_frame(node_transform(&doc), &placed);
+        assert_frame(frame(&doc), &turn);
+        assert_frame(node_transform(&doc), &turn);
 
         doc.undo().expect("undo stretch");
         assert_frame(frame(&doc), &turn);
@@ -1326,7 +1339,8 @@ mod tests {
 
         doc.redo().expect("redo turn");
         doc.redo().expect("redo stretch");
-        assert_frame(frame(&doc), &placed);
+        assert_frame(frame(&doc), &turn);
+        assert_frame(node_transform(&doc), &turn);
         assert!((extents(&doc).x - 8.0).abs() < TOLERANCE);
     }
 
@@ -1382,7 +1396,7 @@ mod tests {
             ..Default::default()
         };
         let mut doc = Document::new(Scene::default());
-        let part = doc.add_part("imported", Shape::cube(2.0), &options).expect("cube tessellates");
+        let part = doc.add_part("imported", Shape::cube(2.0), Transform::IDENTITY, &options).expect("cube tessellates");
         let up = Matrix4::from_translation(Vector3::new(0.0, 1.0, 0.0));
 
         doc.bake_transform(part, up).expect("bake succeeds");
@@ -1437,7 +1451,7 @@ mod tests {
             ..Default::default()
         };
         let mut doc = Document::new(Scene::default());
-        let part = doc.add_part("imported", Shape::cube(2.0), &options).expect("cube tessellates");
+        let part = doc.add_part("imported", Shape::cube(2.0), Transform::IDENTITY, &options).expect("cube tessellates");
         let node = doc.node_for_part(part);
 
         doc.commit_result(part, pad(), SourceFate::Fuse, "Pad", "Pad", &CadTessellationOptions::default())
@@ -1460,7 +1474,7 @@ mod tests {
     #[test]
     fn a_replacing_result_takes_over_its_sources_name() {
         let mut doc = Document::new(Scene::default());
-        let sketch = doc.add_part("sketch", region(), &CadTessellationOptions::default()).expect("sketch tessellates");
+        let sketch = doc.add_part("sketch", region(), Transform::IDENTITY, &CadTessellationOptions::default()).expect("sketch tessellates");
 
         doc.commit_result(sketch, Shape::cube(1.0), SourceFate::Replace, "Thicken", "Thickened", &CadTessellationOptions::default())
             .expect("the result replaces the sketch");
@@ -1510,6 +1524,7 @@ mod tests {
             doc.add_part(
                 "sphere",
                 opencascade::primitives::Shape::sphere(1.0).build(),
+                Transform::IDENTITY,
                 &CadTessellationOptions::default(),
             )
             .expect("sphere tessellates");
@@ -1535,6 +1550,7 @@ mod tests {
         doc.add_part(
             "sphere",
             opencascade::primitives::Shape::sphere(1.0).build(),
+            Transform::IDENTITY,
             &CadTessellationOptions::default(),
         )
         .expect("sphere tessellates");
@@ -1555,7 +1571,7 @@ mod tests {
         let opts = CadTessellationOptions::default();
 
         assert_eq!(doc.numbered_name("Box"), "Box-001");
-        doc.add_numbered_part("Box", opencascade::primitives::Shape::cube(2.0), &opts)
+        doc.add_numbered_part("Box", opencascade::primitives::Shape::cube(2.0), Transform::IDENTITY, &opts)
             .expect("box tessellates");
         assert_eq!(doc.numbered_name("Box"), "Box-002");
 
@@ -1563,7 +1579,7 @@ mod tests {
         assert_eq!(doc.numbered_name("Sphere"), "Sphere-001");
 
         // Gaps are not filled: the next name is one past the highest in use.
-        doc.add_part("Box-007", opencascade::primitives::Shape::cube(2.0), &opts)
+        doc.add_part("Box-007", opencascade::primitives::Shape::cube(2.0), Transform::IDENTITY, &opts)
             .expect("box tessellates");
         assert_eq!(doc.numbered_name("Box"), "Box-008");
     }
@@ -1575,15 +1591,15 @@ mod tests {
         let opts = CadTessellationOptions::default();
         let cube = || opencascade::primitives::Shape::cube(2.0);
 
-        let numbered = doc.add_part("Box-001", cube(), &opts).expect("tessellates");
+        let numbered = doc.add_part("Box-001", cube(), Transform::IDENTITY, &opts).expect("tessellates");
         assert_eq!(doc.duplicate_name(numbered), "Box-002");
 
         // An unnumbered name starts its own series rather than becoming Bracket-Bracket.
-        let plain = doc.add_part("Bracket", cube(), &opts).expect("tessellates");
+        let plain = doc.add_part("Bracket", cube(), Transform::IDENTITY, &opts).expect("tessellates");
         assert_eq!(doc.duplicate_name(plain), "Bracket-001");
 
         // A non-numeric suffix is part of the name, not a counter.
-        let lettered = doc.add_part("Part-A", cube(), &opts).expect("tessellates");
+        let lettered = doc.add_part("Part-A", cube(), Transform::IDENTITY, &opts).expect("tessellates");
         assert_eq!(doc.duplicate_name(lettered), "Part-A-001");
     }
 
@@ -1759,7 +1775,7 @@ mod tests {
     #[test]
     fn only_bodies_take_a_material() {
         let (mut doc, parts) = library_doc(1);
-        let sketch = doc.add_part("sketch", region(), &CadTessellationOptions::default()).unwrap();
+        let sketch = doc.add_part("sketch", region(), Transform::IDENTITY, &CadTessellationOptions::default()).unwrap();
         let steel = library_material(&doc, "Steel");
 
         doc.assign_material(&[parts[0], sketch], steel);
@@ -1813,7 +1829,7 @@ mod tests {
             face_material: FaceMaterial::new().with_base_color_factor(RED),
             ..Default::default()
         };
-        let imported = doc.add_part("imported", Shape::cube(2.0), &options).unwrap();
+        let imported = doc.add_part("imported", Shape::cube(2.0), Transform::IDENTITY, &options).unwrap();
         doc.commit_result(imported, Shape::cube(1.0), SourceFate::Replace, "Boolean", "Boolean", &CadTessellationOptions::default())
             .expect("the result replaces the imported box");
         let result = doc.parts().find(|part| part.name == "imported").unwrap().id;

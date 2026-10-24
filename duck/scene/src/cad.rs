@@ -93,10 +93,6 @@ pub struct CadTessellationOptions {
     /// Whether to draw seam edges instead of suppressing them. A debugging aid;
     /// degenerate edges stay suppressed either way.
     pub show_seam_edges: bool,
-    /// The rigid frame the mesh is expressed in: vertices are the scaled shape
-    /// seen from this frame, and the node is placed at it. In scene units, after
-    /// [`scale_factor`](Self::scale_factor).
-    pub frame: Transform,
 }
 
 impl Default for CadTessellationOptions {
@@ -112,7 +108,6 @@ impl Default for CadTessellationOptions {
             include_edges: true,
             include_points: true,
             show_seam_edges: false,
-            frame: Transform::IDENTITY,
         }
     }
 }
@@ -130,30 +125,29 @@ impl CadTessellationOptions {
         }
     }
 
-    /// Maps the shape's coordinates to the mesh's: scaled by
-    /// [`scale_factor`](Self::scale_factor), then seen from
-    /// [`frame`](Self::frame).
-    pub fn mesh_from_shape(&self) -> Matrix4 {
-        let frame_inverse = self.frame.to_matrix().invert().unwrap_or(Matrix4::identity());
-        frame_inverse * Matrix4::from_scale(self.scale_factor as Real)
-    }
 }
 
 /// Tessellates an OpenCASCADE B-Rep shape, given as its [`ShapeElements`], into a
 /// [`Mesh`] containing face triangles and, optionally, wireframe edge line segments
 /// and B-Rep vertices.
 ///
-/// The mesh topology holds one range per element, so a picked sub-geometry index
-/// is the element's index in `elements`. This is the shared tessellation kernel
-/// used by both the XCAF import path and the interactive authoring path
-/// ([`tessellate_into`]).
-pub fn tessellate_occ_shape(elements: &ShapeElements, options: &CadTessellationOptions) -> Result<Mesh> {
+/// The mesh is expressed in the rigid `frame`, in scene units. Its topology
+/// holds one range per element, so a picked sub-geometry index is the element's
+/// index in `elements`. This is the shared tessellation kernel used by both the
+/// XCAF import path and the interactive authoring path ([`tessellate_into`]).
+pub fn tessellate_occ_shape(
+    elements: &ShapeElements,
+    options: &CadTessellationOptions,
+    frame: Transform,
+) -> Result<Mesh> {
     let shape = elements.shape();
-    let mesh_from_shape = options.mesh_from_shape();
+    // Positions are the scaled shape seen from the frame.
+    let frame_inverse = frame.to_matrix().invert().unwrap_or(Matrix4::identity());
+    let to_mesh = frame_inverse * Matrix4::from_scale(options.scale_factor as Real);
     let position = |[x, y, z]: [f64; 3]| {
-        point3_to_array(transform_point(&mesh_from_shape, Point3::new(x as Real, y as Real, z as Real)))
+        point3_to_array(transform_point(&to_mesh, Point3::new(x as Real, y as Real, z as Real)))
     };
-    let unrotate = options.frame.rotation.conjugate();
+    let unrotate = frame.rotation.conjugate();
     let normal = |[x, y, z]: [f64; 3]| {
         vec3_to_array(unrotate.rotate_vector(Vector3::new(x as Real, y as Real, z as Real)))
     };
@@ -270,8 +264,9 @@ fn push_polyline(positions: &[[f32; 3]], vertices: &mut Vec<Vertex>, indices: &m
     SubMeshRange { start, count: (indices.len() / 2) as u32 - start }
 }
 
-/// Tessellates a shape, given as its [`ShapeElements`], and wires it into `scene`
-/// as a mesh + material + instance + node.
+/// Tessellates a shape, given as its [`ShapeElements`], in the rigid `frame` and
+/// wires it into `scene` as a mesh + material + instance + node placed at the
+/// frame.
 ///
 /// The material templates from `options` are instantiated fresh for the part.
 /// To share materials across parts — say, repeated preview tessellations — use
@@ -280,16 +275,17 @@ pub fn tessellate_into(
     elements: &ShapeElements,
     scene: &Scene,
     options: &CadTessellationOptions,
+    frame: Transform,
     parent: Option<NodeId>,
     name: Option<&str>,
 ) -> Result<NodeHandle> {
     let mut scene = scene.lock();
 
-    let mesh = tessellate_occ_shape(elements, options)?;
+    let mesh = tessellate_occ_shape(elements, options, frame)?;
     let (face_template, line_template) = options.materials_for(elements.shape());
     let face_mat = scene.add_face_material(face_template.clone().with_fresh_id());
     let line_mat = scene.add_line_material(line_template.clone().with_fresh_id());
-    tessellate_finish(&mut scene, mesh, face_mat, line_mat, options.frame, parent, name)
+    tessellate_finish(&mut scene, mesh, face_mat, line_mat, frame, parent, name)
 }
 
 /// Like [`tessellate_into`], but the node shares the given materials instead of
@@ -300,21 +296,14 @@ pub fn tessellate_into_with_materials(
     options: &CadTessellationOptions,
     face_material: &FaceMaterialHandle,
     line_material: &LineMaterialHandle,
+    frame: Transform,
     parent: Option<NodeId>,
     name: Option<&str>,
 ) -> Result<NodeHandle> {
     let mut scene = scene.lock();
 
-    let mesh = tessellate_occ_shape(elements, options)?;
-    tessellate_finish(
-        &mut scene,
-        mesh,
-        face_material.clone(),
-        line_material.clone(),
-        options.frame,
-        parent,
-        name,
-    )
+    let mesh = tessellate_occ_shape(elements, options, frame)?;
+    tessellate_finish(&mut scene, mesh, face_material.clone(), line_material.clone(), frame, parent, name)
 }
 
 fn tessellate_finish(
@@ -341,11 +330,11 @@ fn tessellate_finish(
     Ok(node)
 }
 
-/// Re-tessellates a shape, given as its [`ShapeElements`], into an existing `node`,
-/// preserving its [`NodeId`] and reusing its material slots, and places the node
-/// at the options' [`frame`](CadTessellationOptions::frame). The node must
-/// already carry an instance; the previous mesh and instance are released and
-/// removed unless shared.
+/// Re-tessellates a shape, given as its [`ShapeElements`], into an existing `node`
+/// in the rigid `frame`, preserving its [`NodeId`] and reusing its material
+/// slots, and places the node at the frame. The node must already carry an
+/// instance; the previous mesh and instance are released and removed unless
+/// shared.
 ///
 /// Because the material slots are reused verbatim, the node keeps whichever
 /// materials it was first tessellated with, even if the shape's
@@ -355,6 +344,7 @@ pub fn retessellate_node(
     elements: &ShapeElements,
     scene: &Scene,
     options: &CadTessellationOptions,
+    frame: Transform,
     node: NodeId,
 ) -> Result<()> {
     let mut scene = scene.lock();
@@ -373,7 +363,7 @@ pub fn retessellate_node(
         (old.face_material_handle().cloned(), old.line_material_handle().cloned())
     };
 
-    let mesh = tessellate_occ_shape(elements, options)?;
+    let mesh = tessellate_occ_shape(elements, options, frame)?;
     let mesh = scene.add_mesh(mesh);
 
     let mut instance = Instance::new(mesh);
@@ -384,7 +374,7 @@ pub fn retessellate_node(
     // Replacing the instance releases the node's old one; it and its mesh are
     // reaped when the guard drops unless another node still shares them.
     scene.set_node_instance(node, Some(instance));
-    scene.set_node_transform(node, options.frame);
+    scene.set_node_transform(node, frame);
 
     Ok(())
 }
@@ -406,7 +396,7 @@ mod tests {
     fn sphere_tessellates_to_nonempty_mesh() {
         let shape = opencascade::primitives::Shape::sphere(1.0).build();
         let mut scene = Scene::default();
-        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), None, Some("sphere"))
+        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), Transform::IDENTITY, None, Some("sphere"))
             .expect("tessellation failed");
         assert!(scene.mesh_count() > 0);
         assert!(scene.node_count() > 0);
@@ -416,7 +406,7 @@ mod tests {
     fn cuboid_tessellates_to_nonempty_mesh() {
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
         let mut scene = Scene::default();
-        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), None, Some("box"))
+        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), Transform::IDENTITY, None, Some("box"))
             .expect("tessellation failed");
         assert!(scene.mesh_count() > 0);
     }
@@ -427,7 +417,7 @@ mod tests {
         let b = opencascade::primitives::Shape::sphere(1.5).build();
         let combined = a.union(&b).expect("fuse succeeds").shape;
         let mut scene = Scene::default();
-        tessellate_into(&ShapeElements::new(&combined), &mut scene, &default_options(), None, None)
+        tessellate_into(&ShapeElements::new(&combined), &mut scene, &default_options(), Transform::IDENTITY, None, None)
             .expect("union tessellation failed");
         assert!(scene.mesh_count() > 0);
     }
@@ -436,7 +426,7 @@ mod tests {
     fn cylinder_tessellates() {
         let shape = opencascade::primitives::Shape::cylinder_radius_height(0.5, 2.0);
         let mut scene = Scene::default();
-        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), None, None).unwrap();
+        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), Transform::IDENTITY, None, None).unwrap();
         assert!(scene.mesh_count() > 0);
     }
 
@@ -444,7 +434,7 @@ mod tests {
     fn torus_tessellates() {
         let shape = opencascade::primitives::Shape::torus().radius_1(2.0).radius_2(0.5).build();
         let mut scene = Scene::default();
-        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), None, None).unwrap();
+        tessellate_into(&ShapeElements::new(&shape), &mut scene, &default_options(), Transform::IDENTITY, None, None).unwrap();
         assert!(scene.mesh_count() > 0);
     }
 
@@ -453,7 +443,7 @@ mod tests {
         // All of a full sphere's edges are parameterization artifacts (one seam
         // meridian + two degenerate poles): it has no edge elements to draw.
         let shape = opencascade::primitives::Shape::sphere(1.0).build();
-        let mesh = tessellate_occ_shape(&ShapeElements::new(&shape), &edges_only_options()).unwrap();
+        let mesh = tessellate_occ_shape(&ShapeElements::new(&shape), &edges_only_options(), Transform::IDENTITY).unwrap();
 
         let topology = mesh.topology().expect("topology");
         assert!(topology.edge_ranges.is_empty());
@@ -470,7 +460,7 @@ mod tests {
         let shape = opencascade::primitives::Shape::sphere(1.0).build();
         let options =
             CadTessellationOptions { show_seam_edges: true, ..edges_only_options() };
-        let mesh = tessellate_occ_shape(&ShapeElements::new(&shape), &options).unwrap();
+        let mesh = tessellate_occ_shape(&ShapeElements::new(&shape), &options, Transform::IDENTITY).unwrap();
 
         let topology = mesh.topology().expect("topology");
         assert!(topology.edge_ranges.is_empty());
@@ -486,7 +476,7 @@ mod tests {
         // the seam needs are no elements.
         let shape = opencascade::primitives::Shape::cylinder_radius_height(0.5, 2.0);
         let elements = ShapeElements::new(&shape);
-        let mesh = tessellate_occ_shape(&elements, &default_options()).unwrap();
+        let mesh = tessellate_occ_shape(&elements, &default_options(), Transform::IDENTITY).unwrap();
 
         let topology = mesh.topology().expect("topology");
         assert_eq!(topology.face_ranges.len(), elements.faces().len());
@@ -499,7 +489,7 @@ mod tests {
     #[test]
     fn a_box_draws_each_element_once() {
         let cube = opencascade::primitives::Shape::cube(1.0);
-        let mesh = tessellate_occ_shape(&ShapeElements::new(&cube), &default_options()).unwrap();
+        let mesh = tessellate_occ_shape(&ShapeElements::new(&cube), &default_options(), Transform::IDENTITY).unwrap();
 
         let topology = mesh.topology().expect("topology");
         assert_eq!(topology.face_ranges.len(), 6);
@@ -519,7 +509,7 @@ mod tests {
         let mut scene = Scene::default();
         for _ in 0..3 {
             let shape = opencascade::primitives::Shape::box_centered(1.0, 1.0, 1.0);
-            tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap();
+            tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, Transform::IDENTITY, None, None).unwrap();
         }
         let scene = scene.lock();
         assert_eq!(scene.face_material_count(), 3);
@@ -627,7 +617,7 @@ mod tests {
         let mut scene = Scene::default();
 
         for shape in [open_wire(), planar_face()] {
-            let node = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap().id();
+            let node = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, Transform::IDENTITY, None, None).unwrap().id();
             let (face, line) = node_colors(&scene, node);
             assert_color_eq(face, FREE_FACE, "face");
             assert_color_eq(line, FREE_LINE, "line");
@@ -639,7 +629,7 @@ mod tests {
         let options = classified_options();
         let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::cube(2.0);
-        let node = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap().id();
+        let node = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, Transform::IDENTITY, None, None).unwrap().id();
 
         let (face, line) = node_colors(&scene, node);
         assert_color_eq(face, options.face_material.base_color_factor(), "face");
@@ -651,7 +641,7 @@ mod tests {
         // Callers that never opt in (glTF/STEP import) must see no change.
         let options = default_options();
         let mut scene = Scene::default();
-        let node = tessellate_into(&ShapeElements::new(&open_wire()), &mut scene, &options, None, None).unwrap().id();
+        let node = tessellate_into(&ShapeElements::new(&open_wire()), &mut scene, &options, Transform::IDENTITY, None, None).unwrap().id();
 
         let (face, line) = node_colors(&scene, node);
         assert_color_eq(face, options.face_material.base_color_factor(), "face");
@@ -671,7 +661,7 @@ mod tests {
         ]);
 
         let mut scene = Scene::default();
-        let node = tessellate_into(&ShapeElements::new(&scaled), &mut scene, &default_options(), None, None).unwrap().id();
+        let node = tessellate_into(&ShapeElements::new(&scaled), &mut scene, &default_options(), Transform::IDENTITY, None, None).unwrap().id();
         let aabb = scene.nodes_bounding(node).bounds.expect("scaled box has bounds");
         let (sx, sy, sz) = aabb.size();
         assert!((sx - 6.0).abs() < 1e-3, "expected X extent ~6, got {sx}");
@@ -684,7 +674,7 @@ mod tests {
         let options = default_options();
         let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
-        let node = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap().id();
+        let node = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, Transform::IDENTITY, None, None).unwrap().id();
 
         let before = scene.nodes_bounding(node).bounds.expect("box has bounds");
         let (bx, _, _) = before.size();
@@ -697,7 +687,7 @@ mod tests {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ]);
-        retessellate_node(&ShapeElements::new(&scaled), &mut scene, &options, node).unwrap();
+        retessellate_node(&ShapeElements::new(&scaled), &mut scene, &options, Transform::IDENTITY, node).unwrap();
 
         // Same node id, geometry updated, and no leaked mesh/instance.
         assert!(scene.get_node(node).is_some(), "node id must be preserved");
@@ -723,7 +713,6 @@ mod tests {
             ),
             ..Transform::IDENTITY
         };
-        let framed = CadTessellationOptions { frame, ..default_options() };
         let at_frame = |scene: &Scene, node: NodeId| {
             let placed = scene.get_node(node).unwrap().transform().to_matrix();
             let expected = frame.to_matrix();
@@ -731,12 +720,12 @@ mod tests {
         };
 
         let mut scene = Scene::default();
-        let node = tessellate_into(&elements, &mut scene, &framed, None, None).unwrap().id();
+        let node = tessellate_into(&elements, &mut scene, &default_options(), frame, None, None).unwrap().id();
         assert!(at_frame(&scene, node));
 
         // Seen through the node, the framed mesh is the world mesh.
-        let world = tessellate_occ_shape(&elements, &default_options()).unwrap();
-        let local = tessellate_occ_shape(&elements, &framed).unwrap();
+        let world = tessellate_occ_shape(&elements, &default_options(), Transform::IDENTITY).unwrap();
+        let local = tessellate_occ_shape(&elements, &default_options(), frame).unwrap();
         let to_world = frame.to_matrix();
         for (w, l) in world.vertices().iter().zip(local.vertices()) {
             let placed = transform_point(&to_world, array_to_point3(l.position));
@@ -747,7 +736,7 @@ mod tests {
 
         // Re-tessellating in place keeps the node at the frame.
         scene.set_node_transform(node, Transform::IDENTITY);
-        retessellate_node(&elements, &scene, &framed, node).unwrap();
+        retessellate_node(&elements, &scene, &default_options(), frame, node).unwrap();
         assert!(at_frame(&scene, node));
     }
 
@@ -756,7 +745,7 @@ mod tests {
         let options = default_options();
         let mut scene = Scene::default();
         let shape = opencascade::primitives::Shape::box_centered(2.0, 2.0, 2.0);
-        let node1 = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, None, None).unwrap().id();
+        let node1 = tessellate_into(&ShapeElements::new(&shape), &mut scene, &options, Transform::IDENTITY, None, None).unwrap().id();
 
         // Capture the instance + mesh the part created.
         let instance = scene
@@ -778,7 +767,7 @@ mod tests {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ]);
-        retessellate_node(&ShapeElements::new(&scaled), &mut scene, &options, node1).unwrap();
+        retessellate_node(&ShapeElements::new(&scaled), &mut scene, &options, Transform::IDENTITY, node1).unwrap();
 
         let scene = scene.lock();
         // The shared instance and mesh must survive — node2 still references them.

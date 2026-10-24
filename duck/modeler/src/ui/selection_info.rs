@@ -447,6 +447,7 @@ fn edge_element(index: u32, edge: &Edge) -> Element {
 mod tests {
     use super::*;
     use duck_engine_scene::cad::CadTessellationOptions;
+    use duck_engine_scene::common::Transform;
     use duck_engine_scene::resource::SubGeometryElement;
     use duck_engine_scene::Scene;
     use opencascade::primitives::Shape;
@@ -463,7 +464,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, shape)| {
-                let part = document.add_part(format!("part-{i}"), shape, &options).unwrap();
+                let part = document.add_part(format!("part-{i}"), shape, Transform::IDENTITY, &options).unwrap();
                 document.node_for_part(part).unwrap()
             })
             .collect();
