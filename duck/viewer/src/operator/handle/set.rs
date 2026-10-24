@@ -425,7 +425,6 @@ fn placement(handle: &Handle) -> Transform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_common::Rotation;
     use duck_engine_scene::Projection;
 
     const EPSILON: crate::common::Real = 1e-5;
