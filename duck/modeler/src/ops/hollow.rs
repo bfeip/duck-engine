@@ -2,7 +2,7 @@ use anyhow::{ensure, Context, Result};
 use duck_engine_scene::common::{InnerSpace, Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
 use glam::DVec3;
-use opencascade::primitives::{Face, JoinType, Shape, ShapeType};
+use opencascade::primitives::{Face, JoinType, Shape, ShapeElements, ShapeType};
 use opencascade::OffsetError;
 
 use crate::document::{
@@ -41,10 +41,11 @@ impl HollowFrame {
         let part = doc.part_at(target.node).context("Hollow target is not a known CAD part")?;
         let shape = part.shape();
         ensure!(has_solid(shape), "Only a solid can be hollowed");
-        let removed =
-            target.faces.iter().map(|&index| part.elements().face(index as usize)).collect::<Result<Vec<_>, _>>()?;
+        let elements = part.elements();
+        let removed: Vec<usize> = target.faces.iter().map(|&index| index as usize).collect();
+        let opening = removed.first().map(|&primary| elements.face(primary)).transpose()?;
 
-        let (anchor, normal) = match removed.first().and_then(|primary| rim(shape, primary, &removed)) {
+        let (anchor, normal) = match opening.and_then(|opening| rim(elements, opening, &removed)) {
             Some(rim) => rim,
             None => largest_face_middle(shape)?,
         };
@@ -53,15 +54,12 @@ impl HollowFrame {
 }
 
 /// The middle of an edge `opening` shares with a face that stays, and that
-/// face's outward normal there.
-fn rim(shape: &Shape, opening: &Face, removed: &[&Face]) -> Option<(DVec3, DVec3)> {
+/// face's outward normal there. `removed` are the faces that go, by index.
+fn rim(elements: &ShapeElements, opening: &Face, removed: &[usize]) -> Option<(DVec3, DVec3)> {
     opening.edges().find_map(|edge| {
-        let kept = shape
-            .adjacent_faces(&edge)
-            .into_iter()
-            .find(|face| !removed.iter().any(|gone| gone.is_same(face)))?;
+        let &kept = elements.adjacent_faces(&edge).iter().find(|face| !removed.contains(face))?;
         let middle = edge.midpoint();
-        Some((middle, kept.normal_at(middle).ok()?))
+        Some((middle, elements.faces()[kept].normal_at(middle).ok()?))
     })
 }
 

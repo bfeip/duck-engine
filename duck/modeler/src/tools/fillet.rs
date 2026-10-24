@@ -336,7 +336,8 @@ mod tests {
         op.refresh_preview();
         let shown = op.preview().preview_nodes().to_vec();
 
-        drag_out(&mut op, 5.0);
+        // Out this far the round takes the whole box.
+        drag_out(&mut op, 10.0);
         op.refresh_preview();
         let error = op.error().expect("the oversized blend is reported");
         assert!(error.contains("too large"), "got {error}");
