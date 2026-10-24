@@ -1,14 +1,14 @@
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::{
-    classify_shape, tessellate_into_with_materials, CadTessellationOptions, GeometryClass,
+    classify_shape, tessellate_into_with_materials, CadTessellationOptions, GeometryClass, ShapeElements,
 };
 use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{
     DisplayBehavior, FaceMaterialHandle, Instance, LineMaterialHandle, NodeFlags, NodeId, Visibility,
 };
 use duck_engine_scene::{Scene, SceneData};
-use opencascade::primitives::{Shape, ShapeElements};
+use opencascade::primitives::Shape;
 
 use crate::document::Document;
 

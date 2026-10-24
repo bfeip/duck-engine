@@ -56,10 +56,10 @@ impl DraftFrame {
     /// draft.
     pub fn new(doc: &Document, target: &DraftTarget) -> Result<Self> {
         let part = doc.part_at(target.node).context("Draft target is not a known CAD part")?;
-        let neutral = part.elements().face(target.neutral as usize)?;
+        let neutral = part.face(target.neutral)?;
         ensure!(neutral.face_type() == FaceType::Plane, "The neutral face must be flat");
         let primary = *target.faces.first().context("There are no faces to draft")?;
-        let lever_face = part.elements().face(primary as usize)?;
+        let lever_face = part.face(primary)?;
 
         // `normal_at_center` goes through `BRepGProp_Face::Normal`, which applies
         // each face's orientation: both normals point out of the material.
@@ -126,8 +126,8 @@ pub fn build_draft(doc: &Document, target: &DraftTarget, params: &DraftParams) -
 
     // OCCT's modifications may raise tolerances on their input, so the draft
     // works on a copy: an abandoned preview must leave the part as it was.
-    let body = part.elements().deep_copy();
-    let faces = target.faces.iter().map(|&index| body.face(index as usize)).collect::<Result<Vec<_>, _>>()?;
+    let body = part.deep_copy();
+    let faces = target.faces.iter().map(|&index| body.face(index)).collect::<Result<Vec<_>>>()?;
 
     let pull = vec3_to_dvec3(params.frame.pull);
     let origin = point3_to_dvec3(params.frame.origin);

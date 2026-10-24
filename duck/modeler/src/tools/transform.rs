@@ -295,7 +295,7 @@ impl FaceTweakTarget {
             }
         let resolved = (|| {
             let doc = self.document.lock().unwrap();
-            let face = doc.elements(target.node)?.face(target.face_index as usize).ok()?;
+            let face = doc.part_at(target.node)?.face(target.face_index).ok()?;
             // `normal_at_center` returns the surface's parametric normal, which
             // points inward for Reversed faces — flip it so local Z points out.
             let sign = if face.orientation() == FaceOrientation::Forward { 1.0 } else { -1.0 };
@@ -331,8 +331,8 @@ impl FaceTweakTarget {
 
         let ghost_shape = {
             let doc = self.document.lock().unwrap();
-            doc.elements(target.node)
-                .and_then(|elements| elements.face(target.face_index as usize).ok())
+            doc.part_at(target.node)
+                .and_then(|part| part.face(target.face_index).ok())
                 .map(opencascade::primitives::Shape::from)
         };
         let Some(ghost_shape) = ghost_shape else { return false };

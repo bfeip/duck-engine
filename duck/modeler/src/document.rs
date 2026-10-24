@@ -8,14 +8,14 @@ use duck_engine_scene::resource::{
 use duck_engine_scene::Scene;
 use duck_engine_scene::cad::{
     classify_shape, retessellate_node, tessellate_into, tessellate_into_with_materials,
-    CadTessellationOptions, GeometryClass,
+    CadTessellationOptions, EdgeElement, GeometryClass, ShapeElements,
 };
 use duck_engine_scene::common::{
     decompose_matrix, matrix4_to_row_major_f64, Matrix4, Point3, Real, Transform, Vector3,
     WorldUnits, EPSILON,
 };
 use glam::DVec3;
-use opencascade::primitives::{Shape, ShapeElements, ShapeType, Wire};
+use opencascade::primitives::{Edge, Face, Shape, ShapeCopy, ShapeType, Vertex, Wire};
 
 use crate::history::{Delta, History, PartSnapshot};
 use crate::materials::{Finish, LibraryMaterial, MaterialLibrary, PRESETS};
@@ -198,6 +198,30 @@ impl CadPart {
         &self.elements
     }
 
+    /// The face its selections number `index`.
+    pub fn face(&self, index: u32) -> Result<&Face> {
+        let face = self.elements.faces().get(index as usize);
+        face.with_context(|| format!("{} has no face {index}", self.name))
+    }
+
+    /// The edge its selections number `index`.
+    pub fn edge(&self, index: u32) -> Result<&EdgeElement> {
+        let edge = self.elements.edges().get(index as usize);
+        edge.with_context(|| format!("{} has no edge {index}", self.name))
+    }
+
+    /// The vertex its selections number `index`.
+    pub fn vertex(&self, index: u32) -> Result<&Vertex> {
+        let vertex = self.elements.vertices().get(index as usize);
+        vertex.with_context(|| format!("{} has no vertex {index}", self.name))
+    }
+
+    /// A deep copy of the part's shape, for an operation that may change its
+    /// input: just the B-Rep, not a part (see [`PartCopy`]).
+    pub fn deep_copy(&self) -> PartCopy<'_> {
+        PartCopy { part: self, copy: ShapeCopy::new(self.shape()) }
+    }
+
     /// Tessellation options the part was last built with. Imported parts carry
     /// their own colors here, so a copy made with these keeps its appearance.
     pub fn options(&self) -> &CadTessellationOptions {
@@ -220,6 +244,49 @@ impl CadPart {
             ShapeType::Compound => PartKind::Compound,
             ShapeType::Shape => PartKind::Other,
         }
+    }
+}
+
+/// A deep copy of a part's shape, its faces and edges found as the part's
+/// selections number them.
+///
+/// OCCT operations can retouch the shape they work on: a blend raises the
+/// tolerances of the vertices it touches, an offset may rework the faces it
+/// grows from. An operation that may yet be abandoned, such as a preview, runs
+/// on a copy so the part stays as it was. Its target arrives as selection
+/// indices into the part, though, and OCCT needs the copy's own faces and
+/// edges; a `PartCopy` finds the copy of each element the part numbers.
+///
+/// It is not a part: it has no name, frame, scene node or history, and never
+/// joins the document. Only what an operation builds from it does, through
+/// [`Document::commit_result`].
+///
+/// ```ignore
+/// let body = part.deep_copy();
+/// let faces = target.faces.iter().map(|&index| body.face(index)).collect::<Result<Vec<_>>>()?;
+/// let drafted = body.shape().draft_faces(&faces, pull, angle, origin, pull)?;
+/// ```
+pub struct PartCopy<'a> {
+    part: &'a CadPart,
+    copy: ShapeCopy,
+}
+
+impl PartCopy<'_> {
+    /// The copy.
+    pub fn shape(&self) -> &Shape {
+        self.copy.shape()
+    }
+
+    /// The copy of the part's face numbered `index`.
+    pub fn face(&self, index: u32) -> Result<Face> {
+        let face = self.part.face(index)?;
+        self.copy.copy_of(face).context("A face of the part is missing from its copy")
+    }
+
+    /// The copies of the pieces of the part's edge numbered `index`.
+    pub fn edge_pieces(&self, index: u32) -> Result<Vec<Edge>> {
+        let pieces = self.part.edge(index)?.pieces().iter();
+        pieces.map(|piece| self.copy.copy_of(piece).context("An edge of the part is missing from its copy")).collect()
     }
 }
 
@@ -493,10 +560,7 @@ impl Document {
     ) -> Result<()> {
         let tweaked = {
             let cad_part = self.get_part(part).context("tweak_faces: part not found")?;
-            let faces = face_indices
-                .iter()
-                .map(|&index| cad_part.elements().face(index as usize))
-                .collect::<Result<Vec<_>, _>>()?;
+            let faces = face_indices.iter().map(|&index| cad_part.face(index)).collect::<Result<Vec<_>>>()?;
             let mat = matrix4_to_row_major_f64(&transform);
             cad_part.shape().tweak_faces(faces, mat)?
         };
@@ -811,12 +875,6 @@ impl Document {
         self.part_for_node(node).and_then(|id| self.get_part(id))
     }
 
-    /// The faces, edges and vertices of the part at `node`, numbered as its
-    /// selections number them.
-    pub fn elements(&self, node: NodeId) -> Option<&ShapeElements> {
-        Some(self.part_at(node)?.elements())
-    }
-
     /// Resolve a picked edge to the [`Wire`] that contains it in the part's B-Rep.
     ///
     /// A loft profile is a wire, but the selection system reports the individual
@@ -825,7 +883,7 @@ impl Document {
     /// whole multi-edge profile.
     pub fn wire_for_edge(&self, node: NodeId, edge_index: u32) -> Option<Wire> {
         let part = self.part_at(node)?;
-        let target = &part.elements().edge(edge_index as usize).ok()?.pieces()[0];
+        let target = &part.edge(edge_index).ok()?.pieces()[0];
         part.shape().wires().find(|wire| wire.edges().any(|e| e.is_same(target)))
     }
 
@@ -1706,12 +1764,45 @@ mod tests {
     #[test]
     fn a_seam_split_edge_resolves_to_both_pieces() {
         let (doc, node) = crate::testing::doc_with_bitten_ball();
-        let rim = doc.elements(node).unwrap().edge(crate::testing::bite_rim(&doc, node) as usize).unwrap();
+        let rim = doc.part_at(node).unwrap().edge(crate::testing::bite_rim(&doc, node)).unwrap();
 
         assert_eq!(rim.pieces().len(), 2);
         let length: f64 = rim.pieces().iter().map(|piece| piece.length()).sum();
         assert_eq!(rim.curve().edge_type(), opencascade::primitives::EdgeType::Circle);
         assert!((rim.curve().length() - length).abs() < 1e-6, "expected {length}, got {}", rim.curve().length());
+    }
+
+    #[test]
+    fn an_index_past_the_parts_elements_is_an_error() {
+        let (doc, part, _) = doc_with_box();
+        let part = doc.get_part(part).unwrap();
+        assert!(part.face(5).is_ok());
+        assert!(part.face(6).is_err());
+        assert!(part.edge(12).is_err());
+        assert!(part.vertex(8).is_err());
+    }
+
+    /// A copy finds its own faces and edge pieces by the part's numbers, the
+    /// split rim's two pieces included.
+    #[test]
+    fn a_part_copy_numbers_the_copy_as_the_part() {
+        let (doc, node) = crate::testing::doc_with_bitten_ball();
+        let part = doc.part_at(node).unwrap();
+        let copy = part.deep_copy();
+
+        for (index, face) in part.elements().faces().iter().enumerate() {
+            let copied = copy.face(index as u32).unwrap();
+            assert!(!copied.is_same(face), "face {index} is shared, not copied");
+            assert!(copy.shape().faces().any(|f| f.is_same(&copied)), "face {index} is not the copy's");
+            assert!((copied.surface_area() - face.surface_area()).abs() < 1e-9);
+        }
+        let rim = crate::testing::bite_rim(&doc, node);
+        let pieces = copy.edge_pieces(rim).unwrap();
+        assert_eq!(pieces.len(), 2);
+        for (piece, original) in pieces.iter().zip(part.edge(rim).unwrap().pieces()) {
+            assert!(!piece.is_same(original), "the rim is shared, not copied");
+            assert!(copy.shape().edges().any(|edge| edge.is_same(piece)), "the rim is not the copy's");
+        }
     }
 
     /// `count` boxes in a document with the preset library.

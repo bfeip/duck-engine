@@ -227,7 +227,7 @@ impl PartFace<'_> {
     /// space, with the face's outward normal.
     fn center(&self) -> Option<Snap> {
         let Self { part, index } = self;
-        let center = part.elements().face(*index as usize).and_then(|face| {
+        let center = part.face(*index).and_then(|face| {
             if face.face_type() != FaceType::Plane {
                 return Ok(None);
             }
@@ -452,7 +452,7 @@ fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Snap>) {
     // The B-rep is in the world, scaled into the scene at tessellation.
     let scale = part.options().scale_factor;
     for &index in edges {
-        let midpoint = part.elements().edge(index as usize).and_then(|edge| edge.curve().length_midpoint());
+        let midpoint = part.edge(index).and_then(|edge| Ok(edge.curve().length_midpoint()?));
         let (middle, tangent) = match midpoint {
             Ok(midpoint) => midpoint,
             Err(e) => {

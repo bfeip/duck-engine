@@ -58,10 +58,9 @@ impl RevolveFrame {
     /// Resolves `target` against its part.
     pub fn new(doc: &Document, target: &RevolveTarget) -> Result<Self> {
         let part = doc.part_at(target.node).context("The revolve target is not a known CAD part")?;
-        let elements = part.elements();
         let lever = match &target.profile {
-            Profile::Faces(faces) => elements.face(primary(faces)?)?.midpoint(),
-            Profile::Edges(edges) => elements.edge(primary(edges)?)?.curve().midpoint(),
+            Profile::Faces(faces) => part.face(primary(faces)?)?.midpoint(),
+            Profile::Edges(edges) => part.edge(primary(edges)?)?.curve().midpoint(),
         };
         let bounds = opencascade::bounding_box::aabb(&profile(doc, target)?);
         let size = (bounds.max() - bounds.min()).length() as Real;
@@ -78,8 +77,8 @@ impl RevolveFrame {
 }
 
 /// The first of a profile's indices.
-fn primary(indices: &[u32]) -> Result<usize> {
-    indices.first().map(|&index| index as usize).context("The profile is empty")
+fn primary(indices: &[u32]) -> Result<u32> {
+    indices.first().copied().context("The profile is empty")
 }
 
 /// The axis a revolve turns about, as far as it has been picked.
@@ -132,23 +131,22 @@ pub fn spans_axis(from: Point3, to: Point3) -> bool {
 /// each with the rest of its wire, once.
 fn profile(doc: &Document, target: &RevolveTarget) -> Result<Shape> {
     let part = doc.part_at(target.node).context("The revolve target is not a known CAD part")?;
-    let elements = part.elements();
     let mut pieces: Vec<Shape> = Vec::new();
     match &target.profile {
         Profile::Faces(faces) => {
             for &index in faces {
-                pieces.push(elements.face(index as usize)?.into());
+                pieces.push(part.face(index)?.into());
             }
         }
         Profile::Edges(edges) if has_solid(part.shape()) => {
             for &index in edges {
-                pieces.push(elements.edge(index as usize)?.curve().into());
+                pieces.push(part.edge(index)?.curve().into());
             }
         }
         Profile::Edges(edges) => {
             let mut wires: Vec<Wire> = Vec::new();
             for &index in edges {
-                let element = elements.edge(index as usize)?;
+                let element = part.edge(index)?;
                 let listed = |wire: &Wire| wire.edges().any(|edge| element.pieces().iter().any(|piece| edge.is_same(piece)));
                 if wires.iter().any(listed) {
                     continue;
@@ -347,8 +345,7 @@ mod tests {
         let (doc, node) = doc_with_shape(upright());
         let target = RevolveTarget { node, profile: Profile::Edges(vec![1, 0]) };
         let frame = RevolveFrame::new(&doc, &target).expect("target resolves");
-        let elements = doc.elements(node).unwrap();
-        let middle = dvec3_to_point3(elements.edge(1).unwrap().curve().midpoint());
+        let middle = dvec3_to_point3(doc.part_at(node).unwrap().edge(1).unwrap().curve().midpoint());
         assert!(f64::from(frame.lever.distance(middle)) < EPSILON);
         // OCCT pads the bounding box a little.
         assert!((frame.size - (5.0 as Real).sqrt()).abs() < 0.1, "{}", frame.size);

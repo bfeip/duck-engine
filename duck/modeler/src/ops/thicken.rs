@@ -40,7 +40,7 @@ impl ThickenFrame {
         let whole_sheet =
             !on_solid && (0..face_count).all(|index| target.faces.is_empty() || target.faces.contains(&index));
 
-        let primary = part.elements().face(target.faces.first().copied().unwrap_or(0) as usize)?;
+        let primary = part.face(target.faces.first().copied().unwrap_or(0))?;
         let origin = primary.midpoint();
         let normal = primary.normal_at(origin).context("The face to thicken has no well-defined normal")?;
         Ok(Self {
@@ -146,13 +146,13 @@ pub fn build_thicken(doc: &Document, target: &ThickenTarget, params: &ThickenPar
 
     // OCCT's offset reuses the faces it thickens and may retouch them, so the
     // slab grows from a copy: an abandoned preview must leave the part as it was.
-    let body = part.elements().deep_copy();
+    let body = part.deep_copy();
     let sheet: Shape = if params.frame.whole_sheet {
         body.shape().clone()
     } else {
-        let faces = target.faces.iter().map(|&index| body.face(index as usize)).collect::<Result<Vec<_>, _>>()?;
+        let faces = target.faces.iter().map(|&index| body.face(index)).collect::<Result<Vec<_>>>()?;
         match faces.as_slice() {
-            [face] => Shape::from(*face),
+            [face] => Shape::from(face),
             faces => Shell::from_faces(faces).into(),
         }
     };

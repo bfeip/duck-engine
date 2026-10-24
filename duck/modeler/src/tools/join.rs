@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions};
+use duck_engine_scene::cad::{tessellate_into_with_materials, CadTessellationOptions, ShapeElements};
 use duck_engine_scene::common::{Real, RgbaColor, Transform};
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, NodeFlags, NodeId};
 use duck_engine_viewer::{
@@ -7,7 +7,7 @@ use duck_engine_viewer::{
     operator::SelectionMode,
     selection::{SelectionItem, SelectionManager},
 };
-use opencascade::primitives::{Compound, Edge, Shape, ShapeElements, ShapeType};
+use opencascade::primitives::{Compound, Edge, Shape, ShapeType};
 
 use crate::document::{Document, DOCUMENT_UNITS};
 use crate::ops::join::{

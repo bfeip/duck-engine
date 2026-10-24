@@ -2,11 +2,11 @@ use anyhow::{ensure, Context, Result};
 use duck_engine_scene::common::{InnerSpace, Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
 use glam::DVec3;
-use opencascade::primitives::{Face, JoinType, Shape, ShapeElements, ShapeType};
+use opencascade::primitives::{Face, JoinType, Shape, ShapeType};
 use opencascade::OffsetError;
 
 use crate::document::{
-    dvec3_to_point3, dvec3_to_vec3, has_solid, unwrap_single_solid, Document,
+    dvec3_to_point3, dvec3_to_vec3, has_solid, unwrap_single_solid, CadPart, Document,
 };
 use crate::ops::OFFSET_TOLERANCE;
 
@@ -41,11 +41,9 @@ impl HollowFrame {
         let part = doc.part_at(target.node).context("Hollow target is not a known CAD part")?;
         let shape = part.shape();
         ensure!(has_solid(shape), "Only a solid can be hollowed");
-        let elements = part.elements();
-        let removed: Vec<usize> = target.faces.iter().map(|&index| index as usize).collect();
-        let opening = removed.first().map(|&primary| elements.face(primary)).transpose()?;
+        let opening = target.faces.first().map(|&primary| part.face(primary)).transpose()?;
 
-        let (anchor, normal) = match opening.and_then(|opening| rim(elements, opening, &removed)) {
+        let (anchor, normal) = match opening.and_then(|opening| rim(part, opening, &target.faces)) {
             Some(rim) => rim,
             None => largest_face_middle(shape)?,
         };
@@ -53,13 +51,18 @@ impl HollowFrame {
     }
 }
 
-/// The middle of an edge `opening` shares with a face that stays, and that
-/// face's outward normal there. `removed` are the faces that go, by index.
-fn rim(elements: &ShapeElements, opening: &Face, removed: &[usize]) -> Option<(DVec3, DVec3)> {
+/// The middle of an edge `opening` shares with a face of `part` that stays,
+/// and that face's outward normal there. `removed` are the faces that go, by
+/// index.
+fn rim(part: &CadPart, opening: &Face, removed: &[u32]) -> Option<(DVec3, DVec3)> {
+    let stays = |face: &Face| {
+        let index = part.elements().face_index(face);
+        index.is_some_and(|index| !removed.contains(&(index as u32)))
+    };
     opening.edges().find_map(|edge| {
-        let &kept = elements.adjacent_faces(&edge).iter().find(|face| !removed.contains(face))?;
+        let kept = part.shape().adjacent_faces(&edge).into_iter().find(stays)?;
         let middle = edge.midpoint();
-        Some((middle, elements.faces()[kept].normal_at(middle).ok()?))
+        Some((middle, kept.normal_at(middle).ok()?))
     })
 }
 
@@ -116,12 +119,12 @@ pub fn build_hollow(doc: &Document, target: &HollowTarget, params: &HollowParams
 
     // OCCT's offset may retouch its input, so the hollow works on a copy: an
     // abandoned preview must leave the part as it was.
-    let copy = part.elements().deep_copy();
+    let copy = part.deep_copy();
     // Unwrapping keeps the copy's faces: the solid is the one they bound.
     let body = unwrap_single_solid(copy.shape().clone());
     ensure!(body.shape_type() == ShapeType::Solid, "Only a single solid can be hollowed");
     ensure!(body.sub_shapes().count() == 1, "A part with a void inside can't be hollowed");
-    let faces = target.faces.iter().map(|&index| copy.face(index as usize)).collect::<Result<Vec<_>, _>>()?;
+    let faces = target.faces.iter().map(|&index| copy.face(index)).collect::<Result<Vec<_>>>()?;
 
     let (thickness, tolerance) = (f64::from(params.thickness), f64::from(OFFSET_TOLERANCE));
     body.hollow(-thickness, &faces, JoinType::Intersection, tolerance).map_err(explained)

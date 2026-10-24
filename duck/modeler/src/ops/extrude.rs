@@ -57,7 +57,7 @@ impl ExtrudeFrame {
 
         let (origin, normal) = match *target {
             ExtrudeTarget::Face { face_index, .. } => {
-                let face = source.elements().face(face_index as usize)?;
+                let face = source.face(face_index)?;
                 // `normal_at_center` goes through `BRepGProp_Face::Normal`, which already
                 // applies the face's orientation — the normal points out of the material
                 // for Reversed and Forward faces alike, so it needs no sign correction.
@@ -67,7 +67,7 @@ impl ExtrudeFrame {
                 (dvec3_to_point3(face.center_of_mass()), dvec3_to_vec3(normal).normalize())
             }
             ExtrudeTarget::Edge { edge_index, .. } => {
-                let edge = source.elements().edge(edge_index as usize)?.curve();
+                let edge = source.edge(edge_index)?.curve();
                 let midpoint = (edge.start_point() + edge.end_point()) * 0.5;
                 (dvec3_to_point3(midpoint), sketch_normal.normalize())
             }
@@ -152,11 +152,11 @@ impl ExtrudeParams {
 pub fn build_extrusion(doc: &Document, target: &ExtrudeTarget, params: &ExtrudeParams) -> Result<Shape> {
     ensure!(!params.is_degenerate(), "Nothing to extrude at zero distance");
     let sweep = vec3_to_dvec3(params.direction * params.distance);
-    let elements = doc.elements(target.node()).context("Extrude target is not a known CAD part")?;
+    let part = doc.part_at(target.node()).context("Extrude target is not a known CAD part")?;
 
     match *target {
         ExtrudeTarget::Face { face_index, .. } => {
-            let face = elements.face(face_index as usize)?;
+            let face = part.face(face_index)?;
             let (prism, first, last) = face.extrude_with_caps(sweep);
             let mut prism = Shape::from(prism);
             let mut caps = vec![first, last];
@@ -192,7 +192,7 @@ pub fn build_extrusion(doc: &Document, target: &ExtrudeTarget, params: &ExtrudeP
             Ok(prism)
         }
         ExtrudeTarget::Edge { edge_index, .. } => {
-            let edge = elements.edge(edge_index as usize)?.curve();
+            let edge = part.edge(edge_index)?.curve();
             let mut wall: Shape = edge.extrude(sweep).into();
 
             if params.has_draft() {

@@ -8,14 +8,14 @@ use std::sync::{Mutex, PoisonError};
 
 use anyhow::{bail, Context, Result};
 use duck_engine_common::{decompose_matrix, Matrix4, Real, RgbaColor, Vector3};
-use duck_engine_scene::cad::{tessellate_occ_shape, CadTessellationOptions};
+use duck_engine_scene::cad::{tessellate_occ_shape, CadTessellationOptions, EdgeElement, ShapeElements};
 use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{
     Instance, LineMaterial, Mesh, MeshPrimitive, NodeFlags, NodeId, PrimitiveType,
     Vertex,
 };
 use duck_engine_scene::{PositionedCamera, SceneData};
-use opencascade::primitives::{Compound, Shape, ShapeElements};
+use opencascade::primitives::{Compound, Shape};
 use opencascade::xcaf::{XcafColorTool, XcafDimTolTool, XcafDocument, XcafLabel, XcafShapeTool};
 
 /// Serializes OCCT's STEP/IGES translators, which share process-wide state.
@@ -253,7 +253,7 @@ fn import_pmi(
 
         // Annotation presentations are wireframe, so seams are shown too.
         let elements = ShapeElements::new(&shape);
-        let curves = elements.edges().iter().map(|element| element.curve()).chain(elements.seams());
+        let curves = elements.edges().iter().map(EdgeElement::curve).chain(elements.seams());
         let deflection = options.tessellation.tessellation_tolerance;
         for points in curves.map(|edge| edge.polyline(deflection)) {
             for window in points.windows(2) {

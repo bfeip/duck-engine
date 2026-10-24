@@ -13,7 +13,7 @@
 //! style the two classes differently.
 
 use anyhow::{Context, Result};
-use opencascade::primitives::{Edge, Shape, ShapeElements, ShapeType};
+use opencascade::primitives::{Edge, Shape, ShapeType};
 
 use crate::common::{
     point3_to_array, transform_point, vec3_to_array, Matrix4, Point3, Real, RgbaColor, Rotation,
@@ -25,6 +25,10 @@ use crate::resource::{
     Topology, Vertex,
 };
 use crate::{Scene, SceneData};
+
+mod elements;
+
+pub use elements::{EdgeElement, ShapeElements};
 
 /// Whether a shape bounds a volume, or is free geometry that does not.
 ///

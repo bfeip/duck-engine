@@ -67,9 +67,9 @@ impl FilletFrame {
         let part = doc.part_at(target.node).context("Fillet target is not a known CAD part")?;
         let primary = *target.edges.first().context("There are no edges to blend")?;
         // A seam-split edge's pieces all border the same two faces.
-        let edge = &part.elements().edge(primary as usize)?.pieces()[0];
+        let edge = &part.edge(primary)?.pieces()[0];
         let corner = part
-            .elements()
+            .shape()
             .corner(edge)
             .context("Only an edge between two faces can be filleted or chamfered")?;
 
@@ -135,34 +135,34 @@ pub fn build_fillet(doc: &Document, target: &FilletTarget, params: &FilletParams
     let part = doc.part_at(target.node).context("Fillet target is not a known CAD part")?;
 
     let size = f64::from(params.size);
-    let blend = |extended: bool| -> Result<Shape, opencascade::Error> {
+    let blend = |extended: bool| -> Result<Result<Shape, opencascade::Error>> {
         // OCCT's blend raises the tolerance of vertices it touches on its
         // input, so it works on a copy: an abandoned preview must leave the
         // part as it was.
-        let body = part.elements().deep_copy();
+        let body = part.deep_copy();
         let mut edges = Vec::new();
         for &index in &target.edges {
-            edges.extend(body.edge(index as usize)?.pieces());
+            edges.extend(body.edge_pieces(index)?);
         }
         let shape = body.shape();
-        match (params.kind, extended) {
+        Ok(match (params.kind, extended) {
             (BlendKind::Fillet, true) => shape.fillet_edges_extended(size, &edges),
             (BlendKind::Fillet, false) => shape.fillet_edges(size, &edges),
             (BlendKind::Chamfer, true) => shape.chamfer_edges_extended(size, &edges),
             (BlendKind::Chamfer, false) => shape.chamfer_edges(size, &edges),
-        }
+        })
     };
 
-    let blended = blend(true)
-        .or_else(|error| match error {
-            // The blend itself failed; over the faces as they are it would fail again.
-            opencascade::Error::FilletFailed(_) => Err(error),
-            error => {
-                log::warn!("Could not extend the faces to blend over them, blending them as they are: {error}");
-                blend(false)
-            },
-        })
-        .map_err(|error| explained(params.kind, error))?;
+    let blended = match blend(true)? {
+        Err(error) if !matches!(error, opencascade::Error::FilletFailed(_)) => {
+            log::warn!("Could not extend the faces to blend over them, blending them as they are: {error}");
+            blend(false)?
+        },
+        // Where the blend itself failed, over the faces as they are it would
+        // fail again.
+        blended => blended,
+    }
+    .map_err(|error| explained(params.kind, error))?;
 
     // The blend comes back wrapped in a compound; a lone solid stays a solid.
     let blended = unwrap_single_solid(blended);
@@ -222,8 +222,9 @@ mod tests {
     /// The index of the edge whose midpoint is `point`.
     fn edge_at_point(doc: &Document, node: NodeId, point: glam::DVec3) -> u32 {
         let index = doc
-            .elements(node)
+            .part_at(node)
             .expect("node is a part")
+            .elements()
             .edges()
             .iter()
             .position(|edge| edge.curve().midpoint().distance(point) < 1e-9)
@@ -250,7 +251,7 @@ mod tests {
     #[test]
     fn a_box_edge_frame_sits_on_the_edge_and_points_out_of_the_corner() {
         let (doc, node) = doc_with_box();
-        let edge_count = doc.elements(node).unwrap().edges().len();
+        let edge_count = doc.part_at(node).unwrap().elements().edges().len();
 
         for edge in 0..edge_count as u32 {
             let frame = frame(&doc, node, edge).expect("box edge resolves");

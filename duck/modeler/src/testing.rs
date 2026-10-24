@@ -118,7 +118,7 @@ pub fn doc_with_bitten_ball() -> (Document, NodeId) {
 
 /// The selection index of the bitten ball's rim, the ball's one edge.
 pub fn bite_rim(doc: &Document, node: NodeId) -> u32 {
-    let edges = doc.elements(node).expect("the ball is a part").edges().len();
+    let edges = doc.part_at(node).expect("the ball is a part").elements().edges().len();
     assert_eq!(edges, 1, "the ball has an edge besides its bite's rim");
     0
 }
@@ -179,7 +179,7 @@ pub fn part_shape(doc: &Document, node: NodeId) -> &Shape {
 
 /// The faces of the part at `node`, numbered as its selections number them.
 pub fn part_faces(doc: &Document, node: NodeId) -> &[Face] {
-    doc.elements(node).expect("node is a part").faces()
+    doc.part_at(node).expect("node is a part").elements().faces()
 }
 
 /// The volume of the part at `node`.

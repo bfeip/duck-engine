@@ -7,9 +7,9 @@ use duck_engine_viewer::common::{Aabb, LengthDisplay, Point3, Real, Vector3};
 use duck_engine_viewer::scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 use opencascade::bounding_box::aabb;
-use opencascade::primitives::{Edge, EdgeType, Face, FaceType, ShapeElements, ShapeType};
+use opencascade::primitives::{Edge, EdgeType, Face, FaceType, ShapeType};
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartKind, DOCUMENT_UNITS};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, CadPart, Document, PartKind, DOCUMENT_UNITS};
 use crate::ui::icons;
 
 /// The selection section, caching its measurements between frames.
@@ -342,7 +342,7 @@ fn summarize(document: &Document, selection: &SelectionManager) -> SelectionSumm
         let Some(part) = document.part_for_node(node).and_then(|id| document.get_part(id)) else {
             continue;
         };
-        let Some(element) = measure(part.elements(), item) else { continue };
+        let Some(element) = measure(part, item) else { continue };
 
         match &element {
             Element::Part { area, volume, .. } => {
@@ -382,25 +382,23 @@ fn accumulate(total: &mut Option<Real>, value: Real) {
     *total = Some(total.unwrap_or(0.0) + value);
 }
 
-/// Measure one selected item of a part's `elements`, or `None` if its index is
-/// out of range.
-fn measure(elements: &ShapeElements, item: &SelectionItem) -> Option<Element> {
+/// Measure one selected item of `part`, or `None` if its index is out of range.
+fn measure(part: &CadPart, item: &SelectionItem) -> Option<Element> {
     let SelectionItem::SubGeometry { element, .. } = item else {
-        return Some(part_element(elements));
+        return Some(part_element(part));
     };
-    let index = element.index as usize;
+    let index = element.index;
     Some(match element.kind {
-        SubGeometryKind::Face => face_element(element.index, elements.face(index).ok()?),
-        SubGeometryKind::Edge => edge_element(element.index, elements.edge(index).ok()?.curve()),
-        SubGeometryKind::Pointset => Element::Vertex {
-            index: element.index,
-            position: dvec3_to_point3(elements.vertex(index).ok()?.point()),
+        SubGeometryKind::Face => face_element(index, part.face(index).ok()?),
+        SubGeometryKind::Edge => edge_element(index, part.edge(index).ok()?.curve()),
+        SubGeometryKind::Pointset => {
+            Element::Vertex { index, position: dvec3_to_point3(part.vertex(index).ok()?.point()) }
         },
     })
 }
 
-fn part_element(elements: &ShapeElements) -> Element {
-    let shape = elements.shape();
+fn part_element(part: &CadPart) -> Element {
+    let (shape, elements) = (part.shape(), part.elements());
     Element::Part {
         faces: elements.faces().len(),
         edges: elements.edges().len(),
@@ -446,7 +444,7 @@ fn edge_element(index: u32, edge: &Edge) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_scene::cad::CadTessellationOptions;
+    use duck_engine_scene::cad::{CadTessellationOptions, ShapeElements};
     use duck_engine_scene::common::Transform;
     use duck_engine_scene::resource::SubGeometryElement;
     use duck_engine_scene::Scene;
@@ -573,7 +571,7 @@ mod tests {
     fn a_seam_split_edge_reports_one_circle() {
         let (document, node) = doc_with_bitten_ball();
         let rim = bite_rim(&document, node);
-        let pieces = document.elements(node).unwrap().edge(rim as usize).unwrap().pieces();
+        let pieces = document.part_at(node).unwrap().edge(rim).unwrap().pieces();
         let circumference: Real = pieces.iter().map(|piece| piece.length() as Real).sum();
 
         let summary =
