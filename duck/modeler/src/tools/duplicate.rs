@@ -1,13 +1,9 @@
 use duck_engine_scene::resource::{NodeFlags, NodeId};
-use duck_engine_scene::Scene;
 use duck_engine_viewer::{
     common::{decompose_matrix, Matrix4, SquareMatrix, Transform},
-    event::{Event, EventContext},
-    operator::{
-        ConstraintSpace, NodeTransformTarget, Operator, SelectionMode, TransformDriver,
-        TransformFrame, TransformInteraction, TransformMode, TransformTarget,
-    },
-    selection::SelectionItem,
+    event::{DeviceEvent, Event, EventContext},
+    operator::{Handle, HandleEvent, SelectionMode},
+    selection::{SelectionItem, SelectionManager},
 };
 
 use crate::document::PartId;
@@ -16,6 +12,7 @@ use crate::preview::PreviewSession;
 use crate::tools::{Gesture, ModelingTool, ToolInfo, Workspace};
 use crate::ui::icons;
 use super::targets::selected_parts;
+use super::transform::{parts_frame, Frame, Input, Manipulation, Outcome, Space, TransformMode};
 
 /// Copies the selected parts and places the copies with the translate gizmo.
 ///
@@ -30,38 +27,61 @@ use super::targets::selected_parts;
 /// reaches the document unless the user confirms — and then the whole
 /// placement is a single undo step.
 pub struct DuplicateTool {
-    driver: TransformDriver<DuplicateTarget>,
+    manipulation: Manipulation,
+    copies: Copies,
+    /// Where a drag of the copies would start, refreshed while idle.
+    frame: Option<Frame>,
 }
 
 impl DuplicateTool {
     pub fn new(workspace: &Workspace) -> Self {
-        let target = DuplicateTarget {
-            nodes: NodeTransformTarget::new(),
+        let copies = Copies {
             preview: workspace.preview_session(),
             sources: Vec::new(),
             pending_spawn: false,
             done: false,
             workspace: workspace.clone(),
         };
-        Self { driver: TransformDriver::with_target(TransformMode::Translate, target) }
+        Self { manipulation: Manipulation::new(TransformMode::Translate), copies, frame: None }
+    }
+
+    /// Carries out what the drag asked. Returns whether the event is taken.
+    fn act(&mut self, outcome: Outcome, selection: &mut SelectionManager) -> bool {
+        match outcome {
+            Outcome::Ignored => return false,
+            Outcome::Consumed => {}
+            // The copies already exist; there is nothing to lock.
+            Outcome::Started => {
+                if self.copies.sources.is_empty() {
+                    self.manipulation.abort();
+                }
+            }
+            // One delta for every copy: the selection moves as a rigid group,
+            // and each copy was tessellated at its source's world position.
+            Outcome::Changed => {
+                self.copies.preview.set_preview_transform(decompose_matrix(&self.manipulation.delta()))
+            }
+            Outcome::Confirmed(delta) => self.copies.apply(delta, selection),
+            // Undo the drag but keep the copies, ready for another attempt.
+            Outcome::Cancelled => self.copies.preview.set_preview_transform(Transform::IDENTITY),
+        }
+        true
     }
 
     /// Commit the copies at their current, undragged position. Returns whether
     /// there were any.
-    fn place(&mut self, ctx: &mut EventContext) -> bool {
-        let target = self.driver.target_mut();
-        if target.sources.is_empty() {
+    fn place(&mut self, selection: &mut SelectionManager) -> bool {
+        if self.copies.sources.is_empty() {
             return false;
         }
-        target.apply(Matrix4::identity(), ctx);
+        self.copies.apply(Matrix4::identity(), selection);
         true
     }
 
     /// Drop the copies without adding anything to the document, and leave.
     fn abandon(&mut self) {
-        let target = self.driver.target_mut();
-        target.discard();
-        target.done = true;
+        self.copies.discard();
+        self.copies.done = true;
     }
 }
 
@@ -80,18 +100,26 @@ impl ModelingTool for DuplicateTool {
         // The copies are built from the selection, which `activate` cannot see;
         // the frame tick is the first point with an event context.
         if gesture == Some(Gesture::Frame) {
-            self.driver.target_mut().sync_sources(ctx);
+            self.copies.sync_sources(ctx.selection);
+        }
+        let refresh = matches!(
+            event,
+            Event::Device(DeviceEvent::Update { .. } | DeviceEvent::KeyboardInput { .. })
+        );
+        if refresh && !self.manipulation.is_active() {
+            self.frame = self.copies.frame(ctx.selection);
         }
 
         // A drag takes its own confirm and cancel.
-        if self.driver.dispatch(event, ctx) {
+        let outcome = self.manipulation.dispatch(event, self.frame, &Input::of(ctx));
+        if self.act(outcome, ctx.selection) {
             return true;
         }
-        if self.driver.is_active() {
+        if self.manipulation.is_active() {
             return false;
         }
         match gesture {
-            Some(Gesture::Finish) => self.place(ctx),
+            Some(Gesture::Finish) => self.place(ctx.selection),
             Some(Gesture::Cancel) => {
                 self.abandon();
                 true
@@ -100,22 +128,31 @@ impl ModelingTool for DuplicateTool {
         }
     }
 
+    fn handles(&self) -> Vec<Handle> {
+        self.manipulation.handles(self.frame.as_ref())
+    }
+
+    fn on_handle(&mut self, event: &HandleEvent, ctx: &mut EventContext) {
+        let outcome = self.manipulation.on_handle(event, self.frame, &Input::of(ctx));
+        self.act(outcome, ctx.selection);
+    }
+
     fn activate(&mut self) {
-        self.driver.set_gizmo_enabled(true);
         // Carry the copies along their sources' own axes.
-        self.driver.set_orientation(ConstraintSpace::Local);
-        self.driver.target_mut().pending_spawn = true;
+        self.manipulation.set_orientation(Space::Local);
+        self.copies.pending_spawn = true;
     }
 
     fn deactivate(&mut self) {
-        // Abort any in-progress drag and remove the gizmo and copy previews.
-        let scene = self.driver.target().workspace.document.lock().unwrap().scene().clone();
-        self.driver.teardown(&scene);
-        self.driver.target_mut().done = false;
+        // Abort any in-progress drag and remove the copy previews.
+        self.manipulation.abort();
+        self.copies.discard();
+        self.copies.done = false;
+        self.frame = None;
     }
 
     fn is_finished(&self) -> bool {
-        self.driver.target().done
+        self.copies.done
     }
 
     // No `finalize`: before a placement the pending result is a copy sitting on
@@ -123,15 +160,11 @@ impl ModelingTool for DuplicateTool {
     // never asked for.
 }
 
-/// [`TransformTarget`] over preview copies of the selected parts.
+/// Preview copies of the selected parts.
 ///
 /// The copies are `PreviewSession` ghosts, so a drag only moves scene nodes —
 /// no CAD work per frame — and the real parts are cut once, on commit.
-struct DuplicateTarget {
-    /// Supplies the pivot and local frame for the current selection. Only ever
-    /// queried; its own transform lifecycle is never begun, so the source nodes
-    /// are left alone.
-    nodes: NodeTransformTarget,
+struct Copies {
     /// The copies shown until they are placed.
     preview: PreviewSession,
     /// Part-backed selected nodes the copies were built from, in selection
@@ -146,19 +179,26 @@ struct DuplicateTarget {
     workspace: Workspace,
 }
 
-impl DuplicateTarget {
+impl Copies {
     /// Rebuild the copies when the tool has just been activated or the
     /// selection has changed under it.
-    fn sync_sources(&mut self, ctx: &mut EventContext) {
+    fn sync_sources(&mut self, selection: &SelectionManager) {
         if self.done {
             return;
         }
-        let selected = selected_parts(ctx.selection, &self.workspace.document.lock().unwrap());
+        let selected = selected_parts(selection, &self.workspace.document.lock().unwrap());
         if !self.pending_spawn && selected == self.sources {
             return;
         }
         self.pending_spawn = false;
         self.respawn(selected);
+    }
+
+    /// Where a drag of the copies acts: about their sources, along the primary
+    /// one's axes.
+    fn frame(&self, selection: &SelectionManager) -> Option<Frame> {
+        let document = self.workspace.document.lock().unwrap();
+        parts_frame(&self.sources, selection.primary().map(|item| item.node_id()), &document)
     }
 
     /// Replace the previewed copies with one per node in `sources`.
@@ -195,7 +235,7 @@ impl DuplicateTarget {
 
     /// Cut the real parts at `placement`, select them and end the tool. A
     /// failure keeps the copies, back where they started, to place again.
-    fn apply(&mut self, placement: Matrix4, ctx: &mut EventContext) {
+    fn apply(&mut self, placement: Matrix4, selection: &mut SelectionManager) {
         let copies = {
             let mut document = self.workspace.document.lock().unwrap();
             let parts: Vec<PartId> =
@@ -210,8 +250,8 @@ impl DuplicateTarget {
                 self.discard();
                 self.done = true;
                 // The copies are what the user is now working with.
-                ctx.selection.clear();
-                ctx.selection.extend(nodes.into_iter().map(SelectionItem::Node));
+                selection.clear();
+                selection.extend(nodes.into_iter().map(SelectionItem::Node));
             }
             Err(e) => {
                 self.workspace.notifications.failure("Duplicate", &e);
@@ -227,36 +267,32 @@ impl DuplicateTarget {
     }
 }
 
-impl TransformTarget for DuplicateTarget {
-    fn frame(&mut self, ctx: &mut EventContext) -> Option<TransformFrame> {
-        self.nodes.frame(ctx)
-    }
+#[cfg(test)]
+mod tests {
+    use duck_engine_viewer::common::{InnerSpace, Point3, Real, Vector3};
 
-    fn begin(&mut self, _ctx: &mut EventContext) -> bool {
-        // The copies already exist; there is no source state to snapshot.
-        !self.sources.is_empty()
-    }
+    use super::*;
+    use crate::testing::workspace_with_box;
 
-    fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
-        let delta = interaction.delta_matrix(ctx.camera, ctx.size);
-        // One delta for every copy: the whole selection moves as a rigid group,
-        // and each copy was tessellated at its source's world position.
-        self.preview.set_preview_transform(decompose_matrix(&delta));
-    }
+    const EPSILON: Real = 1e-6;
 
-    fn commit(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
-        let delta = interaction.delta_matrix(ctx.camera, ctx.size);
-        self.apply(delta, ctx);
-    }
+    #[test]
+    fn a_placed_copy_lands_at_the_delta_and_is_selected() {
+        let (ws, node) = workspace_with_box();
+        let mut tool = DuplicateTool::new(&ws);
+        let mut selection = SelectionManager::new();
+        selection.extend([SelectionItem::Node(node)]);
+        tool.activate();
+        tool.copies.sync_sources(&selection);
+        assert_eq!(tool.copies.frame(&selection).map(|f| f.pivot), Some(Point3::new(0.0, 0.0, 0.0)));
 
-    fn cancel(&mut self, _ctx: &mut EventContext) {
-        // Undo the drag but keep the copies: the gizmo stays at the original
-        // pivot, ready for another attempt.
-        self.preview.set_preview_transform(Transform::IDENTITY);
-    }
+        tool.copies.apply(Matrix4::from_translation(Vector3::new(5.0, 0.0, 0.0)), &mut selection);
 
-    fn abort(&mut self, _scene: &Scene) {
-        // The preview session resolves the document's current scene itself.
-        self.discard();
+        let copy = selection.primary().expect("the copy is selected").node_id();
+        assert_ne!(copy, node);
+        let document = ws.document.lock().unwrap();
+        let frame = document.part_at(copy).unwrap().frame();
+        assert!((frame.position - Point3::new(5.0, 0.0, 0.0)).magnitude() < EPSILON, "{frame:?}");
+        assert!(tool.is_finished());
     }
 }

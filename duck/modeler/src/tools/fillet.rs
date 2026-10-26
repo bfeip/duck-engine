@@ -141,7 +141,7 @@ mod tests {
     use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
 
-    use crate::testing::{edge_item, visibility, volume, workspace_with_box_and_cube};
+    use crate::testing::{edge_item, ViewState, visibility, volume, workspace_with_box_and_cube};
     use crate::tools::{Gesture, ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
@@ -171,9 +171,10 @@ mod tests {
     /// Grabs the grip and drags it `distance` out of the corner, then lets go.
     fn drag_out(op: &mut FilletTool, distance: Real) {
         let grabbed = params(op);
-        op.on_handle(&HandleEvent::Begin(SIZE_HANDLE));
-        op.on_handle(&HandleEvent::Drag(drag(grabbed.grip(), grabbed.frame.outward * distance)));
-        op.on_handle(&HandleEvent::End(SIZE_HANDLE));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(SIZE_HANDLE), &mut view.ctx());
+        op.on_handle(&HandleEvent::Drag(drag(grabbed.grip(), grabbed.frame.outward * distance)), &mut view.ctx());
+        op.on_handle(&HandleEvent::End(SIZE_HANDLE), &mut view.ctx());
     }
 
     #[test]
@@ -392,7 +393,8 @@ mod tests {
     fn finalize_commits_only_a_blend_with_size() {
         let (ws, node, _) = workspace_with_box_and_cube();
         let (mut op, mut selection) = targeting_edge(&ws, node);
-        op.on_handle(&HandleEvent::Begin(SIZE_HANDLE));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(SIZE_HANDLE), &mut view.ctx());
         op.finalize(&mut selection).expect("nothing to commit");
         assert!((volume(&ws, node) - 8.0).abs() < 1e-9);
 

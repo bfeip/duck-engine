@@ -130,7 +130,7 @@ mod tests {
     use glam::DVec3;
     use opencascade::primitives::{Face, Wire};
 
-    use crate::testing::{face_item_along, visibility, volume, workspace_with, workspace_with_box_and_cube};
+    use crate::testing::{face_item_along, ViewState, visibility, volume, workspace_with, workspace_with_box_and_cube};
     use crate::tools::{ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
@@ -153,9 +153,10 @@ mod tests {
         let grabbed = params(op);
         let grab = grabbed.grip();
         let drag = crate::testing::drag(THICKNESS_HANDLE, grab, -grabbed.frame.normal * distance);
-        op.on_handle(&HandleEvent::Begin(THICKNESS_HANDLE));
-        op.on_handle(&HandleEvent::Drag(drag));
-        op.on_handle(&HandleEvent::End(THICKNESS_HANDLE));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(THICKNESS_HANDLE), &mut view.ctx());
+        op.on_handle(&HandleEvent::Drag(drag), &mut view.ctx());
+        op.on_handle(&HandleEvent::End(THICKNESS_HANDLE), &mut view.ctx());
     }
 
     #[test]

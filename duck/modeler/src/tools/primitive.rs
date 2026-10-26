@@ -277,7 +277,7 @@ impl<P: Primitive> ModelingTool for PrimitiveTool<P> {
         }
     }
 
-    fn on_handle(&mut self, event: &HandleEvent) {
+    fn on_handle(&mut self, event: &HandleEvent, _ctx: &mut EventContext) {
         let Placement::Placed(edit) = &mut self.placement else { return };
         if edit.on_handle(event) {
             self.preview.set_preview_transform(edit.params().preview_transform());

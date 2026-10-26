@@ -229,7 +229,7 @@ mod tests {
     use opencascade::primitives::ShapeType;
 
     use crate::testing::{
-        face_item, pointer_at, visibility, workspace_with, workspace_with_box, xy_region,
+        face_item, pointer_at, ViewState, visibility, workspace_with, workspace_with_box, xy_region,
     };
     use crate::tools::{Gesture, ModelingTool, Workspace};
 
@@ -374,9 +374,10 @@ mod tests {
         let (mut op, _ws, _node, mut selection) = tool();
         pick_axis(&mut op);
         let params = *op.params().expect("editing");
-        op.on_handle(&HandleEvent::Begin(ANGLE_HANDLE));
-        op.on_handle(&HandleEvent::Drag(swing(&params, consts::TAU, consts::TAU - consts::FRAC_PI_2)));
-        op.on_handle(&HandleEvent::End(ANGLE_HANDLE));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(ANGLE_HANDLE), &mut view.ctx());
+        op.on_handle(&HandleEvent::Drag(swing(&params, consts::TAU, consts::TAU - consts::FRAC_PI_2)), &mut view.ctx());
+        op.on_handle(&HandleEvent::End(ANGLE_HANDLE), &mut view.ctx());
 
         assert!(op.on_gesture(Gesture::Key('a'), &mut selection));
         assert!(op.is_picking());

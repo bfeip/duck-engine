@@ -222,7 +222,7 @@ mod tests {
     use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::HandleEvent;
 
-    use crate::testing::{doc_with_box, drag, edge_item, face_item, workspace_with_box};
+    use crate::testing::{doc_with_box, drag, edge_item, face_item, ViewState, workspace_with_box};
     use crate::tools::ModelingTool;
 
     const EPSILON: Real = 1e-5;
@@ -420,7 +420,8 @@ mod tests {
         op.follow_selection(&selection);
         assert!(!op.is_editing());
 
-        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE), &mut view.ctx());
         assert!(op.is_editing());
         let locked = *op.target().expect("editing");
 
@@ -440,9 +441,10 @@ mod tests {
 
         let tip = op.params().expect("targeted").tip();
         let direction = op.params().expect("targeted").direction;
-        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
-        op.on_handle(&HandleEvent::Drag(drag(DISTANCE_HANDLE, tip, direction * 2.0)));
-        op.on_handle(&HandleEvent::End(DISTANCE_HANDLE));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE), &mut view.ctx());
+        op.on_handle(&HandleEvent::Drag(drag(DISTANCE_HANDLE, tip, direction * 2.0)), &mut view.ctx());
+        op.on_handle(&HandleEvent::End(DISTANCE_HANDLE), &mut view.ctx());
         op.refresh_preview();
 
         assert!((op.params().expect("editing").distance - 2.0).abs() < EPSILON);
@@ -457,9 +459,10 @@ mod tests {
             let params = op.params().expect("targeted");
             (params.tip(), params.direction)
         };
-        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
-        op.on_handle(&HandleEvent::Drag(drag(DISTANCE_HANDLE, tip, direction * distance)));
-        op.on_handle(&HandleEvent::End(DISTANCE_HANDLE));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE), &mut view.ctx());
+        op.on_handle(&HandleEvent::Drag(drag(DISTANCE_HANDLE, tip, direction * distance)), &mut view.ctx());
+        op.on_handle(&HandleEvent::End(DISTANCE_HANDLE), &mut view.ctx());
         op.refresh_preview();
     }
 
@@ -527,7 +530,8 @@ mod tests {
         let shift = Modifiers { shift: true, ..Default::default() };
         assert!(!op.swallows_click(shift));
 
-        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(DISTANCE_HANDLE), &mut view.ctx());
         assert!(op.swallows_click(Modifiers::default()));
         assert!(op.swallows_click(shift));
     }

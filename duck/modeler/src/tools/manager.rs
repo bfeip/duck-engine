@@ -59,7 +59,7 @@ impl Operator for ToolHost {
             HandleOutcome::Ignored => {}
             HandleOutcome::Consumed => return true,
             HandleOutcome::Event(handle_event) => {
-                tool.lock().unwrap().on_handle(&handle_event);
+                tool.lock().unwrap().on_handle(&handle_event, ctx);
                 return true;
             }
         }

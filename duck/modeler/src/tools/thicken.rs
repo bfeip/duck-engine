@@ -190,7 +190,8 @@ mod tests {
     use glam::DVec3;
 
     use crate::testing::{
-        face_item, face_item_along, tube, visibility, volumes, workspace_with, workspace_with_box,
+        face_item, face_item_along, tube, ViewState, visibility, volumes, workspace_with,
+        workspace_with_box,
     };
     use crate::tools::{Gesture, ModelingTool, Workspace};
 
@@ -215,9 +216,10 @@ mod tests {
             FRONT_HANDLE => (grabbed.front_grip(), grabbed.frame.normal),
             _ => (grabbed.back_grip(), -grabbed.frame.normal),
         };
-        op.on_handle(&HandleEvent::Begin(id));
-        op.on_handle(&HandleEvent::Drag(crate::testing::drag(id, grab, outward * distance)));
-        op.on_handle(&HandleEvent::End(id));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(id), &mut view.ctx());
+        op.on_handle(&HandleEvent::Drag(crate::testing::drag(id, grab, outward * distance)), &mut view.ctx());
+        op.on_handle(&HandleEvent::End(id), &mut view.ctx());
     }
 
     /// Joining shows one arrow; a new body adds one against the normal, the

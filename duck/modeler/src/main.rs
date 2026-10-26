@@ -27,7 +27,7 @@ use egui_wgpu::RendererOptions;
 use duck_engine_viewer::{AxisTriadConfig, OffscreenViewer, ViewId, ViewLayout, WindowSurface};
 use duck_engine_viewer::event::Event;
 use duck_engine_viewer::input::ElementState;
-use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator, TransformMode};
+use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator};
 use duck_engine_viewer::common::{
     InnerSpace, Real, RgbaColor, Vector3
 };
@@ -38,7 +38,8 @@ use crate::construction::ConstructionOptions;
 use crate::tools::{
     BooleanTool, BoxTool, CircleTool, CylinderTool, DraftTool, DuplicateTool, ExtrudeTool,
     FilletTool, HollowTool, JoinTool, LoftTool, PathKind, PathTool, RectangleTool, RevolveTool,
-    SphereTool, ThickenTool, ToolId, ToolManager, TransformTool, UnjoinTool, Workspace,
+    SphereTool, ThickenTool, ToolId, ToolManager, TransformMode, TransformTool, UnjoinTool,
+    Workspace,
 };
 use crate::notifications::Notifications;
 use crate::platform::{FileFilter, Host};

@@ -506,7 +506,7 @@ impl<F: Feature> ModelingTool for FeatureTool<F> {
     }
 
     /// Grabbing a grip begins the edit, which locks the target.
-    fn on_handle(&mut self, event: &HandleEvent) {
+    fn on_handle(&mut self, event: &HandleEvent, _ctx: &mut EventContext) {
         let Some(session) = &mut self.session else { return };
         if let HandleEvent::Begin(_) = event {
             session.locked = true;

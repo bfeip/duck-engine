@@ -1,75 +1,179 @@
+//! Move, rotate and scale.
+//!
+//! [`Manipulation`] is the transform itself: its constraint, what drives it —
+//! a gizmo grip, or the cursor after a key — and the delta that comes out. A
+//! tool holds one, feeds it events and grip drags, and acts on the
+//! [`Outcome`]s it returns by previewing and committing the delta on whatever
+//! it moves.
+
+mod gizmo;
+mod manipulation;
+
+pub use manipulation::TransformMode;
+pub(super) use manipulation::{Frame, Input, Manipulation, Outcome, Space};
+
 use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_scene::Scene;
 use duck_engine_viewer::common::{
-    decompose_matrix, InnerSpace, Point3, Quaternion, SquareMatrix, Vector3,
+    centroid_of_slice, decompose_matrix, InnerSpace, Matrix4, Point3, Quaternion, SquareMatrix,
+    Transform, Vector3,
 };
-use duck_engine_viewer::event::{Event, EventContext};
-use duck_engine_viewer::operator::{
-    ConstraintSpace, NodeTransformTarget, Operator, SelectionKinds, SelectionMode, TransformCaps,
-    TransformDriver, TransformFrame, TransformInteraction, TransformMode, TransformTarget,
-};
-use duck_engine_viewer::selection::SelectionItem;
-use opencascade::primitives::FaceOrientation;
+use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
+use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionKinds, SelectionMode};
+use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartId};
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::tools::{Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
+use crate::tools::{selected_parts, Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
 
 /// CAD-aware transform tool for one operation (move, rotate, *or* scale). Each
 /// [`TransformMode`] is registered as its own palette tool.
 ///
-/// The tool is a viewer [`TransformDriver`] over a [`ModelerTarget`], which
-/// routes between two transform grains based on the selection:
+/// What it moves follows the selection:
 ///
-/// - **Whole parts** (node selection) transform through the viewer's
-///   [`NodeTransformTarget`] — the drag previews by mutating the *scene node*
-///   transform, which rests at the part's frame, moving the tessellated mesh
-///   but leaving the CAD B-Rep untouched. On commit the node's move from the
-///   frame is baked into the part's geometry via [`Document::bake_transform`].
-/// - **Faces** (a face drilled into as the primary selection) transform
-///   through [`FaceTweakTarget`]: the drag moves a ghost of the picked face,
-///   and committing re-solves the B-Rep around the transformed face via
-///   [`Document::tweak_faces`].
+/// - **Whole parts** preview by moving their nodes, and commit by baking the
+///   delta into their B-Reps via [`Document::bake_transform`].
+/// - **A face**, drilled into as the primary selection, previews as a ghost of
+///   the face, and commits by re-solving the body around the moved face via
+///   [`Document::tweak_faces`]. A face only scales uniformly.
 ///
-/// Selecting the tool shows its handle set immediately; drag a handle to
-/// transform. The mode's key (G/R/S) starts a freeform transform and X/Y/Z
-/// start an axis-constrained one; left-click or Enter confirms, right-click or
-/// Escape cancels. The tool stays for the next transform until Escape with
-/// none in progress, or another tool.
+/// Selecting the tool shows its gizmo; drag a grip to transform. The mode's key
+/// (G/R/S) starts a free transform at the cursor and X/Y/Z start or change an
+/// axis-constrained one (Shift+X/Y/Z a plane); left-click or Enter confirms,
+/// right-click or Escape cancels. The tool stays for the next transform until
+/// Escape with none in progress, or another tool.
 ///
 /// The gizmo runs along the part's own frame, or the world's when the tool's
 /// panel switches it; each activation starts on the part's.
 pub struct TransformTool {
-    mode: TransformMode,
-    driver: TransformDriver<ModelerTarget>,
+    manipulation: Manipulation,
+    parts: Parts,
+    face: FaceTweak,
+    /// What a transform would start on now, and about which frame. Refreshed
+    /// while idle, so the gizmo follows the selection.
+    offer: Option<(Route, Frame)>,
+    /// What the transform in progress locked onto.
+    active: Option<Route>,
+    workspace: Workspace,
     /// Set by Escape with no transform in progress, so the tool cedes back to
     /// selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
 }
 
+/// What a transform moves.
+#[derive(Clone, PartialEq)]
+enum Route {
+    /// These whole parts.
+    Parts(Vec<NodeId>),
+    /// One face, re-solving its body.
+    Face(FaceTarget),
+}
+
 impl TransformTool {
     pub fn new(mode: TransformMode, workspace: &Workspace) -> Self {
-        let target = ModelerTarget {
-            nodes: NodeTransformTarget::new(),
-            face: FaceTweakTarget::new(Arc::clone(&workspace.document)),
+        Self {
+            manipulation: Manipulation::new(mode),
+            parts: Parts::default(),
+            face: FaceTweak::new(Arc::clone(&workspace.document)),
+            offer: None,
             active: None,
             workspace: workspace.clone(),
+            finished: false,
+        }
+    }
+
+    /// What the selection offers a transform: a face drilled into, else the
+    /// selected parts.
+    fn resolve(&mut self, selection: &SelectionManager) -> Option<(Route, Frame)> {
+        let document = self.workspace.document.lock().unwrap();
+        if let Some(target) = selected_face(selection, &document) {
+            // Resolving the face locks the document itself.
+            drop(document);
+            return self.face.frame_for(target).map(|frame| (Route::Face(target), frame));
+        }
+        let nodes = selected_parts(selection, &document);
+        let frame = parts_frame(&nodes, selection.primary().map(|item| item.node_id()), &document)?;
+        Some((Route::Parts(nodes), frame))
+    }
+
+    /// The frame a transform would start about now.
+    fn frame(&self) -> Option<Frame> {
+        self.offer.as_ref().map(|(_, frame)| *frame)
+    }
+
+    fn scene(&self) -> Scene {
+        self.workspace.document.lock().unwrap().scene().clone()
+    }
+
+    /// Carries out what the transform asked. Returns whether the event is
+    /// taken.
+    fn act(&mut self, outcome: Outcome, selection: &mut SelectionManager) -> bool {
+        match outcome {
+            Outcome::Ignored => return false,
+            Outcome::Consumed => {}
+            Outcome::Started => {
+                if !self.begin() {
+                    self.manipulation.abort();
+                }
+            }
+            Outcome::Changed => self.preview(),
+            Outcome::Confirmed(delta) => self.commit(delta, selection),
+            Outcome::Cancelled => self.cancel(),
+        }
+        true
+    }
+
+    /// Locks onto what was on offer when the transform started.
+    fn begin(&mut self) -> bool {
+        let Some((route, _)) = self.offer.clone() else { return false };
+        let begun = match &route {
+            Route::Parts(nodes) => self.parts.begin(nodes, &self.scene()),
+            Route::Face(target) => self.face.begin(*target, &self.workspace.geometry_options()),
         };
-        Self { mode, driver: TransformDriver::with_target(mode, target), finished: false }
+        self.active = begun.then_some(route);
+        begun
+    }
+
+    fn preview(&mut self) {
+        let delta = self.manipulation.delta();
+        match &self.active {
+            Some(Route::Parts(_)) => self.parts.preview(&delta, &self.scene()),
+            Some(Route::Face(_)) => self.face.preview(&delta),
+            None => {}
+        }
+    }
+
+    fn commit(&mut self, delta: Matrix4, selection: &mut SelectionManager) {
+        match self.active.take() {
+            Some(Route::Parts(_)) => self.parts.commit(delta, &self.workspace),
+            Some(Route::Face(target)) => {
+                self.face.commit(target, delta, selection, &self.workspace.notifications)
+            }
+            None => {}
+        }
+    }
+
+    fn cancel(&mut self) {
+        match self.active.take() {
+            Some(Route::Parts(_)) => self.parts.restore(&self.scene()),
+            Some(Route::Face(_)) => self.face.cancel(),
+            None => {}
+        }
     }
 }
 
 impl ModelingTool for TransformTool {
     fn info(&self) -> ToolInfo {
-        match self.mode {
-            TransformMode::Translate => ToolInfo { id: "move", icon: icons::MOVE, shortcut: Some('g') },
-            TransformMode::Rotate => ToolInfo { id: "rotate", icon: icons::ROTATE, shortcut: Some('r') },
-            TransformMode::Scale => ToolInfo { id: "scale", icon: icons::SCALE, shortcut: Some('s') },
+        let shortcut = Some(self.manipulation.mode().key());
+        match self.manipulation.mode() {
+            TransformMode::Translate => ToolInfo { id: "move", icon: icons::MOVE, shortcut },
+            TransformMode::Rotate => ToolInfo { id: "rotate", icon: icons::ROTATE, shortcut },
+            TransformMode::Scale => ToolInfo { id: "scale", icon: icons::SCALE, shortcut },
         }
     }
 
@@ -79,20 +183,40 @@ impl ModelingTool for TransformTool {
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        if self.driver.dispatch(event, ctx) {
+        // Keep what a transform would start on current while idle: the gizmo
+        // sits on it, and a key starts on it.
+        let refresh = matches!(
+            event,
+            Event::Device(DeviceEvent::Update { .. } | DeviceEvent::KeyboardInput { .. })
+        );
+        if refresh && !self.manipulation.is_active() {
+            self.offer = self.resolve(ctx.selection);
+        }
+
+        let outcome = self.manipulation.dispatch(event, self.frame(), &Input::of(ctx));
+        if self.act(outcome, ctx.selection) {
             return true;
         }
         // Escape cancels a transform in progress, above; with none, it leaves.
         let escape = Gesture::read(event, ctx.modifiers) == Some(Gesture::Cancel);
-        if escape && !self.driver.is_active() {
+        if escape && !self.manipulation.is_active() {
             self.finished = true;
             return true;
         }
         false
     }
 
+    fn handles(&self) -> Vec<Handle> {
+        self.manipulation.handles(self.offer.as_ref().map(|(_, frame)| frame))
+    }
+
+    fn on_handle(&mut self, event: &HandleEvent, ctx: &mut EventContext) {
+        let outcome = self.manipulation.on_handle(event, self.frame(), &Input::of(ctx));
+        self.act(outcome, ctx.selection);
+    }
+
     fn panel_title(&self) -> Option<&str> {
-        match self.mode {
+        match self.manipulation.mode() {
             TransformMode::Translate => Some("Move"),
             TransformMode::Rotate => Some("Rotate"),
             TransformMode::Scale => Some("Scale"),
@@ -100,31 +224,138 @@ impl ModelingTool for TransformTool {
     }
 
     fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let mut orientation = self.driver.orientation();
+        let mut orientation = self.manipulation.orientation();
         ui.label("Axes");
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut orientation, ConstraintSpace::Local, "Local");
-            ui.selectable_value(&mut orientation, ConstraintSpace::World, "Global");
+            ui.selectable_value(&mut orientation, Space::Local, "Local");
+            ui.selectable_value(&mut orientation, Space::World, "Global");
         });
-        self.driver.set_orientation(orientation);
+        self.manipulation.set_orientation(orientation);
     }
 
     fn activate(&mut self) {
-        // Show this mode's handle set as soon as the tool is selected; the next
-        // frame syncs it onto the current selection.
-        self.driver.set_gizmo_enabled(true);
-        self.driver.set_orientation(ConstraintSpace::Local);
+        self.manipulation.set_orientation(Space::Local);
     }
 
     fn deactivate(&mut self) {
-        // Abort any in-progress transform and remove gizmo/ghost nodes.
-        let scene = self.driver.target().workspace.document.lock().unwrap().scene().clone();
-        self.driver.teardown(&scene);
+        // Put back whatever a transform in progress previewed.
+        self.parts.restore(&self.scene());
+        self.face.abort();
+        self.manipulation.abort();
+        self.active = None;
+        self.offer = None;
         self.finished = false;
     }
 
     fn is_finished(&self) -> bool {
         self.finished
+    }
+}
+
+/// Where a transform of the parts at `nodes` acts: about the centre of their
+/// bounds, along the `primary` part's own axes, or the first's when the
+/// primary is none of them.
+pub(super) fn parts_frame(nodes: &[NodeId], primary: Option<NodeId>, document: &Document) -> Option<Frame> {
+    let pivot = {
+        let scene = document.scene().lock();
+        let centres: Vec<Point3> = nodes
+            .iter()
+            .filter_map(|&node| {
+                scene.nodes_bounding(node).bounds.map(|aabb| aabb.center()).or_else(|| {
+                    scene.nodes_transform(node).map(|m| decompose_matrix(&m).position)
+                })
+            })
+            .collect();
+        centroid_of_slice(&centres)?
+    };
+    let axes = primary.filter(|primary| nodes.contains(primary)).or(nodes.first().copied())?;
+    let rotation = document.part_at(axes)?.frame().rotation;
+    Some(Frame { pivot, rotation, uniform_scale: false })
+}
+
+/// The face drilled into as the primary selection, if it belongs to a part.
+fn selected_face(selection: &SelectionManager, document: &Document) -> Option<FaceTarget> {
+    let SelectionItem::SubGeometry { node_id, element } = selection.primary()? else {
+        return None;
+    };
+    if element.kind != SubGeometryKind::Face {
+        return None;
+    }
+    let part = document.part_for_node(node_id)?;
+    Some(FaceTarget { node: node_id, part, face_index: element.index })
+}
+
+/// Whole parts: previewed on their nodes, and baked into their B-Reps on
+/// commit.
+#[derive(Default)]
+struct Parts {
+    rest: Vec<Rest>,
+}
+
+/// Where a moved node rested.
+struct Rest {
+    node: NodeId,
+    local: Transform,
+    world: Matrix4,
+    /// Takes a world transform into the node's parent's space.
+    to_parent: Matrix4,
+}
+
+impl Parts {
+    /// Snapshots the nodes at `nodes`. Fails with none to move.
+    fn begin(&mut self, nodes: &[NodeId], scene: &Scene) -> bool {
+        let scene = scene.lock();
+        self.rest = nodes
+            .iter()
+            .filter_map(|&node| {
+                let parent = scene.get_node(node)?.parent().and_then(|p| scene.nodes_transform(p));
+                Some(Rest {
+                    node,
+                    local: scene.get_node(node)?.transform(),
+                    world: scene.nodes_transform(node)?,
+                    to_parent: parent.and_then(|m| m.invert()).unwrap_or(Matrix4::identity()),
+                })
+            })
+            .collect();
+        !self.rest.is_empty()
+    }
+
+    /// Shows the nodes moved by `delta`.
+    fn preview(&self, delta: &Matrix4, scene: &Scene) {
+        let mut scene = scene.lock();
+        for rest in &self.rest {
+            if scene.has_node(rest.node) {
+                let local = rest.to_parent * delta * rest.world;
+                scene.set_node_transform(rest.node, decompose_matrix(&local));
+            }
+        }
+    }
+
+    /// Puts the nodes back where they rested.
+    fn restore(&mut self, scene: &Scene) {
+        let mut scene = scene.lock();
+        for rest in self.rest.drain(..) {
+            if scene.has_node(rest.node) {
+                scene.set_node_transform(rest.node, rest.local);
+            }
+        }
+    }
+
+    /// Bakes `delta` into each part as one undo step. The delta itself, not
+    /// what the preview could show of it: a stretch across a turned part is
+    /// beyond a node's transform, but not the B-Rep's.
+    fn commit(&mut self, delta: Matrix4, workspace: &Workspace) {
+        let rest = std::mem::take(&mut self.rest);
+        let mut document = workspace.document.lock().unwrap();
+        let scene = document.scene().clone();
+        let mut document = document.undo_scope("Transform");
+        for rest in rest {
+            let Some(part) = document.part_for_node(rest.node) else { continue };
+            if let Err(e) = document.bake_transform(part, delta) {
+                scene.set_node_transform(rest.node, rest.local);
+                workspace.notifications.failure("Transform", &e);
+            }
+        }
     }
 }
 
@@ -137,168 +368,40 @@ struct FaceTarget {
     face_index: u32,
 }
 
-/// Which transform grain an in-progress drag locked onto at
-/// [`TransformTarget::begin`].
-enum ActiveRoute {
-    Nodes,
-    Face(FaceTarget),
-}
-
-/// [`TransformTarget`] routing between whole-part node transforms and single
-/// face tweaks based on the current selection.
+/// One face of a solid, moved by re-solving the body around it.
 ///
-/// The route is resolved from the selection in [`frame`](TransformTarget::frame)
-/// (so the idle gizmo follows the selection grain) and locked in
-/// [`begin`](TransformTarget::begin); preview/commit/cancel always act on the
-/// locked route, so a drag can never change grain midway.
-struct ModelerTarget {
-    nodes: NodeTransformTarget,
-    face: FaceTweakTarget,
-    active: Option<ActiveRoute>,
-    workspace: Workspace,
-}
-
-impl ModelerTarget {
-    /// The face currently drilled into as the primary selection, if it belongs
-    /// to a known CAD part.
-    fn selected_face(&self, ctx: &EventContext) -> Option<FaceTarget> {
-        let SelectionItem::SubGeometry { node_id, element } = ctx.selection.primary()? else {
-            return None;
-        };
-        if element.kind != SubGeometryKind::Face {
-            return None;
-        }
-        let part = self.workspace.document.lock().unwrap().part_for_node(node_id)?;
-        Some(FaceTarget { node: node_id, part, face_index: element.index })
-    }
-
-    /// Bake what each committed node shows into its CAD part: the move from
-    /// the part's frame, where the node rested, to the node's transform now.
-    fn bake_nodes(&mut self, nodes: &[NodeId], ctx: &mut EventContext) {
-        let mut doc = self.workspace.document.lock().unwrap();
-        // One undo step covers a multi-select bake.
-        let mut doc = doc.undo_scope("Transform");
-        for &node in nodes {
-            let Some(part) = doc.part_for_node(node) else { continue };
-            let Some(frame) = doc.get_part(part).map(|p| p.frame().to_matrix()) else { continue };
-            // Stay in common's matrix type; the OCCT array conversion happens
-            // inside bake_transform.
-            let delta = ctx
-                .scene
-                .get_node(node)
-                .zip(frame.invert())
-                .map(|(n, rest_inverse)| n.transform().to_matrix() * rest_inverse);
-            if let Some(delta) = delta
-                && let Err(e) = doc.bake_transform(part, delta) {
-                    self.workspace.notifications.failure("Transform", &e);
-                }
-        }
-    }
-}
-
-impl TransformTarget for ModelerTarget {
-    fn frame(&mut self, ctx: &mut EventContext) -> Option<TransformFrame> {
-        match self.selected_face(ctx) {
-            Some(target) => self.face.frame_for(target),
-            None => self.nodes.frame(ctx),
-        }
-    }
-
-    fn caps(&self) -> TransformCaps {
-        match self.active {
-            // A non-uniform similarity can't be baked into the B-Rep.
-            Some(ActiveRoute::Face(_)) => TransformCaps { uniform_scale_only: true },
-            _ => TransformCaps::default(),
-        }
-    }
-
-    fn begin(&mut self, ctx: &mut EventContext) -> bool {
-        self.active = match self.selected_face(ctx) {
-            Some(target) => {
-                let options = self.workspace.geometry_options();
-                self.face.begin(target, &options).then_some(ActiveRoute::Face(target))
-            }
-            None => self.nodes.begin(ctx).then_some(ActiveRoute::Nodes),
-        };
-        self.active.is_some()
-    }
-
-    fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
-        match self.active {
-            Some(ActiveRoute::Nodes) => self.nodes.preview(interaction, ctx),
-            Some(ActiveRoute::Face(_)) => self.face.preview(interaction, ctx),
-            None => {}
-        }
-    }
-
-    fn commit(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
-        match self.active.take() {
-            Some(ActiveRoute::Nodes) => {
-                let nodes = self.nodes.nodes();
-                self.nodes.commit(interaction, ctx);
-                self.bake_nodes(&nodes, ctx);
-            }
-            Some(ActiveRoute::Face(target)) => {
-                self.face.commit(target, interaction, ctx, &self.workspace.notifications);
-            }
-            None => {}
-        }
-    }
-
-    fn cancel(&mut self, ctx: &mut EventContext) {
-        match self.active.take() {
-            Some(ActiveRoute::Nodes) => self.nodes.cancel(ctx),
-            Some(ActiveRoute::Face(_)) => self.face.cancel(),
-            None => {}
-        }
-    }
-
-    fn abort(&mut self, scene: &Scene) {
-        self.nodes.abort(scene);
-        self.face.abort();
-        self.active = None;
-    }
-}
-
-/// Face half of [`ModelerTarget`]: interactive transform of one face of a
-/// solid.
-///
-/// The drag is previewed cheaply by rigidly transforming a ghost tessellation
-/// of just the picked face — no OCCT work per frame. Committing runs the
-/// actual tweak ([`Document::tweak_faces`]), which re-solves the body around
-/// the moved face and re-tessellates in place; a tweak the kernel cannot
-/// re-solve leaves the part untouched and reports the error.
-struct FaceTweakTarget {
+/// The drag is previewed cheaply by rigidly moving a ghost tessellation of just
+/// the face — no OCCT work per frame. Committing runs the actual tweak
+/// ([`Document::tweak_faces`]), which re-solves the body around the moved face
+/// and re-tessellates in place; a tweak the kernel cannot re-solve leaves the
+/// part untouched and reports the error.
+struct FaceTweak {
     /// Ghost of the picked face shown while dragging.
     preview: PreviewSession,
-    /// Pivot/frame resolved from the last-targeted face (`None` when the face
-    /// has no usable pivot), cached because gizmo syncing runs every update.
+    /// Pivot and axes resolved from the last-targeted face (`None` when it has
+    /// no usable pivot), cached because the gizmo follows it every update.
     resolved: Option<(FaceTarget, Option<(Point3, Quaternion)>)>,
     document: Arc<Mutex<Document>>,
 }
 
-impl FaceTweakTarget {
+impl FaceTweak {
     fn new(document: Arc<Mutex<Document>>) -> Self {
-        Self {
-            preview: PreviewSession::new(Arc::clone(&document)),
-            resolved: None,
-            document,
-        }
+        Self { preview: PreviewSession::new(Arc::clone(&document)), resolved: None, document }
     }
 
-    /// Pivot (face centroid) and frame (local Z = outward face normal) for
+    /// Pivot (face centroid) and axes (local Z = outward face normal) for
     /// `target`, resolved from the B-Rep and cached.
     fn resolve(&mut self, target: FaceTarget) -> Option<(Point3, Quaternion)> {
         if let Some((cached, resolved)) = self.resolved
-            && cached == target {
-                return resolved;
-            }
+            && cached == target
+        {
+            return resolved;
+        }
         let resolved = (|| {
             let doc = self.document.lock().unwrap();
             let face = doc.part_at(target.node)?.face(target.face_index).ok()?;
-            // `normal_at_center` returns the surface's parametric normal, which
-            // points inward for Reversed faces — flip it so local Z points out.
-            let sign = if face.orientation() == FaceOrientation::Forward { 1.0 } else { -1.0 };
+            // `normal_at_center` goes through `BRepGProp_Face::Normal`, which
+            // applies the face's orientation: it already points out.
             let n = match face.normal_at_center() {
                 Ok(n) => n,
                 Err(e) => {
@@ -306,29 +409,29 @@ impl FaceTweakTarget {
                     return None;
                 }
             };
-            let normal = (dvec3_to_vec3(n) * sign).normalize();
+            let normal = dvec3_to_vec3(n).normalize();
             let pivot = dvec3_to_point3(face.center_of_mass());
-            let frame = Quaternion::from_arc(Vector3::unit_z(), normal, None);
-            Some((pivot, frame))
+            Some((pivot, Quaternion::from_arc(Vector3::unit_z(), normal, None)))
         })();
         self.resolved = Some((target, resolved));
         resolved
     }
 
-    /// The gizmo anchor for `target`, if the face can be resolved.
-    fn frame_for(&mut self, target: FaceTarget) -> Option<TransformFrame> {
-        let (pivot, frame) = self.resolve(target)?;
-        Some(TransformFrame { pivot, frame_rotation: Some(frame) })
+    /// The frame a tweak of `target` acts about, if the face resolves.
+    fn frame_for(&mut self, target: FaceTarget) -> Option<Frame> {
+        let (pivot, rotation) = self.resolve(target)?;
+        // A non-uniform scale is no similarity, so the body can't be re-solved
+        // around it.
+        Some(Frame { pivot, rotation, uniform_scale: true })
     }
 
-    /// Lock onto `target`: ghost the face for the upcoming drag. Fails
-    /// (refusing the start) if the face can't be resolved or ghosted.
+    /// Locks onto `target`: ghosts the face for the upcoming drag. Fails if the
+    /// face can't be resolved or ghosted.
     fn begin(&mut self, target: FaceTarget, options: &CadTessellationOptions) -> bool {
         if self.resolve(target).is_none() {
             log::warn!("Tweak target could not be resolved to a CAD face");
             return false;
         }
-
         let ghost_shape = {
             let doc = self.document.lock().unwrap();
             doc.part_at(target.node)
@@ -343,46 +446,186 @@ impl FaceTweakTarget {
         true
     }
 
-    /// Move the ghost to the interaction's current delta.
-    fn preview(&mut self, interaction: &TransformInteraction, ctx: &mut EventContext) {
-        let Some(ghost) = self.preview.preview_node() else { return };
-        let delta = interaction.delta_matrix(ctx.camera, ctx.size);
-        let transform = decompose_matrix(&delta);
-        ctx.scene.set_node_transform(ghost, transform);
+    /// Moves the ghost by `delta`.
+    fn preview(&mut self, delta: &Matrix4) {
+        self.preview.set_preview_transform(decompose_matrix(delta));
     }
 
-    /// Run the tweak on the B-Rep. On success the selection is cleared — the
+    /// Runs the tweak on the B-Rep. On success the selection is cleared — the
     /// part re-tessellates, so face indices no longer identify the same
     /// sub-geometry.
     fn commit(
         &mut self,
         target: FaceTarget,
-        interaction: &TransformInteraction,
-        ctx: &mut EventContext,
+        delta: Matrix4,
+        selection: &mut SelectionManager,
         notifications: &Notifications,
     ) {
-        let delta = interaction.delta_matrix(ctx.camera, ctx.size);
-
         self.preview.cancel();
         self.resolved = None;
 
-        let result =
-            self.document.lock().unwrap().tweak_faces(target.part, &[target.face_index], delta);
+        let result = self.document.lock().unwrap().tweak_faces(target.part, &[target.face_index], delta);
         match result {
-            Ok(()) => ctx.selection.clear(),
+            Ok(()) => selection.clear(),
             Err(e) => notifications.failure("Face tweak", &e),
         }
     }
 
-    /// Discard the drag without touching the B-Rep.
+    /// Discards the drag without touching the B-Rep.
     fn cancel(&mut self) {
         self.preview.cancel();
     }
 
-    /// Drop everything held for the current face (route change or tool
-    /// deactivation). Idempotent.
+    /// Drops everything held for the current face. Idempotent.
     fn abort(&mut self) {
         self.preview.cancel();
         self.resolved = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use duck_engine_viewer::common::{consts, quaternion_from_axis_angle_safe, Axis, EuclideanSpace, Real};
+    use glam::DVec3;
+
+    use super::*;
+    use crate::testing::{face_item_along, volume, workspace_with_box, workspace_with_box_and_cube};
+
+    const EPSILON: Real = 1e-6;
+
+    fn node_position(ws: &Workspace, node: NodeId) -> Point3 {
+        let scene = ws.document.lock().unwrap().scene().clone();
+        let position = scene.lock().get_node(node).unwrap().transform().position;
+        position
+    }
+
+    fn frame_of(ws: &Workspace, node: NodeId) -> Transform {
+        let document = ws.document.lock().unwrap();
+        document.part_at(node).unwrap().frame()
+    }
+
+    fn select(items: &[SelectionItem]) -> SelectionManager {
+        let mut selection = SelectionManager::new();
+        selection.extend(items.iter().copied());
+        selection
+    }
+
+    #[test]
+    fn a_part_frame_sits_on_the_bounds_centre_along_the_primary() {
+        let (ws, main, other) = workspace_with_box_and_cube();
+        let document = ws.document.lock().unwrap();
+        // The box spans -1..1 and the cube 3..4, so their centres are the origin
+        // and (3.5, 3.5, 3.5).
+        let frame = parts_frame(&[main, other], Some(other), &document).unwrap();
+        assert!((frame.pivot - Point3::new(1.75, 1.75, 1.75)).magnitude() < EPSILON, "{:?}", frame.pivot);
+        assert!(!frame.uniform_scale);
+    }
+
+    /// A face drilled into routes to a tweak about the face; the part itself to
+    /// a whole-part move.
+    #[test]
+    fn the_selection_picks_the_route() {
+        let (ws, node) = workspace_with_box();
+        let mut tool = TransformTool::new(TransformMode::Translate, &ws);
+
+        let face = select(&[face_item_along(&ws, node, DVec3::Y)]);
+        let (route, frame) = tool.resolve(&face).expect("a face offers a tweak");
+        assert!(matches!(route, Route::Face(_)));
+        assert!(frame.uniform_scale);
+
+        let part = select(&[SelectionItem::Node(node)]);
+        let (route, _) = tool.resolve(&part).expect("a part offers a move");
+        assert!(route == Route::Parts(vec![node]));
+    }
+
+    #[test]
+    fn a_preview_moves_the_nodes_and_a_restore_puts_them_back() {
+        let (ws, node) = workspace_with_box();
+        let scene = ws.document.lock().unwrap().scene().clone();
+        let mut parts = Parts::default();
+        assert!(parts.begin(&[node], &scene));
+
+        parts.preview(&Matrix4::from_translation(Vector3::new(4.0, 0.0, 0.0)), &scene);
+        assert!((node_position(&ws, node) - Point3::new(4.0, 0.0, 0.0)).magnitude() < EPSILON);
+        parts.restore(&scene);
+        assert!((node_position(&ws, node) - Point3::new(0.0, 0.0, 0.0)).magnitude() < EPSILON);
+    }
+
+    /// The bake is exact: a quarter turn turns the part's frame an exact quarter.
+    #[test]
+    fn a_commit_bakes_the_delta_into_the_part() {
+        let (ws, node) = workspace_with_box();
+        let scene = ws.document.lock().unwrap().scene().clone();
+        let mut parts = Parts::default();
+        parts.begin(&[node], &scene);
+
+        let turn = quaternion_from_axis_angle_safe(Vector3::unit_z(), consts::PI / 2.0);
+        let delta = Matrix4::from_translation(Vector3::new(0.0, 0.0, 5.0)) * Matrix4::from(turn);
+        parts.preview(&delta, &scene);
+        parts.commit(delta, &ws);
+
+        let frame = frame_of(&ws, node);
+        assert!((frame.position - Point3::new(0.0, 0.0, 5.0)).magnitude() < EPSILON, "{frame:?}");
+        let x = frame.rotation * Vector3::unit_x();
+        assert!((x - Vector3::unit_y()).magnitude() < EPSILON, "{x:?}");
+        // The node rests on the new frame.
+        assert!((node_position(&ws, node) - frame.position).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn a_scale_commit_reshapes_the_part() {
+        let (ws, node) = workspace_with_box();
+        let scene = ws.document.lock().unwrap().scene().clone();
+        let mut parts = Parts::default();
+        parts.begin(&[node], &scene);
+        parts.commit(Matrix4::from_scale(2.0), &ws);
+        assert!((volume(&ws, node) - 64.0).abs() < 1e-6, "{}", volume(&ws, node));
+    }
+
+    #[test]
+    fn a_multi_part_commit_undoes_as_one_step() {
+        let (ws, main, other) = workspace_with_box_and_cube();
+        let scene = ws.document.lock().unwrap().scene().clone();
+        let mut parts = Parts::default();
+        parts.begin(&[main, other], &scene);
+        parts.commit(Matrix4::from_translation(Vector3::new(1.0, 0.0, 0.0)), &ws);
+
+        ws.document.lock().unwrap().undo().unwrap();
+        for node in [main, other] {
+            assert!(frame_of(&ws, node).position.x.abs() < EPSILON);
+        }
+    }
+
+    /// Reversed faces included: local Z is the outward normal of every face.
+    #[test]
+    fn a_face_frame_faces_out_of_the_body() {
+        let (ws, node) = workspace_with_box();
+        let mut face = FaceTweak::new(Arc::clone(&ws.document));
+        let part = ws.document.lock().unwrap().part_for_node(node).unwrap();
+        for face_index in 0..6 {
+            let frame = face.frame_for(FaceTarget { node, part, face_index }).unwrap();
+            let out = frame.axis(Axis::Z, Space::Local);
+            // The box is centred on the origin, so out is away from it.
+            let along = out.dot(frame.pivot.to_vec());
+            assert!((along - 1.0).abs() < EPSILON, "face {face_index}: {out:?} at {:?}", frame.pivot);
+        }
+    }
+
+    #[test]
+    fn a_face_commit_re_solves_the_body() {
+        let (ws, node) = workspace_with_box();
+        let selection = select(&[face_item_along(&ws, node, DVec3::X)]);
+        let target = selected_face(&selection, &ws.document.lock().unwrap()).unwrap();
+        let mut face = FaceTweak::new(Arc::clone(&ws.document));
+        let frame = face.frame_for(target).unwrap();
+        assert!(frame.uniform_scale);
+        assert!((frame.pivot - Point3::new(1.0, 0.0, 0.0)).magnitude() < EPSILON, "{:?}", frame.pivot);
+
+        assert!(face.begin(target, &ws.geometry_options()));
+        let mut selection = selection;
+        face.commit(target, Matrix4::from_translation(Vector3::new(1.0, 0.0, 0.0)), &mut selection, &ws.notifications);
+        // The 2-unit box grows a unit along X.
+        assert!((volume(&ws, node) - 12.0).abs() < 1e-6, "{}", volume(&ws, node));
+        assert!(selection.primary().is_none());
     }
 }

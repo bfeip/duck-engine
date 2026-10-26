@@ -135,7 +135,7 @@ mod tests {
     use duck_engine_viewer::selection::SelectionItem;
     use glam::DVec3;
 
-    use crate::testing::{face_item_along, visibility, volume, workspace_with_box};
+    use crate::testing::{face_item_along, ViewState, visibility, volume, workspace_with_box};
     use crate::tools::{ModelingTool, Workspace};
 
     const EPSILON: Real = 1e-5;
@@ -171,9 +171,10 @@ mod tests {
     /// Grabs the grip and swings it by `angle`, then lets go.
     fn drag_by(op: &mut DraftTool, angle: Real) {
         let grabbed = params(op);
-        op.on_handle(&HandleEvent::Begin(ANGLE_HANDLE));
-        op.on_handle(&HandleEvent::Drag(swing(&grabbed, angle)));
-        op.on_handle(&HandleEvent::End(ANGLE_HANDLE));
+        let mut view = ViewState::default();
+        op.on_handle(&HandleEvent::Begin(ANGLE_HANDLE), &mut view.ctx());
+        op.on_handle(&HandleEvent::Drag(swing(&grabbed, angle)), &mut view.ctx());
+        op.on_handle(&HandleEvent::End(ANGLE_HANDLE), &mut view.ctx());
     }
 
     #[test]

@@ -91,6 +91,7 @@ impl PreviewSession {
     }
 
     /// The sole tracked preview node, or `None` if there are zero or more than one.
+    #[cfg(test)]
     pub fn preview_node(&self) -> Option<NodeId> {
         match self.previews.as_slice() {
             [node] => Some(*node),

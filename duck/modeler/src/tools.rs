@@ -12,8 +12,9 @@
 //!   `Feature::picking`. See `revolve.rs`.
 //! - It places a new shape by picking points: a `Primitive`, run by
 //!   `PrimitiveTool` (`primitive.rs`). See `box.rs`.
-//! - It drags the selection with a gizmo: the viewer's `TransformDriver` over
-//!   a `TransformTarget`. See `duplicate.rs`.
+//! - It drags the selection with a gizmo: a `Manipulation` (`transform.rs`),
+//!   whose grips it shows through [`ModelingTool::handles`] and whose outcomes
+//!   it previews and commits. See `duplicate.rs`.
 //! - Otherwise it implements [`ModelingTool`] itself, from the blocks below.
 //!   See `boolean.rs`.
 //!
@@ -85,7 +86,7 @@ pub use revolve::RevolveTool;
 pub use sphere::SphereTool;
 pub use targets::selected_parts;
 pub use thicken::ThickenTool;
-pub use transform::TransformTool;
+pub use transform::{TransformMode, TransformTool};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -290,7 +291,7 @@ pub trait ModelingTool: 'static {
     /// produced. [`HandleEvent::Begin`] is the cue to snapshot whatever
     /// [`HandleEvent::Drag`] edits: a drag reports its total offset from the
     /// grab point, not a per-event increment.
-    fn on_handle(&mut self, _event: &HandleEvent) {}
+    fn on_handle(&mut self, _event: &HandleEvent, _ctx: &mut EventContext) {}
 
     // Display
 

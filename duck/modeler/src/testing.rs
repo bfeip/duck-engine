@@ -9,10 +9,11 @@ use duck_engine_scene::common::{
     InnerSpace, Matrix4, Plane, Point3, Ray, Real, RgbaColor, Transform, Vector3,
 };
 use duck_engine_scene::resource::{NodeId, SubGeometryElement, SubGeometryKind, Visibility};
-use duck_engine_scene::Scene;
+use duck_engine_scene::{PositionedCamera, Projection, Scene};
+use duck_engine_viewer::event::EventContext;
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, NamedKey, PhysicalKey};
 use duck_engine_viewer::operator::{HandleDrag, HandleId};
-use duck_engine_viewer::selection::SelectionItem;
+use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 use glam::DVec3;
 use opencascade::primitives::{Face, Shape, Shell, Wire};
 
@@ -307,6 +308,46 @@ pub fn pointer_at(at: Point3) -> Pointer {
     Pointer {
         snap: Some(Snap { position: at, direction: None, kind: SnapKind::ConstructionPlane }),
         ray: Ray::new(at + Vector3::unit_x() * 10.0, -Vector3::unit_x()),
+    }
+}
+
+/// The state an [`EventContext`] borrows, for driving a tool directly: an
+/// 800×600 view of an empty scene, looking down -Z from ten units out, with
+/// the cursor off the view and nothing selected.
+pub struct ViewState {
+    pub cursor: Option<(f32, f32)>,
+    pub camera: PositionedCamera,
+    pub selection: SelectionManager,
+    pub scene: Scene,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self {
+            cursor: None,
+            camera: PositionedCamera {
+                eye: Point3::new(0.0, 0.0, 10.0),
+                target: Point3::new(0.0, 0.0, 0.0),
+                up: Vector3::unit_y(),
+                aspect: 800.0 / 600.0,
+                projection: Projection::Perspective { fovy: 45.0, znear: 0.1, zfar: 100.0 },
+            },
+            selection: SelectionManager::new(),
+            scene: Scene::default(),
+        }
+    }
+}
+
+impl ViewState {
+    pub fn ctx(&mut self) -> EventContext<'_> {
+        EventContext::new(
+            (800, 600),
+            &mut self.cursor,
+            self.scene.clone(),
+            &mut self.camera,
+            &mut self.selection,
+            Modifiers::default(),
+        )
     }
 }
 

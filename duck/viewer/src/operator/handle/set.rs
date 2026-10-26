@@ -33,6 +33,7 @@ struct Shown {
     drag: DragKind,
     anchor: Point3,
     direction: Vector3,
+    scale: Real,
     color: RgbaColor,
     /// Kept so a sync can tell a reach it can write from one it must rebuild.
     reach: HandleReach,
@@ -140,8 +141,12 @@ impl HandleSet {
                     leader_placement(origin, handle.anchor),
                 );
             }
+            if shown.scale != handle.scale {
+                scene.set_node_display(shown.node.id(), display(handle, self.screen_size));
+            }
             shown.anchor = handle.anchor;
             shown.direction = handle.direction;
+            shown.scale = handle.scale;
             shown.reach = handle.reach;
             shown.drag = handle.drag;
             // A highlighted handle wears the lit color; leave it alone or the
@@ -215,6 +220,7 @@ impl HandleSet {
                     NodeFlags::DOES_NOT_CONTRIBUTE_BOUNDING,
                 )
                 .expect("Failed to add handle node");
+            scene.set_node_display(node.id(), display(handle, self.screen_size));
 
             self.shown.push(Shown {
                 node,
@@ -225,6 +231,7 @@ impl HandleSet {
                 drag: handle.drag,
                 anchor: handle.anchor,
                 direction: handle.direction,
+                scale: handle.scale,
                 color: handle.color,
                 reach: handle.reach,
             });
@@ -405,6 +412,15 @@ fn leader_placement(origin: Point3, anchor: Point3) -> Transform {
     Transform { position: origin, rotation, scale: Vector3::new(1.0, length, 1.0) }
 }
 
+/// How a handle's node draws: at its scale of the set's `screen_size`.
+///
+/// A screen-sized node's own transform scale is discarded when it is drawn, so
+/// the scale has to ride on the screen size, which a node may set over the one
+/// it inherits.
+fn display(handle: &Handle, screen_size: f32) -> DisplayBehavior {
+    DisplayBehavior { screen_size: Some(screen_size * handle.scale as f32), ..Default::default() }
+}
+
 /// Where a handle's node sits: at its anchor, with `+Y` — the axis every shape
 /// is built along — turned onto its direction.
 fn placement(handle: &Handle) -> Transform {
@@ -476,6 +492,24 @@ mod tests {
         // ...and the node actually moved.
         let moved = scene.lock().get_node(before[0]).unwrap().transform().position;
         assert!((moved.x - 5.0).abs() < EPSILON);
+    }
+
+    /// A rescale is a write, like a move: the node keeps its geometry and
+    /// draws at the new size.
+    #[test]
+    fn sync_of_a_rescaled_handle_writes_its_screen_size() {
+        let scene = Scene::default();
+        let mut set = HandleSet::new();
+
+        set.sync(&[handle(0, HandleShape::Ring, Point3::new(0.0, 0.0, 0.0))], &scene);
+        let before = set.node_ids();
+        let size = |scene: &Scene| scene.lock().get_node(before[0]).unwrap().display().screen_size;
+        assert_eq!(size(&scene), Some(HANDLE_SCREEN_SIZE));
+
+        let grown = handle(0, HandleShape::Ring, Point3::new(0.0, 0.0, 0.0)).with_scale(2.5);
+        set.sync(&[grown], &scene);
+        assert_eq!(set.node_ids(), before);
+        assert_eq!(size(&scene), Some(HANDLE_SCREEN_SIZE * 2.5));
     }
 
     #[test]

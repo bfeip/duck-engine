@@ -137,6 +137,8 @@ pub struct Handle {
     pub color: RgbaColor,
     /// Where the grab sits relative to the anchor. See [`HandleReach`].
     pub reach: HandleReach,
+    /// Multiple of the set's unit size the shape and its reach are drawn at.
+    pub scale: Real,
 }
 
 impl Handle {
@@ -150,6 +152,7 @@ impl Handle {
             direction: Vector3::unit_y(),
             color: HANDLE_COLOR,
             reach: HandleReach::None,
+            scale: 1.0,
         }
     }
 
@@ -172,6 +175,13 @@ impl Handle {
 
     pub fn with_color(mut self, color: RgbaColor) -> Self {
         self.color = color;
+        self
+    }
+
+    /// Draws the shape and its reach `scale` times the set's unit size. A
+    /// [`HandleReach::Leader`] still spans its real distance.
+    pub fn with_scale(mut self, scale: Real) -> Self {
+        self.scale = scale;
         self
     }
 }

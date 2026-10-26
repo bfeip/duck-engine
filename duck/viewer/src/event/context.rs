@@ -38,6 +38,19 @@ pub struct EventContext<'c> {
 }
 
 impl<'c> EventContext<'c> {
+    /// A context over the given state with nothing emitted yet, for driving an
+    /// operator outside a dispatcher.
+    pub fn new(
+        size: (u32, u32),
+        cursor_position: &'c mut Option<(f32, f32)>,
+        scene: Scene,
+        camera: &'c mut PositionedCamera,
+        selection: &'c mut SelectionManager,
+        modifiers: Modifiers,
+    ) -> Self {
+        Self { size, cursor_position, scene, camera, selection, modifiers, emit_queue: Vec::new() }
+    }
+
     /// Emit a high-level event (or a synthesized device event) to be re-dispatched
     /// through the operator stack once the current event finishes propagating.
     ///
