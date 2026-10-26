@@ -102,6 +102,18 @@ pub fn length_value<Num: Numeric>(value: &mut Num, units: LengthDisplay) -> egui
         .custom_parser(move |text| units.parse(text, DOCUMENT_UNITS))
 }
 
+/// Drops Tab presses from `input` while no widget has the keyboard.
+///
+/// With nothing focused, egui hands Tab to the first widget, after which every
+/// key goes to it rather than the viewport — where Tab steps between a
+/// transform's typed values. Once a field has focus, Tab moves between fields
+/// as usual.
+pub fn keep_tab_for_viewport(ctx: &egui::Context, input: &mut egui::RawInput) {
+    if !ctx.wants_keyboard_input() {
+        input.events.retain(|event| !matches!(event, egui::Event::Key { key: egui::Key::Tab, .. }));
+    }
+}
+
 /// egui's default fonts, with the monospace Hack as the proportional text's
 /// last fallback for the arrows and symbols Ubuntu lacks.
 pub fn install_fonts(ctx: &egui::Context) {
@@ -192,6 +204,48 @@ mod tests {
             })
             .collect();
         assert!(painted.iter().any(|text| text == "1.250 cm"), "painted {painted:?}");
+    }
+
+    /// Runs a frame of two text fields on `events`, as the modeler feeds egui,
+    /// and returns their ids.
+    fn frame_of_fields(ctx: &egui::Context, events: Vec<egui::Event>) -> [egui::Id; 2] {
+        let mut input = egui::RawInput { events, ..Default::default() };
+        keep_tab_for_viewport(ctx, &mut input);
+        let mut ids = [egui::Id::NULL; 2];
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for id in &mut ids {
+                    *id = ui.text_edit_singleline(&mut String::new()).id;
+                }
+            });
+        });
+        ids
+    }
+
+    fn tab() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn tab_stays_the_viewports_until_a_field_has_focus() {
+        let ctx = egui::Context::default();
+        frame_of_fields(&ctx, Vec::new());
+        frame_of_fields(&ctx, vec![tab()]);
+        frame_of_fields(&ctx, Vec::new());
+        assert_eq!(ctx.memory(|m| m.focused()), None, "Tab must not focus a field");
+
+        let ids = frame_of_fields(&ctx, Vec::new());
+        ctx.memory_mut(|m| m.request_focus(ids[0]));
+        frame_of_fields(&ctx, Vec::new());
+        frame_of_fields(&ctx, vec![tab()]);
+        frame_of_fields(&ctx, Vec::new());
+        assert_eq!(ctx.memory(|m| m.focused()), Some(ids[1]), "Tab moves between fields");
     }
 
     /// Every `.rs` file under `dir`.

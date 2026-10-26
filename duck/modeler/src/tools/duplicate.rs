@@ -9,19 +9,22 @@ use duck_engine_viewer::{
 use crate::document::PartId;
 use crate::ops::duplicate::duplicate_parts;
 use crate::preview::PreviewSession;
-use crate::tools::{Gesture, ModelingTool, ToolInfo, Workspace};
+use crate::tools::{Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
 use crate::ui::icons;
 use super::targets::selected_parts;
-use super::transform::{parts_frame, Frame, Input, Manipulation, Outcome, Space, TransformMode};
+use super::transform::{
+    parts_frame, values_ui, Frame, Input, Manipulation, Outcome, Space, TransformMode,
+};
 
 /// Copies the selected parts and places the copies with the translate gizmo.
 ///
 /// Selecting the tool immediately makes a copy of every selected part, sitting
 /// on top of its source, and shows the translate handles. Drag a handle (or
-/// press G) to carry the copies off; left-click or Enter confirms, right-click
-/// or Escape reverts the drag. With no drag in progress, right-click or Enter
-/// places the copies where they already are and Escape leaves without copying
-/// anything. Either way the tool then cedes back to selection.
+/// press G or X/Y/Z, or type a distance) to carry the copies off; left-click or
+/// Enter confirms, right-click or Escape reverts the drag. With no drag in
+/// progress, right-click or Enter places the copies where they already are and
+/// Escape leaves without copying anything. Either way the tool then cedes back
+/// to selection.
 ///
 /// The copies are only preview geometry until they are placed, so nothing
 /// reaches the document unless the user confirms — and then the whole
@@ -50,22 +53,25 @@ impl DuplicateTool {
         match outcome {
             Outcome::Ignored => return false,
             Outcome::Consumed => {}
-            // The copies already exist; there is nothing to lock.
-            Outcome::Started => {
-                if self.copies.sources.is_empty() {
-                    self.manipulation.abort();
-                }
-            }
-            // One delta for every copy: the selection moves as a rigid group,
-            // and each copy was tessellated at its source's world position.
-            Outcome::Changed => {
-                self.copies.preview.set_preview_transform(decompose_matrix(&self.manipulation.delta()))
-            }
+            // The copies already exist; there is nothing to lock. A drag started
+            // by typing has already moved.
+            Outcome::Started => match self.copies.sources.is_empty() {
+                true => self.manipulation.abort(),
+                false => self.preview(),
+            },
+            Outcome::Changed => self.preview(),
             Outcome::Confirmed(delta) => self.copies.apply(delta, selection),
             // Undo the drag but keep the copies, ready for another attempt.
             Outcome::Cancelled => self.copies.preview.set_preview_transform(Transform::IDENTITY),
         }
         true
+    }
+
+    /// Shows the copies carried by the drag so far. One delta for every copy:
+    /// the selection moves as a rigid group, and each copy was tessellated at
+    /// its source's world position.
+    fn preview(&self) {
+        self.copies.preview.set_preview_transform(decompose_matrix(&self.manipulation.delta()));
     }
 
     /// Commit the copies at their current, undragged position. Returns whether
@@ -111,7 +117,8 @@ impl ModelingTool for DuplicateTool {
         }
 
         // A drag takes its own confirm and cancel.
-        let outcome = self.manipulation.dispatch(event, self.frame, &Input::of(ctx));
+        let units = self.copies.workspace.display_units();
+        let outcome = self.manipulation.dispatch(event, self.frame, &Input::of(ctx, units));
         if self.act(outcome, ctx.selection) {
             return true;
         }
@@ -133,8 +140,20 @@ impl ModelingTool for DuplicateTool {
     }
 
     fn on_handle(&mut self, event: &HandleEvent, ctx: &mut EventContext) {
-        let outcome = self.manipulation.on_handle(event, self.frame, &Input::of(ctx));
+        let units = self.copies.workspace.display_units();
+        let outcome = self.manipulation.on_handle(event, self.frame, &Input::of(ctx, units));
         self.act(outcome, ctx.selection);
+    }
+
+    /// Only while a drag is in progress, for its values.
+    fn panel_title(&self) -> Option<&str> {
+        self.manipulation.is_active().then_some("Duplicate")
+    }
+
+    fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
+        if values_ui(ui, &mut self.manipulation, self.copies.workspace.display_units()) {
+            self.preview();
+        }
     }
 
     fn activate(&mut self) {

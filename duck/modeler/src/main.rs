@@ -463,7 +463,8 @@ impl<'a> ViewerState<'a> {
         // Build the egui frame: docked panels, then the central panel holding
         // the (stable) 3D scene texture. The central image rect is captured to
         // size the offscreen viewer and route viewport input.
-        let raw_input = self.host.take_egui_input();
+        let mut raw_input = self.host.take_egui_input();
+        ui::keep_tab_for_viewport(&self.egui_ctx, &mut raw_input);
         let egui_ctx = self.egui_ctx.clone();
         let scene_texture_id = self.scene_texture_id;
         let mut viewport_rect = None;

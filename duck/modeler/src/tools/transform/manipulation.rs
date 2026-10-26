@@ -8,18 +8,20 @@
 //! Either driver reduces to a pair of points on the constraint's locus: where
 //! the drag began, and where it has reached. A gizmo grip gets the pair from the
 //! handle machinery; the cursor, after a key starts a transform, solves its own
-//! rays for it.
+//! rays for it. Values typed in, or set by a panel, take over from both.
 
 use duck_engine_viewer::common::{
-    consts, quaternion_from_axis_angle_safe, Axis, EuclideanSpace, InnerSpace, Matrix4, Point3,
-    Quaternion, Real, Rotation, SquareMatrix, Vector3, Zero, EPSILON,
+    consts, quaternion_from_axis_angle_safe, Axis, EuclideanSpace, InnerSpace, LengthDisplay,
+    Matrix4, Point3, Quaternion, Real, Rotation, SquareMatrix, Vector3, Zero, EPSILON,
 };
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, MouseButton, NamedKey};
 use duck_engine_viewer::operator::{solve_drag, DragGeometry, Handle, HandleEvent, HandleId};
 use duck_engine_viewer::scene::PositionedCamera;
 
-use super::gizmo::{self, Grip};
+use super::gizmo::{self, plane_axes, Grip};
+use super::typed::TypedValues;
+use crate::document::DOCUMENT_UNITS;
 
 /// Rotation rate for an event whose rotation plane is too edge-on to solve an
 /// angle against.
@@ -84,6 +86,53 @@ pub enum Constraint {
     Plane(Axis, Space),
 }
 
+/// What a transform value measures, which decides how it is shown and typed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldKind {
+    /// A length in document units, typed in the display unit.
+    Length,
+    /// An angle in radians, typed in degrees.
+    Angle,
+    Factor,
+}
+
+impl FieldKind {
+    /// The value that leaves the transform where it started.
+    fn neutral(self) -> Real {
+        match self {
+            FieldKind::Length | FieldKind::Angle => 0.0,
+            FieldKind::Factor => 1.0,
+        }
+    }
+
+    /// Reads typed `text` as a value of this kind, a length shown in `units`.
+    fn parse(self, text: &str, units: LengthDisplay) -> Option<Real> {
+        match self {
+            FieldKind::Length => units.parse(text, DOCUMENT_UNITS).map(|length| length as Real),
+            FieldKind::Angle => text.parse::<Real>().ok().map(Real::to_radians),
+            FieldKind::Factor => text.parse().ok(),
+        }
+    }
+}
+
+/// One value of the transform in progress, as a panel shows and edits it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Field {
+    pub kind: FieldKind,
+    /// The axis the value runs along or turns about, when it has its own.
+    pub axis: Option<Axis>,
+    /// As applied: see [`FieldKind`].
+    pub value: Real,
+    /// The text typed for it, while keys drive the transform.
+    pub typed: Option<String>,
+    /// Whether keys type into it.
+    pub active: bool,
+}
+
+/// What a value of a transform measures, and the axis it runs along, in which
+/// space, when it has its own.
+type Slot = (FieldKind, Option<(Axis, Space)>);
+
 /// What a transform acts about, as the thing being transformed offers it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
@@ -114,15 +163,18 @@ pub struct Input<'a> {
     /// The cursor in view pixels, or `None` when it is off the view.
     pub cursor: Option<(f32, f32)>,
     pub modifiers: Modifiers,
+    /// The unit lengths are typed in.
+    pub units: LengthDisplay,
 }
 
 impl<'a> Input<'a> {
-    pub fn of(ctx: &'a EventContext) -> Self {
+    pub fn of(ctx: &'a EventContext, units: LengthDisplay) -> Self {
         Self {
             camera: &*ctx.camera,
             size: ctx.size,
             cursor: *ctx.cursor_position,
             modifiers: ctx.modifiers,
+            units,
         }
     }
 
@@ -215,6 +267,8 @@ struct Active {
     rotation_axis: Vector3,
     /// How far a scale has gone.
     factor: Real,
+    /// Values typed in or set, which take over from the drive.
+    typed: TypedValues,
 }
 
 impl Active {
@@ -228,6 +282,7 @@ impl Active {
             last_angle: 0.0,
             rotation_axis: Vector3::zero(),
             factor: 1.0,
+            typed: TypedValues::default(),
         };
         active.rotation_axis = active.rotation_axis_for(camera);
         active
@@ -242,6 +297,59 @@ impl Active {
             }
             Constraint::Free => camera.forward(),
         }
+    }
+
+    /// The values of a transform in `mode`. A free move's run along
+    /// `orientation`'s axes.
+    fn slots(&self, mode: TransformMode, orientation: Space) -> Vec<Slot> {
+        let length = |axis, space| (FieldKind::Length, Some((axis, space)));
+        match (mode, self.constraint) {
+            (TransformMode::Translate, Constraint::Free) => {
+                Axis::ALL.map(|axis| length(axis, orientation)).to_vec()
+            }
+            (TransformMode::Translate, Constraint::Axis(axis, space)) => vec![length(axis, space)],
+            (TransformMode::Translate, Constraint::Plane(normal, space)) => {
+                let (u, v) = plane_axes(normal);
+                vec![length(u, space), length(v, space)]
+            }
+            (
+                TransformMode::Rotate,
+                Constraint::Axis(axis, space) | Constraint::Plane(axis, space),
+            ) => vec![(FieldKind::Angle, Some((axis, space)))],
+            (TransformMode::Rotate, Constraint::Free) => vec![(FieldKind::Angle, None)],
+            (TransformMode::Scale, Constraint::Axis(axis, space)) => {
+                vec![(FieldKind::Factor, Some((axis, space)))]
+            }
+            (TransformMode::Scale, _) => vec![(FieldKind::Factor, None)],
+        }
+    }
+
+    /// Whether typed values drive the transform: any of its `fields` is typed
+    /// or set.
+    fn typing(&self, fields: usize) -> bool {
+        (0..fields).any(|field| self.typed.value(field).is_some())
+    }
+
+    /// Each value of the transform in `mode` as it stands: typed, or as the
+    /// drive has it.
+    fn values(&self, mode: TransformMode, orientation: Space) -> Vec<Real> {
+        let slots = self.slots(mode, orientation);
+        let typing = self.typing(slots.len());
+        slots
+            .iter()
+            .enumerate()
+            .map(|(field, &(kind, axis))| match typing {
+                true => self.typed.value(field).unwrap_or(kind.neutral()),
+                false => match mode {
+                    TransformMode::Translate => {
+                        let (axis, space) = axis.expect("a move runs along an axis");
+                        self.translation.dot(self.frame.axis(axis, space))
+                    }
+                    TransformMode::Rotate => self.swept,
+                    TransformMode::Scale => self.factor,
+                },
+            })
+            .collect()
     }
 
     /// The locus a cursor-driven drag in `mode` is solved against.
@@ -326,10 +434,9 @@ impl Active {
         }
     }
 
-    /// The scale as a matrix about the origin: stretching the constraint's
-    /// axes, in its own space.
-    fn scale_matrix(&self) -> Matrix4 {
-        let f = self.factor;
+    /// A scale by `f` as a matrix about the origin: stretching the
+    /// constraint's axes, in its own space.
+    fn scale_matrix(&self, f: Real) -> Matrix4 {
         let (scale, space) = match self.constraint {
             Constraint::Free => return Matrix4::from_scale(f),
             Constraint::Axis(axis, space) => (axis_scale(axis, f, 1.0), space),
@@ -377,6 +484,12 @@ impl Manipulation {
         self.orientation = orientation;
     }
 
+    /// What the transform in progress is confined to; [`Constraint::Free`]
+    /// when idle.
+    pub fn constraint(&self) -> Constraint {
+        self.active.as_ref().map_or(Constraint::Free, |active| active.constraint)
+    }
+
     /// Drops the transform in progress, if any, without an outcome: for a
     /// start the tool could not lock, and for teardown.
     pub fn abort(&mut self) {
@@ -391,14 +504,58 @@ impl Manipulation {
         let about_pivot = |m: Matrix4| {
             Matrix4::from_translation(pivot) * m * Matrix4::from_translation(-pivot)
         };
+        let values = active.values(self.mode, self.orientation);
         match self.mode {
-            TransformMode::Translate => Matrix4::from_translation(active.translation),
+            TransformMode::Translate => {
+                let slots = active.slots(self.mode, self.orientation);
+                let along = |(_, axis): &Slot, value: &Real| {
+                    let (axis, space) = axis.expect("a move runs along an axis");
+                    active.frame.axis(axis, space) * *value
+                };
+                let translation = slots.iter().zip(&values).map(|(slot, value)| along(slot, value));
+                Matrix4::from_translation(translation.fold(Vector3::zero(), |sum, step| sum + step))
+            }
             TransformMode::Rotate => about_pivot(Matrix4::from(quaternion_from_axis_angle_safe(
                 active.rotation_axis,
-                active.swept,
+                values[0],
             ))),
-            TransformMode::Scale => about_pivot(active.scale_matrix()),
+            TransformMode::Scale => about_pivot(active.scale_matrix(values[0].max(MIN_SCALE))),
         }
+    }
+
+    /// The values of the transform in progress, as a panel shows them; none
+    /// when idle.
+    pub fn fields(&self) -> Vec<Field> {
+        let Some(active) = &self.active else { return Vec::new() };
+        let slots = active.slots(self.mode, self.orientation);
+        let typing = active.typing(slots.len());
+        let keyed = active.typed.active(slots.len());
+        slots
+            .iter()
+            .zip(active.values(self.mode, self.orientation))
+            .enumerate()
+            .map(|(field, (&(kind, axis), value))| Field {
+                kind,
+                axis: axis.map(|(axis, _)| axis),
+                value,
+                typed: active.typed.text(field).filter(|_| typing).map(str::to_owned),
+                active: typing && field == keyed,
+            })
+            .collect()
+    }
+
+    /// Sets value `field` outright, as a panel does; the transform then takes
+    /// its values from there on, the others as they stood.
+    pub fn set_field(&mut self, field: usize, value: Real) {
+        let (mode, orientation) = (self.mode, self.orientation);
+        let Some(active) = &mut self.active else { return };
+        let fields = active.slots(mode, orientation).len();
+        if !active.typing(fields) {
+            for (other, current) in active.values(mode, orientation).into_iter().enumerate() {
+                active.typed.set(other, current);
+            }
+        }
+        active.typed.set(field, value);
     }
 
     /// The gizmo grips to show: about `frame` while idle, riding along with a
@@ -414,7 +571,7 @@ impl Manipulation {
                     // stays under the cursor.
                     let mut frame = active.frame;
                     if self.mode == TransformMode::Translate {
-                        frame.pivot += active.translation;
+                        frame.pivot += self.delta().w.truncate();
                     }
                     gizmo::handles(self.mode, &frame, self.orientation)
                 }
@@ -498,6 +655,9 @@ impl Manipulation {
         if key.state != ElementState::Pressed || key.repeat {
             return Outcome::Ignored;
         }
+        if let Some(outcome) = self.type_value(key, frame, input) {
+            return outcome;
+        }
         let Some(command) = Command::read(key, input.modifiers, self.mode) else {
             return Outcome::Ignored;
         };
@@ -527,6 +687,36 @@ impl Manipulation {
             Command::Cancel if self.is_active() => self.cancel(),
             Command::Confirm | Command::Cancel => Outcome::Ignored,
         }
+    }
+
+    /// Types `key` into the transform's values; a key that starts a value starts
+    /// a transform at the cursor first. `None` when `key` doesn't type.
+    fn type_value(
+        &mut self,
+        key: &KeyEvent,
+        frame: Option<Frame>,
+        input: &Input,
+    ) -> Option<Outcome> {
+        let modifiers = input.modifiers;
+        if modifiers.control || modifiers.alt || modifiers.super_key {
+            return None;
+        }
+        let starting = !self.is_active();
+        if starting
+            && !(TypedValues::starts_value(&key.logical_key) && self.start_at_cursor(frame, input))
+        {
+            return None;
+        }
+        let (mode, orientation) = (self.mode, self.orientation);
+        let active = self.active.as_mut()?;
+        let slots = active.slots(mode, orientation);
+        // Every value of a transform measures the same kind of thing.
+        let kind = slots[0].0;
+        let parse = |text: &str| kind.parse(text, input.units);
+        if !active.typed.type_key(&key.logical_key, modifiers.shift, slots.len(), parse) {
+            return None;
+        }
+        Some(if starting { Outcome::Started } else { Outcome::Changed })
     }
 
     /// Starts a free transform about `frame`, driven by the cursor from where
@@ -561,9 +751,11 @@ impl Manipulation {
             make(first)
         };
         // A swept angle belongs to the axis it was swept about; everything else
-        // re-solves from the anchor.
+        // re-solves from the anchor. The axis is taken now, as the re-solve may
+        // find the new rotation plane edge-on.
         active.swept = 0.0;
         active.last_angle = 0.0;
+        active.rotation_axis = active.rotation_axis_for(input.camera);
         if let Drive::Cursor { last, .. } = active.drive {
             self.move_cursor(last, input);
         }
@@ -649,7 +841,7 @@ fn axis_scale(axis: Axis, on: Real, off: Real) -> Vector3 {
 
 #[cfg(test)]
 mod tests {
-    use duck_engine_viewer::common::Transform;
+    use duck_engine_viewer::common::{LengthUnit, Transform};
     use duck_engine_viewer::operator::HandleDrag;
     use duck_engine_viewer::scene::Projection;
 
@@ -681,7 +873,13 @@ mod tests {
     }
 
     fn input(camera: &PositionedCamera) -> Input<'_> {
-        Input { camera, size: SIZE, cursor: Some(CENTER), modifiers: Modifiers::default() }
+        Input {
+            camera,
+            size: SIZE,
+            cursor: Some(CENTER),
+            modifiers: Modifiers::default(),
+            units: LengthDisplay::new(LengthUnit::Millimeter, 2),
+        }
     }
 
     /// A frame on the origin along the world axes.
@@ -982,6 +1180,171 @@ mod tests {
         let uniform = Frame { uniform_scale: true, ..frame() };
         assert_eq!(m.dispatch(&press(key('x')), Some(uniform), &input(&camera)), Outcome::Started);
         assert_eq!(constraint(&m), Constraint::Free);
+    }
+
+    // ── Typed values ─────────────────────────────────────────────────────────
+
+    /// Presses `keys` in turn, Tab as `\t` and Backspace as `<`, and returns
+    /// the last outcome.
+    fn type_keys(m: &mut Manipulation, keys: &str, input: &Input) -> Outcome {
+        let mut last = Outcome::Ignored;
+        for c in keys.chars() {
+            let event = match c {
+                '\t' => named_key(NamedKey::Tab),
+                '<' => named_key(NamedKey::Backspace),
+                c => key(c),
+            };
+            last = m.dispatch(&press(event), Some(frame()), input);
+        }
+        last
+    }
+
+    /// Where the transform so far carries `point`.
+    fn moved(m: &Manipulation, point: Point3) -> Point3 {
+        Point3::from_homogeneous(m.delta() * point.to_homogeneous())
+    }
+
+    const ORIGIN: Point3 = Point3::new(0.0, 0.0, 0.0);
+
+    #[test]
+    fn a_typed_length_is_read_in_the_display_unit() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let centimetres =
+            Input { units: LengthDisplay::new(LengthUnit::Centimeter, 2), ..input(&camera) };
+        let mut m = Manipulation::new(TransformMode::Translate);
+        m.set_orientation(Space::World);
+        type_keys(&mut m, "x1.5", &centimetres);
+        // 1.5 cm is 15 document millimetres, wherever the mouse goes.
+        m.dispatch(&cursor_moved((CENTER.0 + 200.0, CENTER.1 + 50.0)), None, &centimetres);
+        let end = moved(&m, ORIGIN);
+        assert!((end - Point3::new(15.0, 0.0, 0.0)).magnitude() < EPSILON, "{end:?}");
+    }
+
+    #[test]
+    fn a_plane_takes_a_value_along_each_of_its_axes() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let shift = Modifiers { shift: true, ..Modifiers::default() };
+        let shifted = Input { modifiers: shift, ..input(&camera) };
+        let mut m = Manipulation::new(TransformMode::Translate);
+        m.set_orientation(Space::World);
+        m.dispatch(&press(key('Z')), Some(frame()), &shifted);
+        type_keys(&mut m, "3\t4", &input(&camera));
+        let end = moved(&m, ORIGIN);
+        assert!((end - Point3::new(3.0, 4.0, 0.0)).magnitude() < EPSILON, "{end:?}");
+    }
+
+    /// A digit starts a transform, and a free move types X, Y and Z along the
+    /// orientation's axes.
+    #[test]
+    fn a_digit_starts_a_free_move_along_the_orientation() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let rotation = quaternion_from_axis_angle_safe(Vector3::unit_z(), consts::PI / 2.0);
+        let turned = Frame { rotation, ..frame() };
+        let mut m = Manipulation::new(TransformMode::Translate);
+        assert_eq!(m.dispatch(&press(key('2')), Some(turned), &input(&camera)), Outcome::Started);
+        // Local X runs along world Y.
+        let end = moved(&m, ORIGIN);
+        assert!((end - Point3::new(0.0, 2.0, 0.0)).magnitude() < EPSILON, "{end:?}");
+    }
+
+    /// Looking down -Z the YZ rotation plane is edge-on, so the cursor can't
+    /// solve it: the axis has to come from the constraint itself.
+    #[test]
+    fn a_typed_quarter_turn_about_x_carries_y_onto_z() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let mut m = Manipulation::new(TransformMode::Rotate);
+        type_keys(&mut m, "x90", &input(&camera));
+        let end = moved(&m, Point3::new(0.0, 1.0, 0.0));
+        assert!((end - Point3::new(0.0, 0.0, 1.0)).magnitude() < WORLD_EPSILON, "{end:?}");
+    }
+
+    #[test]
+    fn a_typed_scale_is_uniform_and_cannot_collapse() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let mut m = Manipulation::new(TransformMode::Scale);
+        type_keys(&mut m, "2", &input(&camera));
+        let end = moved(&m, Point3::new(1.0, 1.0, 1.0));
+        assert!((end - Point3::new(2.0, 2.0, 2.0)).magnitude() < EPSILON, "{end:?}");
+
+        type_keys(&mut m, "<0", &input(&camera));
+        assert!((moved(&m, Point3::new(1.0, 0.0, 0.0)).x - MIN_SCALE).abs() < EPSILON);
+    }
+
+    #[test]
+    fn typed_values_win_over_the_mouse_until_they_are_cleared() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let input = input(&camera);
+        let mut m = Manipulation::new(TransformMode::Translate);
+        m.set_orientation(Space::World);
+        type_keys(&mut m, "x5", &input);
+        m.dispatch(&cursor_moved((CENTER.0 + 80.0, CENTER.1)), None, &input);
+        assert!((moved(&m, ORIGIN).x - 5.0).abs() < EPSILON);
+
+        assert_eq!(type_keys(&mut m, "<", &input), Outcome::Changed);
+        let mouse = translation(&m);
+        assert!(mouse.x > 0.0 && (mouse.x - 5.0).abs() > 0.1, "{mouse:?}");
+        assert!((moved(&m, ORIGIN) - (ORIGIN + mouse)).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn typing_takes_over_a_grip_drag() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let mut m = Manipulation::new(TransformMode::Translate);
+        let grip = Grip::Axis(Axis::Y);
+        m.on_handle(&HandleEvent::Begin(grip.id()), Some(frame()), &input(&camera));
+        assert_eq!(type_keys(&mut m, "3", &input(&camera)), Outcome::Changed);
+        let end = moved(&m, ORIGIN);
+        assert!((end - Point3::new(0.0, 3.0, 0.0)).magnitude() < EPSILON, "{end:?}");
+    }
+
+    /// Ctrl+Z and the like belong to someone else.
+    #[test]
+    fn a_chord_does_not_type() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let control = Modifiers { control: true, ..Modifiers::default() };
+        let ctrl = Input { modifiers: control, ..input(&camera) };
+        let mut m = Manipulation::new(TransformMode::Translate);
+        assert_eq!(m.dispatch(&press(key('5')), Some(frame()), &ctrl), Outcome::Ignored);
+        assert!(!m.is_active());
+    }
+
+    #[test]
+    fn the_fields_read_the_drive_until_keys_type_into_them() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let input = input(&camera);
+        let mut m = Manipulation::new(TransformMode::Translate);
+        m.set_orientation(Space::World);
+        m.dispatch(&press(key('g')), Some(frame()), &input);
+        m.dispatch(&cursor_moved((CENTER.0 + 80.0, CENTER.1)), None, &input);
+
+        let fields = m.fields();
+        assert_eq!(fields.iter().map(|f| f.axis).collect::<Vec<_>>(), Axis::ALL.map(Some));
+        assert!((fields[0].value - translation(&m).x).abs() < EPSILON);
+        assert!(fields.iter().all(|f| f.kind == FieldKind::Length));
+        assert!(fields.iter().all(|f| f.typed.is_none() && !f.active));
+
+        type_keys(&mut m, "\t-4", &input);
+        let fields = m.fields();
+        assert_eq!(fields[1].typed.as_deref(), Some("-4"));
+        assert!(fields[1].active && !fields[0].active);
+        assert_eq!((fields[0].value, fields[1].value), (0.0, -4.0));
+    }
+
+    /// Editing one value in a panel leaves the others where the mouse had them.
+    #[test]
+    fn a_set_field_keeps_the_others_where_they_stood() {
+        let camera = camera_at((0.0, 0.0, 10.0), false);
+        let input = input(&camera);
+        let mut m = Manipulation::new(TransformMode::Translate);
+        m.set_orientation(Space::World);
+        m.dispatch(&press(key('g')), Some(frame()), &input);
+        m.dispatch(&cursor_moved((CENTER.0 + 80.0, CENTER.1 - 40.0)), None, &input);
+        let before = translation(&m);
+
+        m.set_field(2, 7.0);
+        let end = moved(&m, ORIGIN);
+        assert!((end - Point3::new(before.x, before.y, 7.0)).magnitude() < EPSILON, "{end:?}");
+        assert!(m.fields().iter().all(|f| f.typed.is_none()), "a set value has no typed text");
     }
 
     // ── Grips ────────────────────────────────────────────────────────────────

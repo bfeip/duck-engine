@@ -1,16 +1,19 @@
 //! Move, rotate and scale.
 //!
 //! [`Manipulation`] is the transform itself: its constraint, what drives it —
-//! a gizmo grip, or the cursor after a key — and the delta that comes out. A
-//! tool holds one, feeds it events and grip drags, and acts on the
-//! [`Outcome`]s it returns by previewing and committing the delta on whatever
-//! it moves.
+//! a gizmo grip, the cursor after a key, or values typed in — and the delta
+//! that comes out. A tool holds one, feeds it events and grip drags, and acts on
+//! the [`Outcome`]s it returns by previewing and committing the delta on
+//! whatever it moves. [`values_ui`] shows its values in the tool's panel.
 
 mod gizmo;
 mod manipulation;
+mod typed;
 
 pub use manipulation::TransformMode;
 pub(super) use manipulation::{Frame, Input, Manipulation, Outcome, Space};
+
+use manipulation::{Constraint, Field, FieldKind};
 
 use std::sync::{Arc, Mutex};
 
@@ -18,8 +21,8 @@ use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_scene::Scene;
 use duck_engine_viewer::common::{
-    centroid_of_slice, decompose_matrix, InnerSpace, Matrix4, Point3, Quaternion, SquareMatrix,
-    Transform, Vector3,
+    centroid_of_slice, decompose_matrix, Axis, InnerSpace, LengthDisplay, Matrix4, Point3,
+    Quaternion, Real, SquareMatrix, Transform, Vector3,
 };
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
 use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionKinds, SelectionMode};
@@ -29,7 +32,7 @@ use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartId};
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
 use crate::tools::{selected_parts, Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
-use crate::ui::icons;
+use crate::ui::{icons, length_value};
 
 /// CAD-aware transform tool for one operation (move, rotate, *or* scale). Each
 /// [`TransformMode`] is registered as its own palette tool.
@@ -44,9 +47,12 @@ use crate::ui::icons;
 ///
 /// Selecting the tool shows its gizmo; drag a grip to transform. The mode's key
 /// (G/R/S) starts a free transform at the cursor and X/Y/Z start or change an
-/// axis-constrained one (Shift+X/Y/Z a plane); left-click or Enter confirms,
-/// right-click or Escape cancels. The tool stays for the next transform until
-/// Escape with none in progress, or another tool.
+/// axis-constrained one (Shift+X/Y/Z a plane). Typing a number sets the amount
+/// exactly — `R X 90 ↵` turns a quarter about X — with Tab stepping between the
+/// values of a free or plane move; the panel shows the values and edits them
+/// too. Left-click or Enter confirms, right-click or Escape cancels. The tool
+/// stays for the next transform until Escape with none in progress, or another
+/// tool.
 ///
 /// The gizmo runs along the part's own frame, or the world's when the tool's
 /// panel switches it; each activation starts on the part's.
@@ -116,11 +122,11 @@ impl TransformTool {
         match outcome {
             Outcome::Ignored => return false,
             Outcome::Consumed => {}
-            Outcome::Started => {
-                if !self.begin() {
-                    self.manipulation.abort();
-                }
-            }
+            // A transform started by typing has already moved.
+            Outcome::Started => match self.begin() {
+                true => self.preview(),
+                false => self.manipulation.abort(),
+            },
             Outcome::Changed => self.preview(),
             Outcome::Confirmed(delta) => self.commit(delta, selection),
             Outcome::Cancelled => self.cancel(),
@@ -193,7 +199,8 @@ impl ModelingTool for TransformTool {
             self.offer = self.resolve(ctx.selection);
         }
 
-        let outcome = self.manipulation.dispatch(event, self.frame(), &Input::of(ctx));
+        let units = self.workspace.display_units();
+        let outcome = self.manipulation.dispatch(event, self.frame(), &Input::of(ctx, units));
         if self.act(outcome, ctx.selection) {
             return true;
         }
@@ -211,7 +218,8 @@ impl ModelingTool for TransformTool {
     }
 
     fn on_handle(&mut self, event: &HandleEvent, ctx: &mut EventContext) {
-        let outcome = self.manipulation.on_handle(event, self.frame(), &Input::of(ctx));
+        let units = self.workspace.display_units();
+        let outcome = self.manipulation.on_handle(event, self.frame(), &Input::of(ctx, units));
         self.act(outcome, ctx.selection);
     }
 
@@ -224,13 +232,19 @@ impl ModelingTool for TransformTool {
     }
 
     fn panel_ui(&mut self, ui: &mut egui::Ui, _panel: &mut PanelContext) {
-        let mut orientation = self.manipulation.orientation();
+        let before = self.manipulation.orientation();
+        let mut orientation = before;
         ui.label("Axes");
         ui.horizontal(|ui| {
             ui.selectable_value(&mut orientation, Space::Local, "Local");
             ui.selectable_value(&mut orientation, Space::World, "Global");
         });
         self.manipulation.set_orientation(orientation);
+        // A free move's values run along the axes, so new axes move it.
+        let turned = orientation != before;
+        if values_ui(ui, &mut self.manipulation, self.workspace.display_units()) || turned {
+            self.preview();
+        }
     }
 
     fn activate(&mut self) {
@@ -249,6 +263,105 @@ impl ModelingTool for TransformTool {
 
     fn is_finished(&self) -> bool {
         self.finished
+    }
+}
+
+/// The values of `manipulation`'s transform in progress, for its tool's panel:
+/// what it is confined to, and a field for each value, which edits it — the
+/// one keys are typing into outlined. Shows nothing while idle. Returns whether
+/// a value was edited.
+pub(super) fn values_ui(
+    ui: &mut egui::Ui,
+    manipulation: &mut Manipulation,
+    units: LengthDisplay,
+) -> bool {
+    let fields = manipulation.fields();
+    if fields.is_empty() {
+        return false;
+    }
+    ui.separator();
+    ui.label(describe(manipulation));
+    let mut edited = false;
+    egui::Grid::new("transform_values").num_columns(2).show(ui, |ui| {
+        for (index, field) in fields.iter().enumerate() {
+            match field.kind {
+                FieldKind::Length => {
+                    let axis = field.axis.expect("a length runs along an axis");
+                    let rgb = axis.color();
+                    let color = egui::Rgba::from_rgb(rgb.r, rgb.g, rgb.b);
+                    ui.colored_label(color, axis_name(axis))
+                }
+                FieldKind::Angle => ui.label("Angle"),
+                FieldKind::Factor => ui.label("Factor"),
+            };
+            if let Some(value) = value_field(ui, field, units) {
+                manipulation.set_field(index, value);
+                edited = true;
+            }
+            ui.end_row();
+        }
+    });
+    ui.weak("Type a value; Tab for the next");
+    edited
+}
+
+/// The field editing one value, a length shown in `units`. Returns the new
+/// value, as applied, when it was edited.
+fn value_field(ui: &mut egui::Ui, field: &Field, units: LengthDisplay) -> Option<Real> {
+    let mut shown = match field.kind {
+        FieldKind::Angle => field.value.to_degrees(),
+        _ => field.value,
+    };
+    let drag = match field.kind {
+        FieldKind::Length => length_value(&mut shown, units),
+        FieldKind::Angle => egui::DragValue::new(&mut shown).speed(0.5).suffix("°"),
+        FieldKind::Factor => egui::DragValue::new(&mut shown).speed(0.01).suffix("×"),
+    };
+    // Shown as typed, so a value part-way through — "-", "1." — reads as such.
+    let drag = match field.typed.clone() {
+        Some(text) => drag.custom_formatter(move |_, _| text.clone()),
+        None => drag,
+    };
+    let stroke = match field.active {
+        true => ui.visuals().selection.stroke,
+        false => egui::Stroke::NONE,
+    };
+    let changed = egui::Frame::NONE.stroke(stroke).show(ui, |ui| ui.add(drag).changed()).inner;
+    changed.then(|| match field.kind {
+        FieldKind::Angle => shown.to_radians(),
+        _ => shown,
+    })
+}
+
+/// What the transform in progress is confined to, as its values are headed.
+fn describe(manipulation: &Manipulation) -> String {
+    let space = |space| match space {
+        Space::Local => "local",
+        Space::World => "global",
+    };
+    match (manipulation.mode(), manipulation.constraint()) {
+        (TransformMode::Translate, Constraint::Free) => {
+            format!("Free, along {} axes", space(manipulation.orientation()))
+        }
+        (TransformMode::Rotate, Constraint::Free) => "About the view".to_owned(),
+        (TransformMode::Scale, Constraint::Free) => "Uniform".to_owned(),
+        (TransformMode::Rotate, Constraint::Axis(axis, s) | Constraint::Plane(axis, s)) => {
+            format!("About {} {}", space(s), axis_name(axis))
+        }
+        (_, Constraint::Axis(axis, s)) => format!("Along {} {}", space(s), axis_name(axis)),
+        (_, Constraint::Plane(normal, s)) => {
+            let names: String =
+                Axis::ALL.into_iter().filter(|&axis| axis != normal).map(axis_name).collect();
+            format!("In the {} {names} plane", space(s))
+        }
+    }
+}
+
+fn axis_name(axis: Axis) -> &'static str {
+    match axis {
+        Axis::X => "X",
+        Axis::Y => "Y",
+        Axis::Z => "Z",
     }
 }
 
@@ -485,11 +598,17 @@ impl FaceTweak {
 
 #[cfg(test)]
 mod tests {
-    use duck_engine_viewer::common::{consts, quaternion_from_axis_angle_safe, Axis, EuclideanSpace, Real};
+    use duck_engine_viewer::common::{
+        consts, quaternion_from_axis_angle_safe, EuclideanSpace, LengthUnit,
+    };
+    use duck_engine_viewer::input::{KeyEvent, Modifiers, NamedKey};
     use glam::DVec3;
 
     use super::*;
-    use crate::testing::{face_item_along, volume, workspace_with_box, workspace_with_box_and_cube};
+    use crate::testing::{
+        face_item_along, key, named_key, volume, workspace_with_box, workspace_with_box_and_cube,
+        ViewState,
+    };
 
     const EPSILON: Real = 1e-6;
 
@@ -502,6 +621,10 @@ mod tests {
     fn frame_of(ws: &Workspace, node: NodeId) -> Transform {
         let document = ws.document.lock().unwrap();
         document.part_at(node).unwrap().frame()
+    }
+
+    fn press(event: KeyEvent) -> Event {
+        Event::Device(DeviceEvent::KeyboardInput { event, is_synthetic: false })
     }
 
     fn select(items: &[SelectionItem]) -> SelectionManager {
@@ -627,5 +750,74 @@ mod tests {
         // The 2-unit box grows a unit along X.
         assert!((volume(&ws, node) - 12.0).abs() < 1e-6, "{}", volume(&ws, node));
         assert!(selection.primary().is_none());
+    }
+
+    /// The whole way through the tool: R, then X 9 0 ↵, turns the part an exact
+    /// quarter about its X.
+    #[test]
+    fn typing_turns_a_part_an_exact_quarter() {
+        let (ws, node) = workspace_with_box();
+        let mut tool = TransformTool::new(TransformMode::Rotate, &ws);
+        tool.activate();
+        let mut view = ViewState::default();
+        view.selection.extend([SelectionItem::Node(node)]);
+
+        let update = Event::Device(DeviceEvent::Update { delta_time: 0.016 });
+        assert!(!tool.dispatch(&update, &mut view.ctx()));
+        for event in [key('x'), key('9'), key('0'), named_key(NamedKey::Enter)] {
+            assert!(tool.dispatch(&press(event), &mut view.ctx()));
+        }
+
+        let y = frame_of(&ws, node).rotation * Vector3::unit_y();
+        assert!((y - Vector3::unit_z()).magnitude() < EPSILON, "{y:?}");
+    }
+
+    /// What `values_ui` paints for `manipulation`.
+    fn painted(manipulation: &mut Manipulation, units: LengthDisplay) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut output = None;
+        // A grid measures its columns in a first pass.
+        for _ in 0..2 {
+            output = Some(ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| values_ui(ui, manipulation, units));
+            }));
+        }
+        output
+            .unwrap()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Part-way through a number, the field reads as typed.
+    #[test]
+    fn the_panel_heads_the_values_and_shows_them_as_typed() {
+        let view = ViewState::default();
+        let units = LengthDisplay::new(LengthUnit::Millimeter, 2);
+        let modifiers = Modifiers::default();
+        let input = Input { camera: &view.camera, size: (800, 600), cursor: None, modifiers, units };
+        let pivot = Point3::new(0.0, 0.0, 0.0);
+        let frame = Frame { pivot, rotation: Transform::IDENTITY.rotation, uniform_scale: false };
+        let mut manipulation = Manipulation::new(TransformMode::Translate);
+        manipulation.set_orientation(Space::World);
+        for c in ['x', '1', '2', '.'] {
+            manipulation.dispatch(&press(key(c)), Some(frame), &input);
+        }
+
+        let painted = painted(&mut manipulation, units);
+        for expected in ["Along global X", "X", "12. mm"] {
+            assert!(painted.iter().any(|text| text == expected), "no {expected:?} in {painted:?}");
+        }
+    }
+
+    #[test]
+    fn an_idle_transform_shows_no_values() {
+        let mut manipulation = Manipulation::new(TransformMode::Rotate);
+        let painted = painted(&mut manipulation, LengthDisplay::new(LengthUnit::Millimeter, 2));
+        assert!(painted.is_empty(), "{painted:?}");
     }
 }
