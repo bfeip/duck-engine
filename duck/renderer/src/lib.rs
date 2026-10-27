@@ -19,9 +19,9 @@
 //!
 //! - [`RenderContext`] — one per device and target configuration. The GPU
 //!   handles, the bind group layouts, and the material pipeline cache with its
-//!   shader generator. The target format, MSAA sample count, and adapter
-//!   capabilities are baked in at construction; nothing here is per-scene, so
-//!   every scene drawn at that configuration shares one set of pipelines.
+//!   shader generator. The target format and MSAA sample count are baked in at
+//!   construction; nothing here is per-scene, so every scene drawn at that
+//!   configuration shares one set of pipelines.
 //! - [`SceneResources`] — one per scene. The GPU caches for meshes, textures,
 //!   material bind groups, and processed environment maps, generation-synced
 //!   to the scene.
@@ -143,9 +143,8 @@
 //!
 //! # fn main() -> anyhow::Result<()> {
 //! // One RenderContext, one SceneResources per scene, one Renderer per view.
-//! let (gpu, caps) = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
-//! let mut ctx =
-//!     RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps);
+//! let gpu = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
+//! let mut ctx = RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1);
 //! let mut shared = SceneResources::new(&ctx);
 //! let mut renderer = Renderer::new(&mut ctx, 800, 600);
 //!

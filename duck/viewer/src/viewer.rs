@@ -14,7 +14,7 @@ use crate::{
     scene::{PositionedCamera, PositionedLight, Projection, common::RgbaColor},
     selection::SelectionManager,
     renderer::{
-        Gpu, GpuCapabilities, GpuOptions, HighlightQuery, PassBuilder, RenderContext, Renderer,
+        Gpu, GpuOptions, HighlightQuery, PassBuilder, RenderContext, Renderer,
         SceneFrames, SceneResources, SceneWorkflow, WorkflowGuard,
     },
     view::{
@@ -36,15 +36,16 @@ struct SceneSlot {
 
 /// Pointer capture: while any button or touch that started in a view is held,
 /// all pointer events route to that view regardless of where the cursor is.
-struct Capture {
+struct PointerCapture {
     view: ViewId,
     /// Held mouse buttons + active touches that started this capture.
     holds: usize,
 }
 
-/// Surface-free core viewer: hosts any number of [`View`]s, routes input to
+/// Surface-free core viewer. Hosts any number of [`View`]s, routes input to
 /// them, renders each into its own texture, and composites the result into an
 /// arbitrary [`wgpu::TextureView`] via [`render_to_target`](Self::render_to_target).
+/// 
 /// The concrete output target (a window surface or an offscreen texture) is
 /// owned by a wrapper such as [`SurfacedViewer`] or [`OffscreenViewer`].
 ///
@@ -63,7 +64,7 @@ pub struct Viewer {
     views: Vec<View>,
     /// Keyboard target: the view last clicked (or the first view added).
     focused_view: Option<ViewId>,
-    capture: Option<Capture>,
+    capture: Option<PointerCapture>,
     /// Cursor position in viewer-target coordinates.
     cursor_position: Option<(f32, f32)>,
     compositor: Compositor,
@@ -88,11 +89,10 @@ impl Viewer {
         width: u32,
         height: u32,
         sample_count: u32,
-        capabilities: GpuCapabilities,
     ) -> Self {
         let compositor = Compositor::blend(&gpu.device, color_format);
         Self {
-            ctx: RenderContext::new(gpu, color_format, sample_count, capabilities),
+            ctx: RenderContext::new(gpu, color_format, sample_count),
             size: (width.max(1), height.max(1)),
             scenes: Vec::new(),
             views: Vec::new(),
@@ -388,7 +388,7 @@ impl Viewer {
                     ElementState::Pressed => {
                         if let Some(id) = target {
                             let capture =
-                                self.capture.get_or_insert(Capture { view: id, holds: 0 });
+                                self.capture.get_or_insert(PointerCapture { view: id, holds: 0 });
                             capture.holds += 1;
                             self.focused_view = Some(id);
                             self.dispatch_to(id, event);
@@ -412,7 +412,7 @@ impl Viewer {
                             .or_else(|| self.hit_test(position.0 as f32, position.1 as f32));
                         if let Some(id) = target {
                             let capture =
-                                self.capture.get_or_insert(Capture { view: id, holds: 0 });
+                                self.capture.get_or_insert(PointerCapture { view: id, holds: 0 });
                             capture.holds += 1;
                             self.focused_view = Some(id);
                         }
@@ -1021,7 +1021,6 @@ pub struct WindowSurface<'a> {
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
     sample_count: u32,
-    capabilities: GpuCapabilities,
 }
 
 impl<'a> WindowSurface<'a> {
@@ -1053,7 +1052,6 @@ impl<'a> WindowSurface<'a> {
 
         let info = adapter.get_info();
         let is_gl_backend = info.backend == wgpu::Backend::Gl;
-        let capabilities = GpuCapabilities::from_adapter(&adapter);
 
         log::info!("Using {} adapter: {}", info.backend, info.name);
 
@@ -1145,9 +1143,8 @@ impl<'a> WindowSurface<'a> {
         Self {
             surface,
             config,
-            gpu: Gpu::new(device, queue),
+            gpu: Gpu::new(&adapter, device, queue),
             sample_count,
-            capabilities,
         }
     }
 
@@ -1177,11 +1174,6 @@ impl<'a> WindowSurface<'a> {
     /// The MSAA sample count supported for this surface format.
     pub fn sample_count(&self) -> u32 {
         self.sample_count
-    }
-
-    /// What the adapter behind this surface can do.
-    pub fn capabilities(&self) -> GpuCapabilities {
-        self.capabilities
     }
 
     /// Current surface size as (width, height).
@@ -1242,7 +1234,6 @@ impl<'a> SurfacedViewer<'a> {
             width,
             height,
             surface.sample_count(),
-            surface.capabilities(),
         );
         Self { surface, core }
     }
@@ -1415,16 +1406,15 @@ impl OffscreenViewer {
         width: u32,
         height: u32,
         sample_count: u32,
-        capabilities: GpuCapabilities,
     ) -> Self {
         let (color_texture, render_view, sample_view, encode) = Self::create_color(
             &gpu.device,
             color_format,
             width,
             height,
-            capabilities.has_view_formats,
+            gpu.capabilities().has_view_formats,
         );
-        let core = Viewer::from_gpu(gpu, color_format, width, height, sample_count, capabilities);
+        let core = Viewer::from_gpu(gpu, color_format, width, height, sample_count);
         Self {
             color_format,
             color_texture,
@@ -1440,15 +1430,8 @@ impl OffscreenViewer {
     /// Convenience for thumbnails / server-side rendering where no surface or
     /// external device is involved. Uses `Rgba8UnormSrgb` and no MSAA.
     pub async fn headless(width: u32, height: u32, options: GpuOptions) -> anyhow::Result<Self> {
-        let (gpu, caps) = Gpu::headless(options).await?;
-        Ok(Self::from_gpu(
-            gpu,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-            width,
-            height,
-            1,
-            caps,
-        ))
+        let gpu = Gpu::headless(options).await?;
+        Ok(Self::from_gpu(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, width, height, 1))
     }
 
     /// The color target, its render view, the view samplers read it through,

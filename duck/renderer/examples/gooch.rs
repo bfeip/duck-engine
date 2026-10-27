@@ -83,9 +83,8 @@ fn main() -> anyhow::Result<()> {
     let width = 800u32;
     let height = 600u32;
 
-    let (gpu, caps) = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
-    let mut ctx =
-        RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps);
+    let gpu = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
+    let mut ctx = RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1);
     let mut shared = SceneResources::new(&ctx);
 
     // A workflow is just a named pass list, so a wholly custom stack is one

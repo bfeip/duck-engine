@@ -118,8 +118,8 @@ fn main() -> anyhow::Result<()> {
     let width = 800u32;
     let height = 600u32;
 
-    let (gpu, caps) = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
-    let mut ctx = RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps);
+    let gpu = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
+    let mut ctx = RenderContext::new(gpu, wgpu::TextureFormat::Rgba8UnormSrgb, 1);
     let mut shared = SceneResources::new(&ctx);
 
     // A sphere partly behind a cube, so there is something to see through.

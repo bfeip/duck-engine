@@ -77,7 +77,6 @@ pub struct RenderContext {
     gpu: Gpu,
     format: wgpu::TextureFormat,
     sample_count: u32,
-    capabilities: GpuCapabilities,
 
     layouts: BindGroupLayouts,
     /// Material pipelines, their layouts, and the shader generator.
@@ -91,21 +90,13 @@ impl RenderContext {
     /// all renderers over this context render at that configuration;
     /// [`Renderer::preferred_sample_count`] probes a suitable count. `format` is
     /// promoted to its sRGB variant by [`scene_color_format`].
-    /// `capabilities` are the adapter's, as returned by
-    /// [`Gpu`](crate::render_core::Gpu) acquisition; they decide which
-    /// attachments and passes are available.
-    pub fn new(
-        gpu: Gpu,
-        format: wgpu::TextureFormat,
-        sample_count: u32,
-        capabilities: GpuCapabilities,
-    ) -> Self {
+    pub fn new(gpu: Gpu, format: wgpu::TextureFormat, sample_count: u32) -> Self {
         let format = scene_color_format(format);
         let layouts = BindGroupLayouts::new(&gpu.device);
         let pipelines =
             MaterialPipelineCache::new(&layouts, ShaderGenerator::new(), sample_count, format);
 
-        Self { gpu, format, sample_count, capabilities, layouts, pipelines }
+        Self { gpu, format, sample_count, layouts, pipelines }
     }
 
     /// The GPU handle pair, cloneable for sharing the device/queue.
@@ -135,7 +126,7 @@ impl RenderContext {
 
     /// What the adapter behind this context can do.
     pub fn capabilities(&self) -> GpuCapabilities {
-        self.capabilities
+        self.gpu.capabilities()
     }
 
     /// Compile a user-supplied WESL shader with access to all engine shader modules.
@@ -225,7 +216,7 @@ impl PassBuilder<'_> {
     /// capability should check here and build no pipeline without it, then skip
     /// itself from [`Pass::is_active`](crate::render_core::Pass::is_active).
     pub fn capabilities(&self) -> GpuCapabilities {
-        self.ctx.capabilities
+        self.ctx.gpu.capabilities()
     }
 
     /// The shared bind group layouts: camera, lights, flat color, and IBL.

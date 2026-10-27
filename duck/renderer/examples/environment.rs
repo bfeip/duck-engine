@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
             .iter()
             .collect()
     });
-    let (gpu, caps) = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
+    let gpu = pollster::block_on(Gpu::headless(GpuOptions::default()))?;
 
     let start = Instant::now();
     load_hdr_from_path(&hdr)?;
@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
         projection: Projection::Perspective { fovy: 25.0, znear: 0.1, zfar: 100.0 },
     };
 
-    let mut ctx = RenderContext::new(gpu.clone(), wgpu::TextureFormat::Rgba8UnormSrgb, 1, caps);
+    let mut ctx = RenderContext::new(gpu.clone(), wgpu::TextureFormat::Rgba8UnormSrgb, 1);
     let mut shared = SceneResources::new(&ctx);
     let mut renderer = Renderer::new(&mut ctx, WIDTH, HEIGHT);
     let mut data = spheres(&hdr)?;

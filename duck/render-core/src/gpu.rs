@@ -1,4 +1,5 @@
-/// The GPU handle pair: device + queue.
+/// The GPU handle pair, device + queue, with the capabilities of the adapter
+/// they were created from.
 ///
 /// Owned by whoever drives rendering; both `wgpu::Device` and `wgpu::Queue`
 /// are internally reference-counted, so `Gpu` is cheaply cloneable.
@@ -6,6 +7,7 @@
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    capabilities: GpuCapabilities,
 }
 
 /// What the adapter behind a [`Gpu`] can do, for the decisions that have to be
@@ -13,7 +15,6 @@ pub struct Gpu {
 /// can run at all.
 #[derive(Clone, Copy, Debug)]
 pub struct GpuCapabilities {
-    pub has_compute: bool,
     /// Whether a texture can carry a second view format (such as an sRGB target
     /// sampled as raw bytes).
     pub has_view_formats: bool,
@@ -25,7 +26,6 @@ impl GpuCapabilities {
     pub fn from_adapter(adapter: &wgpu::Adapter) -> Self {
         let flags = adapter.get_downlevel_capabilities().flags;
         Self {
-            has_compute: flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS),
             has_view_formats: flags.contains(wgpu::DownlevelFlags::VIEW_FORMATS),
             backend: adapter.get_info().backend,
         }
@@ -104,10 +104,17 @@ impl GpuOptions {
 }
 
 impl Gpu {
-    /// Wrap pre-created device and queue (e.g. created alongside a surface).
-    #[must_use] 
-    pub const fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
-        Self { device, queue }
+    /// Wrap a device and queue pre-created from `adapter` (e.g. alongside a
+    /// surface).
+    #[must_use]
+    pub fn new(adapter: &wgpu::Adapter, device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        Self { device, queue, capabilities: GpuCapabilities::from_adapter(adapter) }
+    }
+
+    /// What the adapter behind this device can do.
+    #[must_use]
+    pub const fn capabilities(&self) -> GpuCapabilities {
+        self.capabilities
     }
 
     /// Create a GPU without a surface, for offscreen/headless rendering.
@@ -118,7 +125,7 @@ impl Gpu {
     /// # Errors
     /// 
     /// Will return `Err` if initialization of WGPU fails.
-    pub async fn headless(options: GpuOptions) -> anyhow::Result<(Self, GpuCapabilities)> {
+    pub async fn headless(options: GpuOptions) -> anyhow::Result<Self> {
         let instance = options.create_instance().await;
 
         let adapter = instance
@@ -138,8 +145,6 @@ impl Gpu {
         let info = adapter.get_info();
         log::info!("Using {} adapter: {}", info.backend, info.name);
 
-        let capabilities = GpuCapabilities::from_adapter(&adapter);
-
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_features: wgpu::Features::empty(),
@@ -153,6 +158,6 @@ impl Gpu {
             })
             .await?;
 
-        Ok((Self { device, queue }, capabilities))
+        Ok(Self::new(&adapter, device, queue))
     }
 }

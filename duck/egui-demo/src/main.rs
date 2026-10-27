@@ -99,7 +99,6 @@ impl ViewerState<'static> {
             size.width,
             size.height,
             surface.sample_count(),
-            surface.capabilities(),
         );
 
         let view_id = viewer.add_view("main", Scene::default(), ViewLayout::FULL);
