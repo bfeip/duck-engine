@@ -1140,8 +1140,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitflags 2.11.0",
- "bytemuck",
- "cfg-if",
  "cfg_aliases",
  "duck-engine-common",
  "duck-engine-import-export",
@@ -1151,12 +1149,9 @@ dependencies = [
  "image",
  "log",
  "pollster 0.4.0",
- "rayon",
  "serde",
- "thiserror 2.0.18",
  "web-sys",
  "web-time",
- "wesl",
  "wgpu",
  "winit",
 ]
