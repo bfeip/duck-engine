@@ -25,11 +25,6 @@ name = "sub_views"
 path = "examples/sub_views/main.rs"
 required-features = ["winit-support"]
 
-[[example]]
-name = "emscripten-basic"
-path = "examples/emscripten-basic/main.rs"
-required-features = ["emscripten-support"]
-
 
 [features]
 winit-support = ["winit"]
