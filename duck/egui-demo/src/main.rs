@@ -27,7 +27,7 @@ use duck_engine_viewer::operator::{
 use duck_engine_viewer::scene::{Projection, Scene};
 use duck_engine_viewer::winit_support;
 use duck_engine_viewer::{
-    AxisTriadConfig, GpuOptions, OffscreenViewer, ViewId, ViewLayout, ViewMut, WindowSurface,
+    AxisTriadConfig, GpuOptions, OffscreenViewer, View, ViewId, ViewLayout, WindowSurface,
 };
 
 /// Debug actions triggered by key presses
@@ -104,7 +104,7 @@ impl ViewerState<'static> {
         let view_id = viewer.add_view("main", Scene::default(), ViewLayout::FULL);
         let nav_op = Arc::new(Mutex::new(NavigationOperator::new()));
         {
-            let mut view = viewer.view_mut(view_id).expect("main view");
+            let view = viewer.view_mut(view_id).expect("main view");
             let dispatcher = view.dispatcher_mut();
             dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new())));
             dispatcher.push_back(Arc::new(Mutex::new(SelectionOperator::new())));
@@ -153,8 +153,8 @@ impl ViewerState<'static> {
 }
 
 impl<'a> ViewerState<'a> {
-    /// Mutable access to the main view and its scene's shared state.
-    pub(crate) fn view_mut(&mut self) -> ViewMut<'_> {
+    /// Mutable access to the main view.
+    pub(crate) fn view_mut(&mut self) -> &mut View {
         self.viewer.view_mut(self.view_id).expect("main view")
     }
 
@@ -304,9 +304,8 @@ impl<'a> App<'a> {
             let ui = &mut self.ui;
             let scene_texture_id = state.scene_texture_id;
             let mut viewport_rect = None;
-            let mut view = state.viewer.view_mut(state.view_id).expect("main view");
             let full_output = state.egui_ctx.run(raw_input, |ctx| {
-                ui_actions = ui.build(ctx, &mut view, &state.nav_op);
+                ui_actions = ui.build(ctx, &mut state.viewer, state.view_id, &state.nav_op);
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ctx, |ui| {
@@ -319,7 +318,6 @@ impl<'a> App<'a> {
                     });
             });
 
-            drop(view);
             state.egui_winit.handle_platform_output(
                 &state.window,
                 full_output.platform_output.clone(),
@@ -467,8 +465,7 @@ impl<'a> App<'a> {
 
     fn toggle_ortho(&mut self) {
         let Some(state) = self.state.as_mut() else { return };
-        let mut view = state.view_mut();
-        let camera = view.camera_mut();
+        let camera = state.view_mut().camera_mut();
         if camera.projection.is_ortho() {
             let Projection::Perspective { fovy, znear, zfar } = self.last_perspective else {
                 return;
@@ -484,14 +481,13 @@ impl<'a> App<'a> {
         use duck_engine_viewer::renderer::workflow;
         let Some(state) = self.state.as_mut() else { return };
         self.workflow_index = (self.workflow_index + 1) % 2;
-        let mut view = state.view_mut();
-        let mut builder = view.pass_builder();
+        let mut builder = state.viewer.pass_builder(state.view_id).expect("main view");
         let workflow = match self.workflow_index {
             0 => workflow::shaded(&mut builder),
             _ => workflow::hidden_line(&mut builder, Default::default()),
         };
         log::info!("Switched to '{}' workflow", workflow.name());
-        view.set_workflow(workflow);
+        state.view_mut().set_workflow(workflow);
     }
 }
 

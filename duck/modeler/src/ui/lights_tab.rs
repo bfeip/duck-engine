@@ -8,7 +8,7 @@ use duck_engine_viewer::common::{
 use duck_engine_viewer::scene::{
     Light, LightSpace, LightType, MAX_LIGHTS, PositionedCamera, PositionedLight,
 };
-use duck_engine_viewer::{HeadlightMode, ViewMut, default_headlight_rig};
+use duck_engine_viewer::{HeadlightMode, ViewId, Viewer, default_headlight_rig};
 
 use crate::ui::length_value;
 use crate::AppAction;
@@ -27,8 +27,9 @@ pub struct Lighting {
 }
 
 impl Lighting {
-    /// The lighting `view` renders with.
-    pub fn of(view: &ViewMut<'_>) -> Self {
+    /// The lighting view `view_id` renders with.
+    pub fn of(viewer: &Viewer, view_id: ViewId) -> Self {
+        let view = viewer.view(view_id).expect("unknown view");
         let scene = view.scene();
         let scene = scene.lock();
         let environment = scene
@@ -38,18 +39,19 @@ impl Lighting {
         Self {
             headlight: view.headlight(),
             headlight_rig: view.headlight_rig().to_vec(),
-            lights: view.scene_lights().to_vec(),
+            lights: viewer.scene_lights(view_id).expect("unknown view").to_vec(),
             environment,
         }
     }
 
-    /// Write this lighting back to `view`.
-    pub fn apply(&self, view: &mut ViewMut<'_>) {
+    /// Write this lighting back to view `view_id`.
+    pub fn apply(&self, viewer: &mut Viewer, view_id: ViewId) {
+        let view = viewer.view_mut(view_id).expect("unknown view");
         view.set_headlight(self.headlight);
         view.set_headlight_rig(self.headlight_rig.clone());
-        *view.scene_lights_mut() = self.lights.clone();
-
         let scene = view.scene();
+        *viewer.scene_lights_mut(view_id).expect("unknown view") = self.lights.clone();
+
         let mut scene = scene.lock();
         if let Some(id) = scene.active_environment_map() {
             match self.environment {

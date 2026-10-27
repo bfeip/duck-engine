@@ -34,7 +34,7 @@ impl<'a> App<'a> {
         ));
 
         let view = viewer.add_view("main", Scene::default(), ViewLayout::FULL);
-        let mut view = viewer.view_mut(view).unwrap();
+        let view = viewer.view_mut(view).unwrap();
         let dispatcher = view.dispatcher_mut();
         dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new())));
         dispatcher.push_back(Arc::new(Mutex::new(SelectionOperator::new())));

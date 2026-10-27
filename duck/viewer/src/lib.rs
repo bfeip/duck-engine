@@ -29,7 +29,7 @@ pub use view::{
     Corner, HeadlightMode, PixelRect, View, ViewId, ViewLayout, default_headlight_rig,
 };
 pub use renderer::{GpuCapabilities, GpuOptions};
-pub use viewer::{OffscreenViewer, SurfacedViewer, ViewMut, Viewer, WindowSurface};
+pub use viewer::{OffscreenViewer, SurfacedViewer, Viewer, WindowSurface};
 
 // Optional integrations
 #[cfg(feature = "winit-support")]

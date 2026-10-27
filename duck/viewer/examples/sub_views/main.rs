@@ -122,7 +122,7 @@ impl<'a> App<'a> {
         let mut iso_view = None;
         for (name, layout, direction, up, ortho) in panes {
             let id = viewer.add_view(name, model.clone(), layout);
-            let mut view = viewer.view_mut(id).unwrap();
+            let view = viewer.view_mut(id).unwrap();
             view.dispatcher_mut()
                 .push_back(Arc::new(std::sync::Mutex::new(SelectionOperator::new())));
             view.dispatcher_mut()

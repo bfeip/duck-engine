@@ -1,9 +1,9 @@
 use duck_engine_viewer::scene::resource::{EffectiveVisibility, NodeId, RenderLayer, Visibility};
-use duck_engine_viewer::ViewMut;
+use duck_engine_viewer::scene::Scene;
 
 use super::{UiActions, VisibilityChange};
 
-pub fn show(ui: &mut egui::Ui, view: &ViewMut<'_>, actions: &mut UiActions) {
+pub fn show(ui: &mut egui::Ui, scene: &Scene, actions: &mut UiActions) {
     ui.horizontal(|ui| {
         if ui.button("Open...").clicked() {
             actions.load_scene = true;
@@ -22,7 +22,6 @@ pub fn show(ui: &mut egui::Ui, view: &ViewMut<'_>, actions: &mut UiActions) {
         .show(ui, |ui| {
             // The scene must not be locked here: this closure builds widgets,
             // and `render_node_tree` recurses through them.
-            let scene = view.scene();
             // Overlay roots are annotation drawn over the scene, such as grips.
             let roots: Vec<NodeId> = scene
                 .root_nodes()
@@ -36,7 +35,7 @@ pub fn show(ui: &mut egui::Ui, view: &ViewMut<'_>, actions: &mut UiActions) {
                 ui.label("(empty)");
             } else {
                 for root_id in roots {
-                    render_node_tree(ui, &scene, root_id, 0, actions);
+                    render_node_tree(ui, scene, root_id, 0, actions);
                 }
             }
         });
@@ -45,7 +44,7 @@ pub fn show(ui: &mut egui::Ui, view: &ViewMut<'_>, actions: &mut UiActions) {
 /// Recursively render a node and its children in the scene tree.
 pub fn render_node_tree(
     ui: &mut egui::Ui,
-    scene: &duck_engine_viewer::scene::Scene,
+    scene: &Scene,
     node_id: NodeId,
     depth: usize,
     actions: &mut UiActions,

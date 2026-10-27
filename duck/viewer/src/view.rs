@@ -19,7 +19,7 @@ use duck_engine_scene::Scene;
 use crate::{
     camera_transition::CameraTransition,
     event::EventDispatcher,
-    renderer::Renderer,
+    renderer::{Renderer, SceneFrames, SceneWorkflow, WorkflowGuard},
     scene::{
         Light, PositionedCamera, PositionedLight, SceneData,
         common::{RgbaColor, Transform},
@@ -189,7 +189,9 @@ pub fn default_headlight_rig() -> Vec<PositionedLight> {
 /// One independently rendered, independently interactive region of a viewer.
 /// See the [module docs](self) for the concept; create views with
 /// [`Viewer::add_view`](crate::Viewer::add_view) and mutate them through
-/// [`Viewer::view_mut`](crate::Viewer::view_mut).
+/// [`Viewer::view_mut`](crate::Viewer::view_mut). State shared with other views
+/// of the same scene (selection, scene lights) lives on the
+/// [`Viewer`](crate::Viewer), keyed by the view's id.
 pub struct View {
     pub(crate) id: ViewId,
     pub(crate) name: String,
@@ -200,7 +202,7 @@ pub struct View {
     /// Lights this view alone contributes, on top of its scene's lights.
     pub(crate) lights: Vec<PositionedLight>,
     /// When [`headlight_rig`](Self::headlight_rig) contributes to rendering.
-    pub(crate) headlight: HeadlightMode,
+    pub(crate) headlight_mode: HeadlightMode,
     /// The fallback rig, kept apart from [`lights`](Self::lights) so that
     /// [`HeadlightMode::Auto`]'s "no other lights" test does not see itself.
     pub(crate) headlight_rig: Vec<PositionedLight>,
@@ -260,15 +262,56 @@ impl View {
         &self.camera
     }
 
+    /// Mutable access to the view's camera. The aspect is re-stamped from the
+    /// view's pixel size before rendering, so callers need not maintain it.
+    pub fn camera_mut(&mut self) -> &mut PositionedCamera {
+        &mut self.camera
+    }
+
+    /// Replace the view's camera, stamping its aspect from the view's pixel size.
+    pub fn set_camera(&mut self, camera: PositionedCamera) {
+        let aspect = self.aspect();
+        self.camera = camera;
+        self.camera.aspect = aspect;
+    }
+
     /// Whether an animated camera move is in flight; see
-    /// [`ViewMut::transition_camera_to`](crate::ViewMut::transition_camera_to).
+    /// [`transition_camera_to`](Self::transition_camera_to).
     pub fn camera_in_transition(&self) -> bool {
         self.transition.is_some()
     }
 
+    /// Animate the view's camera to `camera` over `duration` seconds
+    /// (smoothstep-eased orbit arc). Replaces any in-flight transition,
+    /// continuing from the current pose; a non-positive duration applies the
+    /// camera immediately. Any other write to the camera — by an operator,
+    /// [`camera_mut`](Self::camera_mut), or [`set_camera`](Self::set_camera) —
+    /// cancels the transition at the viewer's next update. The aspect is
+    /// stamped from the view's pixel size; resizing does not cancel.
+    pub fn transition_camera_to(&mut self, camera: PositionedCamera, duration: f32) {
+        if duration <= 0.0 {
+            self.transition = None;
+            self.set_camera(camera);
+            return;
+        }
+        let mut camera = camera;
+        camera.aspect = self.aspect();
+        self.transition = Some(CameraTransition::new(self.camera.clone(), camera, duration));
+    }
+
+    /// Cancel any in-flight camera transition, leaving the camera where it is.
+    pub fn cancel_camera_transition(&mut self) {
+        self.transition = None;
+    }
+
     /// When this view's headlight rig contributes to rendering.
     pub fn headlight(&self) -> HeadlightMode {
-        self.headlight
+        self.headlight_mode
+    }
+
+    /// Set when the view's headlight rig contributes to rendering.
+    pub fn set_headlight(&mut self, mode: HeadlightMode) {
+        self.headlight_mode = mode;
     }
 
     /// Lights this view alone contributes, on top of its scene's lights.
@@ -276,9 +319,19 @@ impl View {
         &self.lights
     }
 
+    /// Lights this view alone contributes, for mutation.
+    pub fn lights_mut(&mut self) -> &mut Vec<PositionedLight> {
+        &mut self.lights
+    }
+
     /// This view's fallback headlight rig.
     pub fn headlight_rig(&self) -> &[PositionedLight] {
         &self.headlight_rig
+    }
+
+    /// Replace the view's fallback headlight rig.
+    pub fn set_headlight_rig(&mut self, lights: Vec<PositionedLight>) {
+        self.headlight_rig = lights;
     }
 
     /// The lights to render this view with: its scene's lights, then its own,
@@ -292,7 +345,7 @@ impl View {
         scene_lights: &[PositionedLight],
         scene: &SceneData,
     ) -> Vec<PositionedLight> {
-        let rig_on = match self.headlight {
+        let rig_on = match self.headlight_mode {
             HeadlightMode::On => true,
             HeadlightMode::Off => false,
             HeadlightMode::Auto => {
@@ -308,6 +361,37 @@ impl View {
     /// The view's operator stack.
     pub fn dispatcher(&self) -> &EventDispatcher {
         &self.dispatcher
+    }
+
+    /// The view's operator stack, for mutation.
+    pub fn dispatcher_mut(&mut self) -> &mut EventDispatcher {
+        &mut self.dispatcher
+    }
+
+    /// This view's background color. Alpha below 1 shows through to views
+    /// beneath (zero alpha makes the view a pure overlay).
+    pub fn set_background_color(&mut self, color: RgbaColor) {
+        self.renderer.set_background_color(color);
+    }
+
+    /// The view's active rendering workflow.
+    pub fn workflow(&self) -> &SceneWorkflow {
+        self.renderer.workflow()
+    }
+
+    /// Replace the view's rendering workflow.
+    ///
+    /// Build one with [`workflow::shaded`](crate::renderer::workflow::shaded),
+    /// [`workflow::hidden_line`](crate::renderer::workflow::hidden_line), or by
+    /// hand, from the view's [`Viewer::pass_builder`](crate::Viewer::pass_builder).
+    pub fn set_workflow(&mut self, workflow: SceneWorkflow) {
+        self.renderer.set_workflow(workflow);
+    }
+
+    /// Edit the view's workflow in place: insert a pass next to a known one,
+    /// swap one out, drop one, or retune one.
+    pub fn workflow_mut(&mut self) -> WorkflowGuard<'_, SceneFrames> {
+        self.renderer.workflow_mut()
     }
 
     /// The color texture this view renders into, before compositing.

@@ -271,7 +271,7 @@ impl<'a> App<'a> {
         build_material_scene(&scene);
 
         let view_id = viewer.add_view("main", scene.clone(), ViewLayout::FULL);
-        let mut view = viewer.view_mut(view_id).unwrap();
+        let view = viewer.view_mut(view_id).unwrap();
 
         let dispatcher = view.dispatcher_mut();
         dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new())));

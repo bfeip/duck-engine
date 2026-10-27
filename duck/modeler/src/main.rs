@@ -218,7 +218,7 @@ impl ViewerState<'static> {
         tools.register(LoftTool::new(&workspace));
         let shortcuts = Arc::new(Mutex::new(Shortcuts::new(&tools.palette_entries())));
 
-        let mut view = viewer.view_mut(view_id).expect("main view");
+        let view = viewer.view_mut(view_id).expect("main view");
         view.set_background_color(VIEWPORT_BACKGROUND);
         let dispatcher = view.dispatcher_mut();
         dispatcher.push_back(sel_op);
@@ -226,7 +226,6 @@ impl ViewerState<'static> {
         tools.install(dispatcher);
         // Behind the tool host, so an active tool keeps any key it consumes.
         dispatcher.push_back(Arc::clone(&shortcuts));
-        drop(view);
 
         viewer.add_axis_triad(view_id, AxisTriadConfig::default());
 
@@ -422,7 +421,7 @@ impl<'a> ViewerState<'a> {
         self.tools.discard_active();
         // Re-tessellation invalidates sub-geometry indices, and the step may
         // remove selected nodes outright.
-        self.viewer.view_mut(self.view_id).expect("main view").selection_mut().clear();
+        self.viewer.selection_mut(self.view_id).expect("main view").clear();
         let result = step(&mut self.document.lock().unwrap());
         match result {
             Ok(Some(label)) => self.notifications.info(format!("{verb} {label}")),
@@ -436,8 +435,8 @@ impl<'a> ViewerState<'a> {
         // Deactivating the tool tears down its preview, showing again what it
         // hid, before the parts go away.
         self.tools.discard_active();
-        let mut view = self.viewer.view_mut(self.view_id).expect("main view");
-        let deleted = delete::delete_selected_parts(&self.document, view.selection_mut());
+        let selection = self.viewer.selection_mut(self.view_id).expect("main view");
+        let deleted = delete::delete_selected_parts(&self.document, selection);
         if deleted > 0 {
             let plural = if deleted == 1 { "" } else { "s" };
             self.notifications.info(format!("Deleted {deleted} part{plural}"));
@@ -468,11 +467,11 @@ impl<'a> ViewerState<'a> {
         let scene_texture_id = self.scene_texture_id;
         let mut viewport_rect = None;
         let mut ui_actions = Vec::new();
-        let mut view = self.viewer.view_mut(self.view_id).expect("main view");
         // The UI edits copies of the camera and lighting; they are written
         // back on `AppAction::CameraChanged` and `LightingChanged` below.
-        let mut ui_camera = view.camera().clone();
-        let mut ui_lighting = Lighting::of(&view);
+        let mut ui_camera = self.viewer.view(self.view_id).expect("main view").camera().clone();
+        let mut ui_lighting = Lighting::of(&self.viewer, self.view_id);
+        let selection = self.viewer.selection_mut(self.view_id).expect("main view");
         let full_output = egui_ctx.run(raw_input, |ctx| {
             ui_actions = self.ui.show(
                 ctx,
@@ -480,7 +479,7 @@ impl<'a> ViewerState<'a> {
                 &mut ui_camera,
                 &mut ui_lighting,
                 &self.construction_options,
-                view.selection_mut(),
+                selection,
                 &self.tools,
                 &self.notifications,
             );
@@ -493,7 +492,6 @@ impl<'a> ViewerState<'a> {
                     viewport_rect = Some(ui.add(image).rect);
                 });
         });
-        drop(view);
         self.host.handle_platform_output(full_output.platform_output.clone());
 
         // The shortcuts pressed since the last frame, then what the UI asked
@@ -503,8 +501,8 @@ impl<'a> ViewerState<'a> {
         for action in actions {
             match action {
                 AppAction::SwitchTool(tool) => {
-                    let mut view = self.viewer.view_mut(self.view_id).expect("main view");
-                    self.tools.activate(tool, view.selection_mut());
+                    let selection = self.viewer.selection_mut(self.view_id).expect("main view");
+                    self.tools.activate(tool, selection);
                 }
                 AppAction::Delete => self.delete_selection(),
                 AppAction::Undo => self.replay(Document::undo, "Undid", "Nothing to undo"),
@@ -526,12 +524,11 @@ impl<'a> ViewerState<'a> {
                     self.document.lock().unwrap().set_seam_edges_visible(show);
                 }
                 AppAction::CameraChanged => {
-                    let mut view = self.viewer.view_mut(self.view_id).expect("main view");
+                    let view = self.viewer.view_mut(self.view_id).expect("main view");
                     view.set_camera(ui_camera.clone());
                 }
                 AppAction::LightingChanged => {
-                    let mut view = self.viewer.view_mut(self.view_id).expect("main view");
-                    ui_lighting.apply(&mut view);
+                    ui_lighting.apply(&mut self.viewer, self.view_id);
                 }
                 AppAction::ViewSnapped(toward_eye) => {
                     if self.construction_options.borrow_mut().face_view(toward_eye) {
@@ -569,9 +566,8 @@ impl<'a> ViewerState<'a> {
         // After the UI and its actions, so a tool they finished — by a panel's
         // Apply, say — cedes back to selection in the same frame.
         let scene = self.scene();
-        let mut view = self.viewer.view_mut(self.view_id).expect("main view");
-        self.tools.update(&scene, view.selection_mut());
-        drop(view);
+        let selection = self.viewer.selection_mut(self.view_id).expect("main view");
+        self.tools.update(&scene, selection);
 
         // Reconcile the offscreen texture size with the central panel, then
         // re-point the (stable) egui texture id at the new view.

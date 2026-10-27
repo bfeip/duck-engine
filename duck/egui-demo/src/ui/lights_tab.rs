@@ -2,11 +2,10 @@ use duck_engine_viewer::common::{
     Deg, Euler, Point3, Quaternion, Rad, RgbaColor, Rotation3, Transform,
 };
 use duck_engine_viewer::scene::{Light, LightType, PositionedLight};
-use duck_engine_viewer::ViewMut;
 
 use super::UiActions;
 
-pub fn show(ui: &mut egui::Ui, view: &mut ViewMut<'_>, _actions: &mut UiActions) {
+pub fn show(ui: &mut egui::Ui, lights: &mut Vec<PositionedLight>, _actions: &mut UiActions) {
     let mut to_add: Option<LightType> = None;
     ui.horizontal(|ui| {
         ui.label("Add:");
@@ -24,7 +23,6 @@ pub fn show(ui: &mut egui::Ui, view: &mut ViewMut<'_>, _actions: &mut UiActions)
         }
     });
 
-    let lights = view.scene_lights_mut();
     if let Some(light_type) = to_add {
         lights.push(new_light(light_type));
     }

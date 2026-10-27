@@ -53,11 +53,10 @@ fn main() -> anyhow::Result<()> {
         aspect: WIDTH as Real / HEIGHT as Real,
         projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 100.0 },
     };
-    let mut view = viewer.view_mut(view).unwrap();
-    view.set_camera(camera.clone());
+    viewer.view_mut(view).unwrap().set_camera(camera.clone());
 
     // Read back a still image and save it.
-    let image = view.render_to_image(&camera)?;
+    let image = viewer.render_view_to_image(view, &camera)?;
 
     let out = "offscreen.png";
     image.save(out)?;

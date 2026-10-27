@@ -1,21 +1,20 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
+use anyhow::Context as _;
 use duck_engine_common::{Real, Vector3};
 use duck_engine_scene::Scene;
 use web_time::Instant;
 
 use crate::{
     axis_triad::{self, AxisTriad, AxisTriadConfig},
-    camera_transition::CameraTransition,
     compositor::Compositor,
     event::{AppEvent, DeviceEvent, Event, EventContext, EventDispatcher},
     input::{ElementState, TouchPhase},
     scene::{PositionedCamera, PositionedLight, Projection, common::RgbaColor},
     selection::SelectionManager,
     renderer::{
-        Gpu, GpuOptions, HighlightQuery, PassBuilder, RenderContext, Renderer,
-        SceneFrames, SceneResources, SceneWorkflow, WorkflowGuard,
+        Gpu, GpuOptions, HighlightQuery, PassBuilder, RenderContext, Renderer, SceneResources,
     },
     view::{
         HeadlightMode, PixelRect, View, ViewId, ViewLayout, ViewTarget, default_headlight_rig,
@@ -114,10 +113,9 @@ impl Viewer {
     /// The first view of a scene registers the scene with the viewer (GPU
     /// resources + selection, shared by later views of the same handle). The
     /// view starts with a default camera and [`HeadlightMode::Auto`]
-    /// headlights; replace the camera with
-    /// [`ViewMut::set_camera`](ViewMut::set_camera).
+    /// headlights; replace the camera with [`View::set_camera`].
     pub fn add_view(&mut self, name: impl Into<String>, scene: Scene, layout: ViewLayout) -> ViewId {
-        self.attach_scene(&scene);
+        self.ensure_scene(&scene);
 
         let rect = layout.resolve(self.size);
         let renderer = Renderer::new(&mut self.ctx, rect.width, rect.height);
@@ -139,7 +137,7 @@ impl Viewer {
             scene,
             camera,
             lights: Vec::new(),
-            headlight: HeadlightMode::default(),
+            headlight_mode: HeadlightMode::default(),
             headlight_rig: default_headlight_rig(),
             layout,
             rect,
@@ -205,26 +203,18 @@ impl Viewer {
 
         // Attach to the new one. The renderer holds no scene state — targets,
         // workflow, and uniforms are all view-local — so it carries over.
-        self.attach_scene(&scene);
+        self.ensure_scene(&scene);
         self.views[index].scene = scene;
     }
 
+    /// Get a view by ID.
     pub fn view(&self, id: ViewId) -> Option<&View> {
         self.views.iter().find(|v| v.id == id)
     }
 
-    /// Mutable access to a view together with its scene's shared state.
-    pub fn view_mut(&mut self, id: ViewId) -> Option<ViewMut<'_>> {
-        let index = self.views.iter().position(|v| v.id == id)?;
-        let slot = self
-            .scenes
-            .iter()
-            .position(|s| s.scene.ptr_eq(&self.views[index].scene))?;
-        Some(ViewMut {
-            view: &mut self.views[index],
-            slot: &mut self.scenes[slot],
-            ctx: &mut self.ctx,
-        })
+    /// Get a view by ID, for mutation.
+    pub fn view_mut(&mut self, id: ViewId) -> Option<&mut View> {
+        self.views.iter_mut().find(|v| v.id == id)
     }
 
     /// Views in stack order (last is topmost).
@@ -232,15 +222,29 @@ impl Viewer {
         self.views.iter()
     }
 
-    /// Lights shared by every view of `scene`. `None` when no view shows it.
-    pub fn scene_lights(&self, scene: &Scene) -> Option<&[PositionedLight]> {
-        self.scenes.iter().find(|s| s.scene.ptr_eq(scene)).map(|s| s.lights.as_slice())
+    /// Views in stack order (last is topmost), for mutation.
+    pub fn views_mut(&mut self) -> impl Iterator<Item = &mut View> {
+        self.views.iter_mut()
     }
 
-    /// Lights shared by every view of `scene`, for mutation. `None` when no
-    /// view shows it — a scene with no view has nowhere to keep them.
-    pub fn scene_lights_mut(&mut self, scene: &Scene) -> Option<&mut Vec<PositionedLight>> {
-        self.scenes.iter_mut().find(|s| s.scene.ptr_eq(scene)).map(|s| &mut s.lights)
+    /// The selection shared by every view of view `id`'s scene.
+    pub fn selection(&self, id: ViewId) -> Option<&SelectionManager> {
+        self.slot(id).map(|s| &s.selection)
+    }
+
+    /// The selection shared by every view of view `id`'s scene, for mutation.
+    pub fn selection_mut(&mut self, id: ViewId) -> Option<&mut SelectionManager> {
+        self.slot_mut(id).map(|s| &mut s.selection)
+    }
+
+    /// Lights shared by every view of view `id`'s scene.
+    pub fn scene_lights(&self, id: ViewId) -> Option<&[PositionedLight]> {
+        self.slot(id).map(|s| s.lights.as_slice())
+    }
+
+    /// Lights shared by every view of view `id`'s scene, for mutation.
+    pub fn scene_lights_mut(&mut self, id: ViewId) -> Option<&mut Vec<PositionedLight>> {
+        self.slot_mut(id).map(|s| &mut s.lights)
     }
 
     /// Re-place a view; its targets resize if the resolved pixel size changed.
@@ -308,7 +312,7 @@ impl Viewer {
             },
         );
         {
-            let mut view = self.view_mut(id).expect("view was just added");
+            let view = self.view_mut(id).expect("view was just added");
             view.set_background_color(RgbaColor { r: 0.0, g: 0.0, b: 0.0, a: 0.0 });
             view.dispatcher_mut().push_back(operator);
             let mut camera = PositionedCamera {
@@ -505,12 +509,11 @@ impl Viewer {
             .collect();
 
         for (target, duration, fit, request) in snaps {
-            let Some(mut view) = self.view_mut(target) else { continue };
+            let Some(view) = self.view_mut(target) else { continue };
             let bounds = if fit { view.scene.lock().bounding().bounds } else { None };
             let direction = axis_triad::snap_direction(&view.camera, &request);
             let camera = axis_triad::snap_camera(&view.camera, &request, bounds.as_ref());
             view.transition_camera_to(camera, duration);
-            drop(view);
             self.dispatch_to(target, &Event::App(AppEvent::ViewSnapped { direction }));
         }
     }
@@ -620,15 +623,8 @@ impl Viewer {
     /// Dispatch `event` through one view's operator stack. Cursor state in the
     /// event is expected to be view-local.
     fn dispatch_to(&mut self, id: ViewId, event: &Event) {
-        let Some(index) = self.views.iter().position(|v| v.id == id) else { return };
-        let Some(slot) = self
-            .scenes
-            .iter()
-            .position(|s| s.scene.ptr_eq(&self.views[index].scene))
-        else {
-            return;
-        };
-        let view = &mut self.views[index];
+        let Some((view, slot)) = self.view_and_slot(id) else { return };
+        let view = &mut self.views[view];
         let slot = &mut self.scenes[slot];
 
         if let Event::Device(DeviceEvent::CursorMoved { position }) = event {
@@ -737,6 +733,44 @@ impl Viewer {
         Ok(())
     }
 
+    /// Render view `id`'s scene from `camera` and read the result back into an
+    /// RGBA image (blocking). For headless still-image / thumbnail rendering.
+    /// The output size is the view's current pixel size. The view's lights
+    /// apply, resolved against `camera`.
+    pub fn render_view_to_image(
+        &mut self,
+        id: ViewId,
+        camera: &PositionedCamera,
+    ) -> Result<image::RgbaImage, anyhow::Error> {
+        let (view, slot) = self.view_and_slot(id).with_context(|| format!("no view {id:?}"))?;
+        let view = &mut self.views[view];
+        let slot = &mut self.scenes[slot];
+        let lights = {
+            let guard = view.scene.lock();
+            view.effective_lights(&slot.lights, &guard)
+        };
+        let highlight: Option<&dyn HighlightQuery> = if slot.selection.config().outline_enabled {
+            Some(&slot.selection)
+        } else {
+            None
+        };
+        view.renderer.render_scene_to_image(
+            &mut self.ctx,
+            &mut slot.resources,
+            &mut view.scene,
+            camera,
+            &lights,
+            highlight,
+        )
+    }
+
+    /// A [`PassBuilder`] configured for view `id`'s target size, format and
+    /// MSAA settings, for constructing a pass to put in its workflow.
+    pub fn pass_builder(&mut self, id: ViewId) -> Option<PassBuilder<'_>> {
+        let view = self.views.iter().find(|v| v.id == id)?;
+        Some(view.renderer.pass_builder(&mut self.ctx))
+    }
+
     /// Color of target areas no view covers.
     pub fn set_clear_color(&mut self, color: RgbaColor) {
         self.clear_color = wgpu::Color {
@@ -795,7 +829,7 @@ impl Viewer {
 
     /// Register `scene` if no view of it exists yet, creating its shared GPU
     /// resources and selection.
-    fn attach_scene(&mut self, scene: &Scene) {
+    fn ensure_scene(&mut self, scene: &Scene) {
         if self.scenes.iter().any(|s| s.scene.ptr_eq(scene)) {
             return;
         }
@@ -806,173 +840,20 @@ impl Viewer {
             lights: Vec::new(),
         });
     }
-}
 
-/// Mutable access to a [`View`] bundled with its scene's shared state
-/// (selection, GPU resources) and the viewer's render context, obtained from
-/// [`Viewer::view_mut`]. Derefs to [`View`] for reads.
-pub struct ViewMut<'a> {
-    view: &'a mut View,
-    slot: &'a mut SceneSlot,
-    ctx: &'a mut RenderContext,
-}
-
-impl Deref for ViewMut<'_> {
-    type Target = View;
-    fn deref(&self) -> &View {
-        self.view
-    }
-}
-
-impl ViewMut<'_> {
-    /// The view's operator stack.
-    pub fn dispatcher_mut(&mut self) -> &mut EventDispatcher {
-        &mut self.view.dispatcher
+    /// Indices of view `id` and of its scene's slot.
+    fn view_and_slot(&self, id: ViewId) -> Option<(usize, usize)> {
+        let view = self.views.iter().position(|v| v.id == id)?;
+        let slot = self.scenes.iter().position(|s| s.scene.ptr_eq(&self.views[view].scene))?;
+        Some((view, slot))
     }
 
-    /// The selection shared by all views of this view's scene.
-    pub fn selection(&self) -> &SelectionManager {
-        &self.slot.selection
+    fn slot(&self, id: ViewId) -> Option<&SceneSlot> {
+        self.view_and_slot(id).map(|(_, slot)| &self.scenes[slot])
     }
 
-    /// Mutable access to the shared selection.
-    pub fn selection_mut(&mut self) -> &mut SelectionManager {
-        &mut self.slot.selection
-    }
-
-    /// Mutable access to the view's camera. The aspect is re-stamped from the
-    /// view's pixel size before rendering, so callers need not maintain it.
-    pub fn camera_mut(&mut self) -> &mut PositionedCamera {
-        &mut self.view.camera
-    }
-
-    /// Replace the view's camera, stamping its aspect from the view's pixel size.
-    pub fn set_camera(&mut self, camera: PositionedCamera) {
-        let aspect = self.view.aspect();
-        self.view.camera = camera;
-        self.view.camera.aspect = aspect;
-    }
-
-    /// Animate the view's camera to `camera` over `duration` seconds
-    /// (smoothstep-eased orbit arc). Replaces any in-flight transition,
-    /// continuing from the current pose; a non-positive duration applies the
-    /// camera immediately. Any other write to the camera — by an operator,
-    /// [`camera_mut`](Self::camera_mut), or [`set_camera`](Self::set_camera) —
-    /// cancels the transition at the viewer's next update. The aspect is
-    /// stamped from the view's pixel size; resizing does not cancel.
-    pub fn transition_camera_to(&mut self, camera: PositionedCamera, duration: f32) {
-        if duration <= 0.0 {
-            self.view.transition = None;
-            self.set_camera(camera);
-            return;
-        }
-        let mut camera = camera;
-        camera.aspect = self.view.aspect();
-        self.view.transition =
-            Some(CameraTransition::new(self.view.camera.clone(), camera, duration));
-    }
-
-    /// Cancel any in-flight camera transition, leaving the camera where it is.
-    pub fn cancel_camera_transition(&mut self) {
-        self.view.transition = None;
-    }
-
-    /// Set when the view's headlight rig contributes to rendering.
-    pub fn set_headlight(&mut self, mode: HeadlightMode) {
-        self.view.headlight = mode;
-    }
-
-    /// Replace the view's fallback headlight rig.
-    pub fn set_headlight_rig(&mut self, lights: Vec<PositionedLight>) {
-        self.view.headlight_rig = lights;
-    }
-
-    /// Lights this view alone contributes, for mutation.
-    pub fn lights_mut(&mut self) -> &mut Vec<PositionedLight> {
-        &mut self.view.lights
-    }
-
-    /// Lights shared by every view of this view's scene.
-    pub fn scene_lights(&self) -> &[PositionedLight] {
-        &self.slot.lights
-    }
-
-    /// Lights shared by every view of this view's scene, for mutation.
-    pub fn scene_lights_mut(&mut self) -> &mut Vec<PositionedLight> {
-        &mut self.slot.lights
-    }
-
-    /// This view's background color. Alpha below 1 shows through to views
-    /// beneath (zero alpha makes the view a pure overlay).
-    pub fn set_background_color(&mut self, color: RgbaColor) {
-        self.view.renderer.set_background_color(color);
-    }
-
-    /// Replace the view's rendering workflow.
-    ///
-    /// Build one with [`workflow::shaded`](crate::renderer::workflow::shaded),
-    /// [`workflow::hidden_line`](crate::renderer::workflow::hidden_line), or by
-    /// hand, from this view's [`pass_builder`](Self::pass_builder).
-    pub fn set_workflow(&mut self, workflow: SceneWorkflow) {
-        self.view.renderer.set_workflow(workflow);
-    }
-
-    /// The view's active rendering workflow.
-    pub fn workflow(&self) -> &SceneWorkflow {
-        self.view.renderer.workflow()
-    }
-
-    /// Edit the view's workflow in place: insert a pass next to a known one,
-    /// swap one out, drop one, or retune one.
-    pub fn workflow_mut(&mut self) -> WorkflowGuard<'_, SceneFrames> {
-        self.view.renderer.workflow_mut()
-    }
-
-    /// A [`PassBuilder`] configured for this view's target size, format and
-    /// MSAA settings, for constructing a pass to put in its workflow.
-    pub fn pass_builder(&mut self) -> PassBuilder<'_> {
-        self.view.renderer.pass_builder(self.ctx)
-    }
-
-    /// Clear the view's scene, removing all geometry, materials, textures, and
-    /// associated GPU resources, then restore a default camera and selection.
-    ///
-    /// The scene clear and its lights affect every view of the scene; only
-    /// this view's camera is reset.
-    pub fn clear_scene(&mut self) {
-        self.view.scene.clear();
-        self.slot.selection.clear();
-        self.slot.resources.clear();
-        self.slot.lights.clear();
-        self.set_camera(default_camera());
-    }
-
-    /// Render this view's scene from the given camera and read the result back
-    /// into an RGBA image (blocking). For headless still-image / thumbnail
-    /// rendering. The output size is the view's current pixel size. The view's
-    /// lights apply, resolved against the given camera.
-    pub fn render_to_image(
-        &mut self,
-        camera: &PositionedCamera,
-    ) -> Result<image::RgbaImage, anyhow::Error> {
-        let lights = {
-            let guard = self.view.scene.lock();
-            self.view.effective_lights(&self.slot.lights, &guard)
-        };
-        let highlight: Option<&dyn HighlightQuery> = if self.slot.selection.config().outline_enabled
-        {
-            Some(&self.slot.selection)
-        } else {
-            None
-        };
-        self.view.renderer.render_scene_to_image(
-            self.ctx,
-            &mut self.slot.resources,
-            &mut self.view.scene,
-            camera,
-            &lights,
-            highlight,
-        )
+    fn slot_mut(&mut self, id: ViewId) -> Option<&mut SceneSlot> {
+        self.view_and_slot(id).map(|(_, slot)| &mut self.scenes[slot])
     }
 }
 
@@ -986,6 +867,8 @@ fn default_camera() -> PositionedCamera {
     }
 }
 
+/// Allocate a view's color texture at `rect`'s size (at least 1×1), bound for
+/// sampling by the compositor.
 fn create_view_target(
     device: &wgpu::Device,
     compositor: &Compositor,
@@ -1498,7 +1381,7 @@ impl OffscreenViewer {
 
     /// Render all views into the owned offscreen texture and submit. Does not
     /// present (there is no surface); read the result via [`texture_view`] or
-    /// [`ViewMut::render_to_image`].
+    /// [`Viewer::render_view_to_image`].
     ///
     /// [`texture_view`]: Self::texture_view
     pub fn render(&mut self) -> Result<(), anyhow::Error> {

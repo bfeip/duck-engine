@@ -1,22 +1,24 @@
-use duck_engine_viewer::scene::Projection;
+use duck_engine_viewer::event::EventDispatcher;
 use duck_engine_viewer::scene::resource::SubGeometryKind;
-use duck_engine_viewer::selection::SelectionItem;
-use duck_engine_viewer::ViewMut;
+use duck_engine_viewer::scene::{PositionedCamera, PositionedLight, Projection, Scene};
+use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
+use duck_engine_viewer::{ViewId, Viewer};
 
-pub fn show(ui: &mut egui::Ui, view: &ViewMut<'_>) {
-    build_camera_section(ui, view);
+pub fn show(ui: &mut egui::Ui, viewer: &Viewer, view_id: ViewId) {
+    let view = viewer.view(view_id).expect("main view");
+    let scene = view.scene();
+    build_camera_section(ui, view.camera());
     ui.separator();
-    build_operators_section(ui, view);
+    build_operators_section(ui, view.dispatcher());
     ui.separator();
-    build_selection_section(ui, view);
+    build_selection_section(ui, viewer.selection(view_id).expect("main view"), &scene);
     ui.separator();
-    build_scene_info_section(ui, view);
+    build_scene_info_section(ui, &scene, viewer.scene_lights(view_id).expect("main view"));
 }
 
-fn build_camera_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
+fn build_camera_section(ui: &mut egui::Ui, camera: &PositionedCamera) {
     ui.heading("Camera");
 
-    let camera = view.camera();
     ui.label(match camera.projection {
         Projection::Perspective { fovy, .. } => format!("Projection: Perspective ({fovy:.1}°)"),
         Projection::Orthographic { half_height, .. } => {
@@ -36,18 +38,17 @@ fn build_camera_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
     ui.label(format!("Far: {far:.4}"));
 }
 
-fn build_operators_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
+fn build_operators_section(ui: &mut egui::Ui, dispatcher: &EventDispatcher) {
     ui.heading("Operators");
 
-    for name in view.dispatcher().iter_names() {
+    for name in dispatcher.iter_names() {
         ui.label(format!("  {}", name));
     }
 }
 
-fn selection_item_label(item: SelectionItem, view: &ViewMut<'_>) -> String {
+fn selection_item_label(item: SelectionItem, scene: &Scene) -> String {
     let node_id = item.node_id();
-    let node_label = view
-        .scene()
+    let node_label = scene
         .get_node(node_id)
         .and_then(|n| n.name.clone())
         .unwrap_or_else(|| format!("Node #{}", node_id));
@@ -65,10 +66,8 @@ fn selection_item_label(item: SelectionItem, view: &ViewMut<'_>) -> String {
     }
 }
 
-fn build_selection_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
+fn build_selection_section(ui: &mut egui::Ui, selection: &SelectionManager, scene: &Scene) {
     ui.heading("Selection");
-
-    let selection = view.selection();
 
     if selection.is_empty() {
         ui.label("(none)");
@@ -76,21 +75,20 @@ fn build_selection_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
         ui.label(format!("Count: {}", selection.len()));
 
         if let Some(primary) = selection.primary() {
-            ui.label(format!("Primary: {}", selection_item_label(primary, view)));
+            ui.label(format!("Primary: {}", selection_item_label(primary, scene)));
         }
 
         ui.label("Selected:");
         for item in selection.iter() {
-            ui.label(format!("  • {}", selection_item_label(*item, view)));
+            ui.label(format!("  • {}", selection_item_label(*item, scene)));
         }
     }
 }
 
-fn build_scene_info_section(ui: &mut egui::Ui, view: &ViewMut<'_>) {
+fn build_scene_info_section(ui: &mut egui::Ui, scene: &Scene, scene_lights: &[PositionedLight]) {
     ui.heading("Scene Info");
-    let scene = view.scene();
     ui.label(format!("Meshes: {}", scene.mesh_count()));
     ui.label(format!("Instances: {}", scene.instance_count()));
     ui.label(format!("Nodes: {}", scene.node_count()));
-    ui.label(format!("Lights: {}", view.scene_lights().len()));
+    ui.label(format!("Lights: {}", scene_lights.len()));
 }
