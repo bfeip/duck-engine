@@ -1,4 +1,4 @@
-use duck_engine_viewer::scene::resource::{EffectiveVisibility, NodeId, Visibility};
+use duck_engine_viewer::scene::resource::{EffectiveVisibility, NodeId, RenderLayer, Visibility};
 use duck_engine_viewer::ViewMut;
 
 use super::{UiActions, VisibilityChange};
@@ -23,7 +23,15 @@ pub fn show(ui: &mut egui::Ui, view: &ViewMut<'_>, actions: &mut UiActions) {
             // The scene must not be locked here: this closure builds widgets,
             // and `render_node_tree` recurses through them.
             let scene = view.scene();
-            let roots = scene.root_nodes();
+            // Overlay roots are annotation drawn over the scene, such as grips.
+            let roots: Vec<NodeId> = scene
+                .root_nodes()
+                .into_iter()
+                .filter(|&id| {
+                    let node = scene.get_node(id);
+                    node.is_some_and(|node| node.display().layer != RenderLayer::Overlay)
+                })
+                .collect();
             if roots.is_empty() {
                 ui.label("(empty)");
             } else {

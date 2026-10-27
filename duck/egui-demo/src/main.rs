@@ -22,7 +22,7 @@ use winit::event_loop::EventLoopProxy;
 use duck_engine_viewer::event::Event;
 use duck_engine_viewer::input::{ElementState, Key};
 use duck_engine_viewer::operator::{
-    NavigationMode, NavigationOperator, SelectionOperator, TransformMode, TransformOperator,
+    NavigationMode, NavigationOperator, SelectionOperator, TransformOperator,
 };
 use duck_engine_viewer::scene::{Projection, Scene};
 use duck_engine_viewer::winit_support;
@@ -107,9 +107,7 @@ impl ViewerState<'static> {
         {
             let mut view = viewer.view_mut(view_id).expect("main view");
             let dispatcher = view.dispatcher_mut();
-            dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Translate))));
-            dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Rotate))));
-            dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Scale))));
+            dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new())));
             dispatcher.push_back(Arc::new(Mutex::new(SelectionOperator::new())));
             dispatcher.push_back(nav_op.clone());
         }

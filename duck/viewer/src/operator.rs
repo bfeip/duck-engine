@@ -11,12 +11,7 @@ pub use handle::{
 };
 pub use navigation::{NavigationMode, NavigationOperator};
 pub use selection::{SelectionKinds, SelectionMode, SelectionOperator};
-pub use transform::{
-    axis_from_constraint, gizmo, AxisConstraint, ConstraintSpace, NodeTransformTarget,
-    TransformAction, TransformCaps,
-    TransformDriver, TransformFrame, TransformInteraction, TransformMode, TransformOperator,
-    TransformTarget,
-};
+pub use transform::TransformOperator;
 
 use crate::event::{Event, EventContext};
 

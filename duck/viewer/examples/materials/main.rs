@@ -17,7 +17,7 @@ use duck_engine_viewer::scene::resource::{
 };
 use duck_engine_viewer::{GpuOptions, SurfacedViewer, ViewLayout, winit_support};
 use duck_engine_viewer::operator::{
-    NavigationOperator, SelectionOperator, TransformMode, TransformOperator,
+    NavigationOperator, SelectionOperator, TransformOperator,
 };
 
 const SPHERE_RADIUS: Real = 0.4;
@@ -274,9 +274,7 @@ impl<'a> App<'a> {
         let mut view = viewer.view_mut(view_id).unwrap();
 
         let dispatcher = view.dispatcher_mut();
-        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Translate))));
-        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Rotate))));
-        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new(TransformMode::Scale))));
+        dispatcher.push_back(Arc::new(Mutex::new(TransformOperator::new())));
         dispatcher.push_back(Arc::new(Mutex::new(SelectionOperator::new())));
         dispatcher.push_back(Arc::new(Mutex::new(NavigationOperator::new())));
 
