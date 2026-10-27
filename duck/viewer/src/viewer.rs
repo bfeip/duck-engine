@@ -286,6 +286,7 @@ impl Viewer {
     }
 
     /// Add an axis-triad overlay mirroring `target`'s camera orientation.
+    /// 
     /// Clicking one of its six axis handles animates `target`'s camera to look
     /// down that axis; clicking the axis already faced flips to the opposite
     /// side. Each snap is reported to `target`'s operators as
@@ -476,7 +477,7 @@ impl Viewer {
     /// Dispatch an Update event with delta_time since last update to every view.
     ///
     /// Call this once per frame before rendering to enable smooth continuous
-    /// operations like WASD movement in walk mode.
+    /// operations like WASD movement in walk mode, or camera transitions from axis triads.
     pub fn update(&mut self) {
         let now = Instant::now();
         let delta_time = match self.last_update_time {
@@ -587,6 +588,8 @@ impl Viewer {
             .or_else(|| self.cursor_position.and_then(|(x, y)| self.hit_test(x, y)))
     }
 
+    /// Like [`Self::pointer_target`], but hit-tests `position` instead of the
+    /// last cursor position, for touches that carry their own.
     fn pointer_target_at(&self, position: (f64, f64)) -> Option<ViewId> {
         self.capture
             .as_ref()
@@ -594,6 +597,7 @@ impl Viewer {
             .or_else(|| self.hit_test(position.0 as f32, position.1 as f32))
     }
 
+    /// Drop one held button or touch from the capture, ending it when none remain.
     fn release_hold(&mut self) {
         if let Some(capture) = self.capture.as_mut() {
             capture.holds = capture.holds.saturating_sub(1);
@@ -612,6 +616,8 @@ impl Viewer {
             .map(|v| v.id)
     }
 
+    /// The view's rect in target coordinates, or a 1×1 rect at the origin if
+    /// `id` is unknown.
     fn view_rect(&self, id: ViewId) -> PixelRect {
         self.views
             .iter()
