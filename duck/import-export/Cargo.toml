@@ -12,7 +12,7 @@ cad = ["dep:opencascade", "duck-engine-scene/cad"]
 duck-engine-common = { path = "../common" }
 duck-engine-scene = { path = "../scene" }
 anyhow = "1.0"
-bytemuck = { version = "1.16", features = ["derive"] }
+bytemuck = { version = "1.16", features = ["extern_crate_alloc"] }
 gltf = { version = "1.4", features = ["utils", "KHR_materials_transmission"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 log = "0.4"

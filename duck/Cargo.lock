@@ -1092,7 +1092,6 @@ name = "duck-engine-render-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bytemuck",
  "log",
  "thiserror 2.0.18",
  "wesl",
@@ -1111,7 +1110,7 @@ dependencies = [
  "duck-engine-scene",
  "image",
  "log",
- "pollster 0.3.0",
+ "pollster",
  "wgpu",
 ]
 
@@ -1126,11 +1125,9 @@ dependencies = [
  "duck-engine-common",
  "glam",
  "image",
- "log",
  "obj-rs",
  "opencascade",
  "serde",
- "thiserror 2.0.18",
  "uuid",
 ]
 
@@ -1148,7 +1145,7 @@ dependencies = [
  "env_logger",
  "image",
  "log",
- "pollster 0.4.0",
+ "pollster",
  "serde",
  "web-sys",
  "web-time",
@@ -1193,7 +1190,7 @@ dependencies = [
  "egui-winit",
  "env_logger",
  "log",
- "pollster 0.4.0",
+ "pollster",
  "rfd",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -2605,7 +2602,7 @@ dependencies = [
  "glam",
  "log",
  "opencascade",
- "pollster 0.4.0",
+ "pollster",
  "rfd",
  "wgpu",
  "winit",
@@ -3420,12 +3417,6 @@ dependencies = [
 
 [[package]]
 name = "pollster"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
-
-[[package]]
-name = "pollster"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
@@ -3735,7 +3726,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "percent-encoding",
- "pollster 0.4.0",
+ "pollster",
  "raw-window-handle",
  "wasm-bindgen",
  "wasm-bindgen-futures",

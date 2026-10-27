@@ -16,9 +16,7 @@ bitflags = "2.0"
 serde = { version = "1.0", features = ["derive"], optional = true }
 bytemuck = { version = "1.16", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-log = "0.4"
 obj-rs = "0.7"
-thiserror = "2.0"
 
 # uuid's `js` feature sources randomness from JS via wasm-bindgen. Emscripten
 # has a real `std` (and no wasm-bindgen runtime), so it uses the default path.
