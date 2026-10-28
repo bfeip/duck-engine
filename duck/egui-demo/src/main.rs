@@ -122,7 +122,7 @@ impl ViewerState<'static> {
             None,
         );
         let mut egui_renderer = egui_wgpu::Renderer::new(
-            viewer.device(),
+            viewer.context().device(),
             surface.format(),
             RendererOptions::default(),
         );
@@ -130,7 +130,7 @@ impl ViewerState<'static> {
         // Register the offscreen scene texture once; the id is stable and
         // re-pointed on resize via `update_egui_texture_from_wgpu_texture`.
         let scene_texture_id = egui_renderer.register_native_texture(
-            viewer.device(),
+            viewer.context().device(),
             viewer.texture_view(),
             wgpu::FilterMode::Linear,
         );
@@ -340,7 +340,7 @@ impl<'a> App<'a> {
                 if (w, h) != state.viewer.size() {
                     state.viewer.resize(w, h);
                     state.egui_renderer.update_egui_texture_from_wgpu_texture(
-                        state.viewer.device(),
+                        state.viewer.context().device(),
                         state.viewer.texture_view(),
                         wgpu::FilterMode::Linear,
                         state.scene_texture_id,
@@ -360,7 +360,7 @@ impl<'a> App<'a> {
                     let view = output
                         .texture
                         .create_view(&wgpu::TextureViewDescriptor::default());
-                    let mut encoder = state.viewer.device().create_command_encoder(
+                    let mut encoder = state.viewer.context().device().create_command_encoder(
                         &wgpu::CommandEncoderDescriptor { label: Some("egui Encoder") },
                     );
                     render_egui_overlay(
@@ -369,12 +369,12 @@ impl<'a> App<'a> {
                         &full_output,
                         state.surface.size(),
                         ppp,
-                        state.viewer.device(),
-                        state.viewer.queue(),
+                        state.viewer.context().device(),
+                        state.viewer.context().queue(),
                         &mut encoder,
                         &view,
                     );
-                    state.viewer.queue().submit(std::iter::once(encoder.finish()));
+                    state.viewer.context().queue().submit(std::iter::once(encoder.finish()));
                     output.present();
                 }
                 Err(e) => log::error!("Surface acquire error: {}", e),

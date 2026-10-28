@@ -168,7 +168,7 @@ impl ViewerState<'static> {
         ui::install_fonts(&egui_ctx);
 
         let mut egui_renderer = egui_wgpu::Renderer::new(
-            viewer.device(),
+            viewer.context().device(),
             surface.format(),
             RendererOptions::default(),
         );
@@ -176,7 +176,7 @@ impl ViewerState<'static> {
         // Register the offscreen scene texture once; the id is stable and
         // re-pointed on resize via `update_egui_texture_from_wgpu_texture`.
         let scene_texture_id = egui_renderer.register_native_texture(
-            viewer.device(),
+            viewer.context().device(),
             viewer.texture_view(),
             wgpu::FilterMode::Linear,
         );
@@ -584,7 +584,7 @@ impl<'a> ViewerState<'a> {
             if (w, h) != self.viewer.size() {
                 self.viewer.resize(w, h);
                 self.egui_renderer.update_egui_texture_from_wgpu_texture(
-                    self.viewer.device(),
+                    self.viewer.context().device(),
                     self.viewer.texture_view(),
                     wgpu::FilterMode::Linear,
                     self.scene_texture_id,
@@ -604,11 +604,11 @@ impl<'a> ViewerState<'a> {
                 let view = output
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
-                let mut encoder = self.viewer.device().create_command_encoder(
+                let mut encoder = self.viewer.context().device().create_command_encoder(
                     &wgpu::CommandEncoderDescriptor { label: Some("egui Encoder") },
                 );
                 self.render_egui_overlay(&full_output, ppp, &mut encoder, &view);
-                self.viewer.queue().submit(std::iter::once(encoder.finish()));
+                self.viewer.context().queue().submit(std::iter::once(encoder.finish()));
                 output.present();
             }
             Err(e) => log::error!("Surface acquire error: {}", e),
@@ -626,8 +626,8 @@ impl<'a> ViewerState<'a> {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
     ) {
-        let device = self.viewer.device();
-        let queue = self.viewer.queue();
+        let device = self.viewer.context().device();
+        let queue = self.viewer.context().queue();
 
         for (id, image_delta) in &full_output.textures_delta.set {
             self.egui_renderer.update_texture(device, queue, *id, image_delta);

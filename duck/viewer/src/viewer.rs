@@ -800,37 +800,11 @@ impl Viewer {
         if h > 0 { w as Real / h as Real } else { 16.0 / 9.0 }
     }
 
-    /// The render context every view draws through. Custom pipelines and user
-    /// shaders are built from here.
+    /// The render context every view draws through: the device and queue, the
+    /// target format and sample count, and the builders for custom pipelines
+    /// and user shaders.
     pub fn context(&self) -> &RenderContext {
         &self.ctx
-    }
-
-    /// Get the render target texture format.
-    /// Useful for creating render pipelines that need to match the target format.
-    pub fn surface_format(&self) -> wgpu::TextureFormat {
-        self.ctx.format()
-    }
-
-    /// The MSAA sample count every view renders with.
-    pub fn sample_count(&self) -> u32 {
-        self.ctx.sample_count()
-    }
-
-    /// Get a reference to the wgpu device
-    pub fn device(&self) -> &wgpu::Device {
-        self.ctx.device()
-    }
-
-    /// Get a reference to the wgpu queue
-    pub fn queue(&self) -> &wgpu::Queue {
-        self.ctx.queue()
-    }
-
-    /// Returns a clone of the GPU handle pair, for sharing the device/queue with
-    /// other owners (e.g. an offscreen viewer or an egui renderer).
-    pub fn gpu(&self) -> Gpu {
-        self.ctx.gpu().clone()
     }
 
     /// Register `scene` if no view of it exists yet, creating its shared GPU
@@ -1184,7 +1158,7 @@ impl<'a> SurfacedViewer<'a> {
     pub fn render_scene(&mut self) -> Result<(wgpu::SurfaceTexture, wgpu::TextureView, wgpu::CommandEncoder), anyhow::Error> {
         let output = self.surface.acquire()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.core.device().create_command_encoder(
+        let mut encoder = self.core.context().device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("Render Encoder") },
         );
 
@@ -1195,7 +1169,7 @@ impl<'a> SurfacedViewer<'a> {
 
     /// Submit the command encoder and present the surface texture.
     pub fn present(&self, encoder: wgpu::CommandEncoder, output: wgpu::SurfaceTexture) {
-        self.core.queue().submit(std::iter::once(encoder.finish()));
+        self.core.context().queue().submit(std::iter::once(encoder.finish()));
         output.present();
     }
 }
@@ -1372,7 +1346,7 @@ impl OffscreenViewer {
     pub fn resize(&mut self, width: u32, height: u32) {
         let has_view_formats = self.core.context().capabilities().has_view_formats;
         let (texture, render_view, sample_view, encode) = Self::create_color(
-            self.core.device(),
+            self.core.context().device(),
             self.color_format,
             width,
             height,
@@ -1391,7 +1365,7 @@ impl OffscreenViewer {
     ///
     /// [`texture_view`]: Self::texture_view
     pub fn render(&mut self) -> Result<(), anyhow::Error> {
-        let mut encoder = self.core.device().create_command_encoder(
+        let mut encoder = self.core.context().device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("Offscreen Render Encoder") },
         );
         // Disjoint field borrows: `&self.render_view` alongside `&mut self.core`.
@@ -1400,7 +1374,7 @@ impl OffscreenViewer {
             let (width, height) = self.core.size();
             encode.run(&mut encoder, width, height);
         }
-        self.core.queue().submit(std::iter::once(encoder.finish()));
+        self.core.context().queue().submit(std::iter::once(encoder.finish()));
         Ok(())
     }
 
