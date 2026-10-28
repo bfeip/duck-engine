@@ -546,12 +546,12 @@ impl Document {
         }
     }
 
-    /// Transform the given faces (by tessellation index) of a part's B-Rep and
-    /// re-solve the body around them, then re-tessellate the part in place
-    /// (preserving its `NodeId`). The part is untouched on error.
+    /// Transform the given faces (by tessellation index) of a part's B-Rep,
+    /// re-trimming the faces around them to meet them, then re-tessellate the
+    /// part in place (preserving its `NodeId`). The part is untouched on error.
     ///
     /// `transform` must be a similarity (rotation + translation + uniform
-    /// scale); a tweak the body cannot re-solve reports an error.
+    /// scale). A move that would change which faces meet reports an error.
     pub fn tweak_faces(
         &mut self,
         part: PartId,
@@ -562,7 +562,7 @@ impl Document {
             let cad_part = self.get_part(part).context("tweak_faces: part not found")?;
             let faces = face_indices.iter().map(|&index| cad_part.face(index)).collect::<Result<Vec<_>>>()?;
             let mat = matrix4_to_row_major_f64(&transform);
-            cad_part.shape().tweak_faces(faces, mat)?
+            cad_part.shape().move_faces(faces, mat)?
         };
         self.reshape_part(part, tweaked, "Tweak face")
     }
@@ -1229,13 +1229,11 @@ mod tests {
         use crate::ops::boolean::{build_boolean, commit_boolean, BooleanKind, BooleanTarget};
 
         let (mut doc, box_part, _) = doc_with_box();
+        // The sphere tool's default polar axis, as for a sphere snapped to the
+        // corner vertex: it keeps the poles off the cavity's rim.
+        let ball = crate::ops::primitives::sphere(Point3::new(2.0, 2.0, 2.0), Vector3::new(1.0, 2.0, 3.0), 1.0);
         let sphere = doc
-            .add_part(
-                "sphere",
-                opencascade::primitives::Shape::sphere(1.0).at(glam::dvec3(2.0, 2.0, 2.0)).build(),
-                Transform::IDENTITY,
-                &CadTessellationOptions::default(),
-            )
+            .add_part("sphere", ball, Transform::IDENTITY, &CadTessellationOptions::default())
             .expect("sphere tessellates");
         let target = BooleanTarget {
             target: doc.node_for_part(box_part).unwrap(),
@@ -1251,12 +1249,12 @@ mod tests {
         let transform = Matrix4::from_translation(Vector3::new(0.0, 0.5, 0.0));
 
         doc.tweak_faces(part, &[face], transform)
-            .expect("tweaking the boolean result re-solves");
+            .expect("the boolean result's top moves");
 
         assert_eq!(doc.node_for_part(part), Some(node), "node id must be preserved");
         assert!((max_y(&doc, part) - 2.5).abs() < 1e-6, "top must land at y=2.5");
         let faces_after = doc.get_part(part).unwrap().shape().faces().count();
-        assert_eq!(faces_after, faces_before, "the spherical cavity must survive the re-solve");
+        assert_eq!(faces_after, faces_before, "the spherical cavity must survive the move");
     }
 
     #[test]
@@ -1961,5 +1959,159 @@ mod tests {
         assert!(!doc.materials().contains(id));
         doc.redo().expect("redo the creation");
         assert_eq!(doc.materials().get(id).map(|m| m.name.as_str()), Some("Mine"));
+    }
+}
+
+#[cfg(test)]
+mod tweak_sweep {
+    use duck_engine_scene::cad::CadTessellationOptions;
+    use duck_engine_scene::common::{Plane, Point3, Real, Transform, Vector3};
+    use duck_engine_scene::Scene;
+    use glam::{dvec3, DVec3};
+    use opencascade::primitives::{Face, FaceType, Shape};
+
+    use super::{dvec3_to_point3, Document};
+    use crate::ops::boolean::{build_boolean, commit_boolean, BooleanKind, BooleanTarget};
+    use crate::ops::primitives::{prism, rectangle_corners, sphere};
+
+    fn translation(v: DVec3) -> [[f64; 4]; 4] {
+        [[1.0, 0.0, 0.0, v.x], [0.0, 1.0, 0.0, v.y], [0.0, 0.0, 1.0, v.z], [0.0, 0.0, 0.0, 1.0]]
+    }
+
+    /// Rotation by `angle` about the axis through `centre` along unit `axis`.
+    fn rotation(centre: DVec3, axis: DVec3, angle: f64) -> [[f64; 4]; 4] {
+        let r = glam::DMat3::from_axis_angle(axis, angle);
+        let t = centre - r * centre;
+        let c = |i: usize| r.col(i);
+        [
+            [c(0).x, c(1).x, c(2).x, t.x],
+            [c(0).y, c(1).y, c(2).y, t.y],
+            [c(0).z, c(1).z, c(2).z, t.z],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    }
+
+    struct Rng(u32);
+    impl Rng {
+        fn next(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            (self.0 >> 8) as f64 / (1u32 << 24) as f64
+        }
+        fn unit(&mut self) -> DVec3 {
+            loop {
+                let v = dvec3(self.next() - 0.5, self.next() - 0.5, self.next() - 0.5);
+                if v.length() > 0.1 {
+                    return v.normalize();
+                }
+            }
+        }
+    }
+
+    fn v3(v: DVec3) -> Vector3 {
+        Vector3::new(v.x as Real, v.y as Real, v.z as Real)
+    }
+
+    /// The face of `shape` lying in the plane of `face`.
+    fn coplanar<'a>(shape: &Shape, face: &Face) -> Option<Face> {
+        let n = face.normal_at_center().ok()?;
+        let c = face.center_of_mass();
+        shape.faces().find(|f| {
+            let fn_ = f.normal_at_center().unwrap();
+            fn_.dot(n).abs() > 1.0 - 1e-9 && (f.center_of_mass() - c).dot(n).abs() < 1e-6
+        })
+    }
+
+    /// Spike sweep: sphere pockets moved every which way, against the exact
+    /// result from moving the box tool's face and cutting again. Prints.
+    #[test]
+    #[ignore]
+    fn sweep() {
+        let mut rng = Rng(0x9e37_79b9);
+        let options = CadTessellationOptions::default();
+        let (mut right, mut wrong, mut refused, mut no_oracle) = (0, 0, 0, 0);
+        for case in 0..40 {
+            let axis = match case % 3 {
+                0 => DVec3::Y,
+                1 => DVec3::Z,
+                _ => rng.unit(),
+            };
+            let ball = sphere(Point3::new(0.0, 0.0, 0.0), v3(axis), 30.0);
+
+            let n = rng.unit();
+            let plane = Plane::from_point(v3(n), Point3::new(0.0, 0.0, 0.0));
+            let (u, v) = plane.basis();
+            let (u, v) = (dvec3(u.x as f64, u.y as f64, u.z as f64), dvec3(v.x as f64, v.y as f64, v.z as f64));
+            let outward = (u + v + n).normalize();
+            let corner = outward * (12.0 + 15.0 * rng.next()) + rng.unit() * 3.0;
+            let size = 40.0;
+            let centre = corner + (u + v) * (size / 2.0);
+            let base = Plane::from_point(v3(n), dvec3_to_point3(centre));
+            let tool = prism(&rectangle_corners(dvec3_to_point3(centre), &base, size as Real, size as Real), v3(n * size))
+                .unwrap();
+
+            let mut doc = Document::new(Scene::default());
+            let target = doc.add_part("sphere", ball.clone(), Transform::IDENTITY, &options).unwrap();
+            let tool_part = doc.add_part("box", tool.clone(), Transform::IDENTITY, &options).unwrap();
+            let target = BooleanTarget {
+                target: doc.node_for_part(target).unwrap(),
+                tools: vec![doc.node_for_part(tool_part).unwrap()],
+            };
+            let Ok(result) = build_boolean(&doc, &target, BooleanKind::Subtract) else { continue };
+            commit_boolean(&mut doc, &target, result, &options).unwrap();
+            let part = doc.parts().next().unwrap();
+            let body = part.shape().clone();
+
+            let walls: Vec<Face> = body.faces().filter(|f| f.face_type() == FaceType::Plane).collect();
+            for (w, wall) in walls.iter().enumerate() {
+                let normal = wall.normal_at_center().unwrap();
+                let c = wall.center_of_mass();
+                let moves = [
+                    ("normal +2", translation(normal * 2.0)),
+                    ("normal -2", translation(normal * -2.0)),
+                    ("normal +7", translation(normal * 7.0)),
+                    ("normal -7", translation(normal * -7.0)),
+                    ("any 4", translation(rng.unit() * 4.0)),
+                    ("tilt 6deg", rotation(c, normal.any_orthonormal_vector(), 6f64.to_radians())),
+                ];
+                for (label, mat) in moves {
+                    let exact = coplanar(&tool, wall)
+                        .and_then(|box_face| tool.move_faces([&box_face], mat).ok())
+                        .and_then(|moved_tool| ball.subtract(&moved_tool).ok())
+                        .map(|cut| super::unify_same_domain(super::unwrap_single_solid(cut.shape)));
+                    let expected = exact.as_ref().map(|e| e.volume());
+                    let result = match body.move_faces([wall], mat) {
+                        Ok(moved) => moved,
+                        Err(e) => {
+                            let counts = |s: &Shape| (s.faces().count(), s.edges().count(), s.vertices().count());
+                            println!(
+                                "refused case {case} wall {w} {label}: {e}; body f/e/v {:?} exact f/e/v {:?}",
+                                counts(&body),
+                                exact.as_ref().map(counts)
+                            );
+                            refused += 1;
+                            continue;
+                        }
+                    };
+                    let Some(expected) = expected else {
+                        no_oracle += 1;
+                        continue;
+                    };
+                    if (result.volume() - expected).abs() <= 1e-4 * expected {
+                        right += 1;
+                    } else {
+                        wrong += 1;
+                        println!(
+                            "WRONG case {case} axis {axis:.2} wall {w} {label}: vol {:.1} expected {expected:.1} valid {} self-intersects {}",
+                            result.volume(),
+                            result.is_valid(),
+                            result.self_intersects()
+                        );
+                    }
+                }
+            }
+        }
+        println!("right {right}, WRONG {wrong}, refused {refused}, no oracle {no_oracle}");
     }
 }

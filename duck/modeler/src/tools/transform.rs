@@ -42,7 +42,7 @@ use crate::ui::{icons, length_value};
 /// - **Whole parts** preview by moving their nodes, and commit by baking the
 ///   delta into their B-Reps via [`Document::bake_transform`].
 /// - **A face**, drilled into as the primary selection, previews as a ghost of
-///   the face, and commits by re-solving the body around the moved face via
+///   the face, and commits by re-trimming the faces around the moved one via
 ///   [`Document::tweak_faces`]. A face only scales uniformly.
 ///
 /// Selecting the tool shows its gizmo; drag a grip to transform. The mode's key
@@ -481,13 +481,13 @@ struct FaceTarget {
     face_index: u32,
 }
 
-/// One face of a solid, moved by re-solving the body around it.
+/// One face of a solid, moved with the faces around it re-trimmed to meet it.
 ///
 /// The drag is previewed cheaply by rigidly moving a ghost tessellation of just
 /// the face — no OCCT work per frame. Committing runs the actual tweak
-/// ([`Document::tweak_faces`]), which re-solves the body around the moved face
-/// and re-tessellates in place; a tweak the kernel cannot re-solve leaves the
-/// part untouched and reports the error.
+/// ([`Document::tweak_faces`]), which re-trims the faces around the moved one
+/// and re-tessellates in place; a move the kernel cannot make leaves the part
+/// untouched and reports the error.
 struct FaceTweak {
     /// Ghost of the picked face shown while dragging.
     preview: PreviewSession,
