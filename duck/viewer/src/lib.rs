@@ -20,7 +20,9 @@ pub mod selection;
 mod axis_triad;
 mod camera_transition;
 mod compositor;
+mod offscreen;
 mod scene_scale;
+mod surface;
 mod view;
 mod viewer;
 
@@ -29,7 +31,9 @@ pub use view::{
     Corner, HeadlightMode, PixelRect, View, ViewId, ViewLayout, default_headlight_rig,
 };
 pub use renderer::{GpuCapabilities, GpuOptions};
-pub use viewer::{OffscreenViewer, SurfacedViewer, Viewer, WindowSurface};
+pub use offscreen::OffscreenViewer;
+pub use surface::{SurfacedViewer, WindowSurface};
+pub use viewer::Viewer;
 
 // Optional integrations
 #[cfg(feature = "winit-support")]
