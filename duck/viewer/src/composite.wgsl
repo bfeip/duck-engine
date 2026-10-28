@@ -2,7 +2,8 @@
 //
 // Drawn as a fullscreen triangle with the render pass viewport set to the
 // view's rect, so clip space spans exactly that rect and `uv` spans the source
-// texture. Straight-alpha blending is configured on the pipeline.
+// texture. View textures hold premultiplied color; the blend is configured on
+// the pipeline.
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -26,7 +27,8 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 // View textures are sRGB, so sampling decodes to linear.
 
-// Used when the final target is an sRGB format and encodes on write.
+// Used when the final target is an sRGB format and encodes on write: always,
+// when compositing views.
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(view_texture, view_sampler, in.uv);
@@ -40,7 +42,8 @@ fn gamma_from_linear_rgb(rgb: vec3<f32>) -> vec3<f32> {
 }
 
 // Used when the final target is not an sRGB format, so the encode must be
-// applied here. Alpha is straight and stays linear.
+// applied here: the re-encode of a stand-in into its destination. Alpha stays
+// linear.
 @fragment
 fn fs_encode(in: VertexOutput) -> @location(0) vec4<f32> {
     let linear = textureSample(view_texture, view_sampler, in.uv);

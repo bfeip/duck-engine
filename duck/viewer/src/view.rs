@@ -368,10 +368,12 @@ impl View {
         &mut self.dispatcher
     }
 
-    /// This view's background color. Alpha below 1 shows through to views
-    /// beneath (zero alpha makes the view a pure overlay).
+    /// This view's background color, in straight alpha. Alpha below 1 shows
+    /// through to views beneath (zero alpha makes the view a pure overlay).
     pub fn set_background_color(&mut self, color: RgbaColor) {
-        self.renderer.set_background_color(color);
+        // View textures hold premultiplied color.
+        let RgbaColor { r, g, b, a } = color;
+        self.renderer.set_background_color(RgbaColor { r: r * a, g: g * a, b: b * a, a });
     }
 
     /// The view's active rendering workflow.

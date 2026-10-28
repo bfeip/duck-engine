@@ -7,7 +7,7 @@ use web_time::Instant;
 
 use crate::{
     axis_triad::{self, AxisTriad, AxisTriadConfig},
-    compositor::Compositor,
+    compositor::{Compositor, VIEW_FORMAT},
     event::{AppEvent, DeviceEvent, Event, EventContext, EventDispatcher},
     input::{ElementState, TouchPhase},
     scene::{PositionedCamera, PositionedLight, Projection, common::RgbaColor},
@@ -42,7 +42,7 @@ struct PointerCapture {
 
 /// Surface-free core viewer. Hosts any number of [`View`]s, routes input to
 /// them, renders each into its own texture, and composites the result into an
-/// arbitrary [`wgpu::TextureView`] via [`render_to_target`](Self::render_to_target).
+/// sRGB [`wgpu::TextureView`] via [`render_to_target`](Self::render_to_target).
 /// 
 /// The concrete output target (a window surface or an offscreen texture) is
 /// owned by a wrapper such as [`SurfacedViewer`](crate::SurfacedViewer) or
@@ -79,19 +79,26 @@ pub struct Viewer {
 impl Viewer {
     /// Build a viewer around an existing GPU context.
     ///
-    /// `color_format` is the format of the target the viewer will render into
-    /// (a surface format or an offscreen texture format); all views render at
-    /// this format and `sample_count`. The viewer starts with no views.
+    /// `composite_format` is the output format: the sRGB format of the target
+    /// views passed to [`render_to_target`](Self::render_to_target), as the
+    /// surface or texture behind them dictates (e.g. `Bgra8UnormSrgb`). Views
+    /// themselves render at `Rgba8UnormSrgb` and `sample_count`, whatever the
+    /// output; the compositor converts between the two. The viewer starts with
+    /// no views.
     pub fn from_gpu(
         gpu: Gpu,
-        color_format: wgpu::TextureFormat,
+        composite_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
         sample_count: u32,
     ) -> Self {
-        let compositor = Compositor::blend(&gpu.device, color_format);
+        debug_assert!(
+            composite_format.is_srgb(),
+            "composite target {composite_format:?} is not sRGB"
+        );
+        let compositor = Compositor::blend(&gpu.device, composite_format);
         Self {
-            ctx: RenderContext::new(gpu, color_format, sample_count),
+            ctx: RenderContext::new(gpu, VIEW_FORMAT, sample_count),
             size: (width.max(1), height.max(1)),
             scenes: Vec::new(),
             views: Vec::new(),
@@ -685,8 +692,8 @@ impl Viewer {
     }
 
     /// Render every visible view into its texture and composite the stack onto
-    /// `target`. The encoder is not submitted — the caller is responsible for
-    /// that.
+    /// `target`, a view at the format given to [`from_gpu`](Self::from_gpu).
+    /// The encoder is not submitted — the caller is responsible for that.
     ///
     /// Each scene's GPU resources are prepared exactly once per call, however
     /// many views share the scene.

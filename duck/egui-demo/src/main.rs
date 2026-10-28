@@ -95,7 +95,6 @@ impl ViewerState<'static> {
 
         let mut viewer = OffscreenViewer::from_gpu(
             surface.gpu(),
-            surface.format(),
             size.width,
             size.height,
             surface.sample_count(),

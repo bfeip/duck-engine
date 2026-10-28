@@ -2,6 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 use crate::{
     Viewer,
+    compositor::{SrgbTarget, VIEW_FORMAT, srgb_view_format},
     event::{DeviceEvent, Event},
     renderer::{Gpu, GpuOptions, Renderer},
 };
@@ -18,6 +19,8 @@ pub struct WindowSurface<'a> {
     config: wgpu::SurfaceConfiguration,
     gpu: Gpu,
     sample_count: u32,
+    /// Whether the surface texture allows its sRGB variant as a view format.
+    can_reinterpret: bool,
 }
 
 impl<'a> WindowSurface<'a> {
@@ -106,6 +109,17 @@ impl<'a> WindowSurface<'a> {
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
+        // Without an sRGB surface format (WebGPU canvases offer none), view
+        // the surface at its sRGB variant where the backend allows it.
+        let can_reinterpret = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS);
+        let view_formats = srgb_view_format(surface_format, can_reinterpret)
+            .filter(|&format| format != surface_format)
+            .into_iter()
+            .collect();
+
         let present_mode = surface_caps
             .present_modes
             .iter()
@@ -120,7 +134,7 @@ impl<'a> WindowSurface<'a> {
             height,
             present_mode,
             alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
+            view_formats,
             desired_maximum_frame_latency: 2,
         };
 
@@ -128,7 +142,7 @@ impl<'a> WindowSurface<'a> {
 
         // The renderer picks the count: it owns the attachments that have to
         // support it.
-        let sample_count = Renderer::preferred_sample_count(&adapter, surface_format);
+        let sample_count = Renderer::preferred_sample_count(&adapter, VIEW_FORMAT);
 
         if sample_count > 1 {
             log::info!("Using {sample_count}x MSAA");
@@ -142,6 +156,7 @@ impl<'a> WindowSurface<'a> {
             config,
             gpu: Gpu::new(&adapter, device, queue),
             sample_count,
+            can_reinterpret,
         }
     }
 
@@ -169,7 +184,7 @@ impl<'a> WindowSurface<'a> {
         self.config.format
     }
 
-    /// The MSAA sample count supported for this surface format.
+    /// The MSAA sample count supported for rendering views on this device.
     pub fn sample_count(&self) -> u32 {
         self.sample_count
     }
@@ -198,6 +213,7 @@ impl<'a> WindowSurface<'a> {
 /// A [`Viewer`] that owns a window/canvas surface and presents to it.
 pub struct SurfacedViewer<'a> {
     surface: WindowSurface<'a>,
+    target: SrgbTarget,
     core: Viewer,
 }
 
@@ -226,14 +242,21 @@ impl<'a> SurfacedViewer<'a> {
 
     /// Build a surfaced viewer around an already-configured [`WindowSurface`].
     pub fn from_surface(surface: WindowSurface<'a>, width: u32, height: u32) -> Self {
+        let target = SrgbTarget::new(
+            &surface.gpu.device,
+            surface.format(),
+            surface.can_reinterpret,
+            width,
+            height,
+        );
         let core = Viewer::from_gpu(
             surface.gpu(),
-            surface.format(),
+            target.composite_format(),
             width,
             height,
             surface.sample_count(),
         );
-        Self { surface, core }
+        Self { surface, target, core }
     }
 
     /// Create a new viewer from a winit Window (native platforms).
@@ -274,6 +297,7 @@ impl<'a> SurfacedViewer<'a> {
         if let Event::Device(DeviceEvent::Resized(physical_size)) = event {
             let (w, h) = *physical_size;
             self.surface.resize(w, h);
+            self.target.resize(&self.surface.gpu.device, w, h);
         }
         self.core.handle_event(event);
     }
@@ -285,20 +309,20 @@ impl<'a> SurfacedViewer<'a> {
         Ok(())
     }
 
-    /// Render all views into the surface, returning the surface output, view,
-    /// and command encoder for further rendering (overlays, post-processing,
-    /// etc.).
+    /// Render all views into the surface, returning the surface output, a view
+    /// of it at the surface format, and the command encoder for further
+    /// rendering (overlays, post-processing, etc.).
     ///
     /// Call [`present()`](Self::present) when done to submit commands and display the frame.
     pub fn render_scene(&mut self) -> Result<(wgpu::SurfaceTexture, wgpu::TextureView, wgpu::CommandEncoder), anyhow::Error> {
         let output = self.surface.acquire()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self.core.context().device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("Render Encoder") },
         );
 
-        self.core.render_to_target(&view, &mut encoder)?;
+        self.target.render(&mut self.core, &output.texture, &mut encoder)?;
 
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         Ok((output, view, encoder))
     }
 

@@ -158,7 +158,6 @@ impl ViewerState<'static> {
         let (width, height) = host.surface_size();
         let mut viewer = OffscreenViewer::from_gpu(
             surface.gpu(),
-            surface.format(),
             width,
             height,
             surface.sample_count(),
