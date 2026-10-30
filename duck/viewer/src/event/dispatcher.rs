@@ -7,6 +7,7 @@ use crate::input::{
     TouchId, TouchPhase,
 };
 use crate::operator::Operator;
+use crate::ScreenOverlay;
 
 use super::{ArcOperator, DeviceEvent, Event, EventContext};
 
@@ -192,6 +193,15 @@ impl EventDispatcher {
         self.operators.iter().map(|op| op.name())
     }
 
+    /// What every operator draws over the view this frame, in priority order.
+    pub(crate) fn overlay(&self) -> ScreenOverlay {
+        let mut overlay = ScreenOverlay::default();
+        for op in &self.operators {
+            op.overlay(&mut overlay);
+        }
+        overlay
+    }
+
     /// Returns the position of an operator. Position 0 is highest priority.
     pub fn position<T: Operator>(&self, op: &Arc<Mutex<T>>) -> Option<usize> {
         self.find_pos(op)
@@ -367,7 +377,7 @@ impl EventDispatcher {
     /// Processes a touch event and synthesizes corresponding mouse events.
     ///
     /// Touch gestures are mapped to mouse events so existing operators work unchanged:
-    /// - Single-finger drag → left mouse drag (orbit)
+    /// - Single-finger drag → left mouse drag (area selection)
     /// - Two-finger drag → right mouse drag (pan)
     /// - Two-finger pinch → mouse wheel (zoom)
     /// - Single tap → left mouse click (selection)

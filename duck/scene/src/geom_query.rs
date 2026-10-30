@@ -17,8 +17,10 @@
 //!    whether a face hides them; [`is_visible_along`] answers that.
 //!
 //! [`pick_all_from_volume`] is the volume analogue — every instance touching a
-//! convex volume (a rubber-band selection frustum, say) — returning
-//! [`VolumePickResult`]s.
+//! convex volume (a rubber-band selection frustum from
+//! [`PositionedCamera::volume_from_screen_rect`](crate::PositionedCamera::volume_from_screen_rect),
+//! say) — returning [`VolumePickResult`]s that say where each primitive lies
+//! relative to the volume ([`Containment`]).
 //!
 //! # Screen-space geometry
 //!
@@ -46,7 +48,7 @@ mod volume_picking;
 
 pub use mesh_intersection::{
     intersect_ray, intersect_ray_nearest, intersect_ray_with_lines, intersect_ray_with_points,
-    intersect_volume, LineMeshHit, MeshVolumeHit, PointMeshHit, TriangleMeshHit,
+    intersect_volume, Containment, LineMeshHit, MeshVolumeHit, PointMeshHit, TriangleMeshHit,
 };
 pub use pick_query::{pick_all, pick_all_with_view, PickQuery, PickView};
 pub use spatial_index::MeshSpatialIndex;

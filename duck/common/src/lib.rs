@@ -118,6 +118,11 @@ impl RgbaColor {
     pub fn darkened(self, t: f32) -> Self {
         self.mix(Self::BLACK, t).with_alpha(self.a)
     }
+
+    /// This straight-alpha color with rgb multiplied by alpha.
+    pub const fn premultiplied(self) -> Self {
+        Self { r: self.r * self.a, g: self.g * self.a, b: self.b * self.a, a: self.a }
+    }
 }
 
 /// Computes the normal matrix from a world transform matrix.
@@ -717,6 +722,13 @@ mod tests {
                 a: RgbaColor::AXIS_Y.a,
             },
         );
+    }
+
+    #[test]
+    fn test_premultiplied_scales_rgb_by_alpha() {
+        let c = RgbaColor { r: 0.2, g: 0.4, b: 1.0, a: 0.5 };
+        assert_color_eq(c.premultiplied(), RgbaColor { r: 0.1, g: 0.2, b: 0.5, a: 0.5 });
+        assert_color_eq(RgbaColor::BLUE.premultiplied(), RgbaColor::BLUE);
     }
 
     // ===== Axis color Tests =====

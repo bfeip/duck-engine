@@ -1,6 +1,6 @@
 use duck_engine_common::{
-    Deg, InnerSpace, Matrix3, Matrix4, MetricSpace, Point3, Quaternion, Real, SquareMatrix, Vector3,
-    EPSILON, ortho, perspective,
+    ConvexPolyhedron, Deg, InnerSpace, Matrix3, Matrix4, MetricSpace, Plane, Point3, Quaternion,
+    Real, SquareMatrix, Vector3, EPSILON, ortho, perspective,
 };
 
 /// Matrix to convert from OpenGL clip-space depth [-1, 1] to WGPU depth [0, 1].
@@ -385,6 +385,42 @@ impl PositionedCamera {
         let direction = (world_far - world_near).normalize();
 
         crate::common::Ray::new(world_near, direction)
+    }
+
+    /// The world-space volume seen through the screen rectangle with opposite
+    /// corners `a` and `b` (pixels, Y-down), which must enclose some area: the
+    /// planes through the rays at its edges and the near plane. It has no far
+    /// bound. The usual start of area picking; see
+    /// [`geom_query`](crate::geom_query).
+    pub fn volume_from_screen_rect(
+        &self,
+        a: (f32, f32),
+        b: (f32, f32),
+        screen_width: u32,
+        screen_height: u32,
+    ) -> ConvexPolyhedron {
+        let ray = |x: f32, y: f32| self.ray_from_screen_point(x, y, screen_width, screen_height);
+        let (left, right) = (a.0.min(b.0), a.0.max(b.0));
+        let (top, bottom) = (a.1.min(b.1), a.1.max(b.1));
+        let corners = [ray(left, top), ray(right, top), ray(right, bottom), ray(left, bottom)];
+        // Perspective corner rays share the eye and orthographic ones run
+        // parallel; both ways each edge's plane holds its rays and the segment
+        // between their origins.
+        let inside = ray((left + right) / 2.0, (top + bottom) / 2.0).point_at(self.length());
+        let mut planes: Vec<Plane> = (0..4)
+            .map(|i| {
+                let (from, to) = (&corners[i], &corners[(i + 1) % 4]);
+                let normal = from.direction.cross(to.origin - from.origin);
+                let plane = Plane::from_point(normal, from.origin);
+                if plane.signed_distance(inside) > 0.0 {
+                    Plane::from_point(-normal, from.origin)
+                } else {
+                    plane
+                }
+            })
+            .collect();
+        planes.push(Plane::from_point(-self.forward(), corners[0].origin));
+        ConvexPolyhedron::new(planes)
     }
 
     /// Pose interpolated toward `other` at `t` in [0, 1].
@@ -957,6 +993,47 @@ mod tests {
             assert!((cam.up.magnitude() - 1.0).abs() < 1e-4, "unit up at t={t}");
             assert!(cam.up.dot(cam.forward()).abs() < 1e-4, "up orthogonal to forward at t={t}");
         }
+    }
+
+    // ===== Screen-rect volume tests =====
+
+    const SCREEN: (u32, u32) = (800, 600);
+
+    /// Whether the point `camera` shows at pixel `(x, y)`, halfway through its
+    /// depth range, lies in `volume`.
+    fn shows(camera: &PositionedCamera, volume: &ConvexPolyhedron, x: f32, y: f32) -> bool {
+        let point = camera.unproject_point_screen(x, y, 0.5, SCREEN.0, SCREEN.1).unwrap();
+        volume.contains_point(point)
+    }
+
+    #[test]
+    fn screen_rect_volume_holds_what_the_rect_shows() {
+        for camera in [create_test_camera(), create_ortho_test_camera()] {
+            // Corners in either order.
+            let volume =
+                camera.volume_from_screen_rect((500.0, 400.0), (300.0, 200.0), SCREEN.0, SCREEN.1);
+            assert!(shows(&camera, &volume, 400.0, 300.0));
+            assert!(shows(&camera, &volume, 310.0, 390.0));
+            assert!(!shows(&camera, &volume, 290.0, 300.0));
+            assert!(!shows(&camera, &volume, 400.0, 410.0));
+            assert!(!shows(&camera, &volume, 600.0, 100.0));
+        }
+    }
+
+    #[test]
+    fn screen_rect_volume_reaches_back_as_far_as_the_view() {
+        let rect = ((300.0, 200.0), (500.0, 400.0));
+
+        let camera = create_test_camera();
+        let volume = camera.volume_from_screen_rect(rect.0, rect.1, SCREEN.0, SCREEN.1);
+        assert!(volume.contains_point(Point3::new(0.0, 0.0, 0.0)));
+        assert!(!volume.contains_point(Point3::new(0.0, 0.0, 6.0)), "behind the eye");
+
+        // The orthographic slab straddles the eye.
+        let camera = create_ortho_test_camera();
+        let volume = camera.volume_from_screen_rect(rect.0, rect.1, SCREEN.0, SCREEN.1);
+        assert!(volume.contains_point(Point3::new(0.0, 0.0, 6.0)));
+        assert!(!volume.contains_point(Point3::new(0.0, 0.0, 106.0)), "behind the slab");
     }
 
     // ===== Pose transform test =====

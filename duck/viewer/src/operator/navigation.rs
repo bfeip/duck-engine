@@ -138,16 +138,21 @@ pub struct NavigationOperator {
 }
 
 impl NavigationOperator {
-    /// Creates a new navigation operator with default bindings.
+    /// Creates a new navigation operator with default bindings: middle drag
+    /// orbits (with Ctrl, about the point under the cursor), right or
+    /// Shift+middle drag pans, and the wheel zooms. The left button stays free
+    /// for selection.
     pub fn new() -> Self {
+        let shift = Modifiers { shift: true, ..Default::default() };
+        let control = Modifiers { control: true, ..Default::default() };
         let bindings = InputMap::new()
             // Orbit/pan/pivot drag
             .bind(
-                InputBinding::MouseDragStart { button: MouseButton::Left, modifiers: Modifiers::default() },
+                InputBinding::MouseDragStart { button: MouseButton::Middle, modifiers: Modifiers::default() },
                 NavigationAction::Orbit,
             )
             .bind(
-                InputBinding::MouseDrag { button: MouseButton::Left, modifiers: Modifiers::default() },
+                InputBinding::MouseDrag { button: MouseButton::Middle, modifiers: Modifiers::default() },
                 NavigationAction::Orbit,
             )
             .bind(
@@ -159,27 +164,23 @@ impl NavigationOperator {
                 NavigationAction::Pan,
             )
             .bind(
-                InputBinding::MouseDragStart {
-                    button: MouseButton::Left,
-                    modifiers: Modifiers { shift: true, ..Default::default() },
-                },
+                InputBinding::MouseDragStart { button: MouseButton::Middle, modifiers: shift },
                 NavigationAction::Pan,
             )
             .bind(
-                InputBinding::MouseDrag {
-                    button: MouseButton::Left,
-                    modifiers: Modifiers { shift: true, ..Default::default() },
-                },
+                InputBinding::MouseDrag { button: MouseButton::Middle, modifiers: shift },
                 NavigationAction::Pan,
             )
             .bind(
-                InputBinding::MouseDragStart { button: MouseButton::Middle, modifiers: Modifiers::default() },
+                InputBinding::MouseDragStart { button: MouseButton::Middle, modifiers: control },
                 NavigationAction::PivotOrbit,
             )
             .bind(
-                InputBinding::MouseDrag { button: MouseButton::Middle, modifiers: Modifiers::default() },
+                InputBinding::MouseDrag { button: MouseButton::Middle, modifiers: control },
                 NavigationAction::PivotOrbit,
             )
+            // Drag ends match without modifiers. Ending a plain orbit this way
+            // clears a pivot every drag start sets anew.
             .bind(
                 InputBinding::MouseDragEnd { button: MouseButton::Middle, modifiers: Modifiers::default() },
                 NavigationAction::PivotOrbit,
@@ -451,6 +452,21 @@ mod tests {
             aspect: 1.0,
             projection,
         }
+    }
+
+    #[test]
+    fn middle_drags_navigate_and_left_drags_are_free() {
+        let bindings = NavigationOperator::new().bindings;
+        let shift = Modifiers { shift: true, ..Default::default() };
+        let control = Modifiers { control: true, ..Default::default() };
+        for modifiers in [Modifiers::default(), shift, control] {
+            assert!(bindings.actions_for_drag_start(MouseButton::Left, modifiers).is_empty());
+            assert!(bindings.actions_for_drag(MouseButton::Left, modifiers).is_empty());
+        }
+        let middle = |modifiers| bindings.actions_for_drag_start(MouseButton::Middle, modifiers);
+        assert_eq!(middle(Modifiers::default()), [NavigationAction::Orbit]);
+        assert_eq!(middle(shift), [NavigationAction::Pan]);
+        assert_eq!(middle(control), [NavigationAction::PivotOrbit]);
     }
 
     #[test]

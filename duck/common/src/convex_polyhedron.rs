@@ -1,6 +1,6 @@
 use crate::{InnerSpace, Matrix4, Point3, Vector3};
 
-use crate::{Aabb, Plane, Ray, EPSILON};
+use crate::{Aabb, Plane, Real, EPSILON};
 
 /// A convex polyhedron defined as the intersection of half-spaces (planes).
 ///
@@ -197,6 +197,69 @@ impl ConvexPolyhedron {
         self.contains_point(v0) && self.contains_point(v1) && self.contains_point(v2)
     }
 
+    /// Tests if a line segment intersects the polyhedron.
+    pub fn intersects_segment(&self, start: Point3, end: Point3) -> bool {
+        self.contains_point(start) || self.contains_point(end) || self.edge_enters_volume(start, end)
+    }
+
+    /// Tests if a line segment is fully contained within the polyhedron.
+    pub fn contains_segment(&self, start: Point3, end: Point3) -> bool {
+        self.contains_point(start) && self.contains_point(end)
+    }
+
+    /// The part of a convex polygon inside the polyhedron, or nothing if none is.
+    ///
+    /// One vertex is a point and two are a segment, which clip to themselves or
+    /// their inside part.
+    pub fn clip_polygon(&self, vertices: &[Point3]) -> Vec<Point3> {
+        match vertices {
+            [point] => self.contains_point(*point).then_some(*point).into_iter().collect(),
+            [start, end] => self.clip_segment(*start, *end).map(Vec::from).unwrap_or_default(),
+            _ => self.clip_convex_polygon(vertices),
+        }
+    }
+
+    /// The part of a segment inside the polyhedron, as its endpoints.
+    fn clip_segment(&self, start: Point3, end: Point3) -> Option<[Point3; 2]> {
+        let (mut t0, mut t1): (Real, Real) = (0.0, 1.0);
+        for plane in &self.planes {
+            let d0 = plane.signed_distance(start);
+            let d1 = plane.signed_distance(end);
+            match (d0 > EPSILON, d1 > EPSILON) {
+                (true, true) => return None,
+                (true, false) => t0 = t0.max(d0 / (d0 - d1)),
+                (false, true) => t1 = t1.min(d0 / (d0 - d1)),
+                (false, false) => {}
+            }
+        }
+        let direction = end - start;
+        (t0 <= t1).then(|| [start + direction * t0, start + direction * t1])
+    }
+
+    /// Sutherland–Hodgman: clips the polygon by each plane in turn.
+    fn clip_convex_polygon(&self, vertices: &[Point3]) -> Vec<Point3> {
+        let mut polygon = vertices.to_vec();
+        for plane in &self.planes {
+            let Some(&last) = polygon.last() else { break };
+            let mut clipped = Vec::with_capacity(polygon.len() + 1);
+            let mut previous = (last, plane.signed_distance(last));
+            for &vertex in &polygon {
+                let distance = plane.signed_distance(vertex);
+                let (inside, previous_inside) = (distance <= EPSILON, previous.1 <= EPSILON);
+                if inside != previous_inside {
+                    let t = previous.1 / (previous.1 - distance);
+                    clipped.push(previous.0 + (vertex - previous.0) * t);
+                }
+                if inside {
+                    clipped.push(vertex);
+                }
+                previous = (vertex, distance);
+            }
+            polygon = clipped;
+        }
+        polygon
+    }
+
     /// Tests if an edge enters the volume (crosses from outside to inside).
     fn edge_enters_volume(&self, start: Point3, end: Point3) -> bool {
         // For each plane, check if the edge crosses it and if so,
@@ -234,8 +297,8 @@ impl ConvexPolyhedron {
         // - 4 edges connecting near to far
         //
         // For general convex polyhedra, this is more complex.
-        // We use a simpler approach: sample rays from inside the polyhedron
-        // toward the triangle and see if any hit.
+        // We use a simpler approach: test the line through every pair of
+        // planes, which covers the edges, where it crosses the triangle.
 
         // Compute triangle normal and plane
         let edge1 = v1 - v0;
@@ -252,27 +315,24 @@ impl ConvexPolyhedron {
         for i in 0..n {
             for j in (i + 1)..n {
                 // Find the line of intersection between planes i and j
-                if let Some((line_point, line_dir)) =
+                let Some((line_point, line_dir)) =
                     plane_plane_intersection(&self.planes[i], &self.planes[j])
-                {
-                    // Find where this line intersects the triangle's plane
-                    let ray = Ray::new(line_point, line_dir);
-                    if let Some((t, _, _)) = ray.intersect_triangle(v0, v1, v2) {
-                        // Check if this intersection point is inside the polyhedron
-                        let hit_point = ray.point_at(t);
-                        if self.contains_point(hit_point) {
-                            return true;
-                        }
-                    }
-
-                    // Also test the opposite direction
-                    let ray_neg = Ray::new(line_point, -line_dir);
-                    if let Some((t, _, _)) = ray_neg.intersect_triangle(v0, v1, v2) {
-                        let hit_point = ray_neg.point_at(t);
-                        if self.contains_point(hit_point) {
-                            return true;
-                        }
-                    }
+                else {
+                    continue;
+                };
+                // Where the line crosses the triangle's plane. The point on the
+                // line may lie in that plane already, so solve for the
+                // crossing rather than casting rays from it.
+                let denom = tri_normal.dot(line_dir);
+                if denom.abs() < EPSILON {
+                    continue;
+                }
+                let crossing = line_point + line_dir * (tri_normal.dot(v0 - line_point) / denom);
+                let in_triangle = [(v0, v1), (v1, v2), (v2, v0)]
+                    .into_iter()
+                    .all(|(a, b)| (b - a).cross(crossing - a).dot(tri_normal) >= 0.0);
+                if in_triangle && self.contains_point(crossing) {
+                    return true;
                 }
             }
         }
@@ -495,6 +555,87 @@ mod tests {
         let v2 = Point3::new(2.5, 1.0, 0.0);
 
         assert!(!poly.intersects_triangle(v0, v1, v2, false));
+    }
+
+    /// The cube inside a large triangle's interior, in the plane z = 0 where
+    /// the lines through the cube's edges are anchored.
+    #[test]
+    fn thorough_test_finds_a_triangle_around_the_volume() {
+        let poly = create_unit_cube_polyhedron();
+        let v0 = Point3::new(-10.0, -10.0, 0.0);
+        let v1 = Point3::new(10.0, -10.0, 0.0);
+        let v2 = Point3::new(0.0, 10.0, 0.0);
+        assert!(!poly.intersects_triangle(v0, v1, v2, false));
+        assert!(poly.intersects_triangle(v0, v1, v2, true));
+    }
+
+    #[test]
+    fn segment_is_contained_only_when_both_ends_are() {
+        let poly = create_unit_cube_polyhedron();
+        assert!(poly.contains_segment(Point3::new(-0.4, 0.0, 0.0), Point3::new(0.4, 0.2, 0.0)));
+        assert!(!poly.contains_segment(Point3::new(-0.4, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)));
+        assert!(!poly.contains_segment(Point3::new(-1.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn segment_cutting_a_corner_intersects() {
+        let poly = create_unit_cube_polyhedron();
+        // Along x + y = 0.8: through the cube near its (0.5, 0.5) corner, with
+        // both ends and the midpoint outside.
+        let start = Point3::new(-0.2, 1.0, 0.0);
+        let end = Point3::new(3.0, -2.2, 0.0);
+        assert!(!poly.contains_point(start + (end - start) * 0.5));
+        assert!(poly.intersects_segment(start, end));
+    }
+
+    #[test]
+    fn segment_passing_a_corner_misses() {
+        let poly = create_unit_cube_polyhedron();
+        // Along x + y = 1.2, clear of the corner.
+        assert!(!poly.intersects_segment(Point3::new(-0.2, 1.4, 0.0), Point3::new(1.4, -0.2, 0.0)));
+    }
+
+    #[test]
+    fn clipped_triangle_keeps_its_inside_part() {
+        let poly = create_unit_cube_polyhedron();
+        let clipped = poly.clip_polygon(&[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
+        ]);
+
+        // The square [0, 0.5]² in z = 0.
+        assert_eq!(clipped.len(), 4);
+        assert!(clipped.iter().all(|&v| poly.contains_point(v)));
+        let center = clipped.iter().fold(Vector3::new(0.0, 0.0, 0.0), |sum, v| sum + v.to_vec())
+            / clipped.len() as Real;
+        assert!((center - Vector3::new(0.25, 0.25, 0.0)).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn clipped_segment_keeps_its_inside_part() {
+        let poly = create_unit_cube_polyhedron();
+        let clipped = poly.clip_polygon(&[Point3::new(-1.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)]);
+        assert_eq!(clipped.len(), 2);
+        assert!((clipped[0] - Point3::new(-0.5, 0.0, 0.0)).magnitude() < EPSILON);
+        assert!((clipped[1] - Point3::new(0.5, 0.0, 0.0)).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn clipping_what_lies_outside_leaves_nothing() {
+        let poly = create_unit_cube_polyhedron();
+        assert!(poly.clip_polygon(&[Point3::new(2.0, 0.0, 0.0)]).is_empty());
+        assert!(poly
+            .clip_polygon(&[Point3::new(2.0, 0.0, 0.0), Point3::new(2.0, 1.0, 0.0)])
+            .is_empty());
+        assert!(poly
+            .clip_polygon(&[
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(3.0, 0.0, 0.0),
+                Point3::new(2.0, 1.0, 0.0),
+            ])
+            .is_empty());
+        assert_eq!(poly.clip_polygon(&[Point3::origin()]), vec![Point3::origin()]);
     }
 
     #[test]

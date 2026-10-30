@@ -21,6 +21,7 @@ mod axis_triad;
 mod camera_transition;
 mod compositor;
 mod offscreen;
+mod overlay;
 mod scene_scale;
 mod surface;
 mod view;
@@ -32,6 +33,7 @@ pub use view::{
 };
 pub use renderer::{GpuCapabilities, GpuOptions};
 pub use offscreen::OffscreenViewer;
+pub use overlay::{OverlayRect, ScreenOverlay};
 pub use surface::{SurfacedViewer, WindowSurface};
 pub use viewer::Viewer;
 

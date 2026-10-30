@@ -1,7 +1,7 @@
 use duck_engine_common::{array_to_point3, InnerSpace, Point3, Real};
 
 use crate::common::{ConvexPolyhedron, Ray};
-use crate::resource::Mesh;
+use crate::resource::{Mesh, PrimitiveType, SubGeometryKind};
 
 /// Result of a ray-triangle intersection test in local mesh space.
 #[derive(Debug, Clone)]
@@ -42,15 +42,62 @@ pub struct PointMeshHit {
     pub point_index: usize,
 }
 
-/// Result of a volume-mesh intersection test in local mesh space.
+/// Where geometry lies relative to a volume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Containment {
+    /// Entirely outside.
+    Outside,
+    /// Partly inside.
+    Crossing,
+    /// Entirely inside.
+    Inside,
+}
+
+impl Containment {
+    /// The containment of a whole made of `parts`: inside when all of them
+    /// are, outside when all of them are (or there are none), else crossing.
+    pub fn of(parts: impl IntoIterator<Item = Containment>) -> Self {
+        let (mut inside, mut outside) = (true, true);
+        for part in parts {
+            inside &= part == Containment::Inside;
+            outside &= part == Containment::Outside;
+            if !inside && !outside {
+                return Containment::Crossing;
+            }
+        }
+        match (inside, outside) {
+            (_, true) => Containment::Outside,
+            (true, false) => Containment::Inside,
+            (false, false) => Containment::Crossing,
+        }
+    }
+}
+
+/// Result of a volume-mesh intersection test: where each of the mesh's
+/// primitives lies relative to the volume, indexed like [`Mesh::triangles`],
+/// [`Mesh::segments`] and [`Mesh::points`] (and so like a
+/// [`Topology`](crate::resource::Topology)'s ranges).
 #[derive(Debug, Clone)]
 pub struct MeshVolumeHit {
-    /// Indices of triangles that intersect the volume
-    pub triangle_indices: Vec<usize>,
-    /// Indices of line segments that intersect the volume
-    pub segment_indices: Vec<usize>,
-    /// True if all geometry (triangles and line segments) in the mesh is fully contained within the volume
-    pub fully_contained: bool,
+    pub triangles: Vec<Containment>,
+    pub segments: Vec<Containment>,
+    pub points: Vec<Containment>,
+}
+
+impl MeshVolumeHit {
+    /// The containments of the primitives of `kind`.
+    pub fn of_kind(&self, kind: SubGeometryKind) -> &[Containment] {
+        match kind {
+            SubGeometryKind::Face => &self.triangles,
+            SubGeometryKind::Edge => &self.segments,
+            SubGeometryKind::Pointset => &self.points,
+        }
+    }
+
+    /// The containment of the whole mesh.
+    pub fn containment(&self) -> Containment {
+        Containment::of(self.triangles.iter().chain(&self.segments).chain(&self.points).copied())
+    }
 }
 
 /// Tests a ray against all triangles in a mesh.
@@ -166,66 +213,65 @@ pub fn intersect_ray_with_points(mesh: &Mesh, ray: &Ray, tolerance: Real) -> Vec
     hits
 }
 
-/// Tests a convex volume against all triangles and line segments in a mesh.
+/// Tests a convex volume against all triangles, line segments and points in a
+/// mesh.
 ///
-/// The volume should be in local mesh space. Returns which triangles and
-/// segments intersect the volume and whether the entire mesh is contained, or
-/// `None` if nothing intersects. `thorough` enables more accurate but slower
-/// edge-triangle intersection tests.
+/// The volume should be in local mesh space. Returns where each primitive lies
+/// relative to the volume, or `None` if nothing touches it. `thorough` enables
+/// more accurate but slower edge-triangle intersection tests, which catch a
+/// volume passing through a triangle's interior.
 pub fn intersect_volume(
     mesh: &Mesh,
     volume: &ConvexPolyhedron,
     thorough: bool,
 ) -> Option<MeshVolumeHit> {
-    let mut triangle_indices = Vec::new();
-    let mut all_fully_contained = true;
-
-    for (triangle_index, [v0, v1, v2]) in mesh.triangles().enumerate() {
-        let p0 = array_to_point3(v0.position);
-        let p1 = array_to_point3(v1.position);
-        let p2 = array_to_point3(v2.position);
-
-        let fully_inside = volume.contains_triangle(p0, p1, p2);
-
-        if fully_inside {
-            triangle_indices.push(triangle_index);
-        } else if volume.intersects_triangle(p0, p1, p2, thorough) {
-            triangle_indices.push(triangle_index);
-            all_fully_contained = false;
-        } else {
-            all_fully_contained = false;
-        }
+    // The whole mesh first, by its bounds.
+    let bounds = mesh.bounding()?;
+    if !volume.intersects_aabb(&bounds) {
+        return None;
+    }
+    if volume.contains_aabb(&bounds) {
+        let inside = |primitive_type: PrimitiveType| {
+            let count = mesh.index_count(primitive_type) / primitive_type.indices_per_primitive();
+            vec![Containment::Inside; count as usize]
+        };
+        let hit = MeshVolumeHit {
+            triangles: inside(PrimitiveType::TriangleList),
+            segments: inside(PrimitiveType::LineList),
+            points: inside(PrimitiveType::PointList),
+        };
+        return (hit.containment() != Containment::Outside).then_some(hit);
     }
 
-    let mut segment_indices = Vec::new();
+    let classify = |inside: bool, touches: bool| match (inside, touches) {
+        (true, _) => Containment::Inside,
+        (false, true) => Containment::Crossing,
+        (false, false) => Containment::Outside,
+    };
 
-    for (segment_index, [v0, v1]) in mesh.segments().enumerate() {
-        let p0 = array_to_point3(v0.position);
-        let p1 = array_to_point3(v1.position);
-
-        let p0_inside = volume.contains_point(p0);
-        let p1_inside = volume.contains_point(p1);
-
-        if p0_inside && p1_inside {
-            segment_indices.push(segment_index);
-        } else {
-            let mid = p0 + (p1 - p0) * 0.5;
-            if volume.contains_point(mid) {
-                segment_indices.push(segment_index);
-            }
-            all_fully_contained = false;
-        }
-    }
-
-    if triangle_indices.is_empty() && segment_indices.is_empty() {
-        None
-    } else {
-        Some(MeshVolumeHit {
-            triangle_indices,
-            segment_indices,
-            fully_contained: all_fully_contained,
+    let triangles = mesh
+        .triangles()
+        .map(|[v0, v1, v2]| {
+            let [p0, p1, p2] = [v0, v1, v2].map(|v| array_to_point3(v.position));
+            let inside = volume.contains_triangle(p0, p1, p2);
+            classify(inside, !inside && volume.intersects_triangle(p0, p1, p2, thorough))
         })
-    }
+        .collect();
+    let segments = mesh
+        .segments()
+        .map(|[v0, v1]| {
+            let [p0, p1] = [v0, v1].map(|v| array_to_point3(v.position));
+            let inside = volume.contains_segment(p0, p1);
+            classify(inside, !inside && volume.intersects_segment(p0, p1))
+        })
+        .collect();
+    let points = mesh
+        .points()
+        .map(|v| classify(volume.contains_point(array_to_point3(v.position)), false))
+        .collect();
+
+    let hit = MeshVolumeHit { triangles, segments, points };
+    (hit.containment() != Containment::Outside).then_some(hit)
 }
 
 #[cfg(test)]
@@ -233,9 +279,9 @@ mod tests {
     use duck_engine_common::{Point3, Vector3};
 
     use crate::common::{Aabb, ConvexPolyhedron, Ray};
-    use crate::resource::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
+    use crate::resource::{Mesh, MeshPrimitive, PrimitiveType, SubGeometryKind, Vertex};
 
-    use super::{intersect_ray_with_lines, intersect_ray_with_points, intersect_volume};
+    use super::{intersect_ray_with_lines, intersect_ray_with_points, intersect_volume, Containment};
 
     fn make_point_mesh(vertices: Vec<Vertex>) -> Mesh {
         let indices: Vec<u32> = (0..vertices.len() as u32).collect();
@@ -374,32 +420,49 @@ mod tests {
         assert!(hits.is_empty());
     }
 
-    // ===== intersect_volume segment testing =====
+    // ===== intersect_volume =====
+
+    use super::Containment::{Crossing, Inside, Outside};
 
     fn unit_box_volume() -> ConvexPolyhedron {
         let aabb = Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
         ConvexPolyhedron::from_aabb(&aabb)
     }
 
-    #[test]
-    fn volume_hits_segment_fully_inside() {
-        let mesh = make_line_mesh(
-            &[(0, 1)],
-            vec![make_vertex(-0.5, 0.0, 0.0), make_vertex(0.5, 0.0, 0.0)],
-        );
-        let result = intersect_volume(&mesh, &unit_box_volume(), false).unwrap();
-        assert_eq!(result.segment_indices, vec![0]);
+    fn make_triangle_mesh(vertices: Vec<Vertex>) -> Mesh {
+        let indices = (0..vertices.len() as u32).collect();
+        Mesh::from_raw(
+            vertices,
+            vec![MeshPrimitive { primitive_type: PrimitiveType::TriangleList, indices }],
+        )
     }
 
     #[test]
-    fn volume_hits_segment_via_midpoint() {
-        // Both endpoints are exactly on the boundary (outside), midpoint is inside
+    fn containment_of_parts() {
+        assert_eq!(Containment::of([Inside, Inside]), Inside);
+        assert_eq!(Containment::of([Outside, Outside]), Outside);
+        assert_eq!(Containment::of([Inside, Outside]), Crossing);
+        assert_eq!(Containment::of([Inside, Crossing]), Crossing);
+        assert_eq!(Containment::of([]), Outside);
+    }
+
+    #[test]
+    fn volume_classifies_segments() {
         let mesh = make_line_mesh(
-            &[(0, 1)],
-            vec![make_vertex(-1.5, 0.0, 0.0), make_vertex(1.5, 0.0, 0.0)],
+            &[(0, 1), (2, 3), (4, 5)],
+            vec![
+                make_vertex(-0.5, 0.0, 0.0),
+                make_vertex(0.5, 0.0, 0.0),
+                // Through the box, both ends outside.
+                make_vertex(-1.5, 0.0, 0.0),
+                make_vertex(1.5, 0.0, 0.0),
+                make_vertex(2.0, 0.0, 0.0),
+                make_vertex(3.0, 0.0, 0.0),
+            ],
         );
         let result = intersect_volume(&mesh, &unit_box_volume(), false).unwrap();
-        assert_eq!(result.segment_indices, vec![0]);
+        assert_eq!(result.segments, [Inside, Crossing, Outside]);
+        assert_eq!(result.containment(), Crossing);
     }
 
     #[test]
@@ -413,13 +476,71 @@ mod tests {
     }
 
     #[test]
-    fn volume_segment_indices_empty_for_triangle_only_mesh() {
+    fn volume_classifies_points() {
+        let mesh =
+            make_point_mesh(vec![make_vertex(0.0, 0.0, 0.0), make_vertex(2.0, 0.0, 0.0)]);
+        let result = intersect_volume(&mesh, &unit_box_volume(), false).unwrap();
+        assert_eq!(result.points, [Inside, Outside]);
+        assert!(result.triangles.is_empty() && result.segments.is_empty());
+    }
+
+    #[test]
+    fn volume_classifies_triangles() {
+        let mesh = make_triangle_mesh(vec![
+            make_vertex(0.0, 0.0, 0.0),
+            make_vertex(0.5, 0.0, 0.0),
+            make_vertex(0.0, 0.5, 0.0),
+            make_vertex(0.0, 0.0, 0.0),
+            make_vertex(5.0, 0.0, 0.0),
+            make_vertex(0.0, 5.0, 0.0),
+        ]);
+        let result = intersect_volume(&mesh, &unit_box_volume(), false).unwrap();
+        assert_eq!(result.triangles, [Inside, Crossing]);
+        assert_eq!(result.of_kind(SubGeometryKind::Face), [Inside, Crossing]);
+    }
+
+    #[test]
+    fn mesh_inside_the_volume_is_inside_throughout() {
         let mesh = Mesh::from_raw(
-            vec![make_vertex(0.0, 0.0, 0.0), make_vertex(0.5, 0.0, 0.0), make_vertex(0.0, 0.5, 0.0)],
-            vec![MeshPrimitive { primitive_type: PrimitiveType::TriangleList, indices: vec![0, 1, 2] }],
+            vec![
+                make_vertex(0.0, 0.0, 0.0),
+                make_vertex(0.5, 0.0, 0.0),
+                make_vertex(0.0, 0.5, 0.0),
+                make_vertex(-0.5, -0.5, 0.5),
+            ],
+            vec![
+                MeshPrimitive { primitive_type: PrimitiveType::TriangleList, indices: vec![0, 1, 2] },
+                MeshPrimitive { primitive_type: PrimitiveType::LineList, indices: vec![0, 3, 1, 2] },
+                MeshPrimitive { primitive_type: PrimitiveType::PointList, indices: vec![3] },
+            ],
         );
         let result = intersect_volume(&mesh, &unit_box_volume(), false).unwrap();
-        assert!(result.segment_indices.is_empty());
-        assert!(!result.triangle_indices.is_empty());
+        assert_eq!(result.triangles, [Inside]);
+        assert_eq!(result.segments, [Inside, Inside]);
+        assert_eq!(result.points, [Inside]);
+    }
+
+    #[test]
+    fn mesh_beside_the_volume_misses_it() {
+        let mesh = make_triangle_mesh(vec![
+            make_vertex(2.0, 0.0, 0.0),
+            make_vertex(3.0, 0.0, 0.0),
+            make_vertex(2.0, 1.0, 0.0),
+        ]);
+        assert!(intersect_volume(&mesh, &unit_box_volume(), true).is_none());
+    }
+
+    /// A volume inside a triangle's interior, clear of its vertices and edges,
+    /// is found only by the thorough test.
+    #[test]
+    fn thorough_volume_finds_a_triangle_around_it() {
+        let mesh = make_triangle_mesh(vec![
+            make_vertex(-10.0, -10.0, 0.0),
+            make_vertex(10.0, -10.0, 0.0),
+            make_vertex(0.0, 10.0, 0.0),
+        ]);
+        assert!(intersect_volume(&mesh, &unit_box_volume(), false).is_none());
+        let result = intersect_volume(&mesh, &unit_box_volume(), true).unwrap();
+        assert_eq!(result.triangles, [Crossing]);
     }
 }

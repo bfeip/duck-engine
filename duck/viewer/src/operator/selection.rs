@@ -4,13 +4,18 @@ use serde::{Deserialize, Serialize};
 use crate::bindings::{InputBinding, InputMap};
 use crate::event::{AppEvent, DeviceEvent, Event, EventContext};
 use crate::geom_query::{is_visible_along, pick_all_from_ray, RayPickQuery, RayPickResult};
-use crate::input::{Modifiers, MouseButton};
+use crate::input::{ElementState, Key, Modifiers, MouseButton, NamedKey};
 use crate::operator::Operator;
 use crate::scene::common::{Ray, Real};
 use crate::scene::resource::{NodeId, SubGeometryElement, SubGeometryKind};
 use crate::scene::Scene;
-use crate::selection::SelectionItem;
+use crate::selection::{SelectionItem, SelectionManager};
+use crate::ScreenOverlay;
 use duck_engine_common::InnerSpace;
+
+mod area;
+
+use area::AreaDrag;
 
 /// How close the cursor must come to an edge or point to pick it, in pixels.
 const PICK_RADIUS_PX: Real = 6.0;
@@ -21,18 +26,21 @@ const OCCLUSION_SLACK_PX: Real = 2.0;
 /// wins the tie.
 const TIE_PX: Real = 1.0;
 
-/// Semantic actions for the selection operator.
+/// Semantic actions for the selection operator, bound to clicks and drags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SelectionAction {
-    /// Cast a ray and replace the selection with the hit item (or clear if nothing hit).
+    /// Replace the selection with the clicked item or the area's items
+    /// (clearing it if there are none).
     Select,
-    /// Cast a ray and toggle the hit item in/out of the current selection.
+    /// Toggle the clicked item in or out of the selection, or add the area's
+    /// items to it.
     AddToSelection,
 }
 
 bitflags! {
     /// The kinds of geometry a selection may resolve to. Used as a mask on the
-    /// non-`Node` [`SelectionMode`] variants to restrict what a click can select.
+    /// non-`Node` [`SelectionMode`] variants to restrict what a click or an
+    /// area can select.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct SelectionKinds: u8 {
         /// Whole nodes (also acts as the fallback when a hit has no topology mapping).
@@ -75,7 +83,7 @@ pub enum SelectionMode {
     /// e.g. `SubGeometry(FACE)` = faces only; `SubGeometry(FACE | EDGE)` = either.
     SubGeometry(SelectionKinds),
     /// Node first; a second click on an already-selected node drills into the
-    /// closest allowed sub-geometry.
+    /// closest allowed sub-geometry. An area selects whole nodes.
     Progressive(SelectionKinds),
 }
 
@@ -108,21 +116,30 @@ impl SelectionMode {
     }
 }
 
-/// Operator for selecting objects in the scene via mouse click.
+/// Operator for selecting objects in the scene by clicking, or by dragging out
+/// an area.
 ///
 /// A click resolves to the highest kind within reach: a point, then an edge
 /// (each within a few pixels of the cursor, nearest first), then the face under
 /// the cursor. Edges and points a face hides are out of reach unless
 /// [`hidden`](Self::hidden) allows their kind.
+///
+/// An area dragged rightward takes the items wholly inside it, one dragged
+/// leftward every item it touches. Only items that show somewhere in the area
+/// count, unless [`hidden`](Self::hidden) allows their kind. The area is drawn
+/// over the view while dragging, and Escape abandons it.
 pub struct SelectionOperator {
     pub bindings: InputMap<SelectionAction>,
     pub mode: SelectionMode,
-    /// Sub-geometry kinds that stay selectable where faces hide them, for views
-    /// that draw them (e.g. hidden edges in
-    /// [`workflow::hidden_line`](crate::renderer::workflow::hidden_line)). Only
-    /// [`EDGE`](SelectionKinds::EDGE) and [`POINT`](SelectionKinds::POINT) apply.
-    /// Empty by default.
+    /// Kinds that stay selectable where faces hide them, for views that draw
+    /// them (e.g. hidden edges in
+    /// [`workflow::hidden_line`](crate::renderer::workflow::hidden_line)), or
+    /// draw through everything ([`SelectionKinds::all`]). A click can only reach
+    /// hidden [`EDGE`](SelectionKinds::EDGE)s and [`POINT`](SelectionKinds::POINT)s;
+    /// an area honors every kind. Empty by default.
     pub hidden: SelectionKinds,
+    /// The area being dragged out, if any.
+    area: Option<AreaDrag>,
 }
 
 impl SelectionOperator {
@@ -133,19 +150,28 @@ impl SelectionOperator {
 
     /// Creates a new selection operator with the given [`SelectionMode`].
     pub fn with_mode(mode: SelectionMode) -> Self {
+        let shift = Modifiers { shift: true, ..Default::default() };
         let bindings = InputMap::new()
             .bind(
                 InputBinding::MouseClick { button: MouseButton::Left, modifiers: Modifiers::default() },
                 SelectionAction::Select,
             )
             .bind(
-                InputBinding::MouseClick {
+                InputBinding::MouseClick { button: MouseButton::Left, modifiers: shift },
+                SelectionAction::AddToSelection,
+            )
+            .bind(
+                InputBinding::MouseDragStart {
                     button: MouseButton::Left,
-                    modifiers: Modifiers { shift: true, ..Default::default() },
+                    modifiers: Modifiers::default(),
                 },
+                SelectionAction::Select,
+            )
+            .bind(
+                InputBinding::MouseDragStart { button: MouseButton::Left, modifiers: shift },
                 SelectionAction::AddToSelection,
             );
-        Self { bindings, mode, hidden: SelectionKinds::empty() }
+        Self { bindings, mode, hidden: SelectionKinds::empty(), area: None }
     }
 
     fn pick_closest(&self, cursor_x: f32, cursor_y: f32, ctx: &mut EventContext) -> Option<SelectionItem> {
@@ -200,46 +226,94 @@ impl SelectionOperator {
         }
     }
 
-    fn perform_selection(&self, cursor_x: f32, cursor_y: f32, ctx: &mut EventContext) {
-        match self.pick_closest(cursor_x, cursor_y, ctx) {
-            Some(item) => ctx.selection.set(item),
-            None => ctx.selection.clear(),
-        }
+    fn click(&self, button: MouseButton, position: (f32, f32), ctx: &mut EventContext) -> bool {
+        let Some(action) = action(self.bindings.actions_for_click(button, ctx.modifiers)) else {
+            return false;
+        };
+        let picked = self.pick_closest(position.0, position.1, ctx);
+        change_selection(ctx, |selection| match (action, picked) {
+            (SelectionAction::Select, Some(item)) => selection.set(item),
+            (SelectionAction::Select, None) => selection.clear(),
+            (SelectionAction::AddToSelection, Some(item)) => selection.toggle(item),
+            (SelectionAction::AddToSelection, None) => {}
+        });
+        true
     }
 
-    fn perform_add_to_selection(&self, cursor_x: f32, cursor_y: f32, ctx: &mut EventContext) {
-        if let Some(item) = self.pick_closest(cursor_x, cursor_y, ctx) {
-            ctx.selection.toggle(item);
-        }
+    fn finish_area(&self, area: &AreaDrag, ctx: &mut EventContext) {
+        let items = area::select_area(area, self.mode, self.hidden, ctx);
+        change_selection(ctx, |selection| {
+            if area.action == SelectionAction::Select {
+                selection.clear();
+            }
+            selection.extend(items);
+        });
     }
 }
 
 impl Operator for SelectionOperator {
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
-        let Event::Device(DeviceEvent::MouseClick { button, position, .. }) = event else {
-            return false;
-        };
-        let actions = self.bindings.actions_for_click(*button, ctx.modifiers);
-        let select = actions.contains(&SelectionAction::Select);
-        let add = actions.contains(&SelectionAction::AddToSelection);
-        if !select && !add {
-            return false;
+        let Event::Device(event) = event else { return false };
+        match event {
+            DeviceEvent::MouseClick { button, position, .. } => self.click(*button, *position, ctx),
+            DeviceEvent::MouseDragStart { button, start_pos, current_pos } => {
+                let actions = self.bindings.actions_for_drag_start(*button, ctx.modifiers);
+                let Some(action) = action(actions) else { return false };
+                self.area =
+                    Some(AreaDrag { button: *button, action, anchor: *start_pos, cursor: *current_pos });
+                true
+            }
+            DeviceEvent::MouseDrag { button, current_pos, .. } => match &mut self.area {
+                Some(area) if area.button == *button => {
+                    area.cursor = *current_pos;
+                    true
+                }
+                _ => false,
+            },
+            DeviceEvent::MouseDragEnd { button, end_pos, .. } => {
+                let Some(mut area) = self.area.take_if(|area| area.button == *button) else {
+                    return false;
+                };
+                area.cursor = *end_pos;
+                self.finish_area(&area, ctx);
+                true
+            }
+            DeviceEvent::KeyboardInput { event, .. }
+                if self.area.is_some()
+                    && event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(NamedKey::Escape) =>
+            {
+                self.area = None;
+                true
+            }
+            _ => false,
         }
-
-        let previous = ctx.selection.as_slice().to_vec();
-        if select {
-            self.perform_selection(position.0, position.1, ctx);
-        } else {
-            self.perform_add_to_selection(position.0, position.1, ctx);
-        }
-        let current = ctx.selection.as_slice().to_vec();
-        ctx.emit(AppEvent::Selection { previous, current });
-        true
     }
 
     fn name(&self) -> &str {
         "Selection"
     }
+
+    fn overlay(&self, overlay: &mut ScreenOverlay) {
+        if let Some(area) = &self.area {
+            overlay.add_rect(area.overlay_rect());
+        }
+    }
+}
+
+/// The action bound input asks for, `Select` winning when it asks for both.
+fn action(actions: &[SelectionAction]) -> Option<SelectionAction> {
+    [SelectionAction::Select, SelectionAction::AddToSelection]
+        .into_iter()
+        .find(|action| actions.contains(action))
+}
+
+/// Applies `change` to the selection and reports it.
+fn change_selection(ctx: &mut EventContext, change: impl FnOnce(&mut SelectionManager)) {
+    let previous = ctx.selection.as_slice().to_vec();
+    change(ctx.selection);
+    let current = ctx.selection.as_slice().to_vec();
+    ctx.emit(AppEvent::Selection { previous, current });
 }
 
 /// A ray hit a click may resolve to.
@@ -363,8 +437,8 @@ mod tests {
         FaceMaterial, Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SubMeshRange,
         Topology, Vertex,
     };
+    use crate::input::{KeyEvent, PhysicalKey};
     use crate::scene::{PositionedCamera, Projection, SceneData};
-    use crate::selection::SelectionManager;
 
     const VIEWPORT: (u32, u32) = (800, 600);
     /// World size of one pixel under [`camera`]: a 6-unit-tall view over 600 px.
@@ -583,5 +657,209 @@ mod tests {
         assert_eq!(first, Some(SelectionItem::Node(back)));
         selection.set(first.unwrap());
         assert_eq!(click(&op, &scene, &mut selection, column(3.0)), Some(edge(back, 0)));
+    }
+
+    // ===== Areas =====
+
+    const SHIFT: Modifiers = Modifiers { shift: true, control: false, alt: false, super_key: false };
+
+    /// The pixel [`camera`] shows the world line through `(x, y)` at.
+    fn pixel(x: Real, y: Real) -> (f32, f32) {
+        let (width, height) = VIEWPORT;
+        ((width as Real / 2.0 + x / PIXEL) as f32, (height as Real / 2.0 - y / PIXEL) as f32)
+    }
+
+    /// Dispatches `events` to `op` with `modifiers` held, returning whether
+    /// each was consumed.
+    fn send(
+        op: &mut SelectionOperator,
+        scene: &Scene,
+        selection: &mut SelectionManager,
+        modifiers: Modifiers,
+        events: impl IntoIterator<Item = DeviceEvent>,
+    ) -> Vec<bool> {
+        let mut cursor = None;
+        let mut camera = camera();
+        let mut ctx =
+            EventContext::new(VIEWPORT, &mut cursor, scene.clone(), &mut camera, selection, modifiers);
+        events.into_iter().map(|e| op.dispatch(&Event::Device(e), &mut ctx)).collect()
+    }
+
+    fn drag_start(from: (f32, f32)) -> DeviceEvent {
+        DeviceEvent::MouseDragStart { button: MouseButton::Left, start_pos: from, current_pos: from }
+    }
+
+    fn drag_to(from: (f32, f32), to: (f32, f32)) -> DeviceEvent {
+        let delta = (to.0 - from.0, to.1 - from.1);
+        DeviceEvent::MouseDrag { button: MouseButton::Left, start_pos: from, current_pos: to, delta }
+    }
+
+    fn drag_end(from: (f32, f32), to: (f32, f32)) -> DeviceEvent {
+        DeviceEvent::MouseDragEnd { button: MouseButton::Left, start_pos: from, end_pos: to }
+    }
+
+    /// Drags an area with `op` from world `(x, y)` to world `(x, y)` with
+    /// `modifiers` held, and returns the selection it leaves.
+    fn area(
+        op: &mut SelectionOperator,
+        scene: &Scene,
+        selection: &mut SelectionManager,
+        modifiers: Modifiers,
+        from: (Real, Real),
+        to: (Real, Real),
+    ) -> Vec<SelectionItem> {
+        let (from, to) = (pixel(from.0, from.1), pixel(to.0, to.1));
+        let consumed =
+            send(op, scene, selection, modifiers, [drag_start(from), drag_to(from, to), drag_end(from, to)]);
+        assert_eq!(consumed, [true; 3]);
+        selection.as_slice().to_vec()
+    }
+
+    fn select_area(op: &mut SelectionOperator, scene: &Scene, from: (Real, Real), to: (Real, Real)) -> Vec<SelectionItem> {
+        area(op, scene, &mut SelectionManager::new(), Modifiers::default(), from, to)
+    }
+
+    /// A unit square face at depth `z`, centred on `x`.
+    fn square_at(x: f32, z: f32) -> [Corner; 4] {
+        square(z).map(|[cx, cy, cz]| [cx + x, cy, cz])
+    }
+
+    /// Dragging rightward takes what lies wholly inside, leftward what the
+    /// area touches. Areas take whole nodes in the default progressive mode.
+    #[test]
+    fn area_direction_decides_between_inside_and_touching() {
+        let scene = Scene::new(SceneData::new());
+        let left = add_part(&scene, &[square_at(0.0, 0.0)], &[]);
+        let right = add_part(&scene, &[square_at(3.0, 0.0)], &[]);
+        let mut op = SelectionOperator::new();
+
+        let window = select_area(&mut op, &scene, (-1.5, 1.5), (2.5, -1.5));
+        assert_eq!(window, [SelectionItem::Node(left)]);
+
+        let crossing = select_area(&mut op, &scene, (2.5, -1.5), (-1.5, 1.5));
+        assert_eq!(crossing, [SelectionItem::Node(left), SelectionItem::Node(right)]);
+    }
+
+    #[test]
+    fn area_resolves_to_faces_and_edges() {
+        let scene = Scene::new(SceneData::new());
+        let part = add_part(&scene, &[square(0.0)], &[vertical(0.5, 0.0)]);
+        let mut op = sub_geometry_op();
+
+        // Around the edge, across the face.
+        assert_eq!(select_area(&mut op, &scene, (0.4, 1.2), (0.6, -1.2)), [edge(part, 0)]);
+        assert_eq!(
+            select_area(&mut op, &scene, (0.6, -1.2), (0.4, 1.2)),
+            [face(part, 0), edge(part, 0)],
+        );
+        // Across the edge.
+        assert!(select_area(&mut op, &scene, (0.4, 0.5), (0.6, -0.5)).is_empty());
+        assert_eq!(select_area(&mut op, &scene, (0.6, -0.5), (0.4, 0.5)), [face(part, 0), edge(part, 0)]);
+    }
+
+    /// An area clear of every vertex and edge of the face it lies on.
+    #[test]
+    fn crossing_area_inside_a_face_takes_it() {
+        let scene = Scene::new(SceneData::new());
+        let part = add_part(&scene, &[square(0.0)], &[]);
+        let mut op = sub_geometry_op();
+        assert_eq!(select_area(&mut op, &scene, (0.3, -0.2), (0.1, 0.2)), [face(part, 0)]);
+    }
+
+    #[test]
+    fn area_takes_hidden_items_only_when_allowed() {
+        let scene = Scene::new(SceneData::new());
+        let front = add_part(&scene, &[square(0.0)], &[]);
+        let back = add_part(&scene, &[square(-2.0)], &[vertical(0.0, -2.0)]);
+        let around = ((-1.5, 1.5), (1.5, -1.5));
+
+        let mut op = SelectionOperator::with_mode(SelectionMode::Node);
+        assert_eq!(select_area(&mut op, &scene, around.0, around.1), [SelectionItem::Node(front)]);
+        op.hidden = SelectionKinds::NODE;
+        assert_eq!(
+            select_area(&mut op, &scene, around.0, around.1),
+            [SelectionItem::Node(front), SelectionItem::Node(back)],
+        );
+
+        let mut op = sub_geometry_op();
+        assert_eq!(select_area(&mut op, &scene, around.0, around.1), [face(front, 0)]);
+        op.hidden = SelectionKinds::all();
+        assert_eq!(
+            select_area(&mut op, &scene, around.0, around.1),
+            [face(front, 0), face(back, 0), edge(back, 0)],
+        );
+    }
+
+    #[test]
+    fn shift_area_adds_and_plain_area_replaces() {
+        let scene = Scene::new(SceneData::new());
+        let left = add_part(&scene, &[square_at(0.0, 0.0)], &[]);
+        let right = add_part(&scene, &[square_at(3.0, 0.0)], &[]);
+        let mut op = SelectionOperator::new();
+        let mut selection = SelectionManager::new();
+        let (around_left, around_right) = (((-1.5, 1.5), (1.5, -1.5)), ((1.5, 1.5), (4.5, -1.5)));
+
+        area(&mut op, &scene, &mut selection, Modifiers::default(), around_left.0, around_left.1);
+        let both = area(&mut op, &scene, &mut selection, SHIFT, around_right.0, around_right.1);
+        assert_eq!(both, [SelectionItem::Node(left), SelectionItem::Node(right)]);
+
+        let replaced =
+            area(&mut op, &scene, &mut selection, Modifiers::default(), around_right.0, around_right.1);
+        assert_eq!(replaced, [SelectionItem::Node(right)]);
+    }
+
+    #[test]
+    fn area_is_drawn_while_dragging_in_its_kind_color() {
+        let scene = Scene::new(SceneData::new());
+        let mut op = SelectionOperator::new();
+        let mut selection = SelectionManager::new();
+        let drawn = |op: &SelectionOperator| {
+            let mut overlay = ScreenOverlay::default();
+            op.overlay(&mut overlay);
+            overlay.rects().to_vec()
+        };
+        let (from, to) = ((100.0, 100.0), (200.0, 150.0));
+
+        send(&mut op, &scene, &mut selection, Modifiers::default(), [drag_start(from), drag_to(from, to)]);
+        let window = drawn(&op);
+        assert_eq!(window.len(), 1);
+        assert_eq!((window[0].min, window[0].max), (from, to));
+
+        send(&mut op, &scene, &mut selection, Modifiers::default(), [drag_to(to, (50.0, 50.0))]);
+        let crossing = drawn(&op);
+        assert_eq!((crossing[0].min, crossing[0].max), ((50.0, 50.0), from));
+        assert_ne!(crossing[0].stroke_color, window[0].stroke_color);
+
+        send(&mut op, &scene, &mut selection, Modifiers::default(), [drag_end(from, to)]);
+        assert!(drawn(&op).is_empty());
+    }
+
+    #[test]
+    fn escape_abandons_an_area() {
+        let scene = Scene::new(SceneData::new());
+        let part = add_part(&scene, &[square(0.0)], &[]);
+        let mut op = SelectionOperator::new();
+        let mut selection = SelectionManager::new();
+        selection.set(SelectionItem::Node(part));
+        let escape = DeviceEvent::KeyboardInput {
+            event: KeyEvent {
+                physical_key: PhysicalKey::Unidentified,
+                logical_key: Key::Named(NamedKey::Escape),
+                state: ElementState::Pressed,
+                repeat: false,
+            },
+            is_synthetic: false,
+        };
+        let (from, to) = (pixel(0.5, 0.5), pixel(2.0, -2.0));
+
+        let consumed = send(
+            &mut op,
+            &scene,
+            &mut selection,
+            Modifiers::default(),
+            [drag_start(from), escape.clone(), drag_end(from, to), escape],
+        );
+        assert_eq!(consumed, [true, true, false, false]);
+        assert_eq!(selection.as_slice(), [SelectionItem::Node(part)]);
     }
 }

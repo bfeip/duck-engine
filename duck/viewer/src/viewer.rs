@@ -8,6 +8,7 @@ use web_time::Instant;
 use crate::{
     axis_triad::{self, AxisTriad, AxisTriadConfig},
     compositor::{Compositor, VIEW_FORMAT},
+    overlay::{OverlayPainter, ScreenOverlay},
     event::{AppEvent, DeviceEvent, Event, EventContext, EventDispatcher},
     input::{ElementState, TouchPhase},
     scene::{PositionedCamera, PositionedLight, Projection, common::RgbaColor},
@@ -67,6 +68,8 @@ pub struct Viewer {
     /// Cursor position in viewer-target coordinates.
     cursor_position: Option<(f32, f32)>,
     compositor: Compositor,
+    /// Draws operators' screen overlays over the composited views.
+    overlay_painter: OverlayPainter,
     /// Color of target areas no view covers.
     clear_color: wgpu::Color,
     /// Last time update() was called, for delta_time calculation
@@ -97,6 +100,7 @@ impl Viewer {
             "composite target {composite_format:?} is not sRGB"
         );
         let compositor = Compositor::blend(&gpu.device, composite_format);
+        let overlay_painter = OverlayPainter::new(&gpu.device, composite_format);
         Self {
             ctx: RenderContext::new(gpu, VIEW_FORMAT, sample_count),
             size: (width.max(1), height.max(1)),
@@ -106,6 +110,7 @@ impl Viewer {
             capture: None,
             cursor_position: None,
             compositor,
+            overlay_painter,
             clear_color: wgpu::Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 },
             last_update_time: None,
             next_view_id: 0,
@@ -692,7 +697,9 @@ impl Viewer {
     }
 
     /// Render every visible view into its texture and composite the stack onto
-    /// `target`, a view at the format given to [`from_gpu`](Self::from_gpu).
+    /// `target`, a view at the format given to [`from_gpu`](Self::from_gpu),
+    /// with each view's operator [overlay](crate::operator::Operator::overlay)
+    /// on top.
     /// The encoder is not submitted — the caller is responsible for that.
     ///
     /// Each scene's GPU resources are prepared exactly once per call, however
@@ -742,6 +749,23 @@ impl Viewer {
                 .iter()
                 .filter(|v| v.visible)
                 .map(|v| (&v.target.bind_group, v.rect)),
+        );
+
+        // Above every view, triads included: the overlays are the topmost UI.
+        let overlays: Vec<(PixelRect, ScreenOverlay)> = self
+            .views
+            .iter()
+            .filter(|v| v.visible)
+            .map(|v| (v.rect, v.dispatcher.overlay()))
+            .filter(|(_, overlay)| !overlay.is_empty())
+            .collect();
+        self.overlay_painter.draw(
+            self.ctx.device(),
+            self.ctx.queue(),
+            encoder,
+            target,
+            self.size,
+            &overlays,
         );
         Ok(())
     }

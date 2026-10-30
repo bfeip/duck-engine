@@ -372,8 +372,7 @@ impl View {
     /// through to views beneath (zero alpha makes the view a pure overlay).
     pub fn set_background_color(&mut self, color: RgbaColor) {
         // View textures hold premultiplied color.
-        let RgbaColor { r, g, b, a } = color;
-        self.renderer.set_background_color(RgbaColor { r: r * a, g: g * a, b: b * a, a });
+        self.renderer.set_background_color(color.premultiplied());
     }
 
     /// The view's active rendering workflow.

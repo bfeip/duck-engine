@@ -14,6 +14,7 @@ pub use selection::{SelectionKinds, SelectionMode, SelectionOperator};
 pub use transform::TransformOperator;
 
 use crate::event::{Event, EventContext};
+use crate::ScreenOverlay;
 
 /// Operators encapsulate interaction logic and own their own state.
 ///
@@ -34,4 +35,9 @@ pub trait Operator: 'static {
 
     /// Human-readable name for this operator (used for debugging and UI display).
     fn name(&self) -> &str;
+
+    /// Adds this operator's screen-space feedback, such as a rubber band, to
+    /// its view's overlay. Called once per frame before drawing, in view-local
+    /// pixels. Draws nothing by default.
+    fn overlay(&self, _overlay: &mut ScreenOverlay) {}
 }

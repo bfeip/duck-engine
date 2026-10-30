@@ -4,7 +4,7 @@ use crate::common::{Aabb, ConvexPolyhedron};
 use crate::Scene;
 use crate::resource::{InstanceId, Mesh, Node, NodeId};
 
-use super::mesh_intersection;
+use super::mesh_intersection::{self, MeshVolumeHit};
 use super::pick_query::{pick_all, PickQuery};
 
 /// Result of a volume-instance intersection test.
@@ -14,10 +14,11 @@ pub struct VolumePickResult {
     pub node_id: NodeId,
     /// The instance that was hit
     pub instance_id: InstanceId,
-    /// Indices of triangles that intersect the volume (0-based, into the mesh's triangle list)
-    pub triangle_indices: Vec<usize>,
-    /// True if the entire instance is fully contained within the volume
-    pub fully_contained: bool,
+    /// The model matrix the instance was tested at, taking its mesh's local
+    /// space to world space.
+    pub transform: Matrix4,
+    /// Where each of the mesh's primitives lies relative to the volume.
+    pub hit: MeshVolumeHit,
 }
 
 /// Volume picking query; a [`PickQuery`] over a convex volume.
@@ -55,17 +56,16 @@ impl PickQuery for VolumePickQuery {
         mesh: &Mesh,
         node: &Node,
         instance_id: InstanceId,
-        _world_transform: &Matrix4,
+        world_transform: &Matrix4,
         results: &mut Vec<Self::Result>,
     ) {
-        let node_id = node.id;
         // Test against mesh (volume is already in local space)
-        if let Some(mesh_hit) = mesh_intersection::intersect_volume(mesh, &self.volume, self.thorough) {
+        if let Some(hit) = mesh_intersection::intersect_volume(mesh, &self.volume, self.thorough) {
             results.push(VolumePickResult {
-                node_id,
+                node_id: node.id,
                 instance_id,
-                triangle_indices: mesh_hit.triangle_indices,
-                fully_contained: mesh_hit.fully_contained,
+                transform: *world_transform,
+                hit,
             });
         }
     }
@@ -73,8 +73,8 @@ impl PickQuery for VolumePickQuery {
 
 /// Picks all instances intersected by a world-space convex volume.
 ///
-/// Each [`VolumePickResult`] records whether the instance is fully contained
-/// within the volume. `thorough` enables more accurate but slower
+/// Each [`VolumePickResult`] records where each of the instance's primitives
+/// lies relative to the volume. `thorough` enables more accurate but slower
 /// edge-triangle intersection tests, catching volumes that pass through a
 /// triangle without any of its vertices being inside and without its edges
 /// crossing the volume boundary.
