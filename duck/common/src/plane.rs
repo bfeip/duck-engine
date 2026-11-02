@@ -11,6 +11,7 @@ use crate::{Real, EPSILON};
 /// Points with negative signed distance are "inside" (on the normal's opposite side).
 /// This convention is useful for convex polyhedra where "inside" means inside the volume.
 #[derive(Debug, Copy, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Plane {
     /// Unit normal pointing "outside" the half-space
     pub normal: Vector3,

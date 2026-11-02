@@ -6,6 +6,7 @@ use duck_engine_viewer::scene::resource::{
     Vertex,
 };
 use duck_engine_viewer::scene::Scene;
+use serde::{Deserialize, Serialize};
 
 use crate::construction::upright;
 
@@ -15,7 +16,10 @@ const GRID_NORMAL: [f32; 3] = [0.0, 1.0, 0.0];
 /// on top of it.
 const AXIS_ALPHA: f32 = 0.7;
 
-/// Visual and dimensional parameters for the construction grid.
+/// Visual and dimensional parameters for the construction grid. Serialized
+/// without its colors and axis length, which are look rather than layout.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GridConfig {
     /// Whether the grid is drawn at all. Snapping is unaffected.
     pub visible: bool,
@@ -26,10 +30,13 @@ pub struct GridConfig {
     /// A major line is drawn every Nth minor line.
     pub major_every: u32,
     /// Color of the minor (fine) gridlines.
+    #[serde(skip)]
     pub minor_color: RgbaColor,
     /// Color of the major (coarse) gridlines.
+    #[serde(skip)]
     pub major_color: RgbaColor,
     /// Length of the short normal-axis indicator line, in world units.
+    #[serde(skip)]
     pub normal_axis_length: Real,
 }
 

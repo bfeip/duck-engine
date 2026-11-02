@@ -16,9 +16,10 @@ use duck_engine_scene::common::{
 };
 use glam::DVec3;
 use opencascade::primitives::{Edge, Face, Shape, ShapeCopy, ShapeType, Vertex, Wire};
+use serde::{Deserialize, Serialize};
 
 use crate::history::{Delta, History, PartSnapshot};
-use crate::materials::{Finish, LibraryMaterial, MaterialLibrary, PRESETS};
+use crate::materials::{Finish, LibraryMaterial, MaterialLibrary, MaterialRecord, PRESETS};
 
 pub type PartId = Id;
 
@@ -290,6 +291,23 @@ impl PartCopy<'_> {
     }
 }
 
+/// A part as a document file records it, short of its B-Rep.
+#[derive(Serialize, Deserialize)]
+pub struct PartRecord {
+    pub name: String,
+    pub frame: Transform,
+    pub options: CadTessellationOptions,
+    #[serde(default)]
+    pub visibility: Visibility,
+}
+
+/// What a document file holds of a document: its material library, and its
+/// parts in order, each with its B-Rep.
+pub struct DocumentContents {
+    pub materials: Vec<MaterialRecord>,
+    pub parts: Vec<(PartRecord, Shape)>,
+}
+
 /// The series a part name belongs to, i.e. the name with any
 /// [`numbered_name`](Document::numbered_name) suffix removed: `Box-003` → `Box`,
 /// `Bracket` → `Bracket`, `Part-A` → `Part-A`.
@@ -340,13 +358,50 @@ impl Document {
         }
     }
 
-    /// Draws the document in `scene` from now on. The history and the
-    /// material library, whose materials live in the old scene, are cleared.
-    pub fn set_scene(&mut self, scene: Scene) {
-        scene.set_world_units(DOCUMENT_UNITS);
-        self.scene = scene;
-        self.history.clear();
-        self.materials.clear();
+    /// A document drawn in `scene` holding `contents`, with an empty history.
+    /// Fails as a whole, naming the part that could not be built.
+    pub fn from_contents(scene: Scene, contents: DocumentContents) -> Result<Self> {
+        let mut document = Self::new(scene);
+        for MaterialRecord { name, material } in contents.materials {
+            let handle = document.scene.add_face_material(material);
+            document.materials.push(LibraryMaterial::new(name, handle));
+        }
+        // A part's face template that names a library material shares it again.
+        for (PartRecord { name, frame, options, visibility }, shape) in contents.parts {
+            let part = document
+                .add_part(name.clone(), shape, frame, &options)
+                .with_context(|| format!("Failed to build {name}"))?;
+            document.set_part_visibility(part, visibility);
+        }
+        document.history.clear();
+        Ok(document)
+    }
+
+    /// The document's material library and parts, as a document file records
+    /// them.
+    pub fn contents(&self) -> DocumentContents {
+        let materials = self
+            .materials
+            .iter()
+            .filter_map(|material| {
+                let face = self.scene.get_face_material(material.id())?;
+                Some(MaterialRecord { name: material.name.clone(), material: face })
+            })
+            .collect();
+        let parts = self
+            .parts
+            .iter()
+            .map(|part| {
+                let record = PartRecord {
+                    name: part.name.clone(),
+                    frame: part.frame,
+                    options: part.options.clone(),
+                    visibility: self.part_visibility(part.id).unwrap_or_default(),
+                };
+                (record, part.shape().clone())
+            })
+            .collect();
+        DocumentContents { materials, parts }
     }
 
     pub fn scene(&self) -> &Scene {
@@ -430,7 +485,7 @@ impl Document {
     /// past the highest suffix currently in use.
     ///
     /// Derived from the live part names rather than a stored counter, so undo,
-    /// redo, import, and [`set_scene`](Self::set_scene) cannot desync it.
+    /// redo, import, and loading cannot desync it.
     pub fn numbered_name(&self, base: &str) -> String {
         next_numbered_name(self.parts.iter().map(|part| part.name.as_str()), base)
     }
@@ -1095,18 +1150,13 @@ mod tests {
 
     use crate::materials::Finish;
 
-    /// The document labels whatever scene it draws in with its own unit, over
-    /// the engine's default of metres.
+    /// The document labels the scene it draws in with its own unit, over the
+    /// engine's default of metres.
     #[test]
     fn the_scene_is_labelled_in_document_units() {
-        let metres = || {
-            let scene = Scene::default();
-            scene.set_world_units(WorldUnits::METER);
-            scene
-        };
-        let mut doc = Document::new(metres());
-        assert_eq!(doc.scene().world_units(), DOCUMENT_UNITS);
-        doc.set_scene(metres());
+        let scene = Scene::default();
+        scene.set_world_units(WorldUnits::METER);
+        let doc = Document::new(scene);
         assert_eq!(doc.scene().world_units(), DOCUMENT_UNITS);
     }
 
@@ -1961,5 +2011,52 @@ mod tests {
         assert!(!doc.materials().contains(id));
         doc.redo().expect("redo the creation");
         assert_eq!(doc.materials().get(id).map(|m| m.name.as_str()), Some("Mine"));
+    }
+
+    /// `doc` rebuilt in a new scene from what a file would hold of it.
+    fn reloaded(doc: &Document) -> Document {
+        Document::from_contents(Scene::default(), doc.contents()).expect("the contents rebuild")
+    }
+
+    fn part_ids(doc: &Document) -> Vec<PartId> {
+        doc.parts().map(|part| part.id).collect()
+    }
+
+    #[test]
+    fn contents_rebuild_the_parts_in_order() {
+        let (mut doc, parts) = library_doc(3);
+        doc.rename_part(parts[0], "Bracket");
+        doc.bake_transform(parts[1], Matrix4::from_translation(Vector3::new(0.0, 5.0, 0.0))).unwrap();
+        doc.set_part_visibility(parts[2], Visibility::Invisible);
+
+        let loaded = reloaded(&doc);
+        assert_eq!(loaded.parts().count(), 3);
+        for (before, after) in doc.parts().zip(loaded.parts()) {
+            assert_eq!(after.name, before.name);
+            assert_eq!(after.frame(), before.frame());
+            assert!((after.shape().volume() - before.shape().volume()).abs() < 1e-9);
+            assert_eq!(loaded.part_visibility(after.id), doc.part_visibility(before.id));
+        }
+        assert_eq!(loaded.undo_label(), None, "loading records nothing");
+    }
+
+    #[test]
+    fn contents_keep_the_library_and_the_parts_on_it() {
+        let (mut doc, parts) = library_doc(2);
+        let steel = library_material(&doc, "Steel");
+        doc.assign_material(&parts[..1], steel);
+        doc.rename_material(steel, "Stainless");
+        let finish = Finish { color: RED, ..doc.material_finish(steel).unwrap() };
+        doc.set_material_finish(steel, finish);
+
+        let loaded = reloaded(&doc);
+        let names = |doc: &Document| doc.materials().iter().map(|m| m.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&loaded), names(&doc));
+        let parts = part_ids(&loaded);
+        assert_eq!(loaded.part_material(parts[0]), Some(steel));
+        assert_eq!(loaded.part_material(parts[1]), None);
+        assert_eq!(loaded.material_usage().get(&steel), Some(&1));
+        assert_eq!(loaded.material_finish(steel), Some(finish));
+        assert_part_color(&loaded, parts[0], RED);
     }
 }

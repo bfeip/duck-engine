@@ -100,17 +100,18 @@ impl Host {
 
     /// Ask the user where to save `name` and write it there with `write`. A
     /// path without one of `filters`' extensions gets the first filter's.
+    /// Returns the path written, or `None` if the user cancelled.
     pub(crate) fn save_file(
         &self,
         name: &str,
         filters: &[FileFilter],
         write: impl FnOnce(&Path) -> Result<()>,
-    ) -> Result<()> {
+    ) -> Result<Option<PathBuf>> {
         let dialog = filters.iter().fold(rfd::FileDialog::new().set_file_name(name), |dialog, f| {
             dialog.add_filter(f.name, f.extensions)
         });
         let Some(mut path) = dialog.save_file() else {
-            return Ok(());
+            return Ok(None);
         };
         let known = path.extension().and_then(|e| e.to_str()).is_some_and(|ext| {
             filters.iter().flat_map(|f| f.extensions).any(|e| e.eq_ignore_ascii_case(ext))
@@ -118,7 +119,13 @@ impl Host {
         if !known && let Some(ext) = filters.first().and_then(|f| f.extensions.first()) {
             path.set_extension(ext);
         }
-        write(&path)
+        write(&path)?;
+        Ok(Some(path))
+    }
+
+    /// Write `path` with `write`, without asking.
+    pub(crate) fn save_file_to(&self, path: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+        write(path)
     }
 
     /// Let egui see a window event, then normalize it for the viewer.

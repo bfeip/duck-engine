@@ -18,7 +18,7 @@ mod tools;
 mod ui;
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -31,7 +31,6 @@ use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator};
 use duck_engine_viewer::common::{
     InnerSpace, Real, RgbaColor, Vector3
 };
-use duck_engine_viewer::renderer::ibl;
 use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
 
 use crate::construction::ConstructionOptions;
@@ -42,7 +41,7 @@ use crate::tools::{
     Workspace,
 };
 use crate::notifications::Notifications;
-use crate::platform::{FileFilter, Host};
+use crate::platform::Host;
 use crate::shortcuts::Shortcuts;
 use crate::ui::{Lighting, ModelerUi};
 
@@ -50,9 +49,6 @@ use document::Document;
 
 /// Viewport clear color. A cool dark grey.
 const VIEWPORT_BACKGROUND: RgbaColor = RgbaColor { r: 0.035, g: 0.040, b: 0.047, a: 1.0 };
-
-/// The images [`load_environment`] reads.
-const ENVIRONMENT_FILTER: FileFilter = FileFilter { name: "Radiance HDR", extensions: &["hdr"] };
 
 /// What the app is asked to do, by the UI or a shortcut. Gathered over a frame
 /// and carried out once its UI is drawn.
@@ -64,6 +60,12 @@ pub enum AppAction {
     Delete,
     Undo,
     Redo,
+    /// Ask for a document file to replace the document with.
+    Open,
+    /// Save the document to its file, asking where only if it has none.
+    Save,
+    /// Save the document wherever the user picks.
+    SaveAs,
     ImportCad,
     ExportCad,
     /// Ask for an HDR image to light the scene with.
@@ -89,27 +91,24 @@ pub enum AppAction {
 /// What a file the user is asked to pick is for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FilePurpose {
+    /// A document file to replace the document with.
+    Document,
     /// STEP/IGES parts to import into the document.
     CadImport,
     /// An HDR image to light the scene with.
     Environment,
 }
 
-/// Light `scene` with the HDR image at `path`, replacing its environment map if
-/// it had one.
-fn load_environment(scene: &Scene, path: &Path) -> anyhow::Result<()> {
-    // The bytes rather than the path: the browser's copy of a picked file is
-    // gone once it has been received. Decoded once here so a bad file is
-    // reported, not left to fail every render.
-    let bytes = std::fs::read(path)?;
-    ibl::load_hdr_from_bytes(&bytes)?;
-    let mut scene = scene.lock();
-    if let Some(previous) = scene.active_environment_map() {
-        scene.remove_environment_map(previous);
-    }
-    let id = scene.add_environment_map_from_hdr_data(bytes);
-    scene.set_active_environment_map(Some(id));
-    Ok(())
+/// The outcome of reading a file the user picked.
+///
+/// The host reads it in a callback that cannot reach the rest of the app, so
+/// what is left to do once the callback returns is carried out in this.
+enum Received {
+    /// The file was used up in the callback, by an import or an environment
+    /// load. `operation` names it in a failure notice, e.g. "CAD import".
+    Handled { operation: &'static str, result: anyhow::Result<()> },
+    /// A document file was read from `path`, still to be installed.
+    Document { path: PathBuf, result: anyhow::Result<(Document, io::Session)> },
 }
 
 /// Owns all rendering state: egui context + GPU renderer, the window surface
@@ -148,6 +147,8 @@ struct ViewerState<'a> {
     /// The construction grid currently installed in the scene; replaced when
     /// the construction plane or grid settings change.
     grid: Option<grid::Grid>,
+    /// The document file last saved or opened, which Save writes to.
+    document_file: Option<PathBuf>,
 }
 
 impl ViewerState<'static> {
@@ -246,12 +247,11 @@ impl ViewerState<'static> {
             tools,
             shortcuts,
             grid: None,
+            document_file: None,
         }
     }
 
     fn set_default_scene(&mut self) {
-        let mut scene = Scene::default();
-
         // Default camera; lighting comes from the view's headlights.
         let eye = [75.0, 50.0, 75.0].into();
         let target = [0.0, 0.0, 0.0].into();
@@ -269,16 +269,10 @@ impl ViewerState<'static> {
             projection: Projection::Orthographic { half_height: 35., half_depth: 1000. },
         };
 
-        let coptions = self.construction_options.borrow();
-        self.grid =
-            Some(grid::Grid::add_to_scene(&mut scene, &coptions.grid, &coptions.construction_plane));
-        drop(coptions);
-
-        self.viewer.set_view_scene(self.view_id, scene.clone());
-        self.viewer.view_mut(self.view_id).expect("main view").set_camera(camera);
-        let mut document = self.document.lock().unwrap();
-        document.set_scene(scene);
+        let mut document = Document::new(Scene::default());
         document.add_preset_materials();
+        let session = io::Session { camera, ..self.session() };
+        self.install_document(document, session, None);
     }
 }
 
@@ -442,15 +436,86 @@ impl<'a> ViewerState<'a> {
         }
     }
 
+    /// The session to save with the document: the view's camera and lighting,
+    /// and the construction plane and grid.
+    fn session(&self) -> io::Session {
+        let view = self.viewer.view(self.view_id).expect("main view");
+        let construction = self.construction_options.borrow();
+        io::Session {
+            camera: view.camera().clone(),
+            lighting: Lighting::of(&self.viewer, self.view_id),
+            construction_plane: construction.own_plane(),
+            grid: construction.grid.clone(),
+        }
+    }
+
+    /// Replaces the document with `document`, drawn in its own scene, restores
+    /// `session` around it, and makes `file` the one Save writes to.
+    fn install_document(&mut self, document: Document, session: io::Session, file: Option<PathBuf>) {
+        // The active tool's previews live in the outgoing scene, and tearing
+        // them down locks the document.
+        self.tools.discard_active();
+        let scene = document.scene().clone();
+        // In place: the tools hold the same document.
+        *self.document.lock().unwrap() = document;
+        // The new scene comes with an empty selection and no lights.
+        self.viewer.set_view_scene(self.view_id, scene);
+        {
+            let mut construction = self.construction_options.borrow_mut();
+            construction.set_own_plane(session.construction_plane);
+            construction.grid = session.grid;
+        }
+        // The grid went with the old scene.
+        self.grid = None;
+        self.rebuild_grid();
+        let view = self.viewer.view_mut(self.view_id).expect("main view");
+        view.set_camera(session.camera);
+        view.cancel_camera_transition();
+        // After the scene swap: the lights belong to the view's scene.
+        session.lighting.apply(&mut self.viewer, self.view_id);
+        let show = self.construction_options.borrow().geometry_options.show_seam_edges;
+        self.document.lock().unwrap().set_seam_edges_visible(show);
+        self.document_file = file;
+    }
+
+    /// Saves the document to the file it was last saved to or opened from, or
+    /// with `ask` or no such file, wherever the user picks. The active tool
+    /// commits first, as on switching tools, so the file holds what the view
+    /// shows.
+    fn save_document(&mut self, ask: bool) {
+        let selection = self.viewer.selection_mut(self.view_id).expect("main view");
+        self.tools.activate(None, selection);
+        let session = self.session();
+        let write = |path: &Path| io::save_document(path, &self.document.lock().unwrap(), session);
+        let saved = match self.document_file.as_deref() {
+            Some(path) if !ask => self.host.save_file_to(path, write).map(|()| Some(path.to_owned())),
+            file => {
+                let name = file.and_then(Path::file_name).map(|name| name.to_string_lossy());
+                let name = name.as_deref().unwrap_or("untitled.duck");
+                self.host.save_file(name, &[io::DOCUMENT_FILTER], write)
+            }
+        };
+        match saved {
+            Ok(Some(path)) => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                self.notifications.info(format!("Saved {name}"));
+                self.document_file = Some(path);
+            }
+            Ok(None) => {}
+            Err(e) => self.notifications.failure("Save", &e),
+        }
+    }
+
     /// Writes all parts to a STEP/IGES file wherever the host puts it.
     fn export_cad(&self) -> anyhow::Result<()> {
         if self.document.lock().unwrap().is_empty() {
             log::warn!("Nothing to export: document has no parts");
             return Ok(());
         }
-        self.host.save_file("export.step", &io::EXPORT_FILTERS, |path| {
+        let path = self.host.save_file("export.step", &io::EXPORT_FILTERS, |path| {
             io::export_cad_file(&self.document, path)
-        })
+        });
+        path.map(|_| ())
     }
 
     /// Returns true when the user asked to quit via the menu.
@@ -506,6 +571,9 @@ impl<'a> ViewerState<'a> {
                 AppAction::Delete => self.delete_selection(),
                 AppAction::Undo => self.replay(Document::undo, "Undid", "Nothing to undo"),
                 AppAction::Redo => self.replay(Document::redo, "Redid", "Nothing to redo"),
+                AppAction::Open => self.host.open_file(&io::DOCUMENT_FILTER, FilePurpose::Document),
+                AppAction::Save => self.save_document(false),
+                AppAction::SaveAs => self.save_document(true),
                 AppAction::ImportCad => {
                     self.host.open_file(&io::IMPORT_FILTER, FilePurpose::CadImport)
                 }
@@ -515,7 +583,7 @@ impl<'a> ViewerState<'a> {
                     }
                 }
                 AppAction::LoadEnvironment => {
-                    self.host.open_file(&ENVIRONMENT_FILTER, FilePurpose::Environment)
+                    self.host.open_file(&io::ENVIRONMENT_FILTER, FilePurpose::Environment)
                 }
                 AppAction::ConstructionChanged => self.rebuild_grid(),
                 AppAction::TessellationChanged => {
@@ -538,25 +606,39 @@ impl<'a> ViewerState<'a> {
                 AppAction::Quit => return true,
             }
         }
-        // A file opened through ImportCad or LoadEnvironment: this frame on
-        // native, some frames later in the browser.
+        // A file opened through Open, ImportCad or LoadEnvironment: this frame
+        // on native, some frames later in the browser. Read in the callback,
+        // which the browser's copy of the file does not outlive.
         let scene = self.scene();
         let received = self.host.receive_opened_file(|purpose, path| match purpose {
+            FilePurpose::Document => {
+                Received::Document { path: path.to_owned(), result: io::open_document(path) }
+            }
             FilePurpose::CadImport => {
                 let options = &self.construction_options.borrow().geometry_options;
-                ("CAD import", io::import_cad_file(&self.document, path, options))
+                let result = io::import_cad_file(&self.document, path, options);
+                Received::Handled { operation: "CAD import", result }
             }
             FilePurpose::Environment => {
-                let loaded = load_environment(&scene, path);
+                let loaded = io::load_environment(&scene, path);
                 if loaded.is_ok() {
                     let name = path.file_name().unwrap_or_default().to_string_lossy();
                     self.notifications.info(format!("Lit by {name}"));
                 }
-                ("Environment load", loaded)
+                Received::Handled { operation: "Environment load", result: loaded }
             }
         });
-        if let Some((what, Err(e))) = received {
-            self.notifications.failure(what, &e);
+        match received {
+            Some(Received::Document { path, result: Ok((document, session)) }) => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                self.install_document(document, session, Some(path));
+                self.notifications.info(format!("Opened {name}"));
+            }
+            Some(Received::Document { result: Err(e), .. }) => self.notifications.failure("Open", &e),
+            Some(Received::Handled { operation, result: Err(e) }) => {
+                self.notifications.failure(operation, &e)
+            }
+            Some(Received::Handled { result: Ok(()), .. }) | None => {}
         }
         // After the actions, so a snap this frame is in place before its view
         // is checked.
@@ -682,53 +764,4 @@ impl<'a> ViewerState<'a> {
 
 fn main() {
     platform::run();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Write a one-pixel Radiance HDR image named `name` to the temp dir.
-    fn hdr_file(name: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(name);
-        std::fs::write(&path, b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n\x80\x80\x80\x81")
-            .unwrap();
-        path
-    }
-
-    #[test]
-    fn loading_an_environment_replaces_the_last() {
-        let path = hdr_file("duck_modeler_environment_replace.hdr");
-        let scene = Scene::default();
-        let first = load_environment(&scene, &path);
-        let first_id = scene.active_environment_map();
-        let second = load_environment(&scene, &path);
-        let _ = std::fs::remove_file(&path);
-        first.unwrap();
-        second.unwrap();
-
-        let scene = scene.lock();
-        assert_eq!(scene.environment_map_count(), 1);
-        assert!(scene.active_environment_map().is_some());
-        assert_ne!(scene.active_environment_map(), first_id);
-    }
-
-    #[test]
-    fn a_bad_environment_keeps_the_current_one() {
-        let good = hdr_file("duck_modeler_environment_good.hdr");
-        let bad = std::env::temp_dir().join("duck_modeler_environment_bad.hdr");
-        std::fs::write(&bad, b"not an HDR image").unwrap();
-        let scene = Scene::default();
-        let loaded = load_environment(&scene, &good);
-        let current = scene.active_environment_map();
-        let failed = load_environment(&scene, &bad);
-        let _ = std::fs::remove_file(&good);
-        let _ = std::fs::remove_file(&bad);
-
-        loaded.unwrap();
-        assert!(failed.is_err());
-        let scene = scene.lock();
-        assert_eq!(scene.environment_map_count(), 1);
-        assert_eq!(scene.active_environment_map(), current);
-    }
 }

@@ -3,6 +3,7 @@
 
 use duck_engine_scene::common::RgbaColor;
 use duck_engine_scene::resource::{FaceMaterial, FaceMaterialHandle, FaceMaterialId, MaterialFlags};
+use serde::{Deserialize, Serialize};
 
 /// The look of a body's faces. Opacity is the color's alpha.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,6 +91,14 @@ impl LibraryMaterial {
     }
 }
 
+/// A library material as a document file records it. Its material keeps its
+/// id, which parts on it name.
+#[derive(Serialize, Deserialize)]
+pub struct MaterialRecord {
+    pub name: String,
+    pub material: FaceMaterial,
+}
+
 /// The library's materials, in the order they are listed.
 #[derive(Default)]
 pub struct MaterialLibrary {
@@ -131,10 +140,6 @@ impl MaterialLibrary {
     pub fn remove(&mut self, id: FaceMaterialId) -> Option<(usize, LibraryMaterial)> {
         let index = self.materials.iter().position(|m| m.id() == id)?;
         Some((index, self.materials.remove(index)))
-    }
-
-    pub fn clear(&mut self) {
-        self.materials.clear();
     }
 }
 

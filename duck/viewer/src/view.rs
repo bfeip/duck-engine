@@ -15,6 +15,7 @@
 
 use duck_engine_common::{Deg, Quaternion, Real, Rotation3};
 use duck_engine_scene::Scene;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     camera_transition::CameraTransition,
@@ -134,7 +135,7 @@ pub(crate) struct ViewTarget {
 
 /// When a view's headlight rig ([`View::headlight_rig`]) contributes to its
 /// rendering.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum HeadlightMode {
     /// Active only while the view has no lights of its own, its scene has no
     /// lights, and no environment map is active (evaluated each frame).

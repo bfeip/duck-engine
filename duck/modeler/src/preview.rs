@@ -540,8 +540,8 @@ mod tests {
         let document = document();
         let mut session = PreviewSession::new(document.clone());
 
-        // Swap in a fresh scene, as new-document / file-load does.
-        document.lock().unwrap().set_scene(Scene::default());
+        // Swap in a fresh document, as opening a file does.
+        *document.lock().unwrap() = Document::new(Scene::default());
 
         // The preview must land in the new scene, not the one present at construction.
         session.add_preview_from_shape(&unit_shape(), &CadTessellationOptions::default(), "p");

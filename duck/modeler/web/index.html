@@ -31,6 +31,14 @@
           "The modeler needs a mouse and keyboard. Open this page on a desktop or laptop computer.";
       } else {
         canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+        // Ctrl+O and Ctrl+S (with or without Shift) open and save documents,
+        // not the browser's own dialogs.
+        window.addEventListener("keydown", (event) => {
+          const key = event.key.toLowerCase();
+          if ((event.ctrlKey || event.metaKey) && (key === "o" || key === "s")) {
+            event.preventDefault();
+          }
+        });
 
         var Module = {
           canvas,

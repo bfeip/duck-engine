@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::ffi::{CString, c_char, c_int};
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use duck_engine_viewer::emscripten_support;
 use duck_engine_viewer::event::{DeviceEvent, Event};
 use duck_engine_viewer::{GpuOptions, WindowSurface};
@@ -105,19 +105,36 @@ impl Host {
 
     /// Write `name` with `write` and hand it to the browser as a download.
     /// There is no save dialog, so `filters` go unused and the file keeps
-    /// `name`.
+    /// `name`. Returns the path written, gone once downloaded, whose file name
+    /// [`Self::save_file_to`] downloads under again.
     pub(crate) fn save_file(
         &self,
         name: &str,
         _filters: &[FileFilter],
         write: impl FnOnce(&Path) -> Result<()>,
-    ) -> Result<()> {
-        let path = format!("/tmp/{name}");
-        write(Path::new(&path))?;
-        let path = CString::new(path).expect("file name holds no NUL");
-        unsafe { duck_download_file(path.as_ptr()) };
+    ) -> Result<Option<PathBuf>> {
+        let path = PathBuf::from(format!("/tmp/{name}"));
+        write(&path)?;
+        download(&path);
+        Ok(Some(path))
+    }
+
+    /// Write `path`'s file name with `write` and hand it to the browser as a
+    /// download. Nothing is written where `path` points.
+    pub(crate) fn save_file_to(&self, path: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+        let name = path.file_name().context("The path names no file")?;
+        let path = Path::new("/tmp").join(name);
+        write(&path)?;
+        download(&path);
         Ok(())
     }
+}
+
+/// Hands the file at `path` to the browser as a download, dropping it from
+/// memory.
+fn download(path: &Path) {
+    let path = CString::new(path.to_string_lossy().into_owned()).expect("file name holds no NUL");
+    unsafe { duck_download_file(path.as_ptr()) };
 }
 
 /// `purpose` as the tag the picker carries; [`tagged_purpose`] reads it back.
@@ -125,6 +142,7 @@ fn purpose_tag(purpose: FilePurpose) -> c_int {
     match purpose {
         FilePurpose::CadImport => 0,
         FilePurpose::Environment => 1,
+        FilePurpose::Document => 2,
     }
 }
 
@@ -133,6 +151,7 @@ fn tagged_purpose(tag: c_int) -> Option<FilePurpose> {
     match tag {
         0 => Some(FilePurpose::CadImport),
         1 => Some(FilePurpose::Environment),
+        2 => Some(FilePurpose::Document),
         _ => None,
     }
 }

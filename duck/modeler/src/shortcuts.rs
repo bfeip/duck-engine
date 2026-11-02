@@ -23,7 +23,8 @@ pub struct Shortcuts {
 
 impl Shortcuts {
     /// X or Delete deletes the selected parts, Ctrl+Z undoes, Ctrl+Shift+Z or
-    /// Ctrl+Y redoes, and each of `tools`' keys switches to it.
+    /// Ctrl+Y redoes, Ctrl+O opens a document, Ctrl+S saves it, Ctrl+Shift+S
+    /// saves it elsewhere, and each of `tools`' keys switches to it.
     pub fn new(tools: &[(ToolId, ToolInfo)]) -> Self {
         let ctrl = Modifiers { control: true, ..Modifiers::default() };
         let ctrl_shift = Modifiers { shift: true, ..ctrl };
@@ -34,7 +35,10 @@ impl Shortcuts {
             .bind(plain(Key::Named(NamedKey::Delete)), AppAction::Delete)
             .bind(chord(Key::Character('z'), ctrl), AppAction::Undo)
             .bind(chord(Key::Character('z'), ctrl_shift), AppAction::Redo)
-            .bind(chord(Key::Character('y'), ctrl), AppAction::Redo);
+            .bind(chord(Key::Character('y'), ctrl), AppAction::Redo)
+            .bind(chord(Key::Character('o'), ctrl), AppAction::Open)
+            .bind(chord(Key::Character('s'), ctrl), AppAction::Save)
+            .bind(chord(Key::Character('s'), ctrl_shift), AppAction::SaveAs);
         for &(id, info) in tools {
             if let Some(c) = info.shortcut {
                 bindings.add(plain(Key::Character(c)), AppAction::SwitchTool(Some(id)));
@@ -127,6 +131,15 @@ mod tests {
         use AppAction::{Delete, Redo, Undo};
         assert_eq!(shortcuts.take(), [Delete, Delete, Delete, Undo, Redo, Redo]);
         assert!(shortcuts.take().is_empty(), "taking empties the queue");
+    }
+
+    #[test]
+    fn open_save_and_save_as_have_their_keys() {
+        let mut shortcuts = Shortcuts::new(&[]);
+        for (event, modifiers) in [(key('o'), CTRL), (key('s'), CTRL), (key('S'), CTRL_SHIFT)] {
+            assert!(shortcuts.on_key(&event, modifiers));
+        }
+        assert_eq!(shortcuts.take(), [AppAction::Open, AppAction::Save, AppAction::SaveAs]);
     }
 
     #[test]

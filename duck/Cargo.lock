@@ -2605,8 +2605,11 @@ dependencies = [
  "opencascade",
  "pollster",
  "rfd",
+ "serde",
+ "serde_json",
  "wgpu",
  "winit",
+ "zip",
 ]
 
 [[package]]

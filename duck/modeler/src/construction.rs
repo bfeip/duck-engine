@@ -132,6 +132,24 @@ impl ConstructionOptions {
         self.set_plane(view_plane.replaced)
     }
 
+    /// The construction plane the user set: while a snapped view's plane is
+    /// in place, the plane it replaced.
+    pub fn own_plane(&self) -> Plane {
+        match self.view_plane {
+            Some(view_plane) if same_plane(&view_plane.placed, &self.construction_plane) => {
+                view_plane.replaced
+            }
+            _ => self.construction_plane,
+        }
+    }
+
+    /// Sets the construction plane as the user's own, leaving any snapped
+    /// view's. Returns whether it changed.
+    pub fn set_own_plane(&mut self, plane: Plane) -> bool {
+        self.view_plane = None;
+        self.set_plane(plane)
+    }
+
     /// Sets the construction plane, returning whether it changed.
     fn set_plane(&mut self, plane: Plane) -> bool {
         let changed = !same_plane(&plane, &self.construction_plane);
@@ -262,5 +280,32 @@ mod tests {
         options.face_view(Vector3::unit_z());
         assert!(options.leave_view(Vector3::unit_y()));
         assert!(is_plane(&options.construction_plane, Vector3::unit_x(), Point3::new(10.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn the_own_plane_is_the_one_a_snapped_view_replaced() {
+        let mut options = ConstructionOptions::new();
+        let raised = Point3::new(0.0, 20.0, 0.0);
+        options.construction_plane = Plane::from_point(Vector3::unit_y(), raised);
+        options.face_view(Vector3::unit_x());
+        assert!(is_plane(&options.own_plane(), Vector3::unit_y(), raised));
+
+        // A plane set in the snapped view is the user's own.
+        let own = Point3::new(10.0, 0.0, 0.0);
+        options.construction_plane = Plane::from_point(Vector3::unit_x(), own);
+        assert!(is_plane(&options.own_plane(), Vector3::unit_x(), own));
+    }
+
+    #[test]
+    fn setting_the_own_plane_leaves_the_snapped_view() {
+        let mut options = ConstructionOptions::new();
+        options.face_view(Vector3::unit_x());
+
+        // Even the plane the snap placed is now the user's own, and stays on
+        // orbiting away.
+        let placed = options.construction_plane;
+        assert!(!options.set_own_plane(placed));
+        assert!(!options.leave_view(Vector3::unit_z()));
+        assert!(is_plane(&options.construction_plane, Vector3::unit_x(), Point3::origin()));
     }
 }

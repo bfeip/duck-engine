@@ -19,6 +19,16 @@ impl MenuBar {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    if shortcut_item(ui, "Open…", "Ctrl+O") {
+                        actions.push(AppAction::Open);
+                    }
+                    if shortcut_item(ui, "Save", "Ctrl+S") {
+                        actions.push(AppAction::Save);
+                    }
+                    if shortcut_item(ui, "Save As…", "Ctrl+Shift+S") {
+                        actions.push(AppAction::SaveAs);
+                    }
+                    ui.separator();
                     if ui.button("Import…").clicked() {
                         actions.push(AppAction::ImportCad);
                     }
@@ -45,6 +55,11 @@ impl MenuBar {
             });
         });
     }
+}
+
+/// A menu item like "Save  Ctrl+S". Returns whether it was clicked.
+fn shortcut_item(ui: &mut egui::Ui, text: &str, shortcut: &str) -> bool {
+    ui.add(egui::Button::new(text).shortcut_text(shortcut)).clicked()
 }
 
 /// A menu item like "Undo Boolean  Ctrl+Z", disabled without a step label.

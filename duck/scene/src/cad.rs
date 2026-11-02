@@ -68,6 +68,7 @@ pub fn classify_shape(shape: &Shape) -> GeometryClass {
 // if someone is't interesting in edges or points and doesn't include them they
 // still have to provide a material.
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CadTessellationOptions {
     /// Largest distance the faces' triangles and the edges' polylines may
     /// stray from the B-Rep. Lower values produce finer meshes. In the shape's

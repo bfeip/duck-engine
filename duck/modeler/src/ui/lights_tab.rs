@@ -9,13 +9,14 @@ use duck_engine_viewer::scene::{
     Light, LightSpace, LightType, MAX_LIGHTS, PositionedCamera, PositionedLight,
 };
 use duck_engine_viewer::{HeadlightMode, ViewId, Viewer, default_headlight_rig};
+use serde::{Deserialize, Serialize};
 
 use crate::ui::length_value;
 use crate::AppAction;
 
 /// A copy of a view's lighting for the UI to edit, written back on
 /// [`AppAction::LightingChanged`].
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Lighting {
     pub headlight: HeadlightMode,
     pub headlight_rig: Vec<PositionedLight>,
