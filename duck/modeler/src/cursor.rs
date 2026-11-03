@@ -136,6 +136,7 @@ impl Cursor3d {
                 screen_facing: true,
                 screen_size: Some(CURSOR_PIXELS),
                 layer: RenderLayer::Overlay,
+                ..Default::default()
             },
         );
         let id = node.id();

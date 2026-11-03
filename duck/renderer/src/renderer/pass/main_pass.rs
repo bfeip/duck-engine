@@ -1,32 +1,10 @@
-use duck_engine_scene::resource::PrimitiveType;
+use duck_engine_scene::resource::PrimitiveFlags;
 
 use crate::render_core::{
     AuxKind, AuxTarget, FrameTargets, Gpu, Pass, TargetFeatures,
 };
 
 use super::super::pass_context::{DrawOptions, SceneFrame, SceneFrames};
-
-/// Selects which primitive kinds a geometry pass draws, so faces and
-/// lines/points can be split across separate passes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PrimitiveFilter {
-    All,
-    Faces,
-    LinesAndPoints,
-}
-
-impl PrimitiveFilter {
-    pub(crate) const fn accepts(self, primitive_type: PrimitiveType) -> bool {
-        match self {
-            Self::All => true,
-            Self::Faces => matches!(primitive_type, PrimitiveType::TriangleList),
-            Self::LinesAndPoints => matches!(
-                primitive_type,
-                PrimitiveType::LineList | PrimitiveType::PointList
-            ),
-        }
-    }
-}
 
 /// Draws scene geometry: binds camera/lights/IBL, runs a depth pre-pass for
 /// `Blend`-mode materials, then draws the batches this pass is responsible for.
@@ -45,7 +23,8 @@ impl PrimitiveFilter {
 // of primitive type. Transparent line materials are rare enough that this is an
 // acceptable trade.
 pub struct MainPass {
-    filter: PrimitiveFilter,
+    /// The primitive types this pass draws.
+    filter: PrimitiveFlags,
     /// `true` clears color and depth; `false` loads both.
     clears: bool,
 }
@@ -54,13 +33,13 @@ impl MainPass {
     /// Draws triangles, clearing color and depth first.
     #[must_use]
     pub const fn faces() -> Self {
-        Self { filter: PrimitiveFilter::Faces, clears: true }
+        Self { filter: PrimitiveFlags::TRIANGLES, clears: true }
     }
 
     /// Draws lines and points on top of an already-populated color/depth buffer.
     #[must_use]
     pub const fn lines_and_points() -> Self {
-        Self { filter: PrimitiveFilter::LinesAndPoints, clears: false }
+        Self { filter: PrimitiveFlags::LINES.union(PrimitiveFlags::POINTS), clears: false }
     }
 
     /// Draws every primitive kind in one pass, clearing first.
@@ -69,7 +48,7 @@ impl MainPass {
     /// faces-only depth buffer; a workflow with no mask can use this instead.
     #[must_use]
     pub const fn all() -> Self {
-        Self { filter: PrimitiveFilter::All, clears: true }
+        Self { filter: PrimitiveFlags::all(), clears: true }
     }
 }
 
@@ -84,7 +63,7 @@ impl Pass<SceneFrames> for MainPass {
             .draw
             .all_batches()
             .iter()
-            .any(|b| self.filter.accepts(b.primitive_type))
+            .any(|b| self.filter.contains(b.primitive_type.into()))
     }
 
     fn execute(
@@ -210,7 +189,7 @@ impl Pass<SceneFrames> for OverlayPass {
             gpu,
             &mut render_pass,
             batches,
-            DrawOptions { depth_prepass: false, filter: PrimitiveFilter::All },
+            DrawOptions { depth_prepass: false, filter: PrimitiveFlags::all() },
         );
     }
 }

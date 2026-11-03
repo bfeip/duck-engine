@@ -13,7 +13,7 @@ mod silhouette;
 mod sub_geom_highlight;
 
 pub use flat_color::{FlatColorPass, FlatColorPassDesc};
-pub use main_pass::{MainPass, OverlayPass, PrimitiveFilter};
+pub use main_pass::{MainPass, OverlayPass};
 pub use outline_pass::{OutlineCompositePass, OutlineMaskPass};
 pub use silhouette::SilhouetteEdgesPass;
 pub use sub_geom_highlight::SubGeomHighlightPass;

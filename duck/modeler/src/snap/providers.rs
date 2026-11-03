@@ -8,7 +8,7 @@ use duck_engine_viewer::common::{
 use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::scene::resource::{
-    InstanceId, Mesh, Node, NodeId, PrimitiveType, SubGeometryKind, Topology,
+    InstanceId, Mesh, Node, NodeId, PrimitiveType, PrimitiveFlags, SubGeometryKind, Topology,
 };
 use opencascade::primitives::FaceType;
 
@@ -297,6 +297,17 @@ impl GeometrySnapQuery<'_> {
             * 2.0;
         world_tolerance * self.local_scale
     }
+
+    /// This query, with hidden primitive types masked off.
+    fn within(mut self, shown: PrimitiveFlags) -> Self {
+        let faces = shown.contains(PrimitiveFlags::TRIANGLES);
+        let lines = shown.contains(PrimitiveFlags::LINES);
+        self.want_faces &= faces;
+        self.want_face_centers &= faces;
+        self.want_edges &= lines;
+        self.want_midpoints &= lines;
+        self
+    }
 }
 
 impl<'a> PickQuery for GeometrySnapQuery<'a> {
@@ -351,6 +362,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
         node: &Node,
         _instance_id: InstanceId,
         world_transform: &Matrix4,
+        shown: PrimitiveFlags,
         results: &mut Vec<GeometryHit<'a>>,
     ) {
         // The one per-node filter the scene walk doesn't apply; it already
@@ -358,16 +370,17 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
         if self.exclude_nodes.contains(&node.id) {
             return;
         }
+        let query = self.within(shown);
 
-        if self.want_corners {
+        if query.want_corners {
             if let Some(topology) = mesh.topology() {
                 let mut corners = Vec::new();
-                collect_mesh_corners(mesh, topology, world_transform, &mut corners);
+                collect_mesh_corners(mesh, topology, shown, world_transform, &mut corners);
                 results.extend(corners.into_iter().map(GeometryHit::Snap));
             }
         }
 
-        if !self.want_faces && !self.want_face_centers && !self.want_edges && !self.want_midpoints {
+        if !query.want_faces && !query.want_face_centers && !query.want_edges && !query.want_midpoints {
             return;
         }
         // Both narrow phases run in this mesh's local space (the ray is already
@@ -375,7 +388,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
         // world.
         let index = mesh.spatial_index();
 
-        if self.want_faces || self.want_face_centers {
+        if query.want_faces || query.want_face_centers {
             // Nearest ray–triangle hit on this mesh; `GeometrySnap::collect`
             // picks the nearest across all meshes.
             if let Some(hit) = index.nearest_triangle(mesh, &self.ray) {
@@ -394,7 +407,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
                     let face = self
                         .document
                         .part_at(node.id)
-                        .filter(|_| self.want_face_centers)
+                        .filter(|_| query.want_face_centers)
                         .and_then(|part| {
                             let triangle = hit.triangle_index as u32;
                             let index = mesh.sub_geometry_for_primitive(SubGeometryKind::Face, triangle)?;
@@ -410,7 +423,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
             }
         }
 
-        if self.want_edges || self.want_midpoints {
+        if query.want_edges || query.want_midpoints {
             // Bounded by the pixel tolerance: any segment farther from the ray
             // can never rank, and the index skips subtrees outside the bound.
             // An edge's midpoint lies on (or within tessellation deflection of)
@@ -419,10 +432,10 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
             let local_tolerance = self.local_edge_tolerance(mesh, world_transform);
             let mut near_edges = Vec::new();
             index.for_each_segment_within(mesh, &self.ray, local_tolerance, |i, approach| {
-                if self.want_midpoints {
+                if query.want_midpoints {
                     near_edges.extend(mesh.sub_geometry_for_primitive(SubGeometryKind::Edge, i as u32));
                 }
-                if !self.want_edges {
+                if !query.want_edges {
                     return;
                 }
                 let Some([v0, v1]) = mesh.segment(i) else { return };
@@ -468,12 +481,19 @@ fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Snap>) {
     }
 }
 
-/// Extracts a mesh's B-rep corner vertices into `out` (in world space).
+/// Extracts a mesh's B-rep corner vertices into `out` (in world space), from
+/// `shown` primitives only.
 ///
 /// Prefers explicit point topology when present; otherwise derives corners from
 /// edge-range endpoints — the first/last vertex of each edge is its B-rep vertex,
 /// while intermediate curve-approximation points are not corners.
-fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4, out: &mut Vec<Snap>) {
+fn collect_mesh_corners(
+    mesh: &Mesh,
+    topology: &Topology,
+    shown: PrimitiveFlags,
+    world: &Matrix4,
+    out: &mut Vec<Snap>,
+) {
     let vertices = mesh.vertices();
     let mut push_corner = |local: [f32; 3]| {
         let position = transform_point(world, array_to_point3(local));
@@ -485,6 +505,9 @@ fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4, out: 
     };
 
     if !topology.pointset_ranges.is_empty() {
+        if !shown.contains(PrimitiveFlags::POINTS) {
+            return;
+        }
         // TODO: Only works on first point primitive. Not a big deal right now but...
         if let Some(points) = mesh
             .primitives()
@@ -506,6 +529,9 @@ fn collect_mesh_corners(mesh: &Mesh, topology: &Topology, world: &Matrix4, out: 
         return;
     }
 
+    if !shown.contains(PrimitiveFlags::LINES) {
+        return;
+    }
     // TODO: Only works on first line primitive. Not a big deal right now but...
     let Some(lines) = mesh
         .primitives()
@@ -725,7 +751,7 @@ mod tests {
         let world = Matrix4::from_translation(Vector3::new(10.0, 0.0, 0.0));
 
         let mut snaps = Vec::new();
-        collect_mesh_corners(&mesh, &topology, &world, &mut snaps);
+        collect_mesh_corners(&mesh, &topology, PrimitiveFlags::all(), &world, &mut snaps);
 
         assert_eq!(snaps.len(), 2);
         assert!(snaps.iter().any(|s| close(s.position, Point3::new(11.0, 2.0, 3.0))));

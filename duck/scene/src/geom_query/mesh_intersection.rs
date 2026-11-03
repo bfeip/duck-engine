@@ -1,7 +1,7 @@
 use duck_engine_common::{array_to_point3, InnerSpace, Point3, Real};
 
 use crate::common::{ConvexPolyhedron, Ray};
-use crate::resource::{Mesh, PrimitiveType, SubGeometryKind};
+use crate::resource::{Mesh, PrimitiveType, PrimitiveFlags, SubGeometryKind};
 
 /// Result of a ray-triangle intersection test in local mesh space.
 #[derive(Debug, Clone)]
@@ -213,18 +213,21 @@ pub fn intersect_ray_with_points(mesh: &Mesh, ray: &Ray, tolerance: Real) -> Vec
     hits
 }
 
-/// Tests a convex volume against all triangles, line segments and points in a
-/// mesh.
+/// Tests a convex volume against a mesh's triangles, line segments and points,
+/// those of the types in `primitives`.
 ///
-/// The volume should be in local mesh space. Returns where each primitive lies
-/// relative to the volume, or `None` if nothing touches it. `thorough` enables
-/// more accurate but slower edge-triangle intersection tests, which catch a
-/// volume passing through a triangle's interior.
+/// The volume should be in local mesh space. Returns where each tested
+/// primitive lies relative to the volume, the lists of untested types left
+/// empty, or `None` if nothing touches it. `thorough` enables more accurate but
+/// slower edge-triangle intersection tests, which catch a volume passing
+/// through a triangle's interior.
 pub fn intersect_volume(
     mesh: &Mesh,
     volume: &ConvexPolyhedron,
     thorough: bool,
+    primitives: PrimitiveFlags,
 ) -> Option<MeshVolumeHit> {
+    let tests = |primitive_type: PrimitiveType| primitives.contains(primitive_type.into());
     // The whole mesh first, by its bounds.
     let bounds = mesh.bounding()?;
     if !volume.intersects_aabb(&bounds) {
@@ -232,6 +235,9 @@ pub fn intersect_volume(
     }
     if volume.contains_aabb(&bounds) {
         let inside = |primitive_type: PrimitiveType| {
+            if !tests(primitive_type) {
+                return Vec::new();
+            }
             let count = mesh.index_count(primitive_type) / primitive_type.indices_per_primitive();
             vec![Containment::Inside; count as usize]
         };
@@ -249,28 +255,34 @@ pub fn intersect_volume(
         (false, false) => Containment::Outside,
     };
 
-    let triangles = mesh
-        .triangles()
-        .map(|[v0, v1, v2]| {
-            let [p0, p1, p2] = [v0, v1, v2].map(|v| array_to_point3(v.position));
-            let inside = volume.contains_triangle(p0, p1, p2);
-            classify(inside, !inside && volume.intersects_triangle(p0, p1, p2, thorough))
-        })
-        .collect();
-    let segments = mesh
-        .segments()
-        .map(|[v0, v1]| {
-            let [p0, p1] = [v0, v1].map(|v| array_to_point3(v.position));
-            let inside = volume.contains_segment(p0, p1);
-            classify(inside, !inside && volume.intersects_segment(p0, p1))
-        })
-        .collect();
-    let points = mesh
-        .points()
-        .map(|v| classify(volume.contains_point(array_to_point3(v.position)), false))
-        .collect();
+    let mut hit = MeshVolumeHit { triangles: Vec::new(), segments: Vec::new(), points: Vec::new() };
+    if tests(PrimitiveType::TriangleList) {
+        hit.triangles = mesh
+            .triangles()
+            .map(|[v0, v1, v2]| {
+                let [p0, p1, p2] = [v0, v1, v2].map(|v| array_to_point3(v.position));
+                let inside = volume.contains_triangle(p0, p1, p2);
+                classify(inside, !inside && volume.intersects_triangle(p0, p1, p2, thorough))
+            })
+            .collect();
+    }
+    if tests(PrimitiveType::LineList) {
+        hit.segments = mesh
+            .segments()
+            .map(|[v0, v1]| {
+                let [p0, p1] = [v0, v1].map(|v| array_to_point3(v.position));
+                let inside = volume.contains_segment(p0, p1);
+                classify(inside, !inside && volume.intersects_segment(p0, p1))
+            })
+            .collect();
+    }
+    if tests(PrimitiveType::PointList) {
+        hit.points = mesh
+            .points()
+            .map(|v| classify(volume.contains_point(array_to_point3(v.position)), false))
+            .collect();
+    }
 
-    let hit = MeshVolumeHit { triangles, segments, points };
     (hit.containment() != Containment::Outside).then_some(hit)
 }
 
@@ -279,7 +291,7 @@ mod tests {
     use duck_engine_common::{Point3, Vector3};
 
     use crate::common::{Aabb, ConvexPolyhedron, Ray};
-    use crate::resource::{Mesh, MeshPrimitive, PrimitiveType, SubGeometryKind, Vertex};
+    use crate::resource::{Mesh, MeshPrimitive, PrimitiveType, PrimitiveFlags, SubGeometryKind, Vertex};
 
     use super::{intersect_ray_with_lines, intersect_ray_with_points, intersect_volume, Containment};
 
@@ -460,7 +472,7 @@ mod tests {
                 make_vertex(3.0, 0.0, 0.0),
             ],
         );
-        let result = intersect_volume(&mesh, &unit_box_volume(), false).unwrap();
+        let result = intersect_volume(&mesh, &unit_box_volume(), false, PrimitiveFlags::all()).unwrap();
         assert_eq!(result.segments, [Inside, Crossing, Outside]);
         assert_eq!(result.containment(), Crossing);
     }
@@ -471,7 +483,7 @@ mod tests {
             &[(0, 1)],
             vec![make_vertex(2.0, 0.0, 0.0), make_vertex(3.0, 0.0, 0.0)],
         );
-        let result = intersect_volume(&mesh, &unit_box_volume(), false);
+        let result = intersect_volume(&mesh, &unit_box_volume(), false, PrimitiveFlags::all());
         assert!(result.is_none());
     }
 
@@ -479,7 +491,7 @@ mod tests {
     fn volume_classifies_points() {
         let mesh =
             make_point_mesh(vec![make_vertex(0.0, 0.0, 0.0), make_vertex(2.0, 0.0, 0.0)]);
-        let result = intersect_volume(&mesh, &unit_box_volume(), false).unwrap();
+        let result = intersect_volume(&mesh, &unit_box_volume(), false, PrimitiveFlags::all()).unwrap();
         assert_eq!(result.points, [Inside, Outside]);
         assert!(result.triangles.is_empty() && result.segments.is_empty());
     }
@@ -494,7 +506,7 @@ mod tests {
             make_vertex(5.0, 0.0, 0.0),
             make_vertex(0.0, 5.0, 0.0),
         ]);
-        let result = intersect_volume(&mesh, &unit_box_volume(), false).unwrap();
+        let result = intersect_volume(&mesh, &unit_box_volume(), false, PrimitiveFlags::all()).unwrap();
         assert_eq!(result.triangles, [Inside, Crossing]);
         assert_eq!(result.of_kind(SubGeometryKind::Face), [Inside, Crossing]);
     }
@@ -514,10 +526,45 @@ mod tests {
                 MeshPrimitive { primitive_type: PrimitiveType::PointList, indices: vec![3] },
             ],
         );
-        let result = intersect_volume(&mesh, &unit_box_volume(), false).unwrap();
+        let result = intersect_volume(&mesh, &unit_box_volume(), false, PrimitiveFlags::all()).unwrap();
         assert_eq!(result.triangles, [Inside]);
         assert_eq!(result.segments, [Inside, Inside]);
         assert_eq!(result.points, [Inside]);
+    }
+
+    #[test]
+    fn untested_types_are_left_out() {
+        let mesh = Mesh::from_raw(
+            vec![
+                make_vertex(0.0, 0.0, 0.0),
+                make_vertex(0.5, 0.0, 0.0),
+                make_vertex(0.0, 0.5, 0.0),
+                // Out past the volume, so the mesh is not wholly inside it.
+                make_vertex(3.0, 0.0, 0.0),
+            ],
+            vec![
+                MeshPrimitive { primitive_type: PrimitiveType::TriangleList, indices: vec![0, 1, 2] },
+                MeshPrimitive { primitive_type: PrimitiveType::LineList, indices: vec![0, 1, 1, 3] },
+            ],
+        );
+        let lines = intersect_volume(&mesh, &unit_box_volume(), false, PrimitiveFlags::LINES).unwrap();
+        assert!(lines.triangles.is_empty());
+        assert_eq!(lines.segments, [Inside, Crossing]);
+
+        // A mesh inside the volume leaves them out too.
+        let inside = Mesh::from_raw(
+            mesh.vertices()[..3].to_vec(),
+            vec![
+                MeshPrimitive { primitive_type: PrimitiveType::TriangleList, indices: vec![0, 1, 2] },
+                MeshPrimitive { primitive_type: PrimitiveType::LineList, indices: vec![0, 1] },
+            ],
+        );
+        let faces = intersect_volume(&inside, &unit_box_volume(), false, PrimitiveFlags::TRIANGLES).unwrap();
+        assert_eq!(faces.triangles, [Inside]);
+        assert!(faces.segments.is_empty());
+
+        // Nothing tested touches it.
+        assert!(intersect_volume(&mesh, &unit_box_volume(), false, PrimitiveFlags::POINTS).is_none());
     }
 
     #[test]
@@ -527,7 +574,7 @@ mod tests {
             make_vertex(3.0, 0.0, 0.0),
             make_vertex(2.0, 1.0, 0.0),
         ]);
-        assert!(intersect_volume(&mesh, &unit_box_volume(), true).is_none());
+        assert!(intersect_volume(&mesh, &unit_box_volume(), true, PrimitiveFlags::all()).is_none());
     }
 
     /// A volume inside a triangle's interior, clear of its vertices and edges,
@@ -539,8 +586,8 @@ mod tests {
             make_vertex(10.0, -10.0, 0.0),
             make_vertex(0.0, 10.0, 0.0),
         ]);
-        assert!(intersect_volume(&mesh, &unit_box_volume(), false).is_none());
-        let result = intersect_volume(&mesh, &unit_box_volume(), true).unwrap();
+        assert!(intersect_volume(&mesh, &unit_box_volume(), false, PrimitiveFlags::all()).is_none());
+        let result = intersect_volume(&mesh, &unit_box_volume(), true, PrimitiveFlags::all()).unwrap();
         assert_eq!(result.triangles, [Crossing]);
     }
 }

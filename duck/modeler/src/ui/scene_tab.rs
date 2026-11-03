@@ -1,13 +1,15 @@
 //! The scene tab: settings that belong to the scene rather than any one part —
-//! display units, camera projection, construction plane, grid, and snapping.
+//! display units, camera projection, construction plane, grid, which
+//! primitives bodies show, and snapping.
 
 use duck_engine_viewer::common::{
     EuclideanSpace, InnerSpace, LengthDisplay, LengthUnit, Plane, Point3, Real, Vector3,
 };
+use duck_engine_viewer::scene::resource::PrimitiveFlags;
 use duck_engine_viewer::scene::{PositionedCamera, Projection};
 
 use crate::construction::ConstructionOptions;
-use crate::document::DOCUMENT_UNITS;
+use crate::document::{Document, DOCUMENT_UNITS};
 use crate::snap::SnapFlags;
 use crate::ui::length_value;
 use crate::AppAction;
@@ -44,6 +46,7 @@ impl SceneTab {
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
+        document: &mut Document,
         camera: &mut PositionedCamera,
         construction: &mut ConstructionOptions,
         actions: &mut Vec<AppAction>,
@@ -72,6 +75,10 @@ impl SceneTab {
                     actions.push(AppAction::ConstructionChanged);
                 }
             });
+
+        egui::CollapsingHeader::new("Display")
+            .default_open(true)
+            .show(ui, |ui| display_ui(ui, document));
 
         egui::CollapsingHeader::new("Snap")
             .default_open(true)
@@ -253,6 +260,21 @@ fn grid_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
     });
 
     changed
+}
+
+/// Which primitives bodies show. Free geometry always shows whole.
+fn display_ui(ui: &mut egui::Ui, document: &mut Document) {
+    let mut hidden = document.hidden_primitives();
+    let toggles = [("Show faces", PrimitiveFlags::TRIANGLES), ("Show edges", PrimitiveFlags::LINES)];
+    for (label, primitives) in toggles {
+        let mut shown = !hidden.contains(primitives);
+        if ui.checkbox(&mut shown, label).changed() {
+            hidden.set(primitives, !shown);
+        }
+    }
+    if hidden != document.hidden_primitives() {
+        document.set_hidden_primitives(hidden);
+    }
 }
 
 /// Diagnostic toggles. Returns true when existing parts must be re-tessellated.

@@ -7,7 +7,7 @@ use crate::geom_query::{is_visible_along, pick_all_from_ray, RayPickQuery, RayPi
 use crate::input::{ElementState, Key, Modifiers, MouseButton, NamedKey};
 use crate::operator::Operator;
 use crate::scene::common::{Ray, Real};
-use crate::scene::resource::{NodeId, SubGeometryElement, SubGeometryKind};
+use crate::scene::resource::{NodeId, PrimitiveFlags, SubGeometryElement, SubGeometryKind};
 use crate::scene::Scene;
 use crate::selection::{SelectionItem, SelectionManager};
 use crate::ScreenOverlay;
@@ -59,6 +59,15 @@ impl SelectionKinds {
     pub fn sub_geometry() -> Self {
         Self::FACE | Self::EDGE | Self::POINT
     }
+
+    /// The primitive types the sub-geometry kinds among these are built from.
+    pub fn primitive_types(self) -> PrimitiveFlags {
+        SubGeometryKind::ALL
+            .into_iter()
+            .filter(|&kind| self.contains(kind.into()))
+            .map(|kind| PrimitiveFlags::from(kind.primitive_type()))
+            .collect()
+    }
 }
 
 impl From<SubGeometryKind> for SelectionKinds {
@@ -94,24 +103,20 @@ impl Default for SelectionMode {
 }
 
 impl SelectionMode {
-    /// Which primitive types the ray query should test, as `(faces, lines, points)`.
-    fn query_primitives(&self) -> (bool, bool, bool) {
+    /// Which primitive types the ray query should test.
+    fn query_primitives(&self) -> PrimitiveFlags {
         let kinds = match self {
             // Node and node-fallback both need *some* hit to obtain a node id, so
             // query everything.
-            SelectionMode::Node => return (true, true, true),
+            SelectionMode::Node => return PrimitiveFlags::all(),
             SelectionMode::SubGeometry(k) | SelectionMode::Progressive(k) => *k,
         };
         let sub = kinds & SelectionKinds::sub_geometry();
         if sub.is_empty() {
             // Only a node fallback is requested — query everything to get a node hit.
-            (true, true, true)
+            PrimitiveFlags::all()
         } else {
-            (
-                sub.contains(SelectionKinds::FACE),
-                sub.contains(SelectionKinds::EDGE),
-                sub.contains(SelectionKinds::POINT),
-            )
+            sub.primitive_types()
         }
     }
 }
@@ -184,14 +189,8 @@ impl SelectionOperator {
         let pixel_size = camera.world_size_per_pixel(camera_distance, ctx.size.1);
         let tie = TIE_PX * pixel_size;
 
-        let (pick_faces, pick_lines, pick_points) = self.mode.query_primitives();
-        let query = RayPickQuery::for_kinds(
-            ray,
-            PICK_RADIUS_PX * pixel_size,
-            pick_faces,
-            pick_lines,
-            pick_points,
-        );
+        let query =
+            RayPickQuery::new(ray, PICK_RADIUS_PX * pixel_size, self.mode.query_primitives());
         let results = pick_all_from_ray(&query, &ctx.scene);
 
         match self.mode {

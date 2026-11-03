@@ -2,7 +2,9 @@ use duck_engine_common::{Matrix4, SquareMatrix};
 
 use crate::common::Aabb;
 use crate::{PositionedCamera, Scene, SceneData};
-use crate::resource::{DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId, Visibility};
+use crate::resource::{
+    DisplayBehavior, InstanceId, Mesh, Node, NodeFlags, NodeId, PrimitiveFlags, Visibility,
+};
 
 /// A query that can pick objects by traversing the scene tree.
 ///
@@ -36,6 +38,7 @@ pub trait PickQuery {
     /// * `node` - The node being tested
     /// * `instance_id` - ID of the instance being tested
     /// * `world_transform` - The node's world transform (for result computation)
+    /// * `shown` - The primitive types the node draws; the rest must not be hit
     /// * `results` - Vector to push results into
     fn collect_mesh_hits(
         &self,
@@ -43,6 +46,7 @@ pub trait PickQuery {
         node: &Node,
         instance_id: InstanceId,
         world_transform: &Matrix4,
+        shown: PrimitiveFlags,
         results: &mut Vec<Self::Result>,
     );
 }
@@ -141,7 +145,8 @@ fn pick_node<Q: PickQuery>(
     if let Some(instance_id) = node.instance()
         && let Some(transform) = pick_transform(scene, node_id, display, view)
     {
-        collect_instance_hits(query, node, instance_id, scene, &transform, results);
+        let shown = display.shown_primitives();
+        collect_instance_hits(query, node, instance_id, scene, &transform, shown, results);
     }
 
     // Recurse to children. Missing child nodes are silently skipped.
@@ -173,21 +178,22 @@ fn pick_transform(
 }
 
 /// Narrow phase: transforms the query into `transform`'s local space and collects
-/// the node instance's mesh hits. A no-op if the instance or its mesh is missing,
-/// or if `transform` is singular.
+/// the node instance's mesh hits among its `shown` primitives. A no-op if the
+/// instance or its mesh is missing, or if `transform` is singular.
 fn collect_instance_hits<Q: PickQuery>(
     query: &Q,
     node: &Node,
     instance_id: InstanceId,
     scene: &SceneData,
     transform: &Matrix4,
+    shown: PrimitiveFlags,
     results: &mut Vec<Q::Result>,
 ) {
     let Some(instance) = scene.get_instance(instance_id) else { return };
     let Some(mesh) = scene.get_mesh(instance.mesh()) else { return };
     let Some(world_to_local) = transform.invert() else { return };
     let local_query = query.transform(&world_to_local);
-    local_query.collect_mesh_hits(mesh, node, instance_id, transform, results);
+    local_query.collect_mesh_hits(mesh, node, instance_id, transform, shown, results);
 }
 
 #[cfg(test)]
@@ -216,6 +222,7 @@ mod tests {
             node: &Node,
             _instance_id: InstanceId,
             _world_transform: &Matrix4,
+            _shown: PrimitiveFlags,
             results: &mut Vec<NodeId>,
         ) {
             results.push(node.id);

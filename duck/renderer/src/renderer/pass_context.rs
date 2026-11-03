@@ -1,12 +1,11 @@
 use crate::abi;
 use crate::render_core::{FrameFamily, GenCache, Gpu, Pass, Workflow};
-use crate::scene::resource::{AlphaMode, MeshId};
+use crate::scene::resource::{AlphaMode, MeshId, PrimitiveFlags};
 use crate::scene::{Projection, SceneData, SceneProperties};
 
 use super::batching::{BatchMaterial, DrawBatch, DrawData};
 use super::mesh::MeshGpuResources;
 use super::material_cache::MaterialCache;
-use super::pass::PrimitiveFilter;
 use super::pipeline::{MaterialPipelineCache, PipelineCacheKey};
 use super::scene_bindings::SceneBindingRefs;
 use super::surface_config::SurfaceConfig;
@@ -84,14 +83,14 @@ pub struct DrawOptions {
     /// opaque portions establish correct depth occlusion before the main draw
     /// loop renders them with blending.
     pub depth_prepass: bool,
-    /// Only batches of this primitive kind are drawn; the rest are left for
+    /// Only batches of these primitive types are drawn; the rest are left for
     /// another pass.
-    pub filter: PrimitiveFilter,
+    pub filter: PrimitiveFlags,
 }
 
 impl Default for DrawOptions {
     fn default() -> Self {
-        Self { depth_prepass: true, filter: PrimitiveFilter::All }
+        Self { depth_prepass: true, filter: PrimitiveFlags::all() }
     }
 }
 
@@ -157,7 +156,7 @@ impl SceneFrame<'_> {
             // so opaque portions of blend materials establish correct depth occlusion.
             let mut prepass_pipeline_key: Option<PipelineCacheKey> = None;
             for batch in batches {
-                if !filter.accepts(batch.primitive_type) {
+                if !filter.contains(batch.primitive_type.into()) {
                     continue;
                 }
 
@@ -203,7 +202,7 @@ impl SceneFrame<'_> {
         // Main draw loop
         let mut current_pipeline_key: Option<PipelineCacheKey> = None;
         for batch in batches {
-            if !filter.accepts(batch.primitive_type) {
+            if !filter.contains(batch.primitive_type.into()) {
                 continue;
             }
 

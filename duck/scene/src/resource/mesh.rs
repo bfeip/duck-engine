@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use bitflags::bitflags;
 use duck_engine_common::{
     array_to_point3, array_to_vec3, point3_to_array, transform_point, vec3_to_array, InnerSpace,
     Matrix4, Point3, Vector3,
@@ -33,6 +34,10 @@ pub enum PrimitiveType {
 }
 
 impl PrimitiveType {
+    /// All primitive types, for iterating over every type.
+    pub const ALL: [PrimitiveType; 3] =
+        [PrimitiveType::TriangleList, PrimitiveType::LineList, PrimitiveType::PointList];
+
     /// Number of vertex indices consumed by one primitive of this type:
     /// 3 for triangles, 2 for line segments, 1 for points.
     pub fn indices_per_primitive(self) -> u32 {
@@ -40,6 +45,28 @@ impl PrimitiveType {
             PrimitiveType::TriangleList => 3,
             PrimitiveType::LineList => 2,
             PrimitiveType::PointList => 1,
+        }
+    }
+}
+
+bitflags! {
+    /// A set of [`PrimitiveType`]s.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde", serde(transparent))]
+    pub struct PrimitiveFlags: u8 {
+        const TRIANGLES = 1 << 0;
+        const LINES = 1 << 1;
+        const POINTS = 1 << 2;
+    }
+}
+
+impl From<PrimitiveType> for PrimitiveFlags {
+    fn from(primitive_type: PrimitiveType) -> Self {
+        match primitive_type {
+            PrimitiveType::TriangleList => PrimitiveFlags::TRIANGLES,
+            PrimitiveType::LineList => PrimitiveFlags::LINES,
+            PrimitiveType::PointList => PrimitiveFlags::POINTS,
         }
     }
 }

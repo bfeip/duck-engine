@@ -221,7 +221,7 @@ impl Operator for AxisTriadOperator {
 
         let ray =
             ctx.camera.ray_from_screen_point(position.0, position.1, ctx.size.0, ctx.size.1);
-        let query = RayPickQuery::for_kinds(ray, 0.0, true, false, false);
+        let query = RayPickQuery::faces(ray);
         let results = pick_all_from_ray(&query, &ctx.scene);
         let Some(hit) = results.first() else { return false };
         let Some(handle) = self.handles.iter().find(|h| h.nodes.contains(&hit.node_id)) else {

@@ -451,10 +451,13 @@ impl<'a> ViewerState<'a> {
 
     /// Replaces the document with `document`, drawn in its own scene, restores
     /// `session` around it, and makes `file` the one Save writes to.
-    fn install_document(&mut self, document: Document, session: io::Session, file: Option<PathBuf>) {
+    fn install_document(&mut self, mut document: Document, session: io::Session, file: Option<PathBuf>) {
         // The active tool's previews live in the outgoing scene, and tearing
         // them down locks the document.
         self.tools.discard_active();
+        // Bodies keep showing what they showed.
+        let hidden = self.document.lock().unwrap().hidden_primitives();
+        document.set_hidden_primitives(hidden);
         let scene = document.scene().clone();
         // In place: the tools hold the same document.
         *self.document.lock().unwrap() = document;

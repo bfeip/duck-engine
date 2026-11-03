@@ -2,7 +2,7 @@ use duck_engine_common::Matrix4;
 
 use crate::common::{Aabb, ConvexPolyhedron};
 use crate::Scene;
-use crate::resource::{InstanceId, Mesh, Node, NodeId};
+use crate::resource::{InstanceId, Mesh, Node, NodeId, PrimitiveFlags};
 
 use super::mesh_intersection::{self, MeshVolumeHit};
 use super::pick_query::{pick_all, PickQuery};
@@ -17,7 +17,8 @@ pub struct VolumePickResult {
     /// The model matrix the instance was tested at, taking its mesh's local
     /// space to world space.
     pub transform: Matrix4,
-    /// Where each of the mesh's primitives lies relative to the volume.
+    /// Where each of the mesh's primitives the node shows lies relative to the
+    /// volume.
     pub hit: MeshVolumeHit,
 }
 
@@ -57,10 +58,11 @@ impl PickQuery for VolumePickQuery {
         node: &Node,
         instance_id: InstanceId,
         world_transform: &Matrix4,
+        shown: PrimitiveFlags,
         results: &mut Vec<Self::Result>,
     ) {
         // Test against mesh (volume is already in local space)
-        if let Some(hit) = mesh_intersection::intersect_volume(mesh, &self.volume, self.thorough) {
+        if let Some(hit) = mesh_intersection::intersect_volume(mesh, &self.volume, self.thorough, shown) {
             results.push(VolumePickResult {
                 node_id: node.id,
                 instance_id,

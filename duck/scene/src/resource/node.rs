@@ -1107,6 +1107,7 @@ mod tests {
             screen_size: Some(16.0),
             screen_facing: true,
             layer: RenderLayer::Overlay,
+            ..Default::default()
         });
 
         // Display behavior is resolved by the renderer and applies camera-side,

@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 
 use anyhow::{Context, Result};
 use duck_engine_scene::resource::{
-    FaceMaterialHandle, FaceMaterialId, Id, NodeHandle, NodeId, Visibility,
+    FaceMaterialHandle, FaceMaterialId, Id, NodeHandle, NodeId, PrimitiveFlags, Visibility,
 };
 use duck_engine_scene::Scene;
 use duck_engine_scene::cad::{
@@ -341,6 +341,8 @@ pub struct Document {
     scene: Scene,
     history: History,
     materials: MaterialLibrary,
+    /// Primitive types the bodies hide.
+    hidden_primitives: PrimitiveFlags,
     generation: u64,
 }
 
@@ -354,6 +356,7 @@ impl Document {
             scene,
             history: History::default(),
             materials: MaterialLibrary::default(),
+            hidden_primitives: PrimitiveFlags::empty(),
             generation: 0,
         }
     }
@@ -434,6 +437,7 @@ impl Document {
         self.parts.push(CadPart { id, name, elements, frame, options: options.clone() });
         self.part_to_node.insert(id, node);
         self.node_to_part.insert(node, id);
+        self.style_part(self.parts.last().expect("just pushed"));
         self.generation += 1;
         if let Some(snapshot) = self.snapshot_part(id) {
             let label = format!("Add {}", self.get_part(id).unwrap().name);
@@ -576,6 +580,38 @@ impl Document {
     pub fn set_part_visibility(&mut self, id: PartId, visibility: Visibility) {
         if let Some(node) = self.node_for_part(id) {
             self.scene.set_node_visibility(node, visibility);
+        }
+    }
+
+    /// Primitive types the bodies hide.
+    pub fn hidden_primitives(&self) -> PrimitiveFlags {
+        self.hidden_primitives
+    }
+
+    /// Hides the `hidden` primitive types of every body, present and to come:
+    /// they are neither drawn nor picked. Free geometry shows whole.
+    ///
+    /// A display change only: nothing is recorded on the undo stack.
+    pub fn set_hidden_primitives(&mut self, hidden: PrimitiveFlags) {
+        self.hidden_primitives = hidden;
+        for part in &self.parts {
+            self.style_part(part);
+        }
+    }
+
+    /// Hides the document's hidden primitive types on `part`'s node if it is a
+    /// body, and none if it is free geometry.
+    fn style_part(&self, part: &CadPart) {
+        let Some(node) = self.node_for_part(part.id) else { return };
+        let hidden = match classify_shape(part.shape()) {
+            GeometryClass::Solid => self.hidden_primitives,
+            GeometryClass::Free => PrimitiveFlags::empty(),
+        };
+        let mut scene = self.scene.lock();
+        let Some(mut display) = scene.get_node(node).map(|node| node.display()) else { return };
+        if display.hidden_primitives != hidden {
+            display.hidden_primitives = hidden;
+            scene.set_node_display(node, display);
         }
     }
 
@@ -844,6 +880,8 @@ impl Document {
         });
         self.part_to_node.insert(snapshot.part, node);
         self.node_to_part.insert(node, snapshot.part);
+        // The style may have changed while it was removed.
+        self.style_part(self.parts.last().expect("just pushed"));
         self.generation += 1;
         // The node may carry a name from before a rename that this resurrection
         // predates; the snapshot is the authority.
@@ -867,6 +905,8 @@ impl Document {
         let cad_part = self.get_part_mut(part).context("reshape: part not found")?;
         cad_part.elements = elements;
         cad_part.options = options.clone();
+        // A new shape may be of another class.
+        self.style_part(self.get_part(part).context("reshape: part not found")?);
         // Captured options carry a library material's finish from capture time.
         self.refresh_templates(options.face_material.id);
         self.generation += 1;
@@ -2058,5 +2098,65 @@ mod tests {
         assert_eq!(loaded.material_usage().get(&steel), Some(&1));
         assert_eq!(loaded.material_finish(steel), Some(finish));
         assert_part_color(&loaded, parts[0], RED);
+    }
+
+    /// The primitive types `node` hides.
+    fn hidden_on(doc: &Document, node: NodeId) -> PrimitiveFlags {
+        doc.scene().lock().get_node(node).unwrap().display().hidden_primitives
+    }
+
+    /// A triangular region, as free geometry.
+    fn add_sheet(doc: &mut Document) -> (PartId, NodeId) {
+        let shape = crate::testing::xy_region(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]);
+        let part = doc
+            .add_part("sheet", shape, Transform::IDENTITY, &CadTessellationOptions::default())
+            .expect("sheet tessellates");
+        (part, doc.node_for_part(part).expect("part has a node"))
+    }
+
+    #[test]
+    fn hidden_primitives_style_bodies_only() {
+        let (mut doc, _, body) = doc_with_box();
+        let (_, sheet) = add_sheet(&mut doc);
+
+        doc.set_hidden_primitives(PrimitiveFlags::LINES);
+        assert_eq!(doc.hidden_primitives(), PrimitiveFlags::LINES);
+        assert_eq!(hidden_on(&doc, body), PrimitiveFlags::LINES);
+        assert_eq!(hidden_on(&doc, sheet), PrimitiveFlags::empty());
+
+        // Bodies to come hide them too.
+        let later = doc
+            .add_part("later", Shape::cube(1.0), Transform::IDENTITY, &CadTessellationOptions::default())
+            .expect("cube tessellates");
+        let later = doc.node_for_part(later).expect("part has a node");
+        assert_eq!(hidden_on(&doc, later), PrimitiveFlags::LINES);
+
+        doc.set_hidden_primitives(PrimitiveFlags::empty());
+        assert_eq!(hidden_on(&doc, body), PrimitiveFlags::empty());
+        assert_eq!(hidden_on(&doc, later), PrimitiveFlags::empty());
+        assert!(doc.undo_label().is_some_and(|label| label.starts_with("Add")), "not an undo step");
+    }
+
+    #[test]
+    fn a_body_restored_by_undo_takes_the_current_style() {
+        let (mut doc, part, node) = doc_with_box();
+        doc.remove_part(part);
+        doc.set_hidden_primitives(PrimitiveFlags::TRIANGLES);
+
+        doc.undo().expect("undo succeeds");
+        assert_eq!(hidden_on(&doc, node), PrimitiveFlags::TRIANGLES);
+    }
+
+    #[test]
+    fn a_part_reshaped_across_classes_is_restyled() {
+        let mut doc = Document::new(Scene::default());
+        let (part, node) = add_sheet(&mut doc);
+        doc.set_hidden_primitives(PrimitiveFlags::LINES);
+
+        doc.reshape_part(part, Shape::cube(1.0), "Thicken").expect("reshape succeeds");
+        assert_eq!(hidden_on(&doc, node), PrimitiveFlags::LINES);
+
+        doc.undo().expect("undo succeeds");
+        assert_eq!(hidden_on(&doc, node), PrimitiveFlags::empty());
     }
 }

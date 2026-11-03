@@ -249,14 +249,10 @@ pub(crate) fn collect_draw_batches(
             continue;
         };
 
-        // Create a separate batch for each primitive type the mesh supports and
-        // for which the instance has a material assigned.
-        for primitive_type in [
-            PrimitiveType::TriangleList,
-            PrimitiveType::LineList,
-            PrimitiveType::PointList,
-        ] {
-            if !mesh.has_primitive_type(primitive_type) {
+        // Create a separate batch for each primitive type the mesh supports, the
+        // node shows, and the instance has a material assigned for.
+        for primitive_type in PrimitiveType::ALL {
+            if !mesh.has_primitive_type(primitive_type) || !inst_transform.display.shows(primitive_type) {
                 continue;
             }
 
@@ -1181,6 +1177,48 @@ mod tests {
         assert!(draw_data.has_node_highlights());
         let kinds: Vec<_> = draw_data.highlighted_batches().iter().map(|b| b.primitive_type).collect();
         assert_eq!(kinds, vec![PrimitiveType::LineList]);
+    }
+
+    /// Lines hidden on a parent leave its child's faces drawing alone.
+    #[test]
+    fn test_primitives_hidden_on_a_parent_are_not_batched() {
+        use crate::scene::resource::{
+            FaceMaterial, LineMaterial, Mesh, MeshPrimitive, PrimitiveFlags, Vertex,
+        };
+
+        let vertex = Vertex {
+            position: [0.0, 0.0, 0.0],
+            tex_coords: [0.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let mesh = Mesh::from_raw(
+            vec![vertex; 3],
+            vec![
+                MeshPrimitive { primitive_type: PrimitiveType::TriangleList, indices: vec![0, 1, 2] },
+                MeshPrimitive { primitive_type: PrimitiveType::LineList, indices: vec![0, 1] },
+            ],
+        );
+
+        let mut scene = SceneData::new();
+        let mesh_id = scene.add_mesh(mesh);
+        let face = scene.add_face_material(FaceMaterial::new());
+        let line = scene.add_line_material(LineMaterial::new(common::RgbaColor::BLACK));
+        let instance = Instance::new(mesh_id).with_face_material(face).with_line_material(line);
+        let child = scene
+            .add_instance_node(None, instance, None, common::Transform::IDENTITY, NodeFlags::NONE)
+            .unwrap()
+            .id();
+        let types = |scene: &SceneData| {
+            let batches = collect_draw_batches(scene, collect_instance_transforms(scene));
+            batches.iter().map(|b| b.primitive_type).collect::<Vec<_>>()
+        };
+        assert_eq!(types(&scene), [PrimitiveType::TriangleList, PrimitiveType::LineList]);
+
+        let parent = scene.add_default_node(None, None).unwrap().id();
+        scene.reparent_node(child, Some(parent)).unwrap();
+        let display = DisplayBehavior { hidden_primitives: PrimitiveFlags::LINES, ..Default::default() };
+        scene.set_node_display(parent, display);
+        assert_eq!(types(&scene), [PrimitiveType::TriangleList]);
     }
 
     /// Two instance nodes share the same mesh + material but differ in render

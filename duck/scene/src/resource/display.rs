@@ -1,9 +1,10 @@
 //! Per-node render-presentation behavior.
 //!
 //! [`DisplayBehavior`] groups the placement/presentation modifiers that affect
-//! *how* a node's geometry is drawn — distinct from the node's
-//! [`Instance`](super::Instance) (what it draws) and [`super::NodeFlags`]
-//! (non-visual scene-system semantics like selection, export, bounding).
+//! *how* a node's geometry is drawn, and which of its primitives draw at all —
+//! distinct from the node's [`Instance`](super::Instance) (what it draws) and
+//! [`super::NodeFlags`] (non-visual scene-system semantics like selection,
+//! export, bounding).
 //!
 //! These modifiers inherit down the subtree: setting a layer or screen-space
 //! flag on a group root applies to all descendants unless a descendant
@@ -16,6 +17,7 @@ use duck_engine_common::{
     EuclideanSpace, InnerSpace, Matrix4, Point3, Real, Vector3,
 };
 
+use super::{PrimitiveType, PrimitiveFlags};
 use crate::PositionedCamera;
 
 /// Which render layer / pass a node's geometry draws in.
@@ -50,6 +52,8 @@ pub struct DisplayBehavior {
     pub screen_facing: bool,
     /// Which render layer / pass this node draws in.
     pub layer: RenderLayer,
+    /// Primitive types neither drawn nor picked.
+    pub hidden_primitives: PrimitiveFlags,
 }
 
 impl DisplayBehavior {
@@ -59,9 +63,19 @@ impl DisplayBehavior {
         self.screen_size.is_some() || self.screen_facing
     }
 
+    /// The primitive types drawn and picked.
+    pub fn shown_primitives(&self) -> PrimitiveFlags {
+        PrimitiveFlags::all() - self.hidden_primitives
+    }
+
+    /// Whether primitives of `primitive_type` are drawn and picked.
+    pub fn shows(&self, primitive_type: PrimitiveType) -> bool {
+        self.shown_primitives().contains(primitive_type.into())
+    }
+
     /// Resolves a node's own behavior against the inherited (parent) behavior: a
     /// non-`Scene` layer or a set screen-space flag overrides downward, otherwise
-    /// the parent's value is carried.
+    /// the parent's value is carried. Hidden primitives accumulate.
     pub fn inherit(parent: DisplayBehavior, node: DisplayBehavior) -> DisplayBehavior {
         DisplayBehavior {
             // A node that opts into screen-sizing supplies its own size; otherwise
@@ -73,6 +87,7 @@ impl DisplayBehavior {
             } else {
                 parent.layer
             },
+            hidden_primitives: parent.hidden_primitives | node.hidden_primitives,
         }
     }
 
@@ -204,6 +219,22 @@ mod tests {
         // A child's own screen_size overrides the parent's.
         let overriding = DisplayBehavior { screen_size: Some(20.0), ..Default::default() };
         assert_eq!(DisplayBehavior::inherit(parent, overriding).screen_size, Some(20.0));
+    }
+
+    #[test]
+    fn inherit_accumulates_hidden_primitives() {
+        let parent =
+            DisplayBehavior { hidden_primitives: PrimitiveFlags::LINES, ..Default::default() };
+        let node =
+            DisplayBehavior { hidden_primitives: PrimitiveFlags::POINTS, ..Default::default() };
+        let child = DisplayBehavior::inherit(parent, node);
+        assert_eq!(child.hidden_primitives, PrimitiveFlags::LINES | PrimitiveFlags::POINTS);
+        assert_eq!(child.shown_primitives(), PrimitiveFlags::TRIANGLES);
+        assert!(child.shows(PrimitiveType::TriangleList));
+        assert!(!child.shows(PrimitiveType::LineList));
+
+        // The default hides nothing.
+        assert_eq!(DisplayBehavior::default().shown_primitives(), PrimitiveFlags::all());
     }
 
     #[test]

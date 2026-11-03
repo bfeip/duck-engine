@@ -2,7 +2,7 @@ use duck_engine_common::{transform_point, InnerSpace, Matrix4, Point3, Real};
 
 use crate::common::{Aabb, Ray};
 use crate::Scene;
-use crate::resource::{InstanceId, Mesh, Node, NodeId, SubGeometryKind};
+use crate::resource::{InstanceId, Mesh, Node, NodeId, PrimitiveFlags, SubGeometryKind};
 
 use super::mesh_intersection;
 use super::pick_query::{pick_all, pick_all_with_view, PickQuery, PickView};
@@ -90,15 +90,14 @@ pub struct RayPickResult {
 /// - [`RayPickQuery::lines`] for line-only picking.
 /// - [`RayPickQuery::points`] for point-only picking.
 /// - [`RayPickQuery::all`] to pick all primitive types.
-/// - [`RayPickQuery::for_kinds`] for an arbitrary combination.
+/// - [`RayPickQuery::new`] for an arbitrary combination.
 pub struct RayPickQuery {
     /// The ray in current coordinate space (may be transformed to local space)
     ray: Ray,
     /// The original ray in world space (for distance calculations)
     world_ray: Ray,
-    pick_faces: bool,
-    pick_lines: bool,
-    pick_points: bool,
+    /// The primitive types tested.
+    primitives: PrimitiveFlags,
     /// World-space tolerance for line and point picking
     line_tolerance: Real,
     /// Tolerance scaled to the current (possibly local) coordinate space
@@ -110,19 +109,11 @@ impl RayPickQuery {
     ///
     /// `tolerance` is the maximum world-space distance between the ray and a
     /// segment/point for it to be considered a hit (ignored for faces).
-    pub fn for_kinds(
-        ray: Ray,
-        tolerance: Real,
-        pick_faces: bool,
-        pick_lines: bool,
-        pick_points: bool,
-    ) -> Self {
+    pub fn new(ray: Ray, tolerance: Real, primitives: PrimitiveFlags) -> Self {
         Self {
             ray,
             world_ray: ray,
-            pick_faces,
-            pick_lines,
-            pick_points,
+            primitives,
             line_tolerance: tolerance,
             local_line_tolerance: tolerance,
         }
@@ -130,7 +121,7 @@ impl RayPickQuery {
 
     /// Creates a face-only query. Lines and points are ignored.
     pub fn faces(ray: Ray) -> Self {
-        Self::for_kinds(ray, 0.0, true, false, false)
+        Self::new(ray, 0.0, PrimitiveFlags::TRIANGLES)
     }
 
     /// Creates a line-only query. Triangles and points are ignored.
@@ -138,7 +129,7 @@ impl RayPickQuery {
     /// `tolerance` is the maximum world-space distance between the ray and a segment
     /// for the segment to be considered a hit.
     pub fn lines(ray: Ray, tolerance: Real) -> Self {
-        Self::for_kinds(ray, tolerance, false, true, false)
+        Self::new(ray, tolerance, PrimitiveFlags::LINES)
     }
 
     /// Creates a point-only query. Triangles and lines are ignored.
@@ -146,14 +137,14 @@ impl RayPickQuery {
     /// `tolerance` is the maximum world-space distance between the ray and a point
     /// for the point to be considered a hit.
     pub fn points(ray: Ray, tolerance: Real) -> Self {
-        Self::for_kinds(ray, tolerance, false, false, true)
+        Self::new(ray, tolerance, PrimitiveFlags::POINTS)
     }
 
     /// Creates a query that picks triangle faces, line segments, and points.
     ///
     /// `tolerance` is the maximum world-space distance for segment and point hits.
     pub fn all(ray: Ray, tolerance: Real) -> Self {
-        Self::for_kinds(ray, tolerance, true, true, true)
+        Self::new(ray, tolerance, PrimitiveFlags::all())
     }
 }
 
@@ -161,10 +152,12 @@ impl PickQuery for RayPickQuery {
     type Result = RayPickResult;
 
     fn might_intersect_bounds(&self, bounds: &Aabb) -> bool {
-        if self.pick_faces && bounds.intersects_ray(&self.ray).is_some() {
+        if self.primitives.contains(PrimitiveFlags::TRIANGLES)
+            && bounds.intersects_ray(&self.ray).is_some()
+        {
             return true;
         }
-        if self.pick_lines || self.pick_points {
+        if self.primitives.intersects(PrimitiveFlags::LINES | PrimitiveFlags::POINTS) {
             // Inflate bounds by the tolerance so segments/points near-but-outside
             // the AABB are not incorrectly culled during the broad phase.
             let t = self.local_line_tolerance;
@@ -190,9 +183,7 @@ impl PickQuery for RayPickQuery {
         Self {
             ray: self.ray.transform(matrix),
             world_ray: self.world_ray,
-            pick_faces: self.pick_faces,
-            pick_lines: self.pick_lines,
-            pick_points: self.pick_points,
+            primitives: self.primitives,
             line_tolerance: self.line_tolerance,
             local_line_tolerance: self.line_tolerance * scale,
         }
@@ -204,10 +195,12 @@ impl PickQuery for RayPickQuery {
         node: &Node,
         instance_id: InstanceId,
         world_transform: &Matrix4,
+        shown: PrimitiveFlags,
         results: &mut Vec<Self::Result>,
     ) {
         let node_id = node.id;
-        if self.pick_faces {
+        let primitives = self.primitives & shown;
+        if primitives.contains(PrimitiveFlags::TRIANGLES) {
             for mesh_hit in mesh_intersection::intersect_ray(mesh, &self.ray) {
                 let world_hit_point =
                     transform_point(world_transform, mesh_hit.hit_point);
@@ -225,7 +218,7 @@ impl PickQuery for RayPickQuery {
             }
         }
 
-        if self.pick_lines {
+        if primitives.contains(PrimitiveFlags::LINES) {
             for line_hit in
                 mesh_intersection::intersect_ray_with_lines(mesh, &self.ray, self.local_line_tolerance)
             {
@@ -254,7 +247,7 @@ impl PickQuery for RayPickQuery {
             }
         }
 
-        if self.pick_points {
+        if primitives.contains(PrimitiveFlags::POINTS) {
             for point_hit in
                 mesh_intersection::intersect_ray_with_points(mesh, &self.ray, self.local_line_tolerance)
             {
@@ -427,6 +420,59 @@ mod tests {
 
         let edge = segment_hit(&scene, ray);
         assert!(!is_visible_along(&scene, &ray, edge.hit_point, 0.01));
+    }
+
+    fn hide(scene: &Scene, node: NodeId, hidden_primitives: PrimitiveFlags) {
+        scene.set_node_display(node, DisplayBehavior { hidden_primitives, ..Default::default() });
+    }
+
+    #[test]
+    fn hidden_lines_are_not_picked() {
+        let scene = Scene::default();
+        let part = add_part(
+            &scene,
+            &[[[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]],
+            &[[[0.0, -1.0, 1.0], [0.0, 1.0, 1.0]]],
+        );
+        hide(&scene, part, PrimitiveFlags::LINES);
+        let ray = Ray::new(Point3::new(0.05, 0.0, 10.0), Vector3::new(0.0, 0.0, -1.0));
+
+        let hits = pick_all_from_ray(&RayPickQuery::all(ray, 0.1), &scene);
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|hit| matches!(hit.hit, RayHit::Triangle { .. })));
+    }
+
+    #[test]
+    fn primitives_hidden_on_a_parent_are_not_picked() {
+        let scene = Scene::default();
+        let part = add_part(
+            &scene,
+            &[[[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]],
+            &[[[0.0, -1.0, 1.0], [0.0, 1.0, 1.0]]],
+        );
+        let group = scene.add_node(None, None, Transform::IDENTITY, NodeFlags::NONE).unwrap().id();
+        scene.reparent_node(part, Some(group)).unwrap();
+        hide(&scene, group, PrimitiveFlags::TRIANGLES);
+        let ray = Ray::new(Point3::new(0.05, 0.0, 10.0), Vector3::new(0.0, 0.0, -1.0));
+
+        let hits = pick_all_from_ray(&RayPickQuery::all(ray, 0.1), &scene);
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|hit| matches!(hit.hit, RayHit::Segment { .. })));
+    }
+
+    #[test]
+    fn hidden_faces_hide_no_edges() {
+        let scene = Scene::default();
+        let part = add_part(
+            &scene,
+            &[[[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]],
+            &[[[0.0, -1.0, -1.0], [0.0, 1.0, -1.0]]],
+        );
+        hide(&scene, part, PrimitiveFlags::TRIANGLES);
+        let ray = Ray::new(Point3::new(0.05, 0.0, 10.0), Vector3::new(0.0, 0.0, -1.0));
+
+        let edge = segment_hit(&scene, ray);
+        assert!(is_visible_along(&scene, &ray, edge.hit_point, 0.01));
     }
 
     fn camera() -> PositionedCamera {

@@ -9,7 +9,7 @@
 //! 2. Describe what to pick with a [`RayPickQuery`]: [`RayPickQuery::faces`],
 //!    [`lines`](RayPickQuery::lines), [`points`](RayPickQuery::points) (the
 //!    latter two take a world-space tolerance), [`all`](RayPickQuery::all), or
-//!    [`for_kinds`](RayPickQuery::for_kinds) for an arbitrary combination.
+//!    [`new`](RayPickQuery::new) for an arbitrary combination.
 //! 3. Call [`pick_all_from_ray`]. Results come back sorted nearest-first as
 //!    [`RayPickResult`]s: the node and instance hit, the distance, the hit
 //!    point, and per-primitive detail in [`RayHit`].
@@ -30,6 +30,10 @@
 //! pick those where they appear on screen, use the `_with_view` variants
 //! ([`pick_all_from_ray_with_view`], [`pick_all_with_view`]) and pass a
 //! [`PickView`] describing the camera and viewport.
+//!
+//! Primitive types a node's display hides
+//! ([`DisplayBehavior::hidden_primitives`](crate::resource::DisplayBehavior::hidden_primitives))
+//! are never picked.
 //!
 //! # Lower layers
 //!
