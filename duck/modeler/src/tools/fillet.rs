@@ -1,7 +1,7 @@
 use anyhow::Result;
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
-    operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds, SelectionMode},
+    operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds},
     selection::SelectionManager,
 };
 use duck_engine_viewer::common::{LengthDisplay, Real};
@@ -77,7 +77,7 @@ impl Feature for Fillet {
     type Params = FilletParams;
 
     const TOOL: ToolInfo = ToolInfo { id: "fillet", icon: icons::FILLET, shortcut: Some('f') };
-    const SELECTS: SelectionMode = SelectionMode::SubGeometry(SelectionKinds::EDGE);
+    const SELECTS: SelectionKinds = SelectionKinds::EDGE;
     const LOCK: EditLock = EditLock::Part;
 
     fn select(&self, selection: &SelectionManager, locked: Option<NodeId>) -> Option<Selected<FilletTarget>> {

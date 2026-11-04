@@ -38,12 +38,14 @@ pub enum SelectionAction {
 }
 
 bitflags! {
-    /// The kinds of geometry a selection may resolve to. Used as a mask on the
-    /// non-`Node` [`SelectionMode`] variants to restrict what a click or an
-    /// area can select.
+    /// The kinds of geometry a click or an area may select.
+    ///
+    /// Sub-geometry kinds alone select their elements directly. With
+    /// [`NODE`](Self::NODE) among them, a click takes the node first and a
+    /// second click on it the other kinds, and an area takes whole nodes.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct SelectionKinds: u8 {
-        /// Whole nodes (also acts as the fallback when a hit has no topology mapping).
+        /// Whole nodes.
         const NODE = 1 << 0;
         /// Faces.
         const FACE = 1 << 1;
@@ -68,6 +70,13 @@ impl SelectionKinds {
             .map(|kind| PrimitiveFlags::from(kind.primitive_type()))
             .collect()
     }
+
+    /// Which primitive types a click's ray query should test: every type when
+    /// only whole nodes are wanted, since any hit names its node.
+    fn query_primitives(self) -> PrimitiveFlags {
+        let sub = self & Self::sub_geometry();
+        if sub.is_empty() { PrimitiveFlags::all() } else { sub.primitive_types() }
+    }
 }
 
 impl From<SubGeometryKind> for SelectionKinds {
@@ -80,49 +89,10 @@ impl From<SubGeometryKind> for SelectionKinds {
     }
 }
 
-/// Controls what granularity a click resolves to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SelectionMode {
-    /// Whole-node only, ignoring face/edge/point topology.
-    Node,
-    /// Resolve to the closest hit among the allowed kinds. If the [`NODE`] flag is
-    /// set it acts as a fallback when the hit primitive has no topology mapping (or
-    /// when no sub-geometry kinds are allowed).
-    ///
-    /// e.g. `SubGeometry(FACE)` = faces only; `SubGeometry(FACE | EDGE)` = either.
-    SubGeometry(SelectionKinds),
-    /// Node first; a second click on an already-selected node drills into the
-    /// closest allowed sub-geometry. An area selects whole nodes.
-    Progressive(SelectionKinds),
-}
-
-impl Default for SelectionMode {
-    fn default() -> Self {
-        SelectionMode::Progressive(SelectionKinds::all())
-    }
-}
-
-impl SelectionMode {
-    /// Which primitive types the ray query should test.
-    fn query_primitives(&self) -> PrimitiveFlags {
-        let kinds = match self {
-            // Node and node-fallback both need *some* hit to obtain a node id, so
-            // query everything.
-            SelectionMode::Node => return PrimitiveFlags::all(),
-            SelectionMode::SubGeometry(k) | SelectionMode::Progressive(k) => *k,
-        };
-        let sub = kinds & SelectionKinds::sub_geometry();
-        if sub.is_empty() {
-            // Only a node fallback is requested — query everything to get a node hit.
-            PrimitiveFlags::all()
-        } else {
-            sub.primitive_types()
-        }
-    }
-}
-
 /// Operator for selecting objects in the scene by clicking, or by dragging out
 /// an area.
+///
+/// What a click or an area may select is set by [`kinds`](Self::kinds).
 ///
 /// A click resolves to the highest kind within reach: a point, then an edge
 /// (each within a few pixels of the cursor, nearest first), then the face under
@@ -135,7 +105,8 @@ impl SelectionMode {
 /// over the view while dragging, and Escape abandons it.
 pub struct SelectionOperator {
     pub bindings: InputMap<SelectionAction>,
-    pub mode: SelectionMode,
+    /// The kinds a click or an area may select. All of them by default.
+    pub kinds: SelectionKinds,
     /// Kinds that stay selectable where faces hide them, for views that draw
     /// them (e.g. hidden edges in
     /// [`workflow::hidden_line`](crate::renderer::workflow::hidden_line)), or
@@ -148,13 +119,13 @@ pub struct SelectionOperator {
 }
 
 impl SelectionOperator {
-    /// Creates a new selection operator in the default mode.
+    /// Creates a new selection operator that may select every kind.
     pub fn new() -> Self {
-        Self::with_mode(SelectionMode::default())
+        Self::with_kinds(SelectionKinds::all())
     }
 
-    /// Creates a new selection operator with the given [`SelectionMode`].
-    pub fn with_mode(mode: SelectionMode) -> Self {
+    /// Creates a new selection operator that may select `kinds`.
+    pub fn with_kinds(kinds: SelectionKinds) -> Self {
         let shift = Modifiers { shift: true, ..Default::default() };
         let bindings = InputMap::new()
             .bind(
@@ -176,7 +147,7 @@ impl SelectionOperator {
                 InputBinding::MouseDragStart { button: MouseButton::Left, modifiers: shift },
                 SelectionAction::AddToSelection,
             );
-        Self { bindings, mode, hidden: SelectionKinds::empty(), area: None }
+        Self { bindings, kinds, hidden: SelectionKinds::empty(), area: None }
     }
 
     fn pick_closest(&self, cursor_x: f32, cursor_y: f32, ctx: &mut EventContext) -> Option<SelectionItem> {
@@ -190,38 +161,23 @@ impl SelectionOperator {
         let tie = TIE_PX * pixel_size;
 
         let query =
-            RayPickQuery::new(ray, PICK_RADIUS_PX * pixel_size, self.mode.query_primitives());
+            RayPickQuery::new(ray, PICK_RADIUS_PX * pixel_size, self.kinds.query_primitives());
         let results = pick_all_from_ray(&query, &ctx.scene);
+        let candidates = candidates(&results, &ctx.scene, &ray, pixel_size, self.hidden);
+        let sub = self.kinds & SelectionKinds::sub_geometry();
+        if !self.kinds.contains(SelectionKinds::NODE) {
+            return resolve(&candidates, sub, None, tie);
+        }
 
-        match self.mode {
-            SelectionMode::Node => results.first().map(|hit| SelectionItem::Node(hit.node_id)),
-
-            SelectionMode::SubGeometry(kinds) => {
-                let candidates = candidates(&results, &ctx.scene, &ray, pixel_size, self.hidden);
-                let sub = kinds & SelectionKinds::sub_geometry();
-                resolve(&candidates, sub, None, tie).or_else(|| {
-                    kinds
-                        .contains(SelectionKinds::NODE)
-                        .then(|| best(&candidates, tie))
-                        .flatten()
-                        .map(|c| SelectionItem::Node(c.hit.node_id))
-                })
-            }
-
-            SelectionMode::Progressive(kinds) => {
-                let candidates = candidates(&results, &ctx.scene, &ray, pixel_size, self.hidden);
-                // The node the click means is the one owning its best candidate, so a
-                // second click lands on that same candidate.
-                let node = best(&candidates, tie)?.hit.node_id;
-                // Drill into sub-geometry once the node is selected — whether the whole
-                // node or any of its sub-geometry is currently the active selection.
-                if ctx.selection.is_node_selected(node) {
-                    let sub = kinds & SelectionKinds::sub_geometry();
-                    resolve(&candidates, sub, Some(node), tie).or(Some(SelectionItem::Node(node)))
-                } else {
-                    Some(SelectionItem::Node(node))
-                }
-            }
+        // The node the click means is the one owning its best candidate, so a
+        // second click lands on that same candidate.
+        let node = best(&candidates, tie)?.hit.node_id;
+        // Drill into sub-geometry once the node is selected — whether the whole
+        // node or any of its sub-geometry is currently the active selection.
+        if ctx.selection.is_node_selected(node) {
+            resolve(&candidates, sub, Some(node), tie).or(Some(SelectionItem::Node(node)))
+        } else {
+            Some(SelectionItem::Node(node))
         }
     }
 
@@ -240,7 +196,7 @@ impl SelectionOperator {
     }
 
     fn finish_area(&self, area: &AreaDrag, ctx: &mut EventContext) {
-        let items = area::select_area(area, self.mode, self.hidden, ctx);
+        let items = area::select_area(area, self.kinds, self.hidden, ctx);
         change_selection(ctx, |selection| {
             if area.action == SelectionAction::Select {
                 selection.clear();
@@ -566,7 +522,7 @@ mod tests {
     }
 
     fn sub_geometry_op() -> SelectionOperator {
-        SelectionOperator::with_mode(SelectionMode::SubGeometry(SelectionKinds::sub_geometry()))
+        SelectionOperator::with_kinds(SelectionKinds::sub_geometry())
     }
 
     /// Two faces meeting in a valley that opens toward the camera, with an edge
@@ -658,6 +614,41 @@ mod tests {
         assert_eq!(click(&op, &scene, &mut selection, column(3.0)), Some(edge(back, 0)));
     }
 
+    #[test]
+    fn nodes_alone_never_drill_in() {
+        let scene = Scene::new(SceneData::new());
+        let part = add_part(&scene, &[square(0.0)], &[vertical(0.0, 0.0)]);
+        let op = SelectionOperator::with_kinds(SelectionKinds::NODE);
+        let mut selection = SelectionManager::new();
+        for _ in 0..2 {
+            let picked = click(&op, &scene, &mut selection, column(3.0));
+            assert_eq!(picked, Some(SelectionItem::Node(part)));
+            selection.set(picked.unwrap());
+        }
+    }
+
+    #[test]
+    fn faces_alone_are_picked_on_the_first_click() {
+        let scene = Scene::new(SceneData::new());
+        let part = add_part(&scene, &[square(0.0)], &[vertical(0.0, 0.0)]);
+        let op = SelectionOperator::with_kinds(SelectionKinds::FACE);
+        assert_eq!(pick(&op, &scene, column(3.0)), Some(face(part, 0)));
+    }
+
+    /// Nodes and faces: the second click drills into a face, passing over an
+    /// edge within reach.
+    #[test]
+    fn nodes_and_faces_drill_into_faces_only() {
+        let scene = Scene::new(SceneData::new());
+        let part = add_part(&scene, &[square(0.0)], &[vertical(0.0, 0.0)]);
+        let op = SelectionOperator::with_kinds(SelectionKinds::NODE | SelectionKinds::FACE);
+        let mut selection = SelectionManager::new();
+        let first = click(&op, &scene, &mut selection, column(3.0));
+        assert_eq!(first, Some(SelectionItem::Node(part)));
+        selection.set(first.unwrap());
+        assert_eq!(click(&op, &scene, &mut selection, column(3.0)), Some(face(part, 0)));
+    }
+
     // ===== Areas =====
 
     const SHIFT: Modifiers = Modifiers { shift: true, control: false, alt: false, super_key: false };
@@ -724,7 +715,7 @@ mod tests {
     }
 
     /// Dragging rightward takes what lies wholly inside, leftward what the
-    /// area touches. Areas take whole nodes in the default progressive mode.
+    /// area touches. Areas take whole nodes when nodes are selectable.
     #[test]
     fn area_direction_decides_between_inside_and_touching() {
         let scene = Scene::new(SceneData::new());
@@ -772,7 +763,7 @@ mod tests {
         let back = add_part(&scene, &[square(-2.0)], &[vertical(0.0, -2.0)]);
         let around = ((-1.5, 1.5), (1.5, -1.5));
 
-        let mut op = SelectionOperator::with_mode(SelectionMode::Node);
+        let mut op = SelectionOperator::with_kinds(SelectionKinds::NODE);
         assert_eq!(select_area(&mut op, &scene, around.0, around.1), [SelectionItem::Node(front)]);
         op.hidden = SelectionKinds::NODE;
         assert_eq!(

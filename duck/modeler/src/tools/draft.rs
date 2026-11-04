@@ -4,7 +4,6 @@ use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     operator::{
         DragKind, Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds,
-        SelectionMode,
     },
     selection::SelectionManager,
 };
@@ -69,7 +68,7 @@ impl Feature for Draft {
     type Params = DraftParams;
 
     const TOOL: ToolInfo = ToolInfo { id: "draft", icon: icons::DRAFT, shortcut: None };
-    const SELECTS: SelectionMode = SelectionMode::SubGeometry(SelectionKinds::FACE);
+    const SELECTS: SelectionKinds = SelectionKinds::FACE;
     const LOCK: EditLock = EditLock::Part;
 
     /// The primary face is neutral, and the rest on its part are drafted.

@@ -27,7 +27,7 @@ use egui_wgpu::RendererOptions;
 use duck_engine_viewer::{AxisTriadConfig, OffscreenViewer, ViewId, ViewLayout, WindowSurface};
 use duck_engine_viewer::event::Event;
 use duck_engine_viewer::input::ElementState;
-use duck_engine_viewer::operator::{NavigationOperator, SelectionOperator};
+use duck_engine_viewer::operator::{NavigationOperator, SelectionKinds, SelectionOperator};
 use duck_engine_viewer::common::{
     InnerSpace, Real, RgbaColor, Vector3
 };
@@ -56,6 +56,9 @@ const VIEWPORT_BACKGROUND: RgbaColor = RgbaColor { r: 0.035, g: 0.040, b: 0.047,
 pub enum AppAction {
     /// Switch to this tool, or with `None` back to selection.
     SwitchTool(Option<ToolId>),
+    /// Make `kind` the only kind a click selects, or with `extend` add or
+    /// remove it.
+    SelectableKind { kind: SelectionKinds, extend: bool },
     /// Delete the selected parts.
     Delete,
     Undo,
@@ -571,6 +574,7 @@ impl<'a> ViewerState<'a> {
                     let selection = self.viewer.selection_mut(self.view_id).expect("main view");
                     self.tools.activate(tool, selection);
                 }
+                AppAction::SelectableKind { kind, extend } => self.tools.select_kind(kind, extend),
                 AppAction::Delete => self.delete_selection(),
                 AppAction::Undo => self.replay(Document::undo, "Undid", "Nothing to undo"),
                 AppAction::Redo => self.replay(Document::redo, "Redid", "Nothing to redo"),

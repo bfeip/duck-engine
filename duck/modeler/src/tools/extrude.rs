@@ -4,7 +4,6 @@ use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     operator::{
         DragKind, Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds,
-        SelectionMode,
     },
     selection::{SelectionItem, SelectionManager},
 };
@@ -163,7 +162,7 @@ impl Feature for Extrude {
 
     const TOOL: ToolInfo = ToolInfo { id: "extrude", icon: icons::EXTRUDE, shortcut: None };
     /// A face extrudes into a solid, an edge into a face.
-    const SELECTS: SelectionMode = SelectionMode::SubGeometry(SelectionKinds::FACE.union(SelectionKinds::EDGE));
+    const SELECTS: SelectionKinds = SelectionKinds::FACE.union(SelectionKinds::EDGE);
     const LOCK: EditLock = EditLock::Target;
 
     /// The face or edge chosen as the primary selection, if any.

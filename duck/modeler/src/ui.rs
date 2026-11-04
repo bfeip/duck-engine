@@ -7,6 +7,7 @@ mod menu_bar;
 mod right_panel;
 mod model_tab;
 mod scene_tab;
+mod selection_filter;
 mod selection_info;
 mod tool_palette;
 mod tool_panel;
@@ -28,6 +29,7 @@ use crate::AppAction;
 
 use menu_bar::MenuBar;
 use right_panel::RightPanel;
+use selection_filter::SelectionFilterBar;
 use tool_palette::ToolPalette;
 use tool_panel::ToolPanel;
 
@@ -43,6 +45,7 @@ pub struct ModelerUi {
     palette: ToolPalette,
     right: RightPanel,
     tool_panel: ToolPanel,
+    selection_filter: SelectionFilterBar,
 }
 
 impl ModelerUi {
@@ -86,6 +89,7 @@ impl ModelerUi {
             );
         }
         self.tool_panel.show(ctx, tools, selection);
+        self.selection_filter.show(ctx, tools.selection_filter(), &mut actions);
         show_notifications(ctx, notifications);
         actions
     }

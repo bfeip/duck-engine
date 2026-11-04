@@ -3,7 +3,7 @@ use duck_engine_common::{LengthDisplay, Real};
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
     operator::{
-        Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds, SelectionMode,
+        Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds,
     },
     selection::SelectionManager,
 };
@@ -66,7 +66,7 @@ impl Feature for Hollow {
 
     const TOOL: ToolInfo = ToolInfo { id: "hollow", icon: icons::HOLLOW, shortcut: None };
     /// The part first; a second click on it picks a face to open.
-    const SELECTS: SelectionMode = SelectionMode::Progressive(SelectionKinds::FACE);
+    const SELECTS: SelectionKinds = SelectionKinds::NODE.union(SelectionKinds::FACE);
     const LOCK: EditLock = EditLock::Part;
 
     fn select(&self, selection: &SelectionManager, locked: Option<NodeId>) -> Option<Selected<HollowTarget>> {

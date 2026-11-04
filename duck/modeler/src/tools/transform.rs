@@ -25,7 +25,7 @@ use duck_engine_viewer::common::{
     Quaternion, Real, SquareMatrix, Transform, Vector3,
 };
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
-use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionKinds, SelectionMode};
+use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionKinds};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartId};
@@ -184,8 +184,8 @@ impl ModelingTool for TransformTool {
     }
 
     /// Whole parts first; a second click drills into a face for tweaking.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::Progressive(SelectionKinds::FACE)
+    fn selects(&self) -> Option<SelectionKinds> {
+        Some(SelectionKinds::NODE | SelectionKinds::FACE)
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {

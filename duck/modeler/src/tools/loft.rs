@@ -3,7 +3,7 @@ use duck_engine_scene::common::Transform;
 use duck_engine_scene::resource::{SubGeometryElement, SubGeometryKind};
 use duck_engine_viewer::{
     event::{Event, EventContext},
-    operator::{SelectionKinds, SelectionMode},
+    operator::SelectionKinds,
     selection::{SelectionItem, SelectionManager},
 };
 
@@ -141,8 +141,8 @@ impl ModelingTool for LoftTool {
     }
 
     /// The profiles' edges.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::SubGeometry(SelectionKinds::EDGE)
+    fn selects(&self) -> Option<SelectionKinds> {
+        Some(SelectionKinds::EDGE)
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {

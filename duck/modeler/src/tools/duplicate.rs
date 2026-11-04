@@ -2,7 +2,7 @@ use duck_engine_scene::resource::{NodeFlags, NodeId};
 use duck_engine_viewer::{
     common::{decompose_matrix, Matrix4, SquareMatrix, Transform},
     event::{DeviceEvent, Event, EventContext},
-    operator::{Handle, HandleEvent, SelectionMode},
+    operator::{Handle, HandleEvent, SelectionKinds},
     selection::{SelectionItem, SelectionManager},
 };
 
@@ -97,8 +97,8 @@ impl ModelingTool for DuplicateTool {
     }
 
     /// Whole parts only — there is nothing to copy below part granularity.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::Node
+    fn selects(&self) -> Option<SelectionKinds> {
+        Some(SelectionKinds::NODE)
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {

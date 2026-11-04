@@ -45,6 +45,12 @@ pub const LOFT: Icon = icon!("loft.svg");
 pub const REVOLVE: Icon = icon!("revolve.svg");
 pub const DUPLICATE: Icon = icon!("duplicate.svg");
 
+// Selection-kind buttons.
+pub const SELECT_POINT: Icon = icon!("select-point.svg");
+pub const SELECT_EDGE: Icon = icon!("select-edge.svg");
+pub const SELECT_FACE: Icon = icon!("select-face.svg");
+pub const SELECT_PART: Icon = icon!("select-part.svg");
+
 pub const KIND_SOLID: Icon = icon!("kind-solid.svg");
 pub const KIND_FACE: Icon = icon!("kind-face.svg");
 pub const KIND_WIRE: Icon = icon!("kind-wire.svg");

@@ -30,7 +30,7 @@ use duck_engine_viewer::{
     common::Point3,
     event::{Event, EventContext},
     input::Modifiers,
-    operator::{Handle, HandleEvent, SelectionMode},
+    operator::{Handle, HandleEvent, SelectionKinds},
     selection::SelectionManager,
 };
 use opencascade::primitives::Shape;
@@ -60,8 +60,8 @@ pub trait Feature: 'static {
 
     /// Palette identity.
     const TOOL: ToolInfo;
-    /// What a click selects while the tool is active.
-    const SELECTS: SelectionMode;
+    /// The kinds a click selects while the tool is active.
+    const SELECTS: SelectionKinds;
     /// How much of the target an edit locks.
     const LOCK: EditLock;
 
@@ -478,8 +478,8 @@ impl<F: Feature> ModelingTool for FeatureTool<F> {
         F::TOOL
     }
 
-    fn selection_mode(&self) -> SelectionMode {
-        F::SELECTS
+    fn selects(&self) -> Option<SelectionKinds> {
+        Some(F::SELECTS)
     }
 
     /// While the settings want a pick, the cursor snaps and a plain click

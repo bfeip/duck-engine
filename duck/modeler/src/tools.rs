@@ -79,7 +79,7 @@ pub use fillet::FilletTool;
 pub use hollow::HollowTool;
 pub use join::{JoinTool, UnjoinTool};
 pub use loft::LoftTool;
-pub use manager::{ToolId, ToolManager};
+pub use manager::{SelectionFilter, ToolId, ToolManager};
 pub use path::{PathKind, PathTool};
 pub use rectangle::RectangleTool;
 pub use revolve::RevolveTool;
@@ -97,7 +97,7 @@ use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::common::{LengthDisplay, Point3, Ray, Transform};
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
 use duck_engine_viewer::input::{ElementState, Key, Modifiers, MouseButton, NamedKey};
-use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionMode};
+use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionKinds};
 use duck_engine_viewer::selection::SelectionManager;
 use opencascade::primitives::Shape;
 
@@ -264,10 +264,10 @@ pub trait ModelingTool: 'static {
     /// Palette identity: id, icon and shortcut.
     fn info(&self) -> ToolInfo;
 
-    /// Selection granularity the always-on `SelectionOperator` should use
-    /// while this tool is active.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::default()
+    /// The kinds this tool acts on, or `None` to keep the user's. Clicks
+    /// select only these while the tool is active.
+    fn selects(&self) -> Option<SelectionKinds> {
+        None
     }
 
     // Input

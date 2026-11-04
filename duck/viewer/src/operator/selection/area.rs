@@ -12,7 +12,7 @@ use crate::scene::resource::{Mesh, SubGeometryElement, SubGeometryKind};
 use crate::selection::SelectionItem;
 use crate::OverlayRect;
 
-use super::{SelectionAction, SelectionKinds, SelectionMode, OCCLUSION_SLACK_PX};
+use super::{SelectionAction, SelectionKinds, OCCLUSION_SLACK_PX};
 
 /// How many points of an item are tested for visibility at most.
 const MAX_VISIBILITY_SAMPLES: usize = 8;
@@ -84,12 +84,12 @@ struct Candidate {
     samples: Option<Vec<Point3>>,
 }
 
-/// The items `drag` selects at the resolution `mode` gives, in scene order.
-/// Items of a kind in `hidden` are taken where faces hide them; any other must
-/// show somewhere in the area.
+/// The items of `kinds` that `drag` selects, in scene order: whole nodes if
+/// `kinds` has them, else elements. Items of a kind in `hidden` are taken where
+/// faces hide them; any other must show somewhere in the area.
 pub(super) fn select_area(
     drag: &AreaDrag,
-    mode: SelectionMode,
+    kinds: SelectionKinds,
     hidden: SelectionKinds,
     ctx: &EventContext,
 ) -> Vec<SelectionItem> {
@@ -108,7 +108,7 @@ pub(super) fn select_area(
         hits.iter()
             .filter_map(|hit| {
                 let mesh = scene.get_instance(hit.instance_id).and_then(|i| scene.get_mesh(i.mesh()))?;
-                Some(candidates(hit, mesh, mode, kind, hidden, &volume))
+                Some(candidates(hit, mesh, kinds, kind, hidden, &volume))
             })
             .flatten()
             .collect()
@@ -129,12 +129,12 @@ pub(super) fn select_area(
         .collect()
 }
 
-/// The items one instance offers the area: the node as a whole, or the
-/// topology elements of the kinds `mode` allows.
+/// The items one instance offers the area: the node as a whole if `kinds` has
+/// nodes, else its topology elements of `kinds`.
 fn candidates(
     hit: &VolumePickResult,
     mesh: &Mesh,
-    mode: SelectionMode,
+    kinds: SelectionKinds,
     kind: AreaKind,
     hidden: SelectionKinds,
     volume: &ConvexPolyhedron,
@@ -143,22 +143,17 @@ fn candidates(
         let samples = (!hidden.intersects(item_kind)).then(|| samples(hit, mesh, &primitives, volume));
         Candidate { item, samples }
     };
-    let node = || {
+    if kinds.contains(SelectionKinds::NODE) {
         let primitives = KINDS.into_iter().flat_map(|k| touching(hit, k, 0..usize::MAX)).collect();
-        kind.accepts(hit.hit.containment())
+        return kind
+            .accepts(hit.hit.containment())
             .then(|| candidate(SelectionItem::Node(hit.node_id), SelectionKinds::NODE, primitives))
-    };
+            .into_iter()
+            .collect();
+    }
 
-    let kinds = match mode {
-        SelectionMode::Node | SelectionMode::Progressive(_) => return node().into_iter().collect(),
-        SelectionMode::SubGeometry(kinds) => kinds,
-    };
     let sub = kinds & SelectionKinds::sub_geometry();
-    let topology = mesh.topology().filter(|t| !t.is_empty() && !sub.is_empty());
-    let Some(topology) = topology else {
-        // Without elements to resolve to, the node stands in if allowed.
-        return kinds.contains(SelectionKinds::NODE).then(node).flatten().into_iter().collect();
-    };
+    let Some(topology) = mesh.topology().filter(|t| !t.is_empty()) else { return Vec::new() };
 
     let mut found = Vec::new();
     for element_kind in KINDS.into_iter().filter(|&k| sub.contains(SelectionKinds::from(k))) {

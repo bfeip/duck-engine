@@ -4,7 +4,6 @@ use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     operator::{
         DragKind, Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds,
-        SelectionMode,
     },
     selection::{SelectionItem, SelectionManager},
 };
@@ -131,7 +130,7 @@ impl Feature for Revolve {
 
     const TOOL: ToolInfo = ToolInfo { id: "revolve", icon: icons::REVOLVE, shortcut: None };
     /// A face revolves into a solid, an edge into a sheet.
-    const SELECTS: SelectionMode = SelectionMode::SubGeometry(SelectionKinds::FACE.union(SelectionKinds::EDGE));
+    const SELECTS: SelectionKinds = SelectionKinds::FACE.union(SelectionKinds::EDGE);
     const LOCK: EditLock = EditLock::Part;
 
     /// The faces, if the primary is a face, else the edges, on one part.

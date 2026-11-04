@@ -3,7 +3,7 @@ use duck_engine_common::{LengthDisplay, Real};
 use duck_engine_scene::resource::NodeId;
 use duck_engine_viewer::{
     operator::{
-        Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds, SelectionMode,
+        Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds,
     },
     selection::SelectionManager,
 };
@@ -108,7 +108,7 @@ impl Feature for Thicken {
     type Params = ThickenParams;
 
     const TOOL: ToolInfo = ToolInfo { id: "thicken", icon: icons::THICKEN, shortcut: None };
-    const SELECTS: SelectionMode = SelectionMode::SubGeometry(SelectionKinds::FACE);
+    const SELECTS: SelectionKinds = SelectionKinds::FACE;
     const LOCK: EditLock = EditLock::Part;
 
     fn select(&self, selection: &SelectionManager, locked: Option<NodeId>) -> Option<Selected<ThickenTarget>> {

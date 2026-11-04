@@ -4,7 +4,7 @@ use duck_engine_scene::common::{RgbaColor, Transform};
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, NodeFlags, NodeId};
 use duck_engine_viewer::{
     event::{Event, EventContext},
-    operator::SelectionMode,
+    operator::SelectionKinds,
     selection::{SelectionItem, SelectionManager},
 };
 use opencascade::primitives::Shape;
@@ -206,8 +206,8 @@ impl ModelingTool for BooleanTool {
     }
 
     /// Whole parts.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::Node
+    fn selects(&self) -> Option<SelectionKinds> {
+        Some(SelectionKinds::NODE)
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {

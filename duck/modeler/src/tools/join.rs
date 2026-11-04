@@ -4,7 +4,7 @@ use duck_engine_scene::common::{Real, RgbaColor, Transform};
 use duck_engine_scene::resource::{FaceMaterial, LineMaterial, NodeFlags, NodeId};
 use duck_engine_viewer::{
     event::{Event, EventContext},
-    operator::SelectionMode,
+    operator::SelectionKinds,
     selection::{SelectionItem, SelectionManager},
 };
 use opencascade::primitives::{Compound, Edge, Shape, ShapeType};
@@ -257,8 +257,8 @@ impl ModelingTool for JoinTool {
     }
 
     /// Whole parts.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::Node
+    fn selects(&self) -> Option<SelectionKinds> {
+        Some(SelectionKinds::NODE)
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {
@@ -389,8 +389,8 @@ impl ModelingTool for UnjoinTool {
     }
 
     /// Whole parts.
-    fn selection_mode(&self) -> SelectionMode {
-        SelectionMode::Node
+    fn selects(&self) -> Option<SelectionKinds> {
+        Some(SelectionKinds::NODE)
     }
 
     fn dispatch(&mut self, event: &Event, ctx: &mut EventContext) -> bool {

@@ -10,7 +10,7 @@ pub use handle::{
     HandleSet, HandleShape,
 };
 pub use navigation::{NavigationMode, NavigationOperator};
-pub use selection::{SelectionKinds, SelectionMode, SelectionOperator};
+pub use selection::{SelectionKinds, SelectionOperator};
 pub use transform::TransformOperator;
 
 use crate::event::{Event, EventContext};

@@ -4,10 +4,19 @@
 use duck_engine_viewer::bindings::{InputBinding, InputMap};
 use duck_engine_viewer::event::{AppEvent, DeviceEvent, Event, EventContext};
 use duck_engine_viewer::input::{ElementState, Key, KeyEvent, Modifiers, NamedKey};
-use duck_engine_viewer::operator::Operator;
+use duck_engine_viewer::operator::{Operator, SelectionKinds};
 
 use crate::tools::{ToolId, ToolInfo};
 use crate::AppAction;
+
+/// The key making each kind the only one a click selects, in the order the
+/// selection-kind buttons show them.
+pub const SELECTION_KIND_KEYS: [(SelectionKinds, char); 4] = [
+    (SelectionKinds::POINT, '1'),
+    (SelectionKinds::EDGE, '2'),
+    (SelectionKinds::FACE, '3'),
+    (SelectionKinds::NODE, '4'),
+];
 
 /// Last-priority operator turning keys nothing else claimed, and the view
 /// snaps the viewer reports, into [`AppAction`]s, which the app takes once a
@@ -24,7 +33,8 @@ pub struct Shortcuts {
 impl Shortcuts {
     /// X or Delete deletes the selected parts, Ctrl+Z undoes, Ctrl+Shift+Z or
     /// Ctrl+Y redoes, Ctrl+O opens a document, Ctrl+S saves it, Ctrl+Shift+S
-    /// saves it elsewhere, and each of `tools`' keys switches to it.
+    /// saves it elsewhere, 1 to 4 pick the kind a click selects
+    /// ([`SELECTION_KIND_KEYS`]), and each of `tools`' keys switches to it.
     pub fn new(tools: &[(ToolId, ToolInfo)]) -> Self {
         let ctrl = Modifiers { control: true, ..Modifiers::default() };
         let ctrl_shift = Modifiers { shift: true, ..ctrl };
@@ -39,6 +49,9 @@ impl Shortcuts {
             .bind(chord(Key::Character('o'), ctrl), AppAction::Open)
             .bind(chord(Key::Character('s'), ctrl), AppAction::Save)
             .bind(chord(Key::Character('s'), ctrl_shift), AppAction::SaveAs);
+        for (kind, c) in SELECTION_KIND_KEYS {
+            bindings.add(plain(Key::Character(c)), AppAction::SelectableKind { kind, extend: false });
+        }
         for &(id, info) in tools {
             if let Some(c) = info.shortcut {
                 bindings.add(plain(Key::Character(c)), AppAction::SwitchTool(Some(id)));
@@ -153,6 +166,24 @@ mod tests {
         assert!(shortcuts.on_key(&key('d'), Modifiers::default()));
         assert!(shortcuts.on_key(&key('D'), Modifiers::default()));
         assert_eq!(shortcuts.take(), [AppAction::SwitchTool(Some(duplicate)); 2]);
+    }
+
+    #[test]
+    fn number_keys_pick_the_kind_a_click_selects() {
+        let mut shortcuts = Shortcuts::new(&[]);
+        for c in ['1', '2', '3', '4'] {
+            assert!(shortcuts.on_key(&key(c), Modifiers::default()));
+        }
+        let picked: Vec<AppAction> = [
+            SelectionKinds::POINT,
+            SelectionKinds::EDGE,
+            SelectionKinds::FACE,
+            SelectionKinds::NODE,
+        ]
+        .into_iter()
+        .map(|kind| AppAction::SelectableKind { kind, extend: false })
+        .collect();
+        assert_eq!(shortcuts.take(), picked);
     }
 
     /// Plain Z is left for a transform's axis, as is any key bound to nothing.
