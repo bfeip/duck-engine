@@ -71,7 +71,7 @@ impl JoinTool {
                 self.cancel();
                 true
             }
-            Gesture::Finish | Gesture::Hover(_) | Gesture::Click { .. } | Gesture::Key(_) => false,
+            _ => false,
         }
     }
 
@@ -345,9 +345,12 @@ impl UnjoinTool {
                 self.finished = true;
                 true
             }
-            Gesture::Frame | Gesture::Finish | Gesture::Hover(_) | Gesture::Click { .. } | Gesture::Key(_) => {
-                false
-            }
+            Gesture::Frame
+            | Gesture::Finish
+            | Gesture::Hover(_)
+            | Gesture::Click { .. }
+            | Gesture::Key(_)
+            | Gesture::Step(_) => false,
         }
     }
 

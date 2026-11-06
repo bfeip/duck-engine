@@ -16,7 +16,8 @@
 //!   whose grips it shows through [`ModelingTool::handles`] and whose outcomes
 //!   it previews and commits. See `duplicate.rs`.
 //! - Otherwise it implements [`ModelingTool`] itself, from the blocks below.
-//!   See `boolean.rs`.
+//!   See `boolean.rs`, or `array.rs` for one that picks points on a
+//!   selection.
 //!
 //! Its geometry goes in `crate::ops`, which never sees the viewer or egui.
 //! Re-export the tool here, register it in `main.rs`, and give it an icon in
@@ -45,6 +46,7 @@
 //!   [`Notifications::failure`](crate::notifications::Notifications::failure);
 //!   a preview that can't be built says why in the panel.
 
+mod array;
 mod boolean;
 mod r#box;
 mod circle;
@@ -68,6 +70,7 @@ mod targets;
 mod thicken;
 mod transform;
 
+pub use array::RectangularArrayTool;
 pub use boolean::BooleanTool;
 pub use r#box::BoxTool;
 pub use circle::CircleTool;
@@ -231,6 +234,8 @@ pub enum Gesture {
     Cancel,
     /// An unmodified character key, lowercased.
     Key(char),
+    /// Up (+1) or Down (-1) arrow, unmodified: one more or one fewer.
+    Step(i32),
 }
 
 impl Gesture {
@@ -248,6 +253,8 @@ impl Gesture {
                 match event.logical_key {
                     Key::Named(NamedKey::Enter) => Some(Gesture::Finish),
                     Key::Named(NamedKey::Escape) => Some(Gesture::Cancel),
+                    Key::Named(NamedKey::ArrowUp) if modifiers == Modifiers::default() => Some(Gesture::Step(1)),
+                    Key::Named(NamedKey::ArrowDown) if modifiers == Modifiers::default() => Some(Gesture::Step(-1)),
                     Key::Character(c) if modifiers == Modifiers::default() => Some(Gesture::Key(c.to_ascii_lowercase())),
                     _ => None,
                 }
@@ -390,6 +397,16 @@ mod tests {
         assert_eq!(read(press(key('c')), control), None);
         assert_eq!(read(press(KeyEvent { repeat: true, ..key('c') }), Modifiers::default()), None);
         assert_eq!(read(press(KeyEvent { state: ElementState::Released, ..key('c') }), Modifiers::default()), None);
+    }
+
+    #[test]
+    fn unmodified_up_and_down_arrows_step() {
+        assert_eq!(read(press(named_key(NamedKey::ArrowUp)), Modifiers::default()), Some(Gesture::Step(1)));
+        assert_eq!(read(press(named_key(NamedKey::ArrowDown)), Modifiers::default()), Some(Gesture::Step(-1)));
+        let shift = Modifiers { shift: true, ..Modifiers::default() };
+        assert_eq!(read(press(named_key(NamedKey::ArrowUp)), shift), None);
+        let repeat = KeyEvent { repeat: true, ..named_key(NamedKey::ArrowUp) };
+        assert_eq!(read(press(repeat), Modifiers::default()), None);
     }
 
     #[test]

@@ -238,26 +238,49 @@ impl PreviewSession {
         face: &FaceMaterialHandle,
         line: &LineMaterialHandle,
     ) -> Option<NodeId> {
-        let ghost = {
+        let restyle = |source: &Instance| {
+            Instance::new(source.mesh_handle().clone())
+                .with_face_material(face.clone())
+                .with_line_material(line.clone())
+        };
+        let ghost = self.add_beside(node, restyle, None)?;
+        self.hide_source_node(node);
+        Some(ghost)
+    }
+
+    /// Track a preview drawing `node` as it is, mesh and materials shared, at
+    /// `transform` in its parent's space. The preview is not selectable, and
+    /// `node` stays visible. Returns `None`, changing nothing, if `node` has no
+    /// instance.
+    pub fn add_node_copy(&mut self, node: NodeId, transform: Transform) -> Option<NodeId> {
+        self.add_beside(node, Instance::clone, Some(transform))
+    }
+
+    /// Track an unselectable preview beside `node`, under its parent and with
+    /// its display, drawing `instance` of its own instance at `transform`, or
+    /// over it where that is `None`.
+    fn add_beside(
+        &mut self,
+        node: NodeId,
+        instance: impl FnOnce(&Instance) -> Instance,
+        transform: Option<Transform>,
+    ) -> Option<NodeId> {
+        let preview = {
             let scene = self.scene();
             let mut scene = scene.lock();
             let source = scene.get_node(node)?;
-            let (parent, name, transform, display) =
-                (source.parent(), source.name.clone(), source.transform(), source.display());
-            let mesh = scene.get_instance(source.instance()?)?.mesh_handle().clone();
-            let instance = Instance::new(mesh)
-                .with_face_material(face.clone())
-                .with_line_material(line.clone());
-            let ghost = scene
+            let (parent, name, display) = (source.parent(), source.name.clone(), source.display());
+            let transform = transform.unwrap_or_else(|| source.transform());
+            let instance = instance(scene.get_instance(source.instance()?)?);
+            let preview = scene
                 .add_instance_node(parent, instance, name, transform, NodeFlags::DO_NOT_SELECT)
                 .ok()?
                 .id();
-            scene.set_node_display(ghost, display);
-            ghost
+            scene.set_node_display(preview, display);
+            preview
         };
-        self.previews.push(ghost);
-        self.hide_source_node(node);
-        Some(ghost)
+        self.previews.push(preview);
+        Some(preview)
     }
 
     /// Remove all previews and restore every hidden source. Idempotent; the
@@ -624,6 +647,34 @@ mod tests {
         assert!(session.ghost_source_node(bare, &face, &line).is_none());
         assert!(session.is_empty());
         assert_eq!(visibility(&document, bare), Visibility::Visible);
+    }
+
+    #[test]
+    fn a_node_copy_draws_the_source_elsewhere_and_leaves_it_shown() {
+        use duck_engine_scene::common::{InnerSpace, Point3};
+
+        let document = document();
+        let source = add_source(&document);
+        let mut session = PreviewSession::new(document.clone());
+        let moved = Transform { position: Point3::new(3.0, 0.0, 0.0), ..Transform::IDENTITY };
+
+        let copy = session.add_node_copy(source, moved).expect("source has an instance");
+
+        assert_eq!(visibility(&document, source), Visibility::Visible);
+        with_scene(&document, |s| {
+            let instance_of = |node| s.get_instance(s.get_node(node).unwrap().instance().unwrap()).unwrap();
+            assert_eq!(instance_of(copy).mesh(), instance_of(source).mesh());
+            assert_eq!(instance_of(copy).face_material(), instance_of(source).face_material());
+            let node = s.get_node(copy).unwrap();
+            assert!(node.flags().contains(NodeFlags::DO_NOT_SELECT));
+            assert!((node.transform().position - moved.position).magnitude() < 1e-9);
+        });
+
+        session.cancel();
+        with_scene(&document, |s| {
+            assert_eq!(s.node_count(), 1);
+            assert_eq!(s.mesh_count(), 1, "the source still owns its mesh");
+        });
     }
 
     #[test]

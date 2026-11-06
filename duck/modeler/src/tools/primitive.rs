@@ -264,7 +264,7 @@ impl<P: Primitive> ModelingTool for PrimitiveTool<P> {
                 self.cancel();
                 true
             }
-            Gesture::Frame | Gesture::Key(_) => false,
+            _ => false,
         }
     }
 

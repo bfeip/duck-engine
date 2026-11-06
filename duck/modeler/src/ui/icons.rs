@@ -44,6 +44,7 @@ pub const HOLLOW: Icon = icon!("hollow.svg");
 pub const LOFT: Icon = icon!("loft.svg");
 pub const REVOLVE: Icon = icon!("revolve.svg");
 pub const DUPLICATE: Icon = icon!("duplicate.svg");
+pub const RECTANGULAR_ARRAY: Icon = icon!("rectangular-array.svg");
 
 // Selection-kind buttons.
 pub const SELECT_POINT: Icon = icon!("select-point.svg");

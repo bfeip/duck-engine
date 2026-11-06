@@ -59,7 +59,7 @@ impl LoftTool {
                 self.cancel();
                 true
             }
-            Gesture::Finish | Gesture::Hover(_) | Gesture::Click { .. } | Gesture::Key(_) => false,
+            _ => false,
         }
     }
 

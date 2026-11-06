@@ -276,7 +276,7 @@ impl ModelingTool for PathTool {
                 self.cancel();
                 true
             }
-            Gesture::Frame | Gesture::Key(_) => false,
+            _ => false,
         }
     }
 

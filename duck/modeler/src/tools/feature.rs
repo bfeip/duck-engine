@@ -218,7 +218,7 @@ impl<F: Feature> FeatureTool<F> {
                 true
             }
             Gesture::Key(c) => self.edit_with_key(c),
-            Gesture::Finish | Gesture::Hover(_) => false,
+            _ => false,
         }
     }
 
