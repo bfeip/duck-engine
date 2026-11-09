@@ -1,10 +1,8 @@
 use anyhow::Result;
-use duck_engine_common::{consts, InnerSpace, LengthDisplay, Plane, Point3, Real, Vector3};
+use duck_engine_common::{consts, LengthDisplay};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
-    operator::{
-        DragKind, Handle, HandleDrag, HandleId, HandleReach, HandleShape, SelectionKinds,
-    },
+    operator::{Handle, HandleDrag, HandleId, SelectionKinds},
     selection::{SelectionItem, SelectionManager},
 };
 use opencascade::primitives::Shape;
@@ -16,7 +14,7 @@ use crate::ops::revolve::{
 };
 use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
-use super::edit::{angle_field, Params, MIN_DIMENSION};
+use super::edit::{angle_field, Lever, Params};
 use super::feature::{EditLock, Feature, FeatureTool};
 use super::targets::{count_summary, selected_on_part, Selected};
 
@@ -52,13 +50,7 @@ impl Params for RevolveParams {
     /// about. Shown at any angle once there is an axis, so a sweep dragged to
     /// nothing can be dragged back.
     fn handles(&self) -> Vec<Handle> {
-        let Some(lever) = Lever::of(self) else { return Vec::new() };
-        vec![
-            Handle::new(ANGLE_HANDLE, HandleShape::Ball, lever.swung(self.angle))
-                .with_direction(lever.axis)
-                .with_drag(DragKind::Plane)
-                .with_reach(HandleReach::Leader(lever.pivot)),
-        ]
+        lever(self).map(|lever| lever.handle(ANGLE_HANDLE, self.angle)).into_iter().collect()
     }
 
     /// Swinging the ball about the axis sweeps the profile with it, one for
@@ -67,12 +59,8 @@ impl Params for RevolveParams {
         if drag.id != ANGLE_HANDLE {
             return;
         }
-        let Some(lever) = Lever::of(grabbed) else { return };
-        // The swing wraps at half a turn either way: take the turn nearest the
-        // sweep so far, so a drag carries on round.
-        let swept = drag.angle_about(lever.pivot, lever.axis);
-        let so_far = self.angle - grabbed.angle;
-        let swept = swept + consts::TAU * ((so_far - swept) / consts::TAU).round();
+        let Some(lever) = lever(grabbed) else { return };
+        let swept = lever.swept(drag, self.angle - grabbed.angle);
         self.angle = (grabbed.angle + swept).clamp(-consts::TAU, consts::TAU);
     }
 
@@ -81,36 +69,11 @@ impl Params for RevolveParams {
     }
 }
 
-/// The arm the angle grip swings on: from its pivot on the axis, square to the
-/// axis, out to the lever.
-struct Lever {
-    pivot: Point3,
-    axis: Vector3,
-    arm: Vector3,
-}
-
-impl Lever {
-    /// The lever of `params`, once they have an axis. A lever on the axis
-    /// itself swings at the profile's size instead, along some square
-    /// direction.
-    fn of(params: &RevolveParams) -> Option<Self> {
-        let (origin, axis) = params.line()?;
-        let lever = params.frame.lever;
-        let pivot = origin + axis * (lever - origin).dot(axis);
-        let arm = lever - pivot;
-        let arm = if arm.magnitude() > MIN_DIMENSION {
-            arm
-        } else {
-            Plane::from_point(axis, pivot).basis().0 * params.frame.size.max(MIN_DIMENSION)
-        };
-        Some(Self { pivot, axis, arm })
-    }
-
-    /// The end of the arm, swung `angle` counter-clockwise looking down the
-    /// axis.
-    fn swung(&self, angle: Real) -> Point3 {
-        self.pivot + self.arm * angle.cos() + self.axis.cross(self.arm) * angle.sin()
-    }
+/// The lever the angle grip swings on, once `params` have an axis: out to
+/// the profile's lever, or at its size where that is on the axis.
+fn lever(params: &RevolveParams) -> Option<Lever> {
+    let (origin, axis) = params.line()?;
+    Some(Lever::new(origin, axis, params.frame.lever, params.frame.size))
 }
 
 /// Revolves the selected curves or faces about an axis picked with two
@@ -222,9 +185,10 @@ impl Feature for Revolve {
 mod tests {
     use super::*;
 
+    use duck_engine_common::{InnerSpace, Point3, Real};
     use duck_engine_scene::resource::Visibility;
     use duck_engine_viewer::input::Modifiers;
-    use duck_engine_viewer::operator::HandleEvent;
+    use duck_engine_viewer::operator::{HandleEvent, HandleReach};
     use opencascade::primitives::ShapeType;
 
     use crate::testing::{
@@ -264,7 +228,7 @@ mod tests {
     /// A drag swinging the grip from where it sits for `from` to where it
     /// would sit for `to`.
     fn swing(params: &RevolveParams, from: Real, to: Real) -> HandleDrag {
-        let lever = Lever::of(params).expect("the axis is picked");
+        let lever = lever(params).expect("the axis is picked");
         HandleDrag { id: ANGLE_HANDLE, grab: lever.swung(from), point: lever.swung(to), modifiers: Modifiers::default() }
     }
 
@@ -444,9 +408,10 @@ mod tests {
             ..full_turn()
         };
         let params = RevolveParams { frame: RevolveFrame { lever: point(0.5, 1.0), ..params.frame }, ..params };
-        let lever = Lever::of(&params).expect("the axis is picked");
-        assert!((lever.arm.magnitude() - params.frame.size).abs() < EPSILON);
-        assert!(lever.arm.dot(lever.axis).abs() < EPSILON);
+        let end = lever(&params).expect("the axis is picked").swung(0.0);
+        let arm = end - point(0.5, 1.0);
+        assert!((arm.magnitude() - params.frame.size).abs() < EPSILON, "{end:?}");
+        assert!(arm.y.abs() < EPSILON, "the arm is square to the axis: {end:?}");
     }
 
     /// Shift-clicking more faces into a locked revolve keeps its axis and

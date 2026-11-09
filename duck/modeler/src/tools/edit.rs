@@ -3,8 +3,8 @@
 
 use std::ops::RangeInclusive;
 
-use duck_engine_viewer::common::{LengthDisplay, Real};
-use duck_engine_viewer::operator::{Handle, HandleDrag, HandleEvent};
+use duck_engine_viewer::common::{consts, InnerSpace, LengthDisplay, Plane, Point3, Real, Vector3};
+use duck_engine_viewer::operator::{DragKind, Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape};
 
 use crate::ui::length_value;
 
@@ -186,4 +186,52 @@ pub(super) fn angle_field(ui: &mut egui::Ui, label: &str, radians: &mut Real, li
 /// dragged past the opposite face flattens the shape rather than inverting it.
 pub(super) fn grip_dimension(from: Real, delta: Real) -> Real {
     (from + delta).max(MIN_DIMENSION)
+}
+
+/// The arm an angle grip swings on: from its pivot on an axis, square to the
+/// axis, out to the lever.
+pub(super) struct Lever {
+    pivot: Point3,
+    axis: Vector3,
+    arm: Vector3,
+}
+
+impl Lever {
+    /// The lever out to `end` from the axis through `origin` along the unit
+    /// `axis`. An end on the axis itself swings at `size` instead, along some
+    /// square direction.
+    pub(super) fn new(origin: Point3, axis: Vector3, end: Point3, size: Real) -> Self {
+        let pivot = origin + axis * (end - origin).dot(axis);
+        let arm = end - pivot;
+        let arm = if arm.magnitude() > MIN_DIMENSION {
+            arm
+        } else {
+            Plane::from_point(axis, pivot).basis().0 * size.max(MIN_DIMENSION)
+        };
+        Self { pivot, axis, arm }
+    }
+
+    /// The end of the arm, swung `angle` counter-clockwise looking down the
+    /// axis.
+    pub(super) fn swung(&self, angle: Real) -> Point3 {
+        self.pivot + self.arm * angle.cos() + self.axis.cross(self.arm) * angle.sin()
+    }
+
+    /// The grip `id`: a ball at the end of the arm swung `angle`, tied by a
+    /// leader to the axis, dragged round it.
+    pub(super) fn handle(&self, id: HandleId, angle: Real) -> Handle {
+        Handle::new(id, HandleShape::Ball, self.swung(angle))
+            .with_direction(self.axis)
+            .with_drag(DragKind::Plane)
+            .with_reach(HandleReach::Leader(self.pivot))
+    }
+
+    /// How far `drag` has swung the grip about the axis since it was grabbed,
+    /// given the swing `so_far`. The drag's own angle wraps at half a turn
+    /// either way, so this takes the turn nearest the swing so far, and a drag
+    /// carries on round.
+    pub(super) fn swept(&self, drag: &HandleDrag, so_far: Real) -> Real {
+        let swept = drag.angle_about(self.pivot, self.axis);
+        swept + consts::TAU * ((so_far - swept) / consts::TAU).round()
+    }
 }

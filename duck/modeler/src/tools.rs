@@ -16,8 +16,8 @@
 //!   whose grips it shows through [`ModelingTool::handles`] and whose outcomes
 //!   it previews and commits. See `duplicate.rs`.
 //! - Otherwise it implements [`ModelingTool`] itself, from the blocks below.
-//!   See `boolean.rs`, or `array.rs` for one that picks points on a
-//!   selection.
+//!   See `boolean.rs`, or `array/rectangular.rs` for one that picks points on
+//!   a selection.
 //!
 //! Its geometry goes in `crate::ops`, which never sees the viewer or egui.
 //! Re-export the tool here, register it in `main.rs`, and give it an icon in
@@ -70,7 +70,7 @@ mod targets;
 mod thicken;
 mod transform;
 
-pub use array::RectangularArrayTool;
+pub use array::{RadialArrayTool, RectangularArrayTool};
 pub use boolean::BooleanTool;
 pub use r#box::BoxTool;
 pub use circle::CircleTool;

@@ -84,6 +84,11 @@ impl RectangularArray {
             .collect()
     }
 
+    /// Every member's placement but the source's own, in [`offsets`](Self::offsets)'s order.
+    pub fn placements(&self) -> Vec<Matrix4> {
+        self.offsets().into_iter().map(Matrix4::from_translation).collect()
+    }
+
     /// Measures the reaches by `mode`, keeping the members where they are.
     pub fn set_mode(&mut self, mode: ArrayMode) {
         self.axes = self.axes.map(|axis| axis.converted(self.mode, mode));
@@ -94,9 +99,8 @@ impl RectangularArray {
 /// Copies each of `sources` to every member of `array` but its own, as one
 /// undo step. Returns the copies, source-major.
 pub fn rectangular_array(doc: &mut Document, sources: &[PartId], array: &RectangularArray) -> Result<Vec<PartId>> {
-    let placements: Vec<Matrix4> = array.offsets().into_iter().map(Matrix4::from_translation).collect();
     let mut doc = doc.undo_scope("Rectangular array");
-    duplicate_parts(&mut doc, sources, &placements)
+    duplicate_parts(&mut doc, sources, &array.placements())
 }
 
 /// A turn, in radians, too small to tell two members apart.
