@@ -13,7 +13,7 @@ use duck_engine_viewer::scene::resource::{
 use opencascade::primitives::FaceType;
 
 use super::{Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, CadPart, Document};
+use crate::document::{dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, CadPart, Document};
 
 /// Free point on the active construction plane. The always-present, lowest-tier
 /// fallback so a plane-constrained operator always gets a position.
@@ -430,10 +430,15 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
             // one of its segments, so the same bound finds every edge whose
             // midpoint could rank.
             let local_tolerance = self.local_edge_tolerance(mesh, world_transform);
+            let part = self.document.part_at(node.id);
             let mut near_edges = Vec::new();
+            // A part's edge snaps once, from its segment nearest the ray, onto
+            // its B-rep; other meshes snap onto every near segment.
+            let mut nearest: Vec<(u32, Real, Snap)> = Vec::new();
             index.for_each_segment_within(mesh, &self.ray, local_tolerance, |i, approach| {
+                let element = mesh.sub_geometry_for_primitive(SubGeometryKind::Edge, i as u32);
                 if query.want_midpoints {
-                    near_edges.extend(mesh.sub_geometry_for_primitive(SubGeometryKind::Edge, i as u32));
+                    near_edges.extend(element);
                 }
                 if !query.want_edges {
                     return;
@@ -441,14 +446,24 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
                 let Some([v0, v1]) = mesh.segment(i) else { return };
                 let w0 = transform_point(world_transform, array_to_point3(v0.position));
                 let w1 = transform_point(world_transform, array_to_point3(v1.position));
-                results.push(GeometryHit::Snap(Snap {
+                let snap = Snap {
                     position: transform_point(world_transform, approach.closest_on_segment),
                     direction: Some((w1 - w0).normalize()),
                     kind: SnapKind::Edge,
-                }));
+                };
+                match element.filter(|_| part.is_some()) {
+                    Some(element) => match nearest.iter_mut().find(|(e, ..)| *e == element) {
+                        Some(best) if approach.distance < best.1 => *best = (element, approach.distance, snap),
+                        Some(_) => {}
+                        None => nearest.push((element, approach.distance, snap)),
+                    },
+                    None => results.push(GeometryHit::Snap(snap)),
+                }
             });
 
-            if let Some(part) = self.document.part_at(node.id) {
+            if let Some(part) = part {
+                let on_curves = nearest.into_iter().map(|(element, _, snap)| onto_edge(part, element, snap));
+                results.extend(on_curves.map(GeometryHit::Snap));
                 near_edges.sort_unstable();
                 near_edges.dedup();
                 let mut midpoints = Vec::new();
@@ -456,6 +471,30 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
                 results.extend(midpoints.into_iter().map(GeometryHit::Snap));
             }
         }
+    }
+}
+
+/// `snap`, made on the tessellation of `part`'s edge `index`, moved onto the
+/// edge's B-rep curve and along its tangent there. It stays as it was if the
+/// edge has no curve to project onto.
+fn onto_edge(part: &CadPart, index: u32, snap: Snap) -> Snap {
+    // The B-rep is in the world, scaled into the scene at tessellation.
+    let scale = part.options().scale_factor;
+    let projected = part
+        .edge(index)
+        .and_then(|edge| Ok(edge.curve().project(point3_to_dvec3(snap.position) / scale)?));
+    let (point, tangent) = match projected {
+        Ok(projected) => projected,
+        Err(e) => {
+            log::debug!("Edge snap on edge {index} of {} left on its tessellation: {e}", part.name);
+            return snap;
+        }
+    };
+    let tangent = dvec3_to_vec3(tangent);
+    Snap {
+        position: dvec3_to_point3(point * scale),
+        direction: if tangent.magnitude2() > 0.0 { Some(tangent.normalize()) } else { snap.direction },
+        ..snap
     }
 }
 
@@ -1051,6 +1090,65 @@ mod tests {
         }
     }
 
+    /// The rim's tessellation cuts chords across the circle; an edge snap
+    /// lies on the circle itself, along its tangent.
+    #[test]
+    fn edge_snaps_lie_on_a_curved_edge() {
+        const ON_CURVE: Real = 1e-6;
+        // A radius-2 cylinder standing on the XZ plane; the ray drops onto
+        // both rims a radian round from the seam.
+        let (document, _node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 2.0, DVec3::Y, 1.0));
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let (x, z) = (2.0 * (1.0 as Real).cos(), 2.0 * (1.0 as Real).sin());
+        let ray = Ray::new(Point3::new(x, 10.0, z), Vector3::new(0.0, -1.0, 0.0));
+        let mut inp = input_with_ray(ray, screen_of(&cam, Point3::new(x, 1.0, z)), &cam, &plane, &grid);
+        inp.requested = SnapFlags::EDGE;
+
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
+
+        assert_eq!(snaps.len(), 2, "one snap per rim: {snaps:?}");
+        for snap in &snaps {
+            let radial = Vector3::new(snap.position.x, 0.0, snap.position.z);
+            assert!((radial.magnitude() - 2.0).abs() < ON_CURVE, "off the rim: {:?}", snap.position);
+            let tangent = snap.direction.expect("an edge snap carries the curve tangent");
+            assert!(tangent.y.abs() < ON_CURVE && tangent.dot(radial).abs() < ON_CURVE, "{tangent:?}");
+        }
+    }
+
+    /// A box at coordinates no `f32` holds: its tessellation is a few ulps
+    /// off, but an edge snap lands on the B-rep.
+    #[test]
+    fn edge_snaps_land_on_the_b_rep_not_its_rounded_tessellation() {
+        const EXACT: Real = 1e-9;
+        let (x, y) = (100.3, 0.7);
+        let box_shape = Shape::box_from_corners(DVec3::new(97.1, 0.0, -1.0), DVec3::new(x, y, 1.0));
+        let (document, _node) = doc_with_shape(box_shape);
+        let on_edge = Point3::new(x as Real, y as Real, 0.3);
+        let cam = PositionedCamera {
+            eye: Point3::new(x as Real, 10.0, 0.0),
+            target: Point3::new(x as Real, 0.0, 0.0),
+            ..dummy_camera()
+        };
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let ray = Ray::new(on_edge + Vector3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
+        let mut inp = input_with_ray(ray, screen_of(&cam, on_edge), &cam, &plane, &grid);
+        inp.requested = SnapFlags::EDGE;
+
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
+
+        let edge = snaps
+            .iter()
+            .find(|s| (s.position - on_edge).magnitude() < 1e-3)
+            .unwrap_or_else(|| panic!("expected the top edge: {snaps:?}"));
+        let off = (edge.position.x - x as Real).abs() + (edge.position.y - y as Real).abs();
+        assert!(off < EXACT, "{:?}", edge.position);
+        let direction = edge.direction.expect("an edge snap carries the curve tangent");
+        assert!(direction.x.abs() + direction.y.abs() < EXACT, "{direction:?}");
+    }
+
     #[test]
     fn meshes_that_are_not_parts_have_no_midpoints() {
         let (document, _node) = scene_with_edge();
@@ -1112,6 +1210,14 @@ mod tests {
             .find(|s| close(s.position, Point3::new(4.0, 1.0, 0.0)))
             .unwrap_or_else(|| panic!("expected the top edge's midpoint: {snaps:?}"));
         assert!(midpoint.direction.is_some_and(|d| d.z.abs() > 0.9), "{:?}", midpoint.direction);
+
+        inp.requested = SnapFlags::EDGE;
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
+        let edge = snaps
+            .iter()
+            .find(|s| close(s.position, on_edge))
+            .unwrap_or_else(|| panic!("expected the top edge: {snaps:?}"));
+        assert!(edge.direction.is_some_and(|d| d.z.abs() > 0.9), "{:?}", edge.direction);
     }
 
     #[test]
