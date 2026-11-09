@@ -29,7 +29,7 @@ pub(crate) use providers::WireStartSnap;
 
 use bitflags::bitflags;
 
-use duck_engine_viewer::common::{InnerSpace, Plane, Point3, Ray, Vector3};
+use duck_engine_viewer::common::{InnerSpace, Plane, Point3, Ray, Real, Vector3};
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::scene::resource::NodeId;
 
@@ -56,6 +56,9 @@ pub enum SnapKind {
     Midpoint,
     /// The centre of the flat face under the cursor, from its B-rep.
     FaceCenter,
+    /// The centre of a circular edge (a circle or an arc of one), from its
+    /// B-rep, along the circle's axis.
+    Center,
     /// A point on an existing geometry face (ray–surface hit under the cursor).
     Face,
     /// The start point of an in-progress wire, offered so the path can be
@@ -72,7 +75,7 @@ impl SnapKind {
             GridAxis => SnapTier::Axis,
             Face => SnapTier::Face,
             Edge => SnapTier::Edge,
-            Origin | Corner | Midpoint | FaceCenter | WireStart => SnapTier::Feature,
+            Origin | Corner | Midpoint | FaceCenter | Center | WireStart => SnapTier::Feature,
         }
     }
 
@@ -87,6 +90,7 @@ impl SnapKind {
             Edge => SnapFlags::EDGE,
             Midpoint => SnapFlags::MIDPOINT,
             FaceCenter => SnapFlags::FACE_CENTER,
+            Center => SnapFlags::CENTER,
             Face => SnapFlags::FACE,
             WireStart => SnapFlags::WIRE_START,
         }
@@ -95,7 +99,7 @@ impl SnapKind {
 
 /// Ranking precedence, *defined by declaration order* (low → high): a higher
 /// tier always beats a lower one when both are within tolerance; ties break on
-/// screen distance. Reordering these variants is the single place snap
+/// screen distance, or on depth where they coincide on screen. Reordering these variants is the single place snap
 /// precedence is expressed.
 ///
 /// (Rust derives [`Ord`] on a field-less enum by discriminant, i.e. declaration
@@ -134,6 +138,7 @@ bitflags! {
         const FACE               = 1 << 7;
         const MIDPOINT           = 1 << 8;
         const FACE_CENTER        = 1 << 9;
+        const CENTER             = 1 << 10;
     }
 }
 
@@ -278,21 +283,33 @@ impl SnapEngine {
 
     /// Ranks candidates by `(tier, then nearest screen distance)`, dropping any
     /// behind the camera or — for non-fallback kinds — beyond the pixel
-    /// tolerance.
+    /// tolerance. Of two that coincide on screen, the nearer the eye wins.
     fn rank(&self, input: &SnapInput, candidates: &[Snap]) -> Option<Snap> {
+        /// Screen distance within which two candidates are one place.
+        const COINCIDENT: f32 = 1.0;
+        struct Ranked {
+            tier: SnapTier,
+            screen: (f32, f32),
+            dist: f32,
+            depth: Real,
+            snap: Snap,
+        }
+
         let cam = input.camera;
         let view = cam.forward();
         let (vw, vh) = input.viewport;
 
-        let mut best: Option<(SnapTier, f32, Snap)> = None;
+        let mut best: Option<Ranked> = None;
         for &c in candidates {
             // Reject candidates behind the camera; their projection is meaningless.
-            if (c.position - cam.eye).dot(view) <= 0.0 {
+            let depth = (c.position - cam.eye).dot(view);
+            if depth <= 0.0 {
                 continue;
             }
             let screen = cam.project_point_screen(c.position, vw, vh);
-            let dx = screen.x as f32 - input.cursor.0;
-            let dy = screen.y as f32 - input.cursor.1;
+            let screen = (screen.x as f32, screen.y as f32);
+            let dx = screen.0 - input.cursor.0;
+            let dy = screen.1 - input.cursor.1;
             let dist = (dx * dx + dy * dy).sqrt();
 
             // The fallback projects onto the cursor itself, so it is never gated;
@@ -302,18 +319,23 @@ impl SnapEngine {
             }
 
             let tier = c.kind.tier();
-            let better = match best {
+            let better = match &best {
                 None => true,
-                Some((best_tier, best_dist, _)) => {
-                    tier > best_tier || (tier == best_tier && dist < best_dist)
+                Some(best) if tier != best.tier => tier > best.tier,
+                Some(best) => {
+                    let apart = (screen.0 - best.screen.0).hypot(screen.1 - best.screen.1);
+                    match apart <= COINCIDENT {
+                        true => depth < best.depth,
+                        false => dist < best.dist,
+                    }
                 }
             };
             if better {
-                best = Some((tier, dist, c));
+                best = Some(Ranked { tier, screen, dist, depth, snap: c });
             }
         }
 
-        best.map(|(_, _, snap)| snap)
+        best.map(|best| best.snap)
     }
 }
 
@@ -400,6 +422,7 @@ mod tests {
             SnapKind::Midpoint,
             SnapKind::Face,
             SnapKind::FaceCenter,
+            SnapKind::Center,
         ] {
             assert!(SnapFlags::all().contains(kind.flag()));
         }
@@ -424,6 +447,26 @@ mod tests {
         let grid = GridConfig::default();
         let inp = input(&cam, &plane, &grid, cursor);
         assert_eq!(engine.rank(&inp, &candidates).unwrap().kind, SnapKind::Corner);
+    }
+
+    /// Two corners on one line of sight, a back one a little nearer the cursor
+    /// on screen: the front one is what the user sees there.
+    #[test]
+    fn of_coincident_candidates_the_nearer_wins() {
+        let cam = test_camera();
+        let engine = bare_engine();
+        let front = Point3::new(1.0, 0.0, 0.0);
+        let (x, y) = screen_of(&cam, front);
+        let through = cam.unproject_point_screen(x + 0.5, y, 0.5, 800, 600).unwrap();
+        let back = cam.eye + (through - cam.eye).normalize() * 15.0;
+        let cursor = (x + 0.6, y);
+        let corner = |position| Snap { position, direction: None, kind: SnapKind::Corner };
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let inp = input(&cam, &plane, &grid, cursor);
+        for candidates in [[corner(front), corner(back)], [corner(back), corner(front)]] {
+            assert_eq!(engine.rank(&inp, &candidates).unwrap().position, front);
+        }
     }
 
     #[test]
@@ -522,5 +565,29 @@ mod tests {
 
         assert_eq!(snap.kind, SnapKind::FaceCenter);
         assert!((snap.position - Point3::new(3.0, 2.0, 0.0)).magnitude() < EPSILON, "{:?}", snap.position);
+    }
+
+    /// Looking down a cylinder's axis, both rims' centres are under the
+    /// cursor; the top one is in front.
+    #[test]
+    fn the_near_rim_center_beats_the_far_one() {
+        const EPSILON: Real = 1e-6;
+        let cam = PositionedCamera {
+            eye: Point3::new(3.0, 10.0, 0.0),
+            target: Point3::new(3.0, 0.0, 0.0),
+            ..top_down_camera()
+        };
+        let engine = SnapEngine::with_defaults();
+        let cylinder = Shape::cylinder(DVec3::new(3.0, 0.0, 0.0), 1.0, DVec3::Y, 1.0);
+        let (document, _node) = crate::testing::doc_with_shape(cylinder);
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let mut inp = input(&cam, &plane, &grid, screen_of(&cam, Point3::new(3.02, 1.0, 0.0)));
+        inp.requested = SnapFlags::CENTER;
+
+        let snap = engine.snap(&inp, &document, &[]).unwrap();
+
+        assert_eq!(snap.kind, SnapKind::Center);
+        assert!((snap.position - Point3::new(3.0, 1.0, 0.0)).magnitude() < EPSILON, "{:?}", snap.position);
     }
 }

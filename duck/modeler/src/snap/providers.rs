@@ -130,10 +130,14 @@ impl SnapProvider for GridSnap {
 
 /// Snaps to existing geometry: B-rep corners (vertices, [`SnapKind::Corner`]),
 /// points along edges/wires ([`SnapKind::Edge`]), edge midpoints from the
-/// part's B-rep ([`SnapKind::Midpoint`]), ray–surface hits on faces
+/// part's B-rep ([`SnapKind::Midpoint`]), the centres of a part's circular
+/// edges ([`SnapKind::Center`]), ray–surface hits on faces
 /// ([`SnapKind::Face`]), and the centre of the flat face hit
 /// ([`SnapKind::FaceCenter`]). All kinds share one scene walk, the expensive
 /// part, so they cost a single traversal.
+///
+/// Centres are offered for the parts the walk reaches near the cursor, so the
+/// centre of an arc that lies off its part's bounds is missed.
 ///
 /// The walk is delegated to the scene's [`PickQuery`] framework ([`pick_all`]),
 /// which traverses the node tree from the roots, prunes `DO_NOT_SELECT` subtrees,
@@ -146,6 +150,7 @@ impl SnapProvider for GeometrySnap {
         SnapFlags::CORNER
             | SnapFlags::EDGE
             | SnapFlags::MIDPOINT
+            | SnapFlags::CENTER
             | SnapFlags::FACE
             | SnapFlags::FACE_CENTER
     }
@@ -162,11 +167,7 @@ impl SnapProvider for GeometrySnap {
             exclude_nodes: input.exclude_nodes,
             // Only do the work for kinds the caller actually asked for; the engine
             // still drops anything globally disabled afterwards.
-            want_corners: input.requested.contains(SnapFlags::CORNER),
-            want_edges: input.requested.contains(SnapFlags::EDGE),
-            want_midpoints: input.requested.contains(SnapFlags::MIDPOINT),
-            want_faces: input.requested.contains(SnapFlags::FACE),
-            want_face_centers: input.requested.contains(SnapFlags::FACE_CENTER),
+            kinds: input.requested & self.produces(),
         };
 
         // Every face hit lies on the cursor ray, so screen-space ranking cannot
@@ -188,7 +189,7 @@ impl SnapProvider for GeometrySnap {
             }
         }
         if let Some((snap, face)) = nearest_face {
-            if query.want_faces {
+            if query.kinds.contains(SnapFlags::FACE) {
                 snaps.push(snap);
             }
             snaps.extend(face.and_then(|face| face.center()));
@@ -268,12 +269,14 @@ struct GeometrySnapQuery<'a> {
     /// coordinate space; updated alongside the ray by [`Self::transform`].
     local_scale: Real,
     exclude_nodes: &'a [NodeId],
-    want_corners: bool,
-    want_edges: bool,
-    want_midpoints: bool,
-    want_faces: bool,
-    want_face_centers: bool,
+    /// The kinds to look for.
+    kinds: SnapFlags,
 }
+
+/// The kinds found where the ray meets a face.
+const FACE_KINDS: SnapFlags = SnapFlags::FACE.union(SnapFlags::FACE_CENTER);
+/// The kinds found on segments near the ray.
+const SEGMENT_KINDS: SnapFlags = SnapFlags::EDGE.union(SnapFlags::MIDPOINT);
 
 impl GeometrySnapQuery<'_> {
     /// Conservative local-space distance bound for edge candidates: a segment
@@ -298,14 +301,14 @@ impl GeometrySnapQuery<'_> {
         world_tolerance * self.local_scale
     }
 
-    /// This query, with hidden primitive types masked off.
+    /// This query, without the kinds of hidden primitive types.
     fn within(mut self, shown: PrimitiveFlags) -> Self {
-        let faces = shown.contains(PrimitiveFlags::TRIANGLES);
-        let lines = shown.contains(PrimitiveFlags::LINES);
-        self.want_faces &= faces;
-        self.want_face_centers &= faces;
-        self.want_edges &= lines;
-        self.want_midpoints &= lines;
+        if !shown.contains(PrimitiveFlags::TRIANGLES) {
+            self.kinds -= FACE_KINDS;
+        }
+        if !shown.contains(PrimitiveFlags::LINES) {
+            self.kinds -= SEGMENT_KINDS | SnapFlags::CENTER;
+        }
         self
     }
 }
@@ -372,7 +375,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
         }
         let query = self.within(shown);
 
-        if query.want_corners {
+        if query.kinds.contains(SnapFlags::CORNER) {
             if let Some(topology) = mesh.topology() {
                 let mut corners = Vec::new();
                 collect_mesh_corners(mesh, topology, shown, world_transform, &mut corners);
@@ -380,18 +383,21 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
             }
         }
 
-        if !query.want_faces && !query.want_face_centers && !query.want_edges && !query.want_midpoints {
-            return;
+        if query.kinds.contains(SnapFlags::CENTER) {
+            if let Some(part) = self.document.part_at(node.id) {
+                let mut centers = Vec::new();
+                collect_circle_centers(part, &mut centers);
+                results.extend(centers.into_iter().map(GeometryHit::Snap));
+            }
         }
+
         // Both narrow phases run in this mesh's local space (the ray is already
         // there) through the mesh's cached spatial index, and lift results to
         // world.
-        let index = mesh.spatial_index();
-
-        if query.want_faces || query.want_face_centers {
+        if query.kinds.intersects(FACE_KINDS) {
             // Nearest ray–triangle hit on this mesh; `GeometrySnap::collect`
             // picks the nearest across all meshes.
-            if let Some(hit) = index.nearest_triangle(mesh, &self.ray) {
+            if let Some(hit) = mesh.spatial_index().nearest_triangle(mesh, &self.ray) {
                 if let Some([v0, v1, v2]) = mesh.triangle(hit.triangle_index) {
                     // Möller–Trumbore weights: hit = w·v0 + u·v1 + v·v2.
                     let (u, v, w) = hit.barycentric;
@@ -407,7 +413,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
                     let face = self
                         .document
                         .part_at(node.id)
-                        .filter(|_| query.want_face_centers)
+                        .filter(|_| query.kinds.contains(SnapFlags::FACE_CENTER))
                         .and_then(|part| {
                             let triangle = hit.triangle_index as u32;
                             let index = mesh.sub_geometry_for_primitive(SubGeometryKind::Face, triangle)?;
@@ -423,7 +429,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
             }
         }
 
-        if query.want_edges || query.want_midpoints {
+        if query.kinds.intersects(SEGMENT_KINDS) {
             // Bounded by the pixel tolerance: any segment farther from the ray
             // can never rank, and the index skips subtrees outside the bound.
             // An edge's midpoint lies on (or within tessellation deflection of)
@@ -435,12 +441,13 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
             // A part's edge snaps once, from its segment nearest the ray, onto
             // its B-rep; other meshes snap onto every near segment.
             let mut nearest: Vec<(u32, Real, Snap)> = Vec::new();
+            let index = mesh.spatial_index();
             index.for_each_segment_within(mesh, &self.ray, local_tolerance, |i, approach| {
                 let element = mesh.sub_geometry_for_primitive(SubGeometryKind::Edge, i as u32);
-                if query.want_midpoints {
+                if query.kinds.contains(SnapFlags::MIDPOINT) {
                     near_edges.extend(element);
                 }
-                if !query.want_edges {
+                if !query.kinds.contains(SnapFlags::EDGE) {
                     return;
                 }
                 let Some([v0, v1]) = mesh.segment(i) else { return };
@@ -517,6 +524,18 @@ fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Snap>) {
             direction: Some(dvec3_to_vec3(tangent).normalize()),
             kind: SnapKind::Midpoint,
         });
+    }
+}
+
+/// Pushes the centre of each of `part`'s circular edges into `out`, along the
+/// circle's axis.
+fn collect_circle_centers(part: &CadPart, out: &mut Vec<Snap>) {
+    // The B-rep is in the world, scaled into the scene at tessellation.
+    let scale = part.options().scale_factor as Real;
+    for edge in part.elements().edges() {
+        if let Some((center, normal)) = edge.circle_axis() {
+            out.push(Snap { position: center * scale, direction: Some(normal), kind: SnapKind::Center });
+        }
     }
 }
 
@@ -976,11 +995,7 @@ mod tests {
             pixel_tolerance: 12.0,
             local_scale: 1.0,
             exclude_nodes: &[],
-            want_corners: true,
-            want_edges: true,
-            want_midpoints: true,
-            want_faces: true,
-            want_face_centers: true,
+            kinds: SnapFlags::all(),
         };
 
         // An AABB straddling the origin projects under the cursor → kept.
@@ -1163,6 +1178,59 @@ mod tests {
 
         assert!(snaps.iter().any(|s| s.kind == SnapKind::Edge), "{snaps:?}");
         assert!(snaps.iter().all(|s| s.kind != SnapKind::Midpoint), "{snaps:?}");
+    }
+
+    /// Circle-centre candidates for a radius-2 cylinder standing on the XZ
+    /// plane, 1 high, seen from above with the cursor over its axis, and the
+    /// kinds `requested`.
+    fn cylinder_centers(requested: SnapFlags) -> Vec<Snap> {
+        let (document, _node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 2.0, DVec3::Y, 1.0));
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let ray = Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
+        let mut inp = input_with_ray(ray, screen_of(&cam, Point3::new(0.0, 1.0, 0.0)), &cam, &plane, &grid);
+        inp.requested = requested;
+
+        let snaps = GeometrySnap.collect(&inp, &document, &SnapSettings::default());
+        snaps.into_iter().filter(|s| s.kind == SnapKind::Center).collect()
+    }
+
+    #[test]
+    fn rim_centers_lie_on_the_axis_along_it() {
+        const EXACT: Real = 1e-9;
+        let mut heights: Vec<Real> = cylinder_centers(SnapFlags::CENTER)
+            .iter()
+            .map(|center| {
+                let p = center.position;
+                assert!(p.x.abs() < EXACT && p.z.abs() < EXACT, "off the axis: {p:?}");
+                let normal = center.direction.expect("a centre carries the circle's axis");
+                assert!((normal.y.abs() - 1.0).abs() < EXACT, "{normal:?}");
+                p.y
+            })
+            .collect();
+        heights.sort_by(Real::total_cmp);
+        assert_eq!(heights.len(), 2, "one centre per rim: {heights:?}");
+        assert!(heights[0].abs() < EXACT && (heights[1] - 1.0).abs() < EXACT, "{heights:?}");
+    }
+
+    #[test]
+    fn centers_come_only_when_requested() {
+        assert!(cylinder_centers(SnapFlags::all() - SnapFlags::CENTER).is_empty());
+    }
+
+    #[test]
+    fn meshes_that_are_not_parts_have_no_centers() {
+        let (document, _node) = scene_with_edge();
+        let cam = dummy_camera();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let mid = Point3::new(5.0, 0.0, 0.0);
+        let ray = Ray::new(Point3::new(5.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
+        let mut inp = input_with_ray(ray, screen_of(&cam, mid), &cam, &plane, &grid);
+        inp.requested = SnapFlags::CENTER;
+
+        assert!(GeometrySnap.collect(&inp, &document, &SnapSettings::default()).is_empty());
     }
 
     /// Face-centre candidates for a ray straight down through `(x, z)`.

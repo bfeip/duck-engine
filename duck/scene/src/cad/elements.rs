@@ -1,5 +1,7 @@
 use opencascade::primitives::{AncestorMap, Edge, Face, Shape, ShapeMap, SubShape, Vertex, Wire};
 
+use crate::common::{Point3, Real, Vector3};
+
 /// A shape's faces, edges and vertices as a user sees them, numbered: the order
 /// a tessellated mesh's sub-geometry ranges follow, so a picked index is an
 /// element.
@@ -24,9 +26,19 @@ pub struct EdgeElement {
     pieces: Vec<Edge>,
     /// The pieces joined into one, when there are several.
     joined: Option<Edge>,
+    circle: Option<(Point3, Vector3)>,
 }
 
 impl EdgeElement {
+    fn new(pieces: Vec<Edge>, joined: Option<Edge>) -> Self {
+        // A seam splits a circle into arcs of the same circle.
+        let circle = pieces[0].circle_axis().map(|(centre, normal)| {
+            let centre = Point3::new(centre.x as Real, centre.y as Real, centre.z as Real);
+            (centre, Vector3::new(normal.x as Real, normal.y as Real, normal.z as Real))
+        });
+        Self { pieces, joined, circle }
+    }
+
     /// The shape's edges this element covers, in order along its curve: one, or
     /// more where a seam split it.
     pub fn pieces(&self) -> &[Edge] {
@@ -38,6 +50,12 @@ impl EdgeElement {
     pub fn curve(&self) -> &Edge {
         self.joined.as_ref().unwrap_or(&self.pieces[0])
     }
+
+    /// The centre and unit normal of this element's circle, in the shape's
+    /// coordinates, if it is a circle or an arc of one.
+    pub fn circle_axis(&self) -> Option<(Point3, Vector3)> {
+        self.circle
+    }
 }
 
 impl ShapeElements {
@@ -48,11 +66,11 @@ impl ShapeElements {
         for run in std::mem::take(&mut splits.chains) {
             let pieces: Vec<Edge> = run.iter().map(|end| splits.edge(end.edge)).collect();
             if pieces.len() == 1 {
-                edges.push(EdgeElement { pieces, joined: None });
+                edges.push(EdgeElement::new(pieces, None));
                 continue;
             }
             match join(&pieces) {
-                Some(joined) => edges.push(EdgeElement { pieces, joined: Some(joined) }),
+                Some(joined) => edges.push(EdgeElement::new(pieces, Some(joined))),
                 // Pieces that make no one edge are edges of their own, meeting at
                 // vertices of their own.
                 None => {
@@ -60,7 +78,7 @@ impl ShapeElements {
                         splits.reveal(end.other());
                     }
                     edges.extend(
-                        pieces.into_iter().map(|piece| EdgeElement { pieces: vec![piece], joined: None }),
+                        pieces.into_iter().map(|piece| EdgeElement::new(vec![piece], None)),
                     );
                 },
             }
@@ -378,6 +396,7 @@ mod tests {
         }
         let length: f64 = rim.pieces().iter().map(Edge::length).sum();
         assert_eq!(rim.curve().edge_type(), EdgeType::Circle);
+        assert!(rim.circle_axis().is_some(), "the pieces are arcs of the rim's circle");
         assert!(
             (rim.curve().length() - length).abs() < 1e-6,
             "expected {length}, got {}",
@@ -408,6 +427,27 @@ mod tests {
     fn a_cylinder_is_three_faces_and_two_rims() {
         let elements = ShapeElements::new(&Shape::cylinder_radius_height(1.0, 2.0));
         assert_eq!(counts(&elements), (3, 2, 0, 1));
+    }
+
+    #[test]
+    fn rims_know_their_circles_and_box_edges_have_none() {
+        const EPSILON: Real = 1e-9;
+        let elements = ShapeElements::new(&Shape::cylinder_radius_height(1.0, 2.0));
+        let mut heights: Vec<Real> = elements
+            .edges()
+            .iter()
+            .map(|rim| {
+                let (centre, normal) = rim.circle_axis().expect("a rim is a circle");
+                assert!(centre.x.abs() < EPSILON && centre.y.abs() < EPSILON, "{centre:?}");
+                assert!((normal.z.abs() - 1.0).abs() < EPSILON, "{normal:?}");
+                centre.z
+            })
+            .collect();
+        heights.sort_by(Real::total_cmp);
+        assert!(heights[0].abs() < EPSILON && (heights[1] - 2.0).abs() < EPSILON, "{heights:?}");
+
+        let cube = ShapeElements::new(&Shape::cube(1.0));
+        assert!(cube.edges().iter().all(|edge| edge.circle_axis().is_none()));
     }
 
     #[test]
