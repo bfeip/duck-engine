@@ -144,7 +144,7 @@ mod tests {
     fn the_polar_axis_follows_a_snapped_direction() {
         let normal = Vector3::new(0.0, 0.0, 1.0);
         let at = Point3::new(1.0, 2.0, 3.0);
-        let face = Snap { position: at, direction: Some(normal), kind: SnapKind::Face };
+        let face = Snap::new(at, SnapKind::Face).with_direction(normal);
         assert!((SphereParams::start(&face, &Plane::xz()).axis - normal).magnitude() < EPSILON);
     }
 
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn the_polar_axis_otherwise_runs_off_the_world_axes() {
         let at = Point3::new(1.0, 2.0, 3.0);
-        let free = Snap { position: at, direction: None, kind: SnapKind::ConstructionPlane };
+        let free = Snap::new(at, SnapKind::ConstructionPlane);
         let axis = SphereParams::start(&free, &Plane::xz()).axis;
         for world in [Vector3::unit_x(), Vector3::unit_y(), Vector3::unit_z()] {
             assert!(axis.dot(world).abs() < 1.0 - 1e-3, "{axis:?} runs along {world:?}");

@@ -12,7 +12,7 @@ use opencascade::primitives::Shape;
 
 use crate::ops::primitives::{closed_polyline, closed_spline, polyline, region, spline};
 use crate::preview::PreviewSession;
-use crate::snap::{Snap, SnapKind, SnapProvider, WireStartSnap};
+use crate::snap::{Snap, SnapKind, Stroke};
 use crate::ui::icons;
 use super::{Gesture, ModelingTool, ToolInfo, Workspace};
 
@@ -84,7 +84,9 @@ enum Ending {
 /// Draws a line or curve through clicked points.
 ///
 /// The path through the points placed so far shows beneath the path the next
-/// click makes, so a point that reshapes the curve before it shows how.
+/// click makes, so a point that reshapes the curve before it shows how. Each
+/// point snaps in relation to those before it too; on a line, a tangent between
+/// two circles moves the point before.
 ///
 /// Right-click or Enter ends the path at its last point; clicking its first
 /// point again closes it into a region. Either adds it as a part and leaves the
@@ -99,7 +101,7 @@ pub struct PathTool {
     /// The path through the points placed so far.
     placed: PreviewSession,
     /// The points placed so far, none before the first click.
-    points: Vec<Point3>,
+    stroke: Stroke,
     /// Where the 3D cursor marks.
     cursor: Option<Point3>,
     /// Set once the path is added or discarded, so the tool cedes back to
@@ -114,43 +116,33 @@ impl PathTool {
             workspace: workspace.clone(),
             preview: workspace.preview_session(),
             placed: workspace.preview_session(),
-            points: Vec::new(),
+            stroke: Stroke::new(kind == PathKind::Polyline),
             cursor: None,
             finished: false,
         }
     }
 
-    /// The first point, offered as a snap once the path can close on it: it
-    /// takes three points to enclose anything.
-    fn closing_snap(&self) -> Option<WireStartSnap> {
-        (self.points.len() >= 3).then(|| WireStartSnap { start: self.points[0] })
-    }
-
-    /// The snapped point under the cursor at `at`, looking through the
+    /// The snapped next point under the cursor at `at`, looking through the
     /// previews.
-    fn snap(&self, at: (f32, f32), ctx: &EventContext) -> Option<Snap> {
-        let start = self.closing_snap();
-        let extra: Vec<&dyn SnapProvider> =
-            start.iter().map(|start| start as &dyn SnapProvider).collect();
+    fn snap(&mut self, at: (f32, f32), ctx: &EventContext) -> Option<Snap> {
         let exclude: Vec<NodeId> =
             self.preview.preview_nodes()
             .iter()
             .chain(self.placed.preview_nodes())
             .copied()
             .collect();
-        self.workspace.snap_with(at, &exclude, ctx, &extra)
+        self.workspace.snap_next(at, &exclude, ctx, &mut self.stroke)
     }
 
     /// Follows `snap` with the cursor and the path's loose end, or with the
     /// region the path would close into.
     fn hover(&mut self, snap: Option<Snap>) {
         self.cursor = snap.map(|snap| snap.position);
-        let Some(snap) = snap.filter(|_| !self.points.is_empty()) else { return };
+        let Some(snap) = snap.filter(|_| !self.stroke.is_empty()) else { return };
         let shape = if snap.kind == SnapKind::WireStart {
-            self.kind.closed(&self.points)
+            self.kind.closed(&self.stroke.points())
         } else {
-            let points: Vec<Point3> = self.points.iter().copied().chain([snap.position]).collect();
-            self.kind.open(&points)
+            self.kind.open(&self.stroke.points_with(&snap))
         };
         self.show_preview(shape);
     }
@@ -162,7 +154,7 @@ impl PathTool {
         if snap.kind == SnapKind::WireStart {
             self.apply_and_report(Ending::Closed);
         } else {
-            self.points.push(snap.position);
+            self.stroke.place(snap);
             self.show_placed();
             // The next hover adds the loose end.
             self.preview.clear_previews();
@@ -183,7 +175,7 @@ impl PathTool {
     /// Shows the path through the placed points, once there are enough for
     /// one.
     fn show_placed(&mut self) {
-        let Ok(shape) = self.kind.open(&self.points) else { return };
+        let Ok(shape) = self.kind.open(&self.stroke.points()) else { return };
         let options = self.workspace.preview_options();
         let name = format!("{} so far", self.kind.name());
         self.placed.try_replace_preview(&shape, &options, &name);
@@ -203,13 +195,13 @@ impl PathTool {
 
     /// Whether the path can end open where it is.
     fn is_complete(&self) -> bool {
-        self.points.len() >= self.kind.min_points()
+        self.stroke.len() >= self.kind.min_points()
     }
 
     /// Ends the path open, or drops one too short to stand and stays. Returns
     /// whether there was a path.
     fn finish(&mut self) -> bool {
-        if self.points.is_empty() {
+        if self.stroke.is_empty() {
             return false;
         }
         if self.is_complete() {
@@ -223,9 +215,10 @@ impl PathTool {
     /// Adds the path as a part, ended as `ending` says, and finishes the tool.
     /// A failure keeps the points, so the path can go on.
     fn apply(&mut self, ending: Ending) -> Result<()> {
+        let points = self.stroke.points();
         let (name, shape) = match ending {
-            Ending::Open => (self.kind.name(), self.kind.open(&self.points)?),
-            Ending::Closed => ("Region", self.kind.closed(&self.points)?),
+            Ending::Open => (self.kind.name(), self.kind.open(&points)?),
+            Ending::Closed => ("Region", self.kind.closed(&points)?),
         };
         self.workspace.add_numbered_part(name, shape, Transform::IDENTITY)?;
         self.reset();
@@ -251,7 +244,7 @@ impl PathTool {
     fn reset(&mut self) {
         self.preview.cancel();
         self.placed.cancel();
-        self.points.clear();
+        self.stroke.clear();
     }
 }
 
@@ -264,11 +257,13 @@ impl ModelingTool for PathTool {
         let Some(gesture) = Gesture::read(event, ctx.modifiers) else { return false };
         match gesture {
             Gesture::Hover(at) => {
-                self.hover(self.snap(at, ctx));
+                let snap = self.snap(at, ctx);
+                self.hover(snap);
                 false
             }
             Gesture::Click { at, .. } => {
-                self.click(self.snap(at, ctx));
+                let snap = self.snap(at, ctx);
+                self.click(snap);
                 true
             }
             Gesture::Finish => self.finish(),
@@ -319,14 +314,13 @@ mod tests {
 
     /// A snap to `(x, 0, z)` on the construction plane.
     fn at(x: Real, z: Real) -> Option<Snap> {
-        let position = Point3::new(x, 0.0, z);
-        Some(Snap { position, direction: None, kind: SnapKind::ConstructionPlane })
+        Some(Snap::new(Point3::new(x, 0.0, z), SnapKind::ConstructionPlane))
     }
 
     /// The path's first point, offered back to close it.
     fn start_of(tool: &PathTool) -> Option<Snap> {
-        let start = tool.closing_snap().expect("the path can close").start;
-        Some(Snap { position: start, direction: None, kind: SnapKind::WireStart })
+        let start = tool.stroke.points()[0];
+        Some(Snap::new(start, SnapKind::WireStart))
     }
 
     /// The names and shape types of the document's parts.
@@ -372,7 +366,7 @@ mod tests {
 
         assert!(tool.finish());
         assert!(!tool.is_finished());
-        assert!(tool.points.is_empty());
+        assert!(tool.stroke.is_empty());
         assert!(previews_empty(&tool));
         assert!(parts(&ws).is_empty());
         // Nothing placed is nothing to finish.
@@ -382,7 +376,6 @@ mod tests {
     #[test]
     fn clicking_the_first_point_again_closes_a_region() {
         let (mut tool, ws) = tool(PathKind::Spline);
-        assert!(tool.closing_snap().is_none());
         tool.click(at(0.0, 0.0));
         tool.click(at(2.0, 0.0));
         tool.click(at(1.0, 2.0));
@@ -422,6 +415,25 @@ mod tests {
         tool.click(at(1.0, 2.0));
         assert!(tool.placed.preview_node().is_some());
         assert!(tool.preview.is_empty());
+    }
+
+    /// A tangent between two circles moves the point before it.
+    #[test]
+    fn a_click_that_moves_the_last_point_reshapes_the_path() {
+        let (mut tool, _ws) = tool(PathKind::Polyline);
+        tool.click(at(0.0, 0.0));
+        tool.click(at(2.0, 0.0));
+        let tangent = Snap {
+            moves_last: Some(Point3::new(2.0, 0.0, 1.0)),
+            ..Snap::new(Point3::new(4.0, 0.0, 1.0), SnapKind::TangentTangent)
+        };
+
+        tool.hover(Some(tangent));
+        tool.click(Some(tangent));
+
+        let expected = [Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 1.0), Point3::new(4.0, 0.0, 1.0)];
+        assert_eq!(tool.stroke.points(), expected);
+        assert!(tool.placed.preview_node().is_some());
     }
 
     #[test]

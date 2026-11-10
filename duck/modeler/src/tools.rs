@@ -26,7 +26,9 @@
 //! The blocks every family is built from:
 //!
 //! - [`Workspace`]: the document, construction settings and notices, and
-//!   snapping, to a [`Pointer`].
+//!   snapping, to a [`Pointer`]. A tool drawing a path through points keeps a
+//!   [`Stroke`] of them and snaps each next one through
+//!   [`Workspace::snap_next`], which relates it to those before.
 //! - [`Gesture`]: what an event means under the standard bindings.
 //! - `PreviewSession`: preview geometry, and the parts it hides meanwhile.
 //! - `edit.rs`: settings a panel and grips edit live, and the panel's parts.
@@ -108,7 +110,7 @@ use crate::construction::ConstructionOptions;
 use crate::document::{Document, PartId};
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::snap::{Snap, SnapFlags, SnapInput, SnapProvider};
+use crate::snap::{Snap, SnapFlags, SnapInput, Stroke};
 use crate::ui::icons::Icon;
 
 /// Static palette identity for a tool. All fields are `'static` so the
@@ -174,17 +176,35 @@ impl Workspace {
     /// The snapped world point under `cursor`, ignoring the `exclude` nodes,
     /// such as the tool's own preview.
     pub fn snap(&self, cursor: (f32, f32), exclude: &[NodeId], ctx: &EventContext) -> Option<Snap> {
-        self.snap_with(cursor, exclude, ctx, &[])
+        let document = self.document.lock().unwrap();
+        self.snap_in(&document, cursor, exclude, ctx, None)
     }
 
-    /// [`snap`](Self::snap), with `extra` candidates competing alongside the
-    /// registered providers, such as an in-progress wire's start point.
-    pub fn snap_with(
+    /// The snapped next point of `stroke` under `cursor`, ignoring the
+    /// `exclude` nodes: [`snap`](Self::snap), and the snaps relating it to the
+    /// points placed before. `stroke` takes note of where it is.
+    pub fn snap_next(
         &self,
         cursor: (f32, f32),
         exclude: &[NodeId],
         ctx: &EventContext,
-        extra: &[&dyn SnapProvider],
+        stroke: &mut Stroke,
+    ) -> Option<Snap> {
+        let document = self.document.lock().unwrap();
+        let snap = self.snap_in(&document, cursor, exclude, ctx, Some(&*stroke));
+        if let Some(snap) = &snap {
+            stroke.observe(snap, &document);
+        }
+        snap
+    }
+
+    fn snap_in(
+        &self,
+        document: &Document,
+        cursor: (f32, f32),
+        exclude: &[NodeId],
+        ctx: &EventContext,
+        stroke: Option<&Stroke>,
     ) -> Option<Snap> {
         let construction = self.construction.borrow();
         let input = SnapInput {
@@ -196,9 +216,9 @@ impl Workspace {
             grid: &construction.grid,
             requested: SnapFlags::all(),
             exclude_nodes: exclude,
+            stroke,
         };
-        let document = self.document.lock().unwrap();
-        construction.snap.snap(&input, &document, extra)
+        construction.snap.snap(&input, document)
     }
 
     /// What the cursor at `cursor` points at, ignoring the `exclude` nodes for

@@ -306,7 +306,7 @@ pub fn named_key(named: NamedKey) -> KeyEvent {
 /// through it.
 pub fn pointer_at(at: Point3) -> Pointer {
     Pointer {
-        snap: Some(Snap { position: at, direction: None, kind: SnapKind::ConstructionPlane }),
+        snap: Some(Snap::new(at, SnapKind::ConstructionPlane)),
         ray: Ray::new(at + Vector3::unit_x() * 10.0, -Vector3::unit_x()),
     }
 }

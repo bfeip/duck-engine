@@ -291,7 +291,15 @@ fn snap_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) {
     ui.checkbox(&mut settings.enabled, "Enable snapping");
 
     ui.add_enabled_ui(settings.enabled, |ui| {
-        let kinds: [(&str, SnapFlags); 10] = [
+        let kinds = |ui: &mut egui::Ui, enabled: &mut SnapFlags, kinds: &[(&str, SnapFlags)]| {
+            for &(label, flag) in kinds {
+                let mut on = enabled.contains(flag);
+                if ui.checkbox(&mut on, label).changed() {
+                    enabled.set(flag, on);
+                }
+            }
+        };
+        kinds(ui, &mut settings.enabled_kinds, &[
             ("Origin", SnapFlags::ORIGIN),
             ("Grid guides", SnapFlags::GRID_GUIDE),
             ("Grid axes", SnapFlags::GRID_AXIS),
@@ -301,14 +309,16 @@ fn snap_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) {
             ("Edges", SnapFlags::EDGE),
             ("Midpoints", SnapFlags::MIDPOINT),
             ("Circle centers", SnapFlags::CENTER),
+        ]);
+        ui.label("From the last point");
+        kinds(ui, &mut settings.enabled_kinds, &[
             ("Wire start", SnapFlags::WIRE_START),
-        ];
-        for (label, flag) in kinds {
-            let mut on = settings.enabled_kinds.contains(flag);
-            if ui.checkbox(&mut on, label).changed() {
-                settings.enabled_kinds.set(flag, on);
-            }
-        }
+            ("Axis aligned", SnapFlags::AXIS_ALIGNED),
+            ("Parallel", SnapFlags::PARALLEL),
+            ("Closest", SnapFlags::CLOSEST),
+            ("Perpendicular", SnapFlags::PERPENDICULAR),
+            ("Tangent to two circles", SnapFlags::TANGENT_TANGENT),
+        ]);
 
         egui::Grid::new("snap_settings").num_columns(2).show(ui, |ui| {
             ui.label("Tolerance");

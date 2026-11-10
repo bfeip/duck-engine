@@ -460,7 +460,7 @@ mod tests {
     /// `looking`.
     fn pointer_along(at: Point3, direction: Vector3, looking: Vector3) -> Pointer {
         Pointer {
-            snap: Some(Snap { position: at, direction: Some(direction), kind: SnapKind::GridAxis }),
+            snap: Some(Snap::new(at, SnapKind::GridAxis).with_direction(direction)),
             ray: Ray::new(at - looking * 10.0, looking),
         }
     }
