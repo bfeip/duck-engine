@@ -26,6 +26,7 @@ use duck_engine_viewer::{
 use opencascade::primitives::{Shape, Wire};
 
 use crate::construction::upright;
+use crate::labels::Label;
 use crate::ops::primitives::{circle, region};
 use crate::preview::PreviewSession;
 use crate::snap::Snap;
@@ -78,6 +79,8 @@ pub struct Track<P: Primitive> {
     /// What a click would do, or `None` if it would leave the shape
     /// degenerate.
     pub click: Option<Next<P>>,
+    /// What the pointer measures, shown over the viewport.
+    pub labels: Vec<Label>,
 }
 
 /// Where a click takes placement.
@@ -95,6 +98,9 @@ pub struct PrimitiveTool<P: Primitive> {
     placement: Placement<P>,
     /// Where the 3D cursor marks while picking.
     cursor: Option<Point3>,
+    /// The text over the viewport while picking: what the pointer measures
+    /// and snaps to.
+    labels: Vec<Label>,
     /// Set once the shape is applied or discarded, so the tool cedes back to
     /// selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
@@ -116,6 +122,7 @@ impl<P: Primitive> PrimitiveTool<P> {
             preview: workspace.preview_session(),
             placement: Placement::Idle,
             cursor: None,
+            labels: Vec::new(),
             finished: false,
         }
     }
@@ -124,16 +131,23 @@ impl<P: Primitive> PrimitiveTool<P> {
         matches!(self.placement, Placement::Placed(_))
     }
 
-    /// Follows `pointer` with the cursor and the preview.
+    /// Follows `pointer` with the cursor, the preview and the labels.
     fn hover(&mut self, pointer: &Pointer) {
+        self.labels.clear();
         match self.placement {
             Placement::Idle => self.cursor = pointer.snap.map(|snap| snap.position),
             Placement::Picking(stage) => {
                 let track = P::track(stage, pointer);
                 self.cursor = track.cursor;
+                self.labels = track.labels;
                 self.show(track.preview);
             }
             Placement::Placed(_) => {}
+        }
+        // Where the cursor marks the snap itself, rather than a point derived
+        // from it such as a height, the tag says what it snaps to.
+        if let Some(snap) = pointer.snap.filter(|snap| self.cursor == Some(snap.position)) {
+            self.labels.push(self.workspace.snap_tag(&snap));
         }
     }
 
@@ -219,6 +233,7 @@ impl<P: Primitive> PrimitiveTool<P> {
     fn reset(&mut self) {
         self.preview.cancel();
         self.placement = Placement::Idle;
+        self.labels.clear();
     }
 
     /// Shows the preview at `transform`, or hides it.
@@ -286,6 +301,10 @@ impl<P: Primitive> ModelingTool for PrimitiveTool<P> {
 
     fn cursor_target(&self) -> Option<Point3> {
         if self.is_placed() { None } else { self.cursor }
+    }
+
+    fn labels(&self) -> Vec<Label> {
+        if self.is_placed() { Vec::new() } else { self.labels.clone() }
     }
 
     fn panel_title(&self) -> Option<&str> {

@@ -10,6 +10,7 @@ use duck_engine_viewer::{
 };
 use opencascade::primitives::Shape;
 
+use crate::labels::Label;
 use crate::ops::primitives::{closed_polyline, closed_spline, polyline, region, spline};
 use crate::preview::PreviewSession;
 use crate::snap::{Snap, SnapKind, Stroke};
@@ -104,6 +105,8 @@ pub struct PathTool {
     stroke: Stroke,
     /// Where the 3D cursor marks.
     cursor: Option<Point3>,
+    /// What the point under the cursor snaps to, shown beside it.
+    tag: Option<Label>,
     /// Set once the path is added or discarded, so the tool cedes back to
     /// selection. Cleared on [`ModelingTool::deactivate`].
     finished: bool,
@@ -118,6 +121,7 @@ impl PathTool {
             placed: workspace.preview_session(),
             stroke: Stroke::new(kind == PathKind::Polyline),
             cursor: None,
+            tag: None,
             finished: false,
         }
     }
@@ -138,6 +142,7 @@ impl PathTool {
     /// region the path would close into.
     fn hover(&mut self, snap: Option<Snap>) {
         self.cursor = snap.map(|snap| snap.position);
+        self.tag = snap.map(|snap| self.workspace.snap_tag(&snap));
         let Some(snap) = snap.filter(|_| !self.stroke.is_empty()) else { return };
         let shape = if snap.kind == SnapKind::WireStart {
             self.kind.closed(&self.stroke.points())
@@ -279,6 +284,10 @@ impl ModelingTool for PathTool {
         self.cursor
     }
 
+    fn labels(&self) -> Vec<Label> {
+        self.tag.iter().cloned().collect()
+    }
+
     /// Leaving the tool ends a path that can end open, as right-click and Enter
     /// do.
     fn finalize(&mut self, _selection: &mut SelectionManager) -> Result<()> {
@@ -288,6 +297,7 @@ impl ModelingTool for PathTool {
     fn deactivate(&mut self) {
         self.reset();
         self.cursor = None;
+        self.tag = None;
         self.finished = false;
     }
 

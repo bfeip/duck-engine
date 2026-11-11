@@ -5,6 +5,7 @@ mod document;
 mod grid;
 mod history;
 mod io;
+mod labels;
 mod materials;
 mod notifications;
 mod ops;
@@ -543,6 +544,10 @@ impl<'a> ViewerState<'a> {
         // back on `AppAction::CameraChanged` and `LightingChanged` below.
         let mut ui_camera = self.viewer.view(self.view_id).expect("main view").camera().clone();
         let mut ui_lighting = Lighting::of(&self.viewer, self.view_id);
+        // The active tool's text, placed by the camera the scene renders with.
+        let labels = self.tools.labels();
+        let mut label_camera = ui_camera.clone();
+        let units = self.construction_options.borrow().units;
         let selection = self.viewer.selection_mut(self.view_id).expect("main view");
         let full_output = egui_ctx.run(raw_input, |ctx| {
             ui_actions = self.ui.show(
@@ -561,7 +566,13 @@ impl<'a> ViewerState<'a> {
                     let size = ui.available_size();
                     let image =
                         egui::Image::new(egui::load::SizedTexture::new(scene_texture_id, size));
-                    viewport_rect = Some(ui.add(image).rect);
+                    let rect = ui.add(image).rect;
+                    viewport_rect = Some(rect);
+                    // On the viewport's own layer, so windows over it cover
+                    // the labels too. The image is resized to `rect` before
+                    // rendering, so its camera takes that aspect.
+                    label_camera.aspect = (rect.width() / rect.height().max(1.0)) as Real;
+                    labels::paint(ui.painter(), rect, &label_camera, units, &labels);
                 });
         });
         self.host.handle_platform_output(full_output.platform_output.clone());

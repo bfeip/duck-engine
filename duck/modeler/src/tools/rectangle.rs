@@ -59,6 +59,7 @@ impl Primitive for RectangleParams {
             cursor: corner,
             preview: placed.map(|params| params.preview_transform()),
             click: placed.map(Next::Placed),
+            labels: Vec::new(),
         }
     }
 

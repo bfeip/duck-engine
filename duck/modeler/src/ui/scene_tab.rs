@@ -3,7 +3,7 @@
 //! primitives bodies show, and snapping.
 
 use duck_engine_viewer::common::{
-    EuclideanSpace, InnerSpace, LengthDisplay, LengthUnit, Plane, Point3, Real, Vector3,
+    Axis, EuclideanSpace, LengthDisplay, LengthUnit, Plane, Point3, Real,
 };
 use duck_engine_viewer::scene::resource::PrimitiveFlags;
 use duck_engine_viewer::scene::{PositionedCamera, Projection};
@@ -22,6 +22,10 @@ const MIN_CLIP: Real = 1e-3;
 /// The grid's line count is extent over spacing, so they bound its mesh.
 const MIN_GRID_SIZE: Real = 1.0;
 const MIN_GRID_SPACING: Real = 0.01;
+
+/// How far the construction plane may turn off a preset's, as `1 - cos θ`
+/// (about 2.6°), and still be that preset.
+const PRESET_TOLERANCE: Real = 1e-3;
 
 /// Display steps a pixel of drag moves the lengths that run to metres — far
 /// clip, clip depth, grid size — where the rest run to millimetres.
@@ -199,15 +203,12 @@ fn plane_ui(ui: &mut egui::Ui, construction: &mut ConstructionOptions) -> bool {
     let mut offset = -construction.construction_plane.d;
 
     ui.horizontal(|ui| {
-        let presets: [(&str, Vector3); 3] = [
-            ("XY", Vector3::unit_z()),
-            ("XZ", Vector3::unit_y()),
-            ("YZ", Vector3::unit_x()),
-        ];
-        for (label, normal) in presets {
-            // Either facing: a view snap turns the normal toward the eye.
-            let selected = construction.construction_plane.normal.dot(normal).abs() > 0.999;
-            if ui.selectable_label(selected, label).clicked() && !selected {
+        // Either facing: a view snap turns the normal toward the eye.
+        let facing = Axis::along(construction.construction_plane.normal, PRESET_TOLERANCE);
+        for axis in [Axis::Z, Axis::Y, Axis::X] {
+            let selected = facing == Some(axis);
+            if ui.selectable_label(selected, axis.plane_name()).clicked() && !selected {
+                let normal = axis.direction();
                 construction.construction_plane =
                     Plane::from_point(normal, Point3::origin() + normal * offset);
                 changed = true;

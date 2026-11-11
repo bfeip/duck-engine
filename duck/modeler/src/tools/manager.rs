@@ -8,6 +8,7 @@ use duck_engine_viewer::operator::{
 use duck_engine_viewer::selection::SelectionManager;
 
 use crate::cursor::Cursor3d;
+use crate::labels::Label;
 use crate::notifications::Notifications;
 use crate::tools::{ModelingTool, ToolInfo};
 
@@ -239,6 +240,11 @@ impl ToolManager {
             .active
             .and_then(|i| self.tools[i.0].lock().unwrap().cursor_target());
         self.cursor.update(target, scene);
+    }
+
+    /// The active tool's text over the viewport, or none in selection mode.
+    pub fn labels(&self) -> Vec<Label> {
+        self.active_tool().map(|tool| tool.labels()).unwrap_or_default()
     }
 
     /// Palette snapshot for the `ui` module: `(id, info)` per tool.

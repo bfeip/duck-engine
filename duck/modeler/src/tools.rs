@@ -31,6 +31,8 @@
 //!   [`Workspace::snap_next`], which relates it to those before.
 //! - [`Gesture`]: what an event means under the standard bindings.
 //! - `PreviewSession`: preview geometry, and the parts it hides meanwhile.
+//! - [`Label`]: text over the viewport, such as a measurement, shown through
+//!   [`ModelingTool::labels`].
 //! - `edit.rs`: settings a panel and grips edit live, and the panel's parts.
 //! - `targets.rs`: what the selection designates.
 //!
@@ -108,6 +110,7 @@ use opencascade::primitives::Shape;
 
 use crate::construction::ConstructionOptions;
 use crate::document::{Document, PartId};
+use crate::labels::Label;
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
 use crate::snap::{Snap, SnapFlags, SnapInput, Stroke};
@@ -221,6 +224,12 @@ impl Workspace {
         construction.snap.snap(&input, document)
     }
 
+    /// The tag beside `snap` saying what it locks onto.
+    pub fn snap_tag(&self, snap: &Snap) -> Label {
+        let construction = self.construction.borrow();
+        Label::Tag { at: snap.position, text: snap.describe(&construction.construction_plane) }
+    }
+
     /// What the cursor at `cursor` points at, ignoring the `exclude` nodes for
     /// snapping.
     pub fn pointer(&self, cursor: (f32, f32), exclude: &[NodeId], ctx: &EventContext) -> Pointer {
@@ -328,6 +337,15 @@ pub trait ModelingTool: 'static {
     /// Polled each frame while the tool is active.
     fn cursor_target(&self) -> Option<Point3> {
         None
+    }
+
+    /// Text this tool wants over the viewport, such as a measurement or what
+    /// the pointer snaps to.
+    ///
+    /// Polled each frame while the tool is active, like
+    /// [`ModelingTool::cursor_target`].
+    fn labels(&self) -> Vec<Label> {
+        Vec::new()
     }
 
     /// Title of the tool's options window, or `None` if the tool has no panel.

@@ -115,6 +115,7 @@ impl Primitive for CylinderParams {
                     preview: radius.map(|radius| flat(base, &plane, radius, radius)),
                     click: radius
                         .map(|radius| Next::Stage(CylinderStage::Height { base, plane, radius })),
+                    labels: Vec::new(),
                 }
             }
             CylinderStage::Height { base, plane, radius } => {
@@ -125,6 +126,7 @@ impl Primitive for CylinderParams {
                     cursor: Some(base + plane.normal * height),
                     preview: placed.map(|params| params.preview_transform()),
                     click: placed.map(Next::Placed),
+                    labels: Vec::new(),
                 }
             }
         }

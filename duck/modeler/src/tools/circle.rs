@@ -56,6 +56,7 @@ impl Primitive for CircleParams {
             cursor: rim,
             preview: placed.map(|params| params.preview_transform()),
             click: placed.map(Next::Placed),
+            labels: Vec::new(),
         }
     }
 

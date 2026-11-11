@@ -146,6 +146,7 @@ impl Primitive for BoxParams {
                     click: size.map(|(width, depth)| {
                         Next::Stage(BoxStage::Height { base, plane, width, depth })
                     }),
+                    labels: Vec::new(),
                 }
             }
             BoxStage::Height { base, plane, width, depth } => {
@@ -156,6 +157,7 @@ impl Primitive for BoxParams {
                     cursor: Some(base + plane.normal * height),
                     preview: placed.map(|params| params.preview_transform()),
                     click: placed.map(Next::Placed),
+                    labels: Vec::new(),
                 }
             }
         }

@@ -21,7 +21,7 @@ use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_scene::Scene;
 use duck_engine_viewer::common::{
-    centroid_of_slice, decompose_matrix, Axis, InnerSpace, LengthDisplay, Matrix4, Point3,
+    centroid_of_slice, decompose_matrix, InnerSpace, LengthDisplay, Matrix4, Point3,
     Quaternion, Real, SquareMatrix, Transform, Vector3,
 };
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
@@ -289,7 +289,7 @@ pub(super) fn values_ui(
                     let axis = field.axis.expect("a length runs along an axis");
                     let rgb = axis.color();
                     let color = egui::Rgba::from_rgb(rgb.r, rgb.g, rgb.b);
-                    ui.colored_label(color, axis_name(axis))
+                    ui.colored_label(color, axis.name())
                 }
                 FieldKind::Angle => ui.label("Angle"),
                 FieldKind::Factor => ui.label("Factor"),
@@ -346,22 +346,12 @@ fn describe(manipulation: &Manipulation) -> String {
         (TransformMode::Rotate, Constraint::Free) => "About the view".to_owned(),
         (TransformMode::Scale, Constraint::Free) => "Uniform".to_owned(),
         (TransformMode::Rotate, Constraint::Axis(axis, s) | Constraint::Plane(axis, s)) => {
-            format!("About {} {}", space(s), axis_name(axis))
+            format!("About {} {}", space(s), axis.name())
         }
-        (_, Constraint::Axis(axis, s)) => format!("Along {} {}", space(s), axis_name(axis)),
+        (_, Constraint::Axis(axis, s)) => format!("Along {} {}", space(s), axis.name()),
         (_, Constraint::Plane(normal, s)) => {
-            let names: String =
-                Axis::ALL.into_iter().filter(|&axis| axis != normal).map(axis_name).collect();
-            format!("In the {} {names} plane", space(s))
+            format!("In the {} {} plane", space(s), normal.plane_name())
         }
-    }
-}
-
-fn axis_name(axis: Axis) -> &'static str {
-    match axis {
-        Axis::X => "X",
-        Axis::Y => "Y",
-        Axis::Z => "Z",
     }
 }
 
@@ -599,7 +589,7 @@ impl FaceTweak {
 #[cfg(test)]
 mod tests {
     use duck_engine_viewer::common::{
-        consts, quaternion_from_axis_angle_safe, EuclideanSpace, LengthUnit,
+        consts, quaternion_from_axis_angle_safe, Axis, EuclideanSpace, LengthUnit,
     };
     use duck_engine_viewer::input::{KeyEvent, Modifiers, NamedKey};
     use glam::DVec3;

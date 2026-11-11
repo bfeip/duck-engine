@@ -5,6 +5,7 @@ use duck_engine_common::{
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape};
 use opencascade::primitives::Shape;
 
+use crate::labels::Label;
 use crate::ops::primitives::sphere;
 use crate::snap::Snap;
 use crate::tools::{Pointer, ToolInfo};
@@ -88,6 +89,7 @@ impl Primitive for SphereParams {
             cursor: rim,
             preview: placed.map(|params| params.preview_transform()),
             click: placed.map(Next::Placed),
+            labels: rim.map(|to| Label::Dimension { from: center, to }).into_iter().collect(),
         }
     }
 
@@ -167,6 +169,15 @@ mod tests {
         let Some(Next::Placed(params)) = track.click else { panic!("the point places the sphere") };
         assert!((params.radius - 5.0).abs() < EPSILON);
         assert!((params.center - center).magnitude() < EPSILON);
+    }
+
+    #[test]
+    fn the_radius_is_measured_from_the_centre_to_the_pointer() {
+        let center = Point3::new(1.0, 2.0, 3.0);
+        let rim = center + Vector3::new(3.0, 0.0, 4.0);
+        let stage = SphereStage { center, axis: Vector3::unit_y(), up: Vector3::unit_y() };
+        let track = SphereParams::track(stage, &pointer_at(rim));
+        assert_eq!(track.labels, vec![Label::Dimension { from: center, to: rim }]);
     }
 
     #[test]

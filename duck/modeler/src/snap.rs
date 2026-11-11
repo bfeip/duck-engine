@@ -40,7 +40,7 @@ pub use stroke::Stroke;
 
 use bitflags::bitflags;
 
-use duck_engine_viewer::common::{InnerSpace, Plane, Point3, Ray, Real, Vector3};
+use duck_engine_viewer::common::{Axis, InnerSpace, Plane, Point3, Ray, Real, Vector3};
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::scene::resource::{NodeId, SubGeometryElement, SubGeometryKind};
 
@@ -114,6 +114,10 @@ impl SnapKind {
         }
     }
 }
+
+/// How far a direction may turn off a world axis, as `1 - cos θ` (about
+/// 0.08°), and still lie along it.
+const AXIS_TOLERANCE: Real = 1e-6;
 
 /// Ranking precedence, *defined by declaration order* (low → high): a higher
 /// tier always beats a lower one when both are within tolerance; ties break on
@@ -232,6 +236,40 @@ impl Snap {
 
     pub fn with_on(self, on: PartElement) -> Self {
         Self { on: Some(on), ..self }
+    }
+
+    /// What the snap locks onto, in a few words, as the pointer tags it: the
+    /// axis an axis snap runs along, the world plane a free point lies on, and
+    /// what a relation relates to. `construction` is the construction plane.
+    pub fn describe(&self, construction: &Plane) -> String {
+        use SnapKind::*;
+        let axis = self.direction.and_then(|direction| Axis::along(direction, AXIS_TOLERANCE));
+        let on = self.on.map(|on| match on.element.kind {
+            SubGeometryKind::Face => "face",
+            SubGeometryKind::Edge => "edge",
+            SubGeometryKind::Pointset => "point",
+        });
+        match self.kind {
+            ConstructionPlane => match Axis::along(construction.normal, AXIS_TOLERANCE) {
+                Some(normal) => format!("{} plane", normal.plane_name()),
+                None => "Plane".to_owned(),
+            },
+            Origin => "Origin".to_owned(),
+            GridGuide => "Grid".to_owned(),
+            GridAxis => axis.map_or("Axis".to_owned(), |axis| format!("{} axis", axis.name())),
+            Corner => "Corner".to_owned(),
+            Edge => "Edge".to_owned(),
+            Midpoint => "Midpoint".to_owned(),
+            FaceCenter => "Face center".to_owned(),
+            Center => "Center".to_owned(),
+            Face => "Face".to_owned(),
+            WireStart => "Close path".to_owned(),
+            AxisAligned => axis.map_or("Aligned".to_owned(), |axis| format!("Along {}", axis.name())),
+            Parallel => "Parallel".to_owned(),
+            Closest => on.map_or("Closest".to_owned(), |on| format!("Closest on {on}")),
+            Perpendicular => on.map_or("Perpendicular".to_owned(), |on| format!("Perpendicular to {on}")),
+            TangentTangent => "Tangent to circle".to_owned(),
+        }
     }
 
     /// How this snap ranks. A relation ranks one tier above the element it
@@ -578,6 +616,44 @@ mod tests {
     fn relation(kind: SnapKind, element: SubGeometryKind, position: Point3, found_at: Point3) -> Candidate {
         let on = PartElement { part: PartId::new(), element: SubGeometryElement::new(element, 0) };
         Candidate { snap: Snap::new(position, kind).with_on(on), found_at }
+    }
+
+    #[test]
+    fn an_axis_snap_names_the_world_axis_it_runs_along_either_way() {
+        let at = Point3::new(1.0, 0.0, 0.0);
+        let plane = Plane::xz();
+        let axis = Snap::new(at, SnapKind::GridAxis).with_direction(-Vector3::unit_y());
+        assert_eq!(axis.describe(&plane), "Y axis");
+        let aligned = Snap::new(at, SnapKind::AxisAligned).with_direction(Vector3::unit_x());
+        assert_eq!(aligned.describe(&plane), "Along X");
+    }
+
+    #[test]
+    fn an_axis_snap_off_the_world_axes_names_none() {
+        let at = Point3::new(1.0, 0.0, 0.0);
+        let plane = Plane::xz();
+        let skew = Vector3::new(1.0, 1.0, 0.0).normalize();
+        assert_eq!(Snap::new(at, SnapKind::GridAxis).with_direction(skew).describe(&plane), "Axis");
+        assert_eq!(Snap::new(at, SnapKind::AxisAligned).with_direction(skew).describe(&plane), "Aligned");
+    }
+
+    #[test]
+    fn a_free_point_names_the_world_plane_it_lies_on() {
+        let free = Snap::new(Point3::new(1.0, 2.0, 5.0), SnapKind::ConstructionPlane);
+        let raised = Plane::from_point(-Vector3::unit_z(), Point3::new(0.0, 0.0, 5.0));
+        assert_eq!(free.describe(&raised), "XY plane");
+        let tilted = Plane::from_point(Vector3::new(0.0, 1.0, 1.0), Point3::new(0.0, 0.0, 0.0));
+        assert_eq!(free.describe(&tilted), "Plane");
+    }
+
+    #[test]
+    fn a_relation_names_what_it_relates_to() {
+        let at = Point3::new(1.0, 0.0, 0.0);
+        let plane = Plane::xz();
+        let foot = relation(SnapKind::Perpendicular, SubGeometryKind::Edge, at, at).snap;
+        assert_eq!(foot.describe(&plane), "Perpendicular to edge");
+        let nearest = relation(SnapKind::Closest, SubGeometryKind::Face, at, at).snap;
+        assert_eq!(nearest.describe(&plane), "Closest on face");
     }
 
     #[test]

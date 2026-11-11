@@ -289,6 +289,25 @@ impl Axis {
         }
     }
     
+    /// The letter naming this axis: `"X"`, `"Y"` or `"Z"`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Axis::X => "X",
+            Axis::Y => "Y",
+            Axis::Z => "Z",
+        }
+    }
+
+    /// The name of the coordinate plane this axis is normal to, from the other
+    /// two: `"YZ"` for X.
+    pub fn plane_name(&self) -> &'static str {
+        match self {
+            Axis::X => "YZ",
+            Axis::Y => "XZ",
+            Axis::Z => "XY",
+        }
+    }
+
     /// Unit direction vector for this axis.
     pub fn direction(&self) -> Vector3 {
         match self {
@@ -308,6 +327,14 @@ impl Axis {
                 a.total_cmp(&b)
             })
             .unwrap()
+    }
+
+    /// The axis `direction` lies along, of either sign, if any: within
+    /// `tolerance` as `1 - cos θ` of the angle between them.
+    pub fn along(direction: Vector3, tolerance: Real) -> Option<Axis> {
+        let axis = Axis::nearest(direction);
+        let cos = axis.direction().dot(direction).abs();
+        (cos > direction.magnitude() * (1.0 - tolerance)).then_some(axis)
     }
 
     /// RGB color convention: X=red, Y=green, Z=blue.
@@ -741,6 +768,27 @@ mod tests {
             assert!(hl.r > base.r && hl.g > base.g && hl.b > base.b, "{axis:?}: {hl:?} vs {base:?}");
             assert!((hl.a - base.a).abs() < COLOR_EPSILON);
         }
+    }
+
+    #[test]
+    fn test_axis_names_read_back_and_name_the_plane_by_the_others() {
+        for axis in Axis::ALL {
+            let letter = axis.name().to_ascii_lowercase().chars().next().unwrap();
+            assert_eq!(Axis::from_char(letter), Some(axis));
+            let others: String =
+                Axis::ALL.into_iter().filter(|&other| other != axis).map(|other| other.name()).collect();
+            assert_eq!(axis.plane_name(), others);
+        }
+    }
+
+    #[test]
+    fn test_axis_along_holds_within_the_tolerance_only() {
+        assert_eq!(Axis::along(-Vector3::unit_z() * 3.0, 1e-6), Some(Axis::Z));
+        // About 1.4° off X.
+        let tilted = Vector3::new(1.0, 0.025, 0.0);
+        assert_eq!(Axis::along(tilted, 1e-3), Some(Axis::X));
+        assert_eq!(Axis::along(tilted, 1e-6), None);
+        assert_eq!(Axis::along(Vector3::new(0.0, 0.0, 0.0), 1e-3), None);
     }
 
     #[test]
