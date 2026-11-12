@@ -42,9 +42,10 @@ use bitflags::bitflags;
 
 use duck_engine_viewer::common::{Axis, InnerSpace, Plane, Point3, Ray, Real, Vector3};
 use duck_engine_viewer::scene::PositionedCamera;
-use duck_engine_viewer::scene::resource::{NodeId, SubGeometryElement, SubGeometryKind};
+use duck_engine_viewer::scene::resource::{NodeId, SubGeometryKind};
 
-use crate::document::{Document, PartId};
+use crate::document::Document;
+use crate::geometry::PartElement;
 use crate::grid::GridConfig;
 
 /// What a single snap locks onto. Maps to a ranking [`SnapTier`] and a
@@ -199,13 +200,6 @@ pub struct SnapInput<'a> {
     /// The path the calling tool is drawing, for the snaps that relate the
     /// next point to those placed before it; `None` if it draws none.
     pub stroke: Option<&'a Stroke>,
-}
-
-/// An element of a part's B-rep, numbered as its selections number it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PartElement {
-    pub part: PartId,
-    pub element: SubGeometryElement,
 }
 
 /// A snap location: where the cursor snaps to, and what it locks onto there.
@@ -476,9 +470,12 @@ impl SnapEngine {
 mod tests {
     use super::*;
     use duck_engine_viewer::common::Real;
+    use duck_engine_viewer::scene::resource::SubGeometryElement;
     use duck_engine_viewer::scene::{Projection, Scene};
     use glam::DVec3;
     use opencascade::primitives::Shape;
+
+    use crate::document::PartId;
 
     /// A camera looking down −Z from (0, 0, 10) at the origin, 800×600 viewport.
     fn test_camera() -> PositionedCamera {

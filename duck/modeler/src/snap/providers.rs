@@ -8,14 +8,13 @@ use duck_engine_viewer::common::{
 use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::scene::resource::{
-    InstanceId, Mesh, Node, NodeId, PrimitiveType, PrimitiveFlags, SubGeometryElement, SubGeometryKind,
-    Topology,
+    InstanceId, Mesh, Node, NodeId, PrimitiveType, PrimitiveFlags, SubGeometryKind, Topology,
 };
-use opencascade::primitives::{EdgePoint, FaceType};
 
 use super::stroke::{edge_relations, face_relations};
-use super::{Candidate, PartElement, Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, CadPart, Document};
+use super::{Candidate, Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
+use crate::document::{CadPart, Document};
+use crate::geometry::{CurvePoint, PartEdge, PartFace, SurfacePoint};
 
 /// Free point on the active construction plane. The always-present, lowest-tier
 /// fallback so a plane-constrained operator always gets a position.
@@ -174,7 +173,7 @@ impl SnapProvider for GeometrySnap {
             }
             if let Some(face) = face {
                 if kinds.contains(SnapFlags::FACE_CENTER) {
-                    candidates.extend(face.center().map(Candidate::from));
+                    candidates.extend(face_center(&face).map(Candidate::from));
                 }
                 if let Some(stroke) = stroke {
                     face_relations(&face, snap.position, stroke, kinds, &mut candidates);
@@ -206,55 +205,19 @@ enum GeometryHit<'a> {
     Face { snap: Snap, face: Option<PartFace<'a>> },
 }
 
-/// An edge of a part.
-#[derive(Clone, Copy)]
-pub(super) struct PartEdge<'a> {
-    pub(super) part: &'a CadPart,
-    /// The edge's element index.
-    pub(super) index: u32,
-}
-
-impl PartEdge<'_> {
-    pub(super) fn element(&self) -> PartElement {
-        PartElement { part: self.part.id, element: SubGeometryElement::new(SubGeometryKind::Edge, self.index) }
+/// The centre of `face` if it is flat, along its outward normal.
+fn face_center(face: &PartFace) -> Option<Snap> {
+    if !face.is_flat() {
+        return None;
     }
-}
-
-/// A face of a part.
-#[derive(Clone, Copy)]
-pub(super) struct PartFace<'a> {
-    pub(super) part: &'a CadPart,
-    /// The face's element index.
-    pub(super) index: u32,
-}
-
-impl PartFace<'_> {
-    pub(super) fn element(&self) -> PartElement {
-        PartElement { part: self.part.id, element: SubGeometryElement::new(SubGeometryKind::Face, self.index) }
-    }
-
-    /// The face's centre if it is flat: the centroid of its area, in world
-    /// space, with the face's outward normal.
-    fn center(&self) -> Option<Snap> {
-        let Self { part, index } = self;
-        let center = part.face(*index).and_then(|face| {
-            if face.face_type() != FaceType::Plane {
-                return Ok(None);
-            }
-            let center = face.center_of_mass();
-            Ok(Some((center, face.normal_at(center)?)))
-        });
-        let (center, normal) = match center {
-            Ok(center) => center?,
-            Err(e) => {
-                log::debug!("No centre snap on face {index} of {}: {e}", part.name);
-                return None;
-            }
-        };
-        // The B-rep is in the world, scaled into the scene at tessellation.
-        let scale = part.options().scale_factor;
-        let center = Snap::new(dvec3_to_point3(center * scale), SnapKind::FaceCenter);
-        Some(center.with_direction(dvec3_to_vec3(normal)).with_on(self.element()))
+    match face.centroid() {
+        Ok(SurfacePoint { point, normal }) => {
+            Some(Snap::new(point, SnapKind::FaceCenter).with_direction(normal).with_on(face.element()))
+        }
+        Err(e) => {
+            log::debug!("No centre snap on {face}: {e}");
+            None
+        }
     }
 }
 
@@ -424,7 +387,7 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
                     let face = self.document.part_at(node.id).and_then(|part| {
                         let triangle = hit.triangle_index as u32;
                         let index = mesh.sub_geometry_for_primitive(SubGeometryKind::Face, triangle)?;
-                        Some(PartFace { part, index })
+                        PartFace::new(part, index).ok()
                     });
                     let snap = Snap::new(transform_point(world_transform, hit.hit_point), SnapKind::Face)
                         .with_direction(transform_normal(world_transform, normal));
@@ -478,8 +441,13 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
 
             if let Some(part) = part {
                 for (index, _, snap) in nearest {
-                    let edge = PartEdge { part, index };
-                    results.push(GeometryHit::PartEdge { snap: onto_edge(edge, snap), edge });
+                    match PartEdge::new(part, index) {
+                        Ok(edge) => results.push(GeometryHit::PartEdge { snap: onto_edge(edge, snap), edge }),
+                        Err(e) => {
+                            log::debug!("Edge snap left on its tessellation: {e}");
+                            results.push(GeometryHit::Snap(snap));
+                        }
+                    }
                 }
                 near_edges.sort_unstable();
                 near_edges.dedup();
@@ -495,56 +463,40 @@ impl<'a> PickQuery for GeometrySnapQuery<'a> {
 /// curve and along its tangent there. It stays where it was if the edge has no
 /// curve to project onto.
 fn onto_edge(edge: PartEdge, snap: Snap) -> Snap {
-    let PartEdge { part, index } = edge;
     let snap = snap.with_on(edge.element());
-    // The B-rep is in the world, scaled into the scene at tessellation.
-    let scale = part.options().scale_factor;
-    let projected = part
-        .edge(index)
-        .and_then(|edge| Ok(edge.curve().project(point3_to_dvec3(snap.position) / scale)?));
-    let EdgePoint { point, tangent } = match projected {
-        Ok(projected) => projected,
+    match edge.nearest(snap.position) {
+        Ok(CurvePoint { point, tangent }) => Snap {
+            position: point,
+            direction: if tangent.magnitude2() > 0.0 { Some(tangent) } else { snap.direction },
+            ..snap
+        },
         Err(e) => {
-            log::debug!("Edge snap on edge {index} of {} left on its tessellation: {e}", part.name);
-            return snap;
+            log::debug!("Edge snap on {edge} left on its tessellation: {e}");
+            snap
         }
-    };
-    let tangent = dvec3_to_vec3(tangent);
-    Snap {
-        position: dvec3_to_point3(point * scale),
-        direction: if tangent.magnitude2() > 0.0 { Some(tangent.normalize()) } else { snap.direction },
-        ..snap
     }
 }
 
 /// Pushes the midpoint of each of `part`'s `edges` (element indices) into `out`,
 /// taken on the B-rep curve, with the curve's tangent there.
 fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Snap>) {
-    // The B-rep is in the world, scaled into the scene at tessellation.
-    let scale = part.options().scale_factor;
     for &index in edges {
-        let midpoint = part.edge(index).and_then(|edge| Ok(edge.curve().length_midpoint()?));
-        let EdgePoint { point: middle, tangent } = match midpoint {
-            Ok(midpoint) => midpoint,
-            Err(e) => {
-                log::debug!("No midpoint snap on edge {index} of {}: {e}", part.name);
-                continue;
+        let midpoint = PartEdge::new(part, index).and_then(|edge| Ok((edge, edge.midpoint()?)));
+        match midpoint {
+            Ok((edge, CurvePoint { point, tangent })) => {
+                out.push(Snap::new(point, SnapKind::Midpoint).with_direction(tangent).with_on(edge.element()));
             }
-        };
-        let midpoint = Snap::new(dvec3_to_point3(middle * scale), SnapKind::Midpoint)
-            .with_direction(dvec3_to_vec3(tangent).normalize());
-        out.push(midpoint.with_on(PartEdge { part, index }.element()));
+            Err(e) => log::debug!("No midpoint snap on edge {index} of {}: {e}", part.name),
+        }
     }
 }
 
 /// Pushes the centre of each of `part`'s circular edges into `out`, along the
 /// circle's axis.
 fn collect_circle_centers(part: &CadPart, out: &mut Vec<Snap>) {
-    // The B-rep is in the world, scaled into the scene at tessellation.
-    let scale = part.options().scale_factor as Real;
-    for edge in part.elements().edges() {
-        if let Some((center, normal)) = edge.circle_axis() {
-            out.push(Snap::new(center * scale, SnapKind::Center).with_direction(normal));
+    for index in 0..part.elements().edges().len() as u32 {
+        if let Some(circle) = PartEdge::new(part, index).ok().and_then(|edge| edge.circle()) {
+            out.push(Snap::new(circle.center, SnapKind::Center).with_direction(circle.normal));
         }
     }
 }

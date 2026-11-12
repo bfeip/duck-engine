@@ -2,6 +2,7 @@ mod construction;
 mod cursor;
 mod delete;
 mod document;
+mod geometry;
 mod grid;
 mod history;
 mod io;

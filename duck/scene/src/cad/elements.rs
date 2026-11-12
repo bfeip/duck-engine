@@ -27,6 +27,7 @@ pub struct EdgeElement {
     /// The pieces joined into one, when there are several.
     joined: Option<Edge>,
     circle: Option<(Point3, Vector3)>,
+    circle_radius: Option<Real>,
 }
 
 impl EdgeElement {
@@ -36,7 +37,8 @@ impl EdgeElement {
             let centre = Point3::new(centre.x as Real, centre.y as Real, centre.z as Real);
             (centre, Vector3::new(normal.x as Real, normal.y as Real, normal.z as Real))
         });
-        Self { pieces, joined, circle }
+        let circle_radius = pieces[0].circle_radius().map(|radius| radius as Real);
+        Self { pieces, joined, circle, circle_radius }
     }
 
     /// The shape's edges this element covers, in order along its curve: one, or
@@ -55,6 +57,12 @@ impl EdgeElement {
     /// coordinates, if it is a circle or an arc of one.
     pub fn circle_axis(&self) -> Option<(Point3, Vector3)> {
         self.circle
+    }
+
+    /// The radius of this element's circle, in the shape's units, if it is a
+    /// circle or an arc of one.
+    pub fn circle_radius(&self) -> Option<Real> {
+        self.circle_radius
     }
 }
 
@@ -440,6 +448,8 @@ mod tests {
                 let (centre, normal) = rim.circle_axis().expect("a rim is a circle");
                 assert!(centre.x.abs() < EPSILON && centre.y.abs() < EPSILON, "{centre:?}");
                 assert!((normal.z.abs() - 1.0).abs() < EPSILON, "{normal:?}");
+                let radius = rim.circle_radius().expect("a rim has a radius");
+                assert!((radius - 1.0).abs() < EPSILON, "{radius}");
                 centre.z
             })
             .collect();
@@ -448,6 +458,7 @@ mod tests {
 
         let cube = ShapeElements::new(&Shape::cube(1.0));
         assert!(cube.edges().iter().all(|edge| edge.circle_axis().is_none()));
+        assert!(cube.edges().iter().all(|edge| edge.circle_radius().is_none()));
     }
 
     #[test]

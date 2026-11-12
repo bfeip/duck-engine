@@ -4,18 +4,15 @@
 //! tangent points of the hovered geometry ([`edge_relations`],
 //! [`face_relations`]).
 
-use duck_engine_viewer::common::{InnerSpace, Point3, Ray, Vector3, EPSILON};
-use duck_engine_viewer::scene::resource::SubGeometryKind;
-use glam::DVec3;
-use opencascade::primitives::{EdgePoint, EdgeType};
+use duck_engine_viewer::common::{InnerSpace, MetricSpace, Point3, Ray, Real, Vector3, EPSILON};
 
-use super::providers::{PartEdge, PartFace};
 use super::{Candidate, Snap, SnapFlags, SnapInput, SnapKind, SnapProvider, SnapSettings};
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, Document};
+use crate::document::Document;
+use crate::geometry::{CurvePoint, PartEdge, PartFace};
 
 /// How far, relative to its radius, a point may lie off an arc and still be on
 /// it.
-const ON_ARC: f64 = 1e-6;
+const ON_ARC: Real = 1e-6;
 
 /// The points a tool has placed in the path it is drawing, for the snaps that
 /// relate the next point to them.
@@ -81,13 +78,9 @@ impl Stroke {
     /// Takes note of `snap`, where the cursor is: the straight edge it lies on
     /// becomes the one the next points may run parallel to.
     pub fn observe(&mut self, snap: &Snap, document: &Document) {
-        let Some(on) = snap.on.filter(|on| on.element.kind == SubGeometryKind::Edge) else { return };
-        let Some(edge) = document.get_part(on.part).and_then(|part| part.edge(on.element.index).ok()) else {
-            return;
-        };
-        let curve = edge.curve();
-        if curve.edge_type() == EdgeType::Line {
-            self.acquired = Some(dvec3_to_vec3(curve.end_point() - curve.start_point()).normalize());
+        let straight = snap.on.and_then(|on| on.edge(document)).and_then(|edge| edge.direction());
+        if let Some(direction) = straight {
+            self.acquired = Some(direction);
         }
     }
 
@@ -156,48 +149,35 @@ pub(super) fn edge_relations(
     out: &mut Vec<Candidate>,
 ) {
     let Some(last) = stroke.last() else { return };
-    let PartEdge { part, index } = *edge;
-    let curve = match part.edge(index) {
-        Ok(element) => element.curve(),
-        Err(e) => {
-            log::debug!("No relations to edge {index} of {}: {e}", part.name);
-            return;
-        }
-    };
-    // The B-rep is in the world, scaled into the scene at tessellation.
-    let scale = part.options().scale_factor;
-    let from = point3_to_dvec3(last.position) / scale;
-    let relation = |kind, at: EdgePoint| Candidate {
-        snap: Snap::new(dvec3_to_point3(at.point * scale), kind)
-            .with_direction(dvec3_to_vec3(at.tangent))
-            .with_on(edge.element()),
+    let from = last.position;
+    let relation = |kind, at: CurvePoint| Candidate {
+        snap: Snap::new(at.point, kind).with_direction(at.tangent).with_on(edge.element()),
         found_at: found,
     };
 
     if kinds.contains(SnapFlags::CLOSEST) {
-        match curve.project(from) {
+        match edge.nearest(from) {
             Ok(nearest) if apart(nearest.point, from) => out.push(relation(SnapKind::Closest, nearest)),
             Ok(_) => {}
-            Err(e) => log::debug!("No closest snap on edge {index} of {}: {e}", part.name),
+            Err(e) => log::debug!("No closest snap on {edge}: {e}"),
         }
     }
     if kinds.contains(SnapFlags::PERPENDICULAR) {
-        match curve.projections(from) {
+        match edge.feet(from) {
             Ok(feet) => out.extend(
                 feet.into_iter()
                     .filter(|foot| apart(foot.point, from))
                     .map(|foot| relation(SnapKind::Perpendicular, foot)),
             ),
-            Err(e) => log::debug!("No perpendicular snap on edge {index} of {}: {e}", part.name),
+            Err(e) => log::debug!("No perpendicular snap on {edge}: {e}"),
         }
     }
     if stroke.straight && kinds.contains(SnapFlags::TANGENT_TANGENT) {
         for (leaves, touches) in tangents_from(last, edge, document) {
-            let snap = Snap::new(dvec3_to_point3(touches), SnapKind::TangentTangent)
-                .with_direction(dvec3_to_vec3((touches - leaves).normalize()))
+            let snap = Snap::new(touches, SnapKind::TangentTangent)
+                .with_direction((touches - leaves).normalize())
                 .with_on(edge.element());
-            let moves_last = Some(dvec3_to_point3(leaves));
-            out.push(Candidate { snap: Snap { moves_last, ..snap }, found_at: found });
+            out.push(Candidate { snap: Snap { moves_last: Some(leaves), ..snap }, found_at: found });
         }
     }
 }
@@ -213,152 +193,73 @@ pub(super) fn face_relations(
     out: &mut Vec<Candidate>,
 ) {
     let Some(last) = stroke.last() else { return };
-    let PartFace { part, index } = *face;
-    let surface = match part.face(index) {
-        Ok(surface) => surface,
-        Err(e) => {
-            log::debug!("No relations to face {index} of {}: {e}", part.name);
-            return;
-        }
-    };
-    // The B-rep is in the world, scaled into the scene at tessellation.
-    let scale = part.options().scale_factor;
-    let from = point3_to_dvec3(last.position) / scale;
-    let relation = |kind, point: DVec3| {
-        let snap = Snap::new(dvec3_to_point3(point * scale), kind).with_on(face.element());
-        let snap = match surface.normal_at(point) {
-            Ok(normal) => snap.with_direction(dvec3_to_vec3(normal)),
+    let from = last.position;
+    let relation = |kind, point: Point3| {
+        let snap = Snap::new(point, kind).with_on(face.element());
+        let snap = match face.normal_at(point) {
+            Ok(normal) => snap.with_direction(normal),
             Err(_) => snap,
         };
         Candidate { snap, found_at: found }
     };
 
     if kinds.contains(SnapFlags::CLOSEST) {
-        match surface.project(from) {
+        match face.nearest(from) {
             Ok(point) if apart(point, from) => out.push(relation(SnapKind::Closest, point)),
             Ok(_) => {}
-            Err(e) => log::debug!("No closest snap on face {index} of {}: {e}", part.name),
+            Err(e) => log::debug!("No closest snap on {face}: {e}"),
         }
     }
     if kinds.contains(SnapFlags::PERPENDICULAR) {
-        match surface.projections(from) {
+        match face.feet(from) {
             Ok(feet) => out.extend(
                 feet.into_iter()
                     .filter(|&point| apart(point, from))
                     .map(|point| relation(SnapKind::Perpendicular, point)),
             ),
-            Err(e) => log::debug!("No perpendicular snap on face {index} of {}: {e}", part.name),
+            Err(e) => log::debug!("No perpendicular snap on {face}: {e}"),
         }
     }
 }
 
 /// Whether `point` is far enough from `from` to make a segment.
-fn apart(point: DVec3, from: DVec3) -> bool {
-    point.distance(from) > f64::from(EPSILON)
+fn apart(point: Point3, from: Point3) -> bool {
+    point.distance(from) > EPSILON
 }
 
 /// The segments from the circle `last` lies on to the circle `edge` is, tangent
 /// to both, where each touches the arcs themselves: where they leave and where
-/// they touch `edge`, in the world.
-fn tangents_from(last: &Snap, edge: &PartEdge, document: &Document) -> Vec<(DVec3, DVec3)> {
-    let Some(on) = last.on.filter(|on| on.element.kind == SubGeometryKind::Edge) else { return Vec::new() };
-    if on == edge.element() {
+/// they touch `edge`.
+fn tangents_from(last: &Snap, edge: &PartEdge, document: &Document) -> Vec<(Point3, Point3)> {
+    let Some(from) = last.on.and_then(|on| on.edge(document)) else { return Vec::new() };
+    if from.element() == edge.element() {
         return Vec::new();
     }
-    let Some(from) = document.get_part(on.part).map(|part| PartEdge { part, index: on.element.index }) else {
-        return Vec::new();
-    };
-    let (Some(leaving), Some(touched)) = (Circle::of(from), Circle::of(*edge)) else { return Vec::new() };
-    // Coplanar: one normal, and both centres in the plane.
-    let size = leaving.radius + touched.radius + leaving.center.distance(touched.center);
-    let tolerance = ON_ARC * size;
-    let coplanar = leaving.normal.cross(touched.normal).length() <= ON_ARC
-        && (touched.center - leaving.center).dot(leaving.normal).abs() <= tolerance;
-    if !coplanar {
-        return Vec::new();
-    }
-
-    let tangents = common_tangents(leaving.center, leaving.radius, touched.center, touched.radius, leaving.normal);
+    let (Some(leaving), Some(touched)) = (from.circle(), edge.circle()) else { return Vec::new() };
+    let tangents = leaving.common_tangents(&touched);
     tangents
         .into_iter()
-        .filter(|&(leaves, touches)| leaves.distance(touches) > tolerance)
-        .filter(|&(leaves, touches)| leaving.holds(leaves) && touched.holds(touches))
+        .filter(|&(leaves, touches)| {
+            from.holds(leaves, ON_ARC * leaving.radius) && edge.holds(touches, ON_ARC * touched.radius)
+        })
         .collect()
-}
-
-/// A part's circular edge, in the world.
-struct Circle<'a> {
-    edge: PartEdge<'a>,
-    center: DVec3,
-    normal: DVec3,
-    radius: f64,
-}
-
-impl<'a> Circle<'a> {
-    /// `edge`, if it is a circle or an arc of one.
-    fn of(edge: PartEdge<'a>) -> Option<Self> {
-        let PartEdge { part, index } = edge;
-        let curve = part.edge(index).ok()?.curve();
-        let (center, normal) = curve.circle_axis()?;
-        let radius = curve.circle_radius()?;
-        let scale = part.options().scale_factor;
-        Some(Self { edge, center: center * scale, normal, radius: radius * scale })
-    }
-
-    /// Whether `point`, on the edge's circle, lies on the edge itself.
-    fn holds(&self, point: DVec3) -> bool {
-        let PartEdge { part, index } = self.edge;
-        let scale = part.options().scale_factor;
-        let Ok(element) = part.edge(index) else { return false };
-        element
-            .curve()
-            .project(point / scale)
-            .is_ok_and(|nearest| (nearest.point * scale).distance(point) <= ON_ARC * self.radius)
-    }
-}
-
-/// The lines tangent to the circles about `c1` and `c2` of radii `r1` and `r2`,
-/// both in the plane through them facing `normal`: where each touches the
-/// first circle and the second. Four for circles apart, two for circles that
-/// cross, none for one inside the other.
-fn common_tangents(c1: DVec3, r1: f64, c2: DVec3, r2: f64, normal: DVec3) -> Vec<(DVec3, DVec3)> {
-    let between = c2 - c1;
-    let distance = between.length();
-    if distance <= f64::EPSILON {
-        return Vec::new();
-    }
-    let x = between / distance;
-    let y = normal.normalize().cross(x);
-    let mut tangents = Vec::new();
-    // Touching both circles on the same side of the line, then on opposite
-    // sides (crossing between them).
-    for side in [1.0, -1.0] {
-        // The line's unit normal `n` makes this cosine with `x`.
-        let cos = (r1 - side * r2) / distance;
-        if cos.abs() > 1.0 {
-            continue;
-        }
-        let sin = (1.0 - cos * cos).sqrt();
-        for turn in [1.0, -1.0] {
-            let n = x * cos + y * (turn * sin);
-            tangents.push((c1 + n * r1, c2 + n * (side * r2)));
-        }
-    }
-    tangents
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_viewer::common::{Plane, Real};
+    use duck_engine_viewer::common::Plane;
+    use duck_engine_viewer::scene::resource::SubGeometryKind;
     use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
-    use opencascade::primitives::Shape;
+    use glam::DVec3;
+    use opencascade::primitives::{EdgeType, Shape};
 
     use duck_engine_viewer::common::Transform;
     use duck_engine_viewer::scene::cad::CadTessellationOptions;
 
+    use crate::document::dvec3_to_vec3;
     use crate::grid::GridConfig;
-    use crate::testing::{doc_with_box, doc_with_shape};
+    use crate::testing::{doc_with_box, doc_with_shape, rim};
 
     const CLOSE: Real = 1e-6;
 
@@ -411,19 +312,6 @@ mod tests {
 
     fn of_kind(snaps: &[Snap], kind: SnapKind) -> Vec<Snap> {
         snaps.iter().copied().filter(|snap| snap.kind == kind).collect()
-    }
-
-    /// The edge of a part of `document` that is a circle, or an arc of one,
-    /// about `center`.
-    fn rim(document: &Document, center: Point3) -> PartEdge<'_> {
-        document
-            .parts()
-            .find_map(|part| {
-                let mut edges = part.elements().edges().iter();
-                let index = edges.position(|edge| edge.circle_axis().is_some_and(|(c, _)| close(c, center)))?;
-                Some(PartEdge { part, index: index as u32 })
-            })
-            .expect("a rim about the centre")
     }
 
     /// A document holding `shape`, and a radius-1 cylinder standing on
@@ -507,7 +395,7 @@ mod tests {
             .unwrap();
         let curve = part.edge(straight).unwrap().curve();
         let direction = dvec3_to_vec3(curve.end_point() - curve.start_point()).normalize();
-        let edge = PartEdge { part, index: straight };
+        let edge = PartEdge::new(part, straight).unwrap();
 
         let mut stroke = stroke(true, &[at(5.0, 0.0, 5.0)]);
         stroke.observe(&on(&edge, Point3::new(0.0, 0.0, 0.0)), &document);
@@ -527,22 +415,6 @@ mod tests {
         stroke.observe(&on(&rim, Point3::new(2.0, 0.0, 0.0)), &document);
 
         assert_eq!(stroke.parallels().count(), 0);
-    }
-
-    #[test]
-    fn common_tangents_of_circles_apart_crossing_and_nested() {
-        const EXACT: f64 = 1e-12;
-        let tangents = common_tangents(DVec3::ZERO, 1.0, DVec3::new(4.0, 0.0, 0.0), 1.0, DVec3::Z);
-        assert_eq!(tangents.len(), 4);
-        for (a, b) in &tangents {
-            // Each touches its circle, square to the line between them.
-            assert!((a.length() - 1.0).abs() < EXACT && ((*b - DVec3::new(4.0, 0.0, 0.0)).length() - 1.0).abs() < EXACT);
-            assert!(a.dot(*b - *a).abs() < EXACT, "not tangent to the first: {a} {b}");
-        }
-        assert!(tangents.iter().any(|(a, b)| (*a - DVec3::Y).length() < EXACT && (*b - DVec3::new(4.0, 1.0, 0.0)).length() < EXACT));
-
-        assert_eq!(common_tangents(DVec3::ZERO, 2.0, DVec3::new(3.0, 0.0, 0.0), 2.0, DVec3::Z).len(), 2);
-        assert!(common_tangents(DVec3::ZERO, 3.0, DVec3::new(1.0, 0.0, 0.0), 1.0, DVec3::Z).is_empty());
     }
 
     #[test]
@@ -575,7 +447,7 @@ mod tests {
         let top = (0..part.elements().faces().len() as u32)
             .find(|&index| (part.face(index).unwrap().center_of_mass().y - 1.0).abs() < 1e-9)
             .unwrap();
-        let face = PartFace { part, index: top };
+        let face = PartFace::new(part, top).unwrap();
         let stroke = stroke(false, &[at(3.0, 4.0, 0.5)]);
 
         let mut out = Vec::new();

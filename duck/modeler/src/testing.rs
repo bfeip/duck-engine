@@ -19,6 +19,7 @@ use opencascade::primitives::{Face, Shape, Shell, Wire};
 
 use crate::construction::ConstructionOptions;
 use crate::document::{unify_same_domain, unwrap_single_solid, Document, PartId, SourceFate};
+use crate::geometry::PartEdge;
 use crate::notifications::Notifications;
 use crate::ops::loft::LoftProfile;
 use crate::snap::{Snap, SnapKind};
@@ -122,6 +123,19 @@ pub fn bite_rim(doc: &Document, node: NodeId) -> u32 {
     let edges = doc.part_at(node).expect("the ball is a part").elements().edges().len();
     assert_eq!(edges, 1, "the ball has an edge besides its bite's rim");
     0
+}
+
+/// The edge of a part of `document` that is a circle, or an arc of one, about
+/// `center`.
+pub fn rim(document: &Document, center: Point3) -> PartEdge<'_> {
+    document
+        .parts()
+        .find_map(|part| {
+            let about = |(c, _): (Point3, Vector3)| (c - center).magnitude() < 1e-6;
+            let index = part.elements().edges().iter().position(|edge| edge.circle_axis().is_some_and(about))?;
+            PartEdge::new(part, index as u32).ok()
+        })
+        .expect("a rim about the centre")
 }
 
 /// A document holding two unit square faces, one 2 above the other, and an
