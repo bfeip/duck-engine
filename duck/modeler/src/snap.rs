@@ -192,8 +192,8 @@ pub struct SnapInput<'a> {
     pub plane: &'a Plane,
     /// Grid configuration (spacing, extent) for grid snapping.
     pub grid: &'a GridConfig,
-    /// Which kinds the calling operator wants; intersected with the engine's
-    /// globally-enabled kinds.
+    /// Which kinds the calling operator wants. A provider sees those of them
+    /// the engine has enabled.
     pub requested: SnapFlags,
     /// Nodes to ignore (e.g. the operator's own in-progress preview geometry).
     pub exclude_nodes: &'a [NodeId],
@@ -311,7 +311,7 @@ pub trait SnapProvider {
     /// kinds are disabled or not requested.
     fn produces(&self) -> SnapFlags;
 
-    /// Candidate snaps found for `input`.
+    /// Candidate snaps found for `input`, of the kinds it requests.
     fn collect(&self, input: &SnapInput, document: &Document, settings: &SnapSettings) -> Vec<Candidate>;
 }
 
@@ -386,6 +386,7 @@ impl SnapEngine {
             SnapFlags::empty()
         };
         active |= SnapFlags::CONSTRUCTION_PLANE;
+        let input = &SnapInput { requested: active, ..*input };
 
         let mut candidates = Vec::new();
         for provider in &self.providers {
@@ -468,6 +469,9 @@ impl SnapEngine {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use super::*;
     use duck_engine_viewer::common::Real;
     use duck_engine_viewer::scene::resource::SubGeometryElement;
@@ -806,6 +810,38 @@ mod tests {
             engine.snap(&inp, &document).unwrap().kind,
             SnapKind::ConstructionPlane
         );
+    }
+
+    /// A provider of every kind, which notes the kinds it is asked for.
+    struct Asked(Rc<Cell<SnapFlags>>);
+
+    impl SnapProvider for Asked {
+        fn produces(&self) -> SnapFlags {
+            SnapFlags::all()
+        }
+
+        fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Candidate> {
+            self.0.set(input.requested);
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_provider_is_asked_only_for_requested_kinds_that_are_enabled() {
+        let cam = top_down_camera();
+        let asked = Rc::new(Cell::new(SnapFlags::empty()));
+        let mut engine = bare_engine();
+        engine.add_provider(Box::new(Asked(Rc::clone(&asked))));
+        engine.settings.enabled_kinds = SnapFlags::all() - SnapFlags::FACE;
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let document = Document::new(Scene::default());
+        let mut inp = input(&cam, &plane, &grid, (400.0, 300.0));
+        inp.requested = SnapFlags::CORNER | SnapFlags::FACE;
+
+        engine.snap(&inp, &document);
+
+        assert_eq!(asked.get(), SnapFlags::CORNER | SnapFlags::CONSTRUCTION_PLANE);
     }
 
     #[test]

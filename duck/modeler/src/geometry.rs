@@ -3,6 +3,13 @@
 //!
 //! A [`PartEdge`] or [`PartFace`] is an element of a part, found in its B-rep.
 //! Their queries take and return world points and directions.
+//!
+//! [`near_cursor`] finds what the scene's meshes show near the cursor, by the
+//! element indices that name those edges and faces.
+
+mod cursor;
+
+pub use cursor::{near_cursor, Cursor, SegmentHit};
 
 use std::fmt;
 

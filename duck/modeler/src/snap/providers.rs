@@ -1,20 +1,14 @@
 //! The built-in [`SnapProvider`]s. Each is a stateless strategy; all live
 //! context arrives through [`SnapInput`] and the [`Document`].
 
-use duck_engine_viewer::common::{
-    array_to_point3, array_to_vec3, transform_normal, transform_point, Aabb, EuclideanSpace,
-    InnerSpace, Matrix4, Point3, Ray, Real,
-};
-use duck_engine_viewer::scene::geom_query::{pick_all, PickQuery};
-use duck_engine_viewer::scene::PositionedCamera;
-use duck_engine_viewer::scene::resource::{
-    InstanceId, Mesh, Node, NodeId, PrimitiveType, PrimitiveFlags, SubGeometryKind, Topology,
-};
+use duck_engine_viewer::common::{EuclideanSpace, InnerSpace, Point3, Real};
+use duck_engine_viewer::scene::geom_query::PickView;
+use duck_engine_viewer::scene::resource::PrimitiveFlags;
 
-use super::stroke::{edge_relations, face_relations};
+use super::stroke::{edge_relations, face_relations, Stroke};
 use super::{Candidate, Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
 use crate::document::{CadPart, Document};
-use crate::geometry::{CurvePoint, PartEdge, PartFace, SurfacePoint};
+use crate::geometry::{near_cursor, CurvePoint, Cursor, PartEdge, PartFace, SegmentHit, SurfacePoint};
 
 /// Free point on the active construction plane. The always-present, lowest-tier
 /// fallback so a plane-constrained operator always gets a position.
@@ -97,16 +91,11 @@ impl SnapProvider for GridSnap {
 /// ([`SnapKind::Face`]), and the centre of the flat face hit
 /// ([`SnapKind::FaceCenter`]). With a stroke, the part edges near the cursor
 /// and the face under it also relate it to the stroke's last point
-/// ([`edge_relations`], [`face_relations`]). All kinds share one scene walk,
-/// the expensive part, so they cost a single traversal.
+/// ([`edge_relations`], [`face_relations`]). All kinds share one scene walk
+/// ([`near_cursor`]), the expensive part, so they cost a single traversal.
 ///
 /// Centres are offered for the parts the walk reaches near the cursor, so the
 /// centre of an arc that lies off its part's bounds is missed.
-///
-/// The walk is delegated to the scene's [`PickQuery`] framework ([`pick_all`]),
-/// which traverses the node tree from the roots, prunes `DO_NOT_SELECT` subtrees,
-/// and culls whole nodes by their cached world-space AABB before any per-primitive
-/// work — so meshes nowhere near the cursor are skipped entirely.
 pub(crate) struct GeometrySnap;
 
 impl SnapProvider for GeometrySnap {
@@ -121,23 +110,16 @@ impl SnapProvider for GeometrySnap {
     }
 
     fn collect(&self, input: &SnapInput, document: &Document, settings: &SnapSettings) -> Vec<Candidate> {
-        // Only do the work for kinds the caller actually asked for; the engine
-        // still drops anything globally disabled afterwards.
         let mut kinds = input.requested & self.produces();
         let stroke = input.stroke.filter(|stroke| !stroke.is_empty());
         if stroke.is_none() {
             kinds -= RELATION_KINDS;
         }
-        let query = GeometrySnapQuery {
-            document,
+        let cursor = Cursor {
+            view: PickView { camera: input.camera, viewport: input.viewport },
+            at: input.cursor,
             ray: input.ray,
-            camera: input.camera,
-            cursor: input.cursor,
-            viewport: input.viewport,
-            pixel_tolerance: settings.pixel_tolerance,
-            local_scale: 1.0,
-            exclude_nodes: input.exclude_nodes,
-            kinds,
+            reach: settings.pixel_tolerance,
         };
 
         // Every face hit lies on the cursor ray, so screen-space ranking cannot
@@ -147,27 +129,27 @@ impl SnapProvider for GeometrySnap {
         let mut candidates: Vec<Candidate> = Vec::new();
         let mut nearest_face = None;
         let mut nearest_d2 = Real::INFINITY;
-        for hit in pick_all(&query, document.scene()) {
-            match hit {
-                GeometryHit::Snap(snap) => candidates.push(snap.into()),
-                GeometryHit::PartEdge { snap, edge } => {
-                    if kinds.contains(SnapFlags::EDGE) {
-                        candidates.push(snap.into());
-                    }
-                    if let Some(stroke) = stroke {
-                        edge_relations(&edge, snap.position, stroke, kinds, document, &mut candidates);
-                    }
+        for near in near_cursor(document.scene(), &cursor, sought(kinds), input.exclude_nodes) {
+            let part = document.part_at(near.node);
+            candidates.extend(near.corners.iter().map(|&corner| Candidate::from(Snap::new(corner, SnapKind::Corner))));
+            if kinds.contains(SnapFlags::CENTER) && near.shown.contains(PrimitiveFlags::LINES) {
+                if let Some(part) = part {
+                    collect_circle_centers(part, &mut candidates);
                 }
-                GeometryHit::Face { snap, face } => {
-                    let d2 = (snap.position - input.ray.origin).magnitude2();
-                    if d2 < nearest_d2 {
-                        nearest_d2 = d2;
-                        nearest_face = Some((snap, face));
-                    }
+            }
+            edge_snaps(&near.segments, part, kinds, stroke, document, &mut candidates);
+            if let Some(hit) = near.face {
+                let d2 = (hit.point - input.ray.origin).magnitude2();
+                if d2 < nearest_d2 {
+                    nearest_d2 = d2;
+                    nearest_face = Some((near.node, hit));
                 }
             }
         }
-        if let Some((snap, face)) = nearest_face {
+        if let Some((node, hit)) = nearest_face {
+            let face = document.part_at(node).and_then(|part| PartFace::new(part, hit.element?).ok());
+            let snap = Snap::new(hit.point, SnapKind::Face).with_direction(hit.normal);
+            let snap = Snap { on: face.map(|face| face.element()), ..snap };
             if kinds.contains(SnapFlags::FACE) {
                 candidates.push(snap.into());
             }
@@ -193,16 +175,82 @@ impl SnapProvider for GeometrySnap {
     }
 }
 
-/// What [`GeometrySnapQuery`] finds on one mesh.
-enum GeometryHit<'a> {
-    /// A finished candidate.
-    Snap(Snap),
-    /// The point of a part's edge nearest the cursor ray, on its B-rep, as a
-    /// [`SnapKind::Edge`] snap.
-    PartEdge { snap: Snap, edge: PartEdge<'a> },
-    /// The cursor ray's nearest hit on the mesh, as a [`SnapKind::Face`] snap,
-    /// with the part face it landed on.
-    Face { snap: Snap, face: Option<PartFace<'a>> },
+/// The kinds relating what is under the cursor to a stroke.
+const RELATION_KINDS: SnapFlags =
+    SnapFlags::CLOSEST.union(SnapFlags::PERPENDICULAR).union(SnapFlags::TANGENT_TANGENT);
+
+/// The primitives `kinds` are found on: triangles where the cursor ray meets a
+/// face, lines for the segments near it, points for corners.
+fn sought(kinds: SnapFlags) -> PrimitiveFlags {
+    let on_faces = SnapFlags::FACE | SnapFlags::FACE_CENTER | SnapFlags::CLOSEST | SnapFlags::PERPENDICULAR;
+    let on_segments = SnapFlags::EDGE | SnapFlags::MIDPOINT | RELATION_KINDS;
+    let mut sought = PrimitiveFlags::empty();
+    sought.set(PrimitiveFlags::TRIANGLES, kinds.intersects(on_faces));
+    sought.set(PrimitiveFlags::LINES, kinds.intersects(on_segments));
+    sought.set(PrimitiveFlags::POINTS, kinds.contains(SnapFlags::CORNER));
+    sought
+}
+
+/// Pushes into `out` the `kinds` of snap found on the `segments` near the
+/// cursor on one mesh, `part`'s if it is a part's: onto its edges, their
+/// midpoints, and with a `stroke`, what relates them to its last point.
+fn edge_snaps(
+    segments: &[SegmentHit],
+    part: Option<&CadPart>,
+    kinds: SnapFlags,
+    stroke: Option<&Stroke>,
+    document: &Document,
+    out: &mut Vec<Candidate>,
+) {
+    let on_tessellation =
+        |segment: &SegmentHit| Snap::new(segment.point, SnapKind::Edge).with_direction(segment.direction);
+    // A part's edge is found once, from its segment nearest the ray, on its
+    // B-rep; any other segment is snapped onto as it is.
+    let mut nearest: Vec<(u32, &SegmentHit)> = Vec::new();
+    for segment in segments {
+        match segment.element.filter(|_| part.is_some()) {
+            // A part's edge also relates to the stroke.
+            Some(element) if kinds.intersects(SnapFlags::EDGE | RELATION_KINDS) => {
+                match nearest.iter_mut().find(|(found, _)| *found == element) {
+                    Some(best) if segment.distance < best.1.distance => best.1 = segment,
+                    Some(_) => {}
+                    None => nearest.push((element, segment)),
+                }
+            }
+            None if kinds.contains(SnapFlags::EDGE) => out.push(on_tessellation(segment).into()),
+            _ => {}
+        }
+    }
+    let Some(part) = part else { return };
+
+    for (index, segment) in nearest {
+        let snap = on_tessellation(segment);
+        let edge = match PartEdge::new(part, index) {
+            Ok(edge) => edge,
+            Err(e) => {
+                log::debug!("Edge snap left on its tessellation: {e}");
+                out.push(snap.into());
+                continue;
+            }
+        };
+        let snap = onto_edge(edge, snap);
+        if kinds.contains(SnapFlags::EDGE) {
+            out.push(snap.into());
+        }
+        if let Some(stroke) = stroke {
+            edge_relations(&edge, snap.position, stroke, kinds, document, out);
+        }
+    }
+
+    if kinds.contains(SnapFlags::MIDPOINT) {
+        // An edge's midpoint lies on (or within tessellation deflection of) one
+        // of its segments, so every edge whose midpoint could rank has a
+        // segment here.
+        let mut edges: Vec<u32> = segments.iter().filter_map(|segment| segment.element).collect();
+        edges.sort_unstable();
+        edges.dedup();
+        collect_edge_midpoints(part, &edges, out);
+    }
 }
 
 /// The centre of `face` if it is flat, along its outward normal.
@@ -217,244 +265,6 @@ fn face_center(face: &PartFace) -> Option<Snap> {
         Err(e) => {
             log::debug!("No centre snap on {face}: {e}");
             None
-        }
-    }
-}
-
-/// The [`PickQuery`] that drives [`GeometrySnap`]'s single scene walk. Broad phase
-/// is a screen-space test (the same metric the ranking uses); the narrow phase runs
-/// in local space and transforms results back to world.
-#[derive(Clone, Copy)]
-struct GeometrySnapQuery<'a> {
-    /// The parts whose B-rep refines snaps onto their meshes.
-    document: &'a Document,
-    /// Cursor ray: world space at broad phase, local space after [`Self::transform`].
-    ray: Ray,
-    camera: &'a PositionedCamera,
-    cursor: (f32, f32),
-    viewport: (u32, u32),
-    pixel_tolerance: f32,
-    /// Factor mapping world-space distances into the current (possibly local)
-    /// coordinate space; updated alongside the ray by [`Self::transform`].
-    local_scale: Real,
-    exclude_nodes: &'a [NodeId],
-    /// The kinds to look for.
-    kinds: SnapFlags,
-}
-
-/// The kinds relating what is under the cursor to a stroke.
-const RELATION_KINDS: SnapFlags =
-    SnapFlags::CLOSEST.union(SnapFlags::PERPENDICULAR).union(SnapFlags::TANGENT_TANGENT);
-/// The kinds found where the ray meets a face.
-const FACE_KINDS: SnapFlags = SnapFlags::FACE
-    .union(SnapFlags::FACE_CENTER)
-    .union(SnapFlags::CLOSEST)
-    .union(SnapFlags::PERPENDICULAR);
-/// The kinds found on segments near the ray.
-const SEGMENT_KINDS: SnapFlags = SnapFlags::EDGE.union(SnapFlags::MIDPOINT).union(RELATION_KINDS);
-
-impl GeometrySnapQuery<'_> {
-    /// Conservative local-space distance bound for edge candidates: a segment
-    /// farther than this from the ray projects to more than `pixel_tolerance`
-    /// pixels from the cursor, so `rank()` could never accept it.
-    ///
-    /// Every segment lies inside the mesh bounds, so its depth is at most the
-    /// farthest corner's, and `world_size_per_pixel` is non-decreasing in depth;
-    /// the 2× margin covers off-axis perspective distortion.
-    fn local_edge_tolerance(&self, mesh: &Mesh, world_transform: &Matrix4) -> Real {
-        let Some(bounds) = mesh.bounding() else {
-            return 0.0;
-        };
-        let forward = self.camera.forward();
-        let mut far_depth = self.camera.projection.depth_range().0;
-        for corner in bounds.transform(world_transform).corners() {
-            far_depth = far_depth.max((corner - self.camera.eye).dot(forward));
-        }
-        let world_tolerance = self.pixel_tolerance as Real
-            * self.camera.world_size_per_pixel(far_depth, self.viewport.1)
-            * 2.0;
-        world_tolerance * self.local_scale
-    }
-
-    /// The kinds this query looks for on `shown` primitives: where the ray
-    /// meets a face, and on segments near it.
-    fn within(&self, shown: PrimitiveFlags) -> (SnapFlags, SnapFlags) {
-        let on = |primitives, kinds| match shown.contains(primitives) {
-            true => self.kinds & kinds,
-            false => SnapFlags::empty(),
-        };
-        (on(PrimitiveFlags::TRIANGLES, FACE_KINDS), on(PrimitiveFlags::LINES, SEGMENT_KINDS | SnapFlags::CENTER))
-    }
-}
-
-impl<'a> PickQuery for GeometrySnapQuery<'a> {
-    type Result = GeometryHit<'a>;
-
-    fn might_intersect_bounds(&self, bounds: &Aabb) -> bool {
-        let (w, h) = self.viewport;
-        let forward = self.camera.forward();
-        let mut min_x = f32::INFINITY;
-        let mut min_y = f32::INFINITY;
-        let mut max_x = f32::NEG_INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
-
-        for corner in bounds.corners() {
-            // A corner behind the camera has no meaningful screen projection, so
-            // don't risk culling a node straddling the camera plane — keep it.
-            if (corner - self.camera.eye).dot(forward) <= 0.0 {
-                return true;
-            }
-            let s = self.camera.project_point_screen(corner, w, h);
-            let (sx, sy) = (s.x as f32, s.y as f32);
-            min_x = min_x.min(sx);
-            min_y = min_y.min(sy);
-            max_x = max_x.max(sx);
-            max_y = max_y.max(sy);
-        }
-
-        let tol = self.pixel_tolerance;
-        let (cx, cy) = self.cursor;
-        cx >= min_x - tol && cx <= max_x + tol && cy >= min_y - tol && cy <= max_y + tol
-    }
-
-    fn transform(&self, matrix: &Matrix4) -> Self {
-        // world_to_local (= matrix) embeds the inverse of the world scale, so a
-        // world-space distance d maps to d * column_magnitude in local space.
-        // The max column magnitude stays conservative under non-uniform scale.
-        let scale = [matrix.x, matrix.y, matrix.z]
-            .iter()
-            .map(|col| col.truncate().magnitude())
-            .fold(0.0, Real::max);
-
-        Self {
-            ray: self.ray.transform(matrix),
-            local_scale: self.local_scale * scale,
-            ..*self
-        }
-    }
-
-    fn collect_mesh_hits(
-        &self,
-        mesh: &Mesh,
-        node: &Node,
-        _instance_id: InstanceId,
-        world_transform: &Matrix4,
-        shown: PrimitiveFlags,
-        results: &mut Vec<GeometryHit<'a>>,
-    ) {
-        // The one per-node filter the scene walk doesn't apply; it already
-        // skips invisible subtrees.
-        if self.exclude_nodes.contains(&node.id) {
-            return;
-        }
-        let (on_faces, on_segments) = self.within(shown);
-
-        if self.kinds.contains(SnapFlags::CORNER) {
-            if let Some(topology) = mesh.topology() {
-                let mut corners = Vec::new();
-                collect_mesh_corners(mesh, topology, shown, world_transform, &mut corners);
-                results.extend(corners.into_iter().map(GeometryHit::Snap));
-            }
-        }
-
-        if on_segments.contains(SnapFlags::CENTER) {
-            if let Some(part) = self.document.part_at(node.id) {
-                let mut centers = Vec::new();
-                collect_circle_centers(part, &mut centers);
-                results.extend(centers.into_iter().map(GeometryHit::Snap));
-            }
-        }
-
-        // Both narrow phases run in this mesh's local space (the ray is already
-        // there) through the mesh's cached spatial index, and lift results to
-        // world.
-        if !on_faces.is_empty() {
-            // Nearest ray–triangle hit on this mesh; `GeometrySnap::collect`
-            // picks the nearest across all meshes.
-            if let Some(hit) = mesh.spatial_index().nearest_triangle(mesh, &self.ray) {
-                if let Some([v0, v1, v2]) = mesh.triangle(hit.triangle_index) {
-                    // Möller–Trumbore weights: hit = w·v0 + u·v1 + v·v2.
-                    let (u, v, w) = hit.barycentric;
-                    let mut normal = array_to_vec3(v0.normal) * w
-                        + array_to_vec3(v1.normal) * u
-                        + array_to_vec3(v2.normal) * v;
-                    if normal.magnitude2() <= Real::EPSILON {
-                        // Missing/cancelling vertex normals: use the flat one.
-                        let p0 = array_to_point3(v0.position);
-                        normal = (array_to_point3(v1.position) - p0)
-                            .cross(array_to_point3(v2.position) - p0);
-                    }
-                    let face = self.document.part_at(node.id).and_then(|part| {
-                        let triangle = hit.triangle_index as u32;
-                        let index = mesh.sub_geometry_for_primitive(SubGeometryKind::Face, triangle)?;
-                        PartFace::new(part, index).ok()
-                    });
-                    let snap = Snap::new(transform_point(world_transform, hit.hit_point), SnapKind::Face)
-                        .with_direction(transform_normal(world_transform, normal));
-                    let snap = Snap { on: face.map(|face| face.element()), ..snap };
-                    results.push(GeometryHit::Face { snap, face });
-                }
-            }
-        }
-
-        if on_segments.intersects(SEGMENT_KINDS) {
-            // Bounded by the pixel tolerance: any segment farther from the ray
-            // can never rank, and the index skips subtrees outside the bound.
-            // An edge's midpoint lies on (or within tessellation deflection of)
-            // one of its segments, so the same bound finds every edge whose
-            // midpoint could rank.
-            let local_tolerance = self.local_edge_tolerance(mesh, world_transform);
-            let part = self.document.part_at(node.id);
-            let mut near_edges = Vec::new();
-            // A part's edge is found once, from its segment nearest the ray, on
-            // its B-rep; other meshes snap onto every near segment.
-            let mut nearest: Vec<(u32, Real, Snap)> = Vec::new();
-            let index = mesh.spatial_index();
-            index.for_each_segment_within(mesh, &self.ray, local_tolerance, |i, approach| {
-                let element = mesh.sub_geometry_for_primitive(SubGeometryKind::Edge, i as u32);
-                if on_segments.contains(SnapFlags::MIDPOINT) {
-                    near_edges.extend(element);
-                }
-                let element = element.filter(|_| part.is_some());
-                // A part's edge also relates to the stroke.
-                let wanted = match element {
-                    Some(_) => SnapFlags::EDGE | RELATION_KINDS,
-                    None => SnapFlags::EDGE,
-                };
-                if !on_segments.intersects(wanted) {
-                    return;
-                }
-                let Some([v0, v1]) = mesh.segment(i) else { return };
-                let w0 = transform_point(world_transform, array_to_point3(v0.position));
-                let w1 = transform_point(world_transform, array_to_point3(v1.position));
-                let snap = Snap::new(transform_point(world_transform, approach.closest_on_segment), SnapKind::Edge)
-                    .with_direction((w1 - w0).normalize());
-                match element {
-                    Some(element) => match nearest.iter_mut().find(|(e, ..)| *e == element) {
-                        Some(best) if approach.distance < best.1 => *best = (element, approach.distance, snap),
-                        Some(_) => {}
-                        None => nearest.push((element, approach.distance, snap)),
-                    },
-                    None => results.push(GeometryHit::Snap(snap)),
-                }
-            });
-
-            if let Some(part) = part {
-                for (index, _, snap) in nearest {
-                    match PartEdge::new(part, index) {
-                        Ok(edge) => results.push(GeometryHit::PartEdge { snap: onto_edge(edge, snap), edge }),
-                        Err(e) => {
-                            log::debug!("Edge snap left on its tessellation: {e}");
-                            results.push(GeometryHit::Snap(snap));
-                        }
-                    }
-                }
-                near_edges.sort_unstable();
-                near_edges.dedup();
-                let mut midpoints = Vec::new();
-                collect_edge_midpoints(part, &near_edges, &mut midpoints);
-                results.extend(midpoints.into_iter().map(GeometryHit::Snap));
-            }
         }
     }
 }
@@ -479,12 +289,13 @@ fn onto_edge(edge: PartEdge, snap: Snap) -> Snap {
 
 /// Pushes the midpoint of each of `part`'s `edges` (element indices) into `out`,
 /// taken on the B-rep curve, with the curve's tangent there.
-fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Snap>) {
+fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Candidate>) {
     for &index in edges {
         let midpoint = PartEdge::new(part, index).and_then(|edge| Ok((edge, edge.midpoint()?)));
         match midpoint {
             Ok((edge, CurvePoint { point, tangent })) => {
-                out.push(Snap::new(point, SnapKind::Midpoint).with_direction(tangent).with_on(edge.element()));
+                let midpoint = Snap::new(point, SnapKind::Midpoint).with_direction(tangent);
+                out.push(midpoint.with_on(edge.element()).into());
             }
             Err(e) => log::debug!("No midpoint snap on edge {index} of {}: {e}", part.name),
         }
@@ -493,89 +304,13 @@ fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Snap>) {
 
 /// Pushes the centre of each of `part`'s circular edges into `out`, along the
 /// circle's axis.
-fn collect_circle_centers(part: &CadPart, out: &mut Vec<Snap>) {
+fn collect_circle_centers(part: &CadPart, out: &mut Vec<Candidate>) {
     for index in 0..part.elements().edges().len() as u32 {
         if let Some(circle) = PartEdge::new(part, index).ok().and_then(|edge| edge.circle()) {
-            out.push(Snap::new(circle.center, SnapKind::Center).with_direction(circle.normal));
+            out.push(Snap::new(circle.center, SnapKind::Center).with_direction(circle.normal).into());
         }
     }
 }
-
-/// Extracts a mesh's B-rep corner vertices into `out` (in world space), from
-/// `shown` primitives only.
-///
-/// Prefers explicit point topology when present; otherwise derives corners from
-/// edge-range endpoints — the first/last vertex of each edge is its B-rep vertex,
-/// while intermediate curve-approximation points are not corners.
-fn collect_mesh_corners(
-    mesh: &Mesh,
-    topology: &Topology,
-    shown: PrimitiveFlags,
-    world: &Matrix4,
-    out: &mut Vec<Snap>,
-) {
-    let vertices = mesh.vertices();
-    let mut push_corner = |local: [f32; 3]| {
-        let position = transform_point(world, array_to_point3(local));
-        out.push(Snap::new(position, SnapKind::Corner));
-    };
-
-    if !topology.pointset_ranges.is_empty() {
-        if !shown.contains(PrimitiveFlags::POINTS) {
-            return;
-        }
-        // TODO: Only works on first point primitive. Not a big deal right now but...
-        if let Some(points) = mesh
-            .primitives()
-            .iter()
-            .find(|p| p.primitive_type == PrimitiveType::PointList)
-        {
-            for range in &topology.pointset_ranges {
-                for i in range.start..range.start + range.count {
-                    if let Some(vtx) = points
-                        .indices
-                        .get(i as usize)
-                        .and_then(|&idx| vertices.get(idx as usize))
-                    {
-                        push_corner(vtx.position);
-                    }
-                }
-            }
-        }
-        return;
-    }
-
-    if !shown.contains(PrimitiveFlags::LINES) {
-        return;
-    }
-    // TODO: Only works on first line primitive. Not a big deal right now but...
-    let Some(lines) = mesh
-        .primitives()
-        .iter()
-        .find(|p| p.primitive_type == PrimitiveType::LineList)
-    else {
-        return;
-    };
-
-    for range in &topology.edge_ranges {
-        if range.count == 0 {
-            continue;
-        }
-        // Edge ranges count segments; the LineList holds 2 indices per segment.
-        let first = range.start as usize * 2;
-        let last = (range.start + range.count - 1) as usize * 2 + 1;
-        for slot in [first, last] {
-            if let Some(vtx) = lines
-                .indices
-                .get(slot)
-                .and_then(|&idx| vertices.get(idx as usize))
-            {
-                push_corner(vtx.position);
-            }
-        }
-    }
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -584,8 +319,8 @@ mod tests {
     use duck_engine_viewer::scene::cad::CadTessellationOptions;
     use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
     use duck_engine_viewer::scene::resource::{
-        Instance, Mesh, MeshPrimitive, NodeFlags, PrimitiveType, SubMeshRange, Topology, Vertex,
-        Visibility,
+        Instance, Mesh, MeshPrimitive, NodeFlags, NodeId, PrimitiveType, SubMeshRange, Topology,
+        Vertex, Visibility,
     };
     use glam::DVec3;
     use opencascade::primitives::Shape;
@@ -732,38 +467,6 @@ mod tests {
         assert!(close(edge.position, Point3::new(3.0, 0.0, 2.0)), "{:?}", edge.position);
         // Direction is the edge tangent (±X).
         assert!(edge.direction.map_or(false, |d| d.x.abs() > 0.9), "{:?}", edge.direction);
-    }
-
-    #[test]
-    fn corners_from_edge_endpoints_in_world_space() {
-        // One straight edge A→B as a single LineList segment.
-        let a = [1.0, 2.0, 3.0];
-        let b = [4.0, 5.0, 6.0];
-        let mesh = Mesh::from_raw(
-            vec![
-                Vertex { position: a, tex_coords: [0.0; 3], normal: [0.0; 3] },
-                Vertex { position: b, tex_coords: [0.0; 3], normal: [0.0; 3] },
-            ],
-            vec![MeshPrimitive {
-                primitive_type: PrimitiveType::LineList,
-                indices: vec![0, 1],
-            }],
-        );
-        let topology = Topology {
-            face_ranges: vec![],
-            edge_ranges: vec![SubMeshRange { start: 0, count: 1 }],
-            pointset_ranges: vec![],
-        };
-        // Translate the whole part by +10 in X.
-        let world = Matrix4::from_translation(Vector3::new(10.0, 0.0, 0.0));
-
-        let mut snaps = Vec::new();
-        collect_mesh_corners(&mesh, &topology, PrimitiveFlags::all(), &world, &mut snaps);
-
-        assert_eq!(snaps.len(), 2);
-        assert!(snaps.iter().any(|s| close(s.position, Point3::new(11.0, 2.0, 3.0))));
-        assert!(snaps.iter().any(|s| close(s.position, Point3::new(14.0, 5.0, 6.0))));
-        assert!(snaps.iter().all(|s| s.kind == SnapKind::Corner));
     }
 
     /// Adds a single-triangle node (vertices at `positions` with `normals`,
@@ -929,31 +632,6 @@ mod tests {
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
         assert!(snaps.is_empty(), "far cursor should cull the node: {snaps:?}");
-    }
-
-    #[test]
-    fn might_intersect_bounds_tests_screen_proximity() {
-        let cam = dummy_camera();
-        let document = Document::new(Scene::default());
-        let query = GeometrySnapQuery {
-            document: &document,
-            ray: Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0)),
-            camera: &cam,
-            cursor: screen_of(&cam, Point3::origin()),
-            viewport: (800, 600),
-            pixel_tolerance: 12.0,
-            local_scale: 1.0,
-            exclude_nodes: &[],
-            kinds: SnapFlags::all(),
-        };
-
-        // An AABB straddling the origin projects under the cursor → kept.
-        let near = Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
-        assert!(query.might_intersect_bounds(&near));
-
-        // A small AABB off to the side projects far from the cursor → culled.
-        let far = Aabb::new(Point3::new(7.8, -0.2, -0.2), Point3::new(8.2, 0.2, 0.2));
-        assert!(!query.might_intersect_bounds(&far));
     }
 
     #[test]
