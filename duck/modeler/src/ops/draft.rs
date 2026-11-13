@@ -1,12 +1,11 @@
 use anyhow::{ensure, Context, Result};
 use duck_engine_scene::common::{InnerSpace, Matrix3, Point3, Rad, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
-use opencascade::primitives::{FaceType, Shape};
+use opencascade::primitives::Shape;
 use opencascade::DraftError;
 
-use crate::document::{
-    dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, vec3_to_dvec3, Document,
-};
+use crate::document::{point3_to_dvec3, vec3_to_dvec3, Document};
+use crate::geometry::{PartFace, SurfacePoint};
 
 /// A change of angle at or below this many radians drafts nothing; OCCT
 /// ignores anything smaller.
@@ -56,20 +55,14 @@ impl DraftFrame {
     /// draft.
     pub fn new(doc: &Document, target: &DraftTarget) -> Result<Self> {
         let part = doc.part_at(target.node).context("Draft target is not a known CAD part")?;
-        let neutral = part.face(target.neutral)?;
-        ensure!(neutral.face_type() == FaceType::Plane, "The neutral face must be flat");
+        let neutral = PartFace::new(part, target.neutral)?;
+        ensure!(neutral.is_flat(), "The neutral face must be flat");
         let primary = *target.faces.first().context("There are no faces to draft")?;
-        let lever_face = part.face(primary)?;
+        let lever_face = PartFace::new(part, primary)?;
 
-        // `normal_at_center` goes through `BRepGProp_Face::Normal`, which applies
-        // each face's orientation: both normals point out of the material.
-        let origin = dvec3_to_point3(neutral.center_of_mass());
-        let normal = dvec3_to_vec3(neutral.normal_at_center()?).normalize();
-        let centre = lever_face.midpoint();
-        let outward = lever_face
-            .normal_at(centre)
-            .context("The face to draft has no well-defined normal")?;
-        let (centre, outward) = (dvec3_to_point3(centre), dvec3_to_vec3(outward).normalize());
+        let SurfacePoint { point: origin, normal } = neutral.centroid()?;
+        let SurfacePoint { point: centre, normal: outward } =
+            lever_face.middle().context("The face to draft has no well-defined normal")?;
 
         // Away from the neutral plane toward the drafted face. One straddling
         // the plane pulls into the material behind the neutral face.
@@ -151,7 +144,7 @@ mod tests {
 
     use duck_engine_scene::common::Vector3;
     use glam::DVec3;
-    use opencascade::primitives::{Edge, Face, ShapeType, Wire};
+    use opencascade::primitives::{Edge, Face, FaceType, ShapeType, Wire};
 
     use crate::document::{unwrap_single_solid, SourceFate};
     use crate::testing::{commit, doc_with_box, doc_with_shape, face_along, part_faces, part_shape, square_frustum};

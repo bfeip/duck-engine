@@ -1,8 +1,10 @@
-//! The geometry of parts' edges and faces, in the world: the point of one
-//! nearest another, where a perpendicular meets it, its middle, its circle.
+//! The geometry of parts' edges, faces and vertices, in the world: the point
+//! of one nearest another, where a perpendicular meets it, its middle, its
+//! circle.
 //!
-//! A [`PartEdge`] or [`PartFace`] is an element of a part, found in its B-rep.
-//! Their queries take and return world points and directions.
+//! A [`PartEdge`], [`PartFace`] or [`PartVertex`] is an element of a part,
+//! found in its B-rep. Their queries take and return world points and
+//! directions.
 //!
 //! [`near_cursor`] finds what the scene's meshes show near the cursor, by the
 //! element indices that name those edges and faces.
@@ -18,7 +20,7 @@ use duck_engine_scene::cad::EdgeElement;
 use duck_engine_scene::common::{InnerSpace, MetricSpace, Point3, Real, Vector3};
 use duck_engine_scene::resource::{SubGeometryElement, SubGeometryKind};
 use glam::DVec3;
-use opencascade::primitives::{EdgePoint, EdgeType, Face, FaceType};
+use opencascade::primitives::{EdgePoint, EdgeType, Face, FaceType, Vertex};
 
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, CadPart, Document, PartId};
 
@@ -230,10 +232,19 @@ impl<'a> PartFace<'a> {
     }
 
     /// The centre of the face's area, which a curved face may not pass
-    /// through, and the face's normal at its point nearest there.
+    /// through, and the face's normal at its point nearest there. An error
+    /// where no one point is nearest, as on the axis of a cylinder's side.
     pub fn centroid(&self) -> Result<SurfacePoint> {
         let center = self.face.center_of_mass();
         Ok(SurfacePoint { point: to_world(self.part, center), normal: self.normal_in_shape(center)? })
+    }
+
+    /// The point halfway through the face's parameter ranges, and the face's
+    /// normal there. It lies on the surface, curved or closed, though it may
+    /// fall in a hole or notch of a trimmed face.
+    pub fn middle(&self) -> Result<SurfacePoint> {
+        let middle = self.face.midpoint();
+        Ok(SurfacePoint { point: to_world(self.part, middle), normal: self.normal_in_shape(middle)? })
     }
 
     fn normal_in_shape(&self, point: DVec3) -> Result<Vector3> {
@@ -248,6 +259,24 @@ impl<'a> PartFace<'a> {
 impl fmt::Display for PartFace<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "face {} of {}", self.index, self.part.name)
+    }
+}
+
+/// A vertex of a part.
+#[derive(Clone, Copy)]
+pub struct PartVertex<'a> {
+    part: &'a CadPart,
+    vertex: &'a Vertex,
+}
+
+impl<'a> PartVertex<'a> {
+    /// The vertex `part`'s selections number `index`.
+    pub fn new(part: &'a CadPart, index: u32) -> Result<Self> {
+        Ok(Self { part, vertex: part.vertex(index)? })
+    }
+
+    pub fn point(&self) -> Point3 {
+        to_world(self.part, self.vertex.point())
     }
 }
 
@@ -412,6 +441,37 @@ mod tests {
 
         assert!(!side.is_flat());
         assert!((normal - Vector3::unit_x()).magnitude() < EPSILON, "{normal:?}");
+    }
+
+    /// The centre of a cylinder's side is on its axis, which every point of
+    /// the side is as near.
+    #[test]
+    fn a_cylinders_side_has_a_middle_but_no_normal_at_its_centre() {
+        let (document, node) = doc_with_cylinder();
+        let part = document.part_at(node).unwrap();
+        let side = part.elements().faces().iter().position(|face| face.face_type() == FaceType::Cylinder).unwrap();
+        let side = PartFace::new(part, side as u32).unwrap();
+
+        let SurfacePoint { point, normal } = side.middle().unwrap();
+
+        let radial = Vector3::new(point.x, 0.0, point.z);
+        assert!((radial.magnitude() - 2.0).abs() < EPSILON && (point.y - 0.5).abs() < EPSILON, "{point:?}");
+        assert!((normal - radial.normalize()).magnitude() < EPSILON, "{normal:?}");
+        assert!(side.centroid().is_err());
+    }
+
+    #[test]
+    fn a_boxs_vertices_are_its_corners() {
+        let (document, node) = doc_with_box();
+        let part = document.part_at(node).unwrap();
+
+        let corners: Vec<Point3> = (0..8).map(|index| PartVertex::new(part, index).unwrap().point()).collect();
+
+        for corner in &corners {
+            let reach = [corner.x.abs(), corner.y.abs(), corner.z.abs()];
+            assert!(reach.iter().all(|reach| (reach - 1.0).abs() < EPSILON), "{corner:?}");
+        }
+        assert!(PartVertex::new(part, 8).is_err());
     }
 
     #[test]

@@ -23,15 +23,23 @@
 //! higher-tier snap (grid axis, corner, ...) wins whenever one is within the
 //! pixel tolerance.
 //!
+//! Providers measure nothing themselves. What the scene shows near the cursor
+//! comes from [`near_cursor`](crate::geometry::near_cursor), and the points of
+//! a part's B-rep from [`PartEdge`](crate::geometry::PartEdge) and
+//! [`PartFace`](crate::geometry::PartFace); a provider chooses which of them
+//! to offer, as which kind.
+//!
 //! # Extending
 //!
 //! To add a snap: add a [`SnapKind`] variant (plus its one-line [`Snap::tier`]
 //! and [`SnapKind::flag`] arms and a [`SnapFlags`] bit), implement
 //! [`SnapProvider`], and register it in [`SnapEngine::with_defaults`] (or via
-//! [`SnapEngine::add_provider`]). A snap relating the next point to the points
-//! placed before it reads [`SnapInput::stroke`], and proposes nothing without
-//! one. [`Snap::direction`] already carries an optional tangent/axis for line
-//! snaps and future orientation snaps.
+//! [`SnapEngine::add_provider`]). A provider is asked only for the kinds in
+//! [`SnapInput::requested`]: those the caller wants that are enabled. A snap
+//! relating the next point to the points placed before it reads
+//! [`SnapInput::stroke`], and proposes nothing without one. [`Snap::direction`]
+//! already carries an optional tangent/axis for line snaps and future
+//! orientation snaps.
 
 mod providers;
 mod stroke;

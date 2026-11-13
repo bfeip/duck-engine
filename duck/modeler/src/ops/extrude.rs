@@ -4,9 +4,8 @@ use duck_engine_scene::resource::NodeId;
 use opencascade::history::ShapeHistory;
 use opencascade::primitives::{Face, JoinType, Shape};
 
-use crate::document::{
-    dvec3_to_point3, dvec3_to_vec3, has_solid, vec3_to_dvec3, Document, SourceFate,
-};
+use crate::document::{dvec3_to_point3, has_solid, vec3_to_dvec3, Document, SourceFate};
+use crate::geometry::{PartFace, SurfacePoint};
 use crate::ops::OFFSET_TOLERANCE;
 
 /// A distance at or below this is degenerate: there is nothing to extrude.
@@ -57,14 +56,10 @@ impl ExtrudeFrame {
 
         let (origin, normal) = match *target {
             ExtrudeTarget::Face { face_index, .. } => {
-                let face = source.face(face_index)?;
-                // `normal_at_center` goes through `BRepGProp_Face::Normal`, which already
-                // applies the face's orientation — the normal points out of the material
-                // for Reversed and Forward faces alike, so it needs no sign correction.
-                let normal = face
-                    .normal_at_center()
+                let SurfacePoint { point, normal } = PartFace::new(source, face_index)?
+                    .centroid()
                     .context("Selected face has no well-defined extrusion direction")?;
-                (dvec3_to_point3(face.center_of_mass()), dvec3_to_vec3(normal).normalize())
+                (point, normal)
             }
             ExtrudeTarget::Edge { edge_index, .. } => {
                 let edge = source.edge(edge_index)?.curve();

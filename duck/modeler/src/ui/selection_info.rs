@@ -7,9 +7,10 @@ use duck_engine_viewer::common::{Aabb, LengthDisplay, Point3, Real, Vector3};
 use duck_engine_viewer::scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 use opencascade::bounding_box::aabb;
-use opencascade::primitives::{Edge, EdgeType, Face, FaceType, ShapeType};
+use opencascade::primitives::{Edge, EdgeType, FaceType, ShapeType};
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, CadPart, Document, PartKind, DOCUMENT_UNITS};
+use crate::document::{dvec3_to_point3, CadPart, Document, PartKind, DOCUMENT_UNITS};
+use crate::geometry::{PartFace, PartVertex};
 use crate::ui::icons;
 
 /// The selection section, caching its measurements between frames.
@@ -389,10 +390,10 @@ fn measure(part: &CadPart, item: &SelectionItem) -> Option<Element> {
     };
     let index = element.index;
     Some(match element.kind {
-        SubGeometryKind::Face => face_element(index, part.face(index).ok()?),
+        SubGeometryKind::Face => face_element(part, index)?,
         SubGeometryKind::Edge => edge_element(index, part.edge(index).ok()?.curve()),
         SubGeometryKind::Pointset => {
-            Element::Vertex { index, position: dvec3_to_point3(part.vertex(index).ok()?.point()) }
+            Element::Vertex { index, position: PartVertex::new(part, index).ok()?.point() }
         },
     })
 }
@@ -408,7 +409,9 @@ fn part_element(part: &CadPart) -> Element {
     }
 }
 
-fn face_element(index: u32, face: &Face) -> Element {
+/// Measure face `index` of `part`, or `None` if it has no such face.
+fn face_element(part: &CadPart, index: u32) -> Option<Element> {
+    let face = part.face(index).ok()?;
     let ty = face.face_type();
     let dimensions = match ty {
         FaceType::Cylinder => face.cylinder_radius().map(|r| Dimensions::Radius(r as Real)),
@@ -423,10 +426,10 @@ fn face_element(index: u32, face: &Face) -> Element {
         _ => None,
     };
     let normal = match ty {
-        FaceType::Plane => face.normal_at_center().ok().map(dvec3_to_vec3),
+        FaceType::Plane => PartFace::new(part, index).and_then(|face| face.centroid()).ok().map(|centre| centre.normal),
         _ => None,
     };
-    Element::Face { index, ty, dimensions, normal, area: face.surface_area() as Real }
+    Some(Element::Face { index, ty, dimensions, normal, area: face.surface_area() as Real })
 }
 
 fn edge_element(index: u32, edge: &Edge) -> Element {

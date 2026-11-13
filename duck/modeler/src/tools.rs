@@ -20,8 +20,9 @@
 //!   a selection.
 //!
 //! Its geometry goes in `crate::ops`, which never sees the viewer or egui.
-//! Re-export the tool here, register it in `main.rs`, and give it an icon in
-//! `ui::icons`.
+//! Where a part's faces, edges and vertices lie in the world, such as the
+//! point a grip stands on, comes from `crate::geometry`. Re-export the tool
+//! here, register it in `main.rs`, and give it an icon in `ui::icons`.
 //!
 //! The blocks every family is built from:
 //!

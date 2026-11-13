@@ -21,14 +21,15 @@ use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_scene::Scene;
 use duck_engine_viewer::common::{
-    centroid_of_slice, decompose_matrix, InnerSpace, LengthDisplay, Matrix4, Point3,
-    Quaternion, Real, SquareMatrix, Transform, Vector3,
+    centroid_of_slice, decompose_matrix, LengthDisplay, Matrix4, Point3, Quaternion, Real,
+    SquareMatrix, Transform, Vector3,
 };
 use duck_engine_viewer::event::{DeviceEvent, Event, EventContext};
 use duck_engine_viewer::operator::{Handle, HandleEvent, SelectionKinds};
 use duck_engine_viewer::selection::{SelectionItem, SelectionManager};
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, Document, PartId};
+use crate::document::{Document, PartId};
+use crate::geometry::{PartFace, SurfacePoint};
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
 use crate::tools::{selected_parts, Gesture, ModelingTool, PanelContext, ToolInfo, Workspace};
@@ -502,19 +503,16 @@ impl FaceTweak {
         }
         let resolved = (|| {
             let doc = self.document.lock().unwrap();
-            let face = doc.part_at(target.node)?.face(target.face_index).ok()?;
-            // `normal_at_center` goes through `BRepGProp_Face::Normal`, which
-            // applies the face's orientation: it already points out.
-            let n = match face.normal_at_center() {
-                Ok(n) => n,
+            let face = PartFace::new(doc.part_at(target.node)?, target.face_index).ok()?;
+            match face.centroid() {
+                Ok(SurfacePoint { point, normal }) => {
+                    Some((point, Quaternion::from_arc(Vector3::unit_z(), normal, None)))
+                }
                 Err(e) => {
                     log::warn!("Tweak target has no usable pivot: {e}");
-                    return None;
+                    None
                 }
-            };
-            let normal = dvec3_to_vec3(n).normalize();
-            let pivot = dvec3_to_point3(face.center_of_mass());
-            Some((pivot, Quaternion::from_arc(Vector3::unit_z(), normal, None)))
+            }
         })();
         self.resolved = Some((target, resolved));
         resolved
@@ -589,7 +587,7 @@ impl FaceTweak {
 #[cfg(test)]
 mod tests {
     use duck_engine_viewer::common::{
-        consts, quaternion_from_axis_angle_safe, Axis, EuclideanSpace, LengthUnit,
+        consts, quaternion_from_axis_angle_safe, Axis, EuclideanSpace, InnerSpace, LengthUnit,
     };
     use duck_engine_viewer::input::{KeyEvent, Modifiers, NamedKey};
     use glam::DVec3;

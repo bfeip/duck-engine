@@ -1,10 +1,11 @@
 use anyhow::{ensure, Context, Result};
-use duck_engine_scene::common::{InnerSpace, Point3, Real, Vector3};
+use duck_engine_scene::common::{Point3, Real, Vector3};
 use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::{JoinType, Shape, Shell};
 use opencascade::OffsetError;
 
-use crate::document::{dvec3_to_point3, dvec3_to_vec3, has_solid, Document, SourceFate};
+use crate::document::{has_solid, Document, SourceFate};
+use crate::geometry::{PartFace, SurfacePoint};
 use crate::ops::OFFSET_TOLERANCE;
 
 /// The faces being thickened, all on one part, identified the way the
@@ -40,15 +41,10 @@ impl ThickenFrame {
         let whole_sheet =
             !on_solid && (0..face_count).all(|index| target.faces.is_empty() || target.faces.contains(&index));
 
-        let primary = part.face(target.faces.first().copied().unwrap_or(0))?;
-        let origin = primary.midpoint();
-        let normal = primary.normal_at(origin).context("The face to thicken has no well-defined normal")?;
-        Ok(Self {
-            origin: dvec3_to_point3(origin),
-            normal: dvec3_to_vec3(normal).normalize(),
-            on_solid,
-            whole_sheet,
-        })
+        let primary = PartFace::new(part, target.faces.first().copied().unwrap_or(0))?;
+        let SurfacePoint { point: origin, normal } =
+            primary.middle().context("The face to thicken has no well-defined normal")?;
+        Ok(Self { origin, normal, on_solid, whole_sheet })
     }
 }
 
@@ -186,7 +182,7 @@ fn explained(error: opencascade::Error) -> anyhow::Error {
 mod tests {
     use super::*;
 
-    use duck_engine_scene::common::EuclideanSpace;
+    use duck_engine_scene::common::{EuclideanSpace, InnerSpace};
     use glam::DVec3;
     use opencascade::bounding_box::aabb;
     use opencascade::primitives::{Face, FaceType, ShapeType, Wire};
