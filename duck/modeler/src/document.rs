@@ -550,6 +550,14 @@ impl Document {
         self.remove_part_inner(id);
     }
 
+    /// Removes `parts` as one undo step.
+    pub fn remove_parts(&mut self, parts: &[PartId]) {
+        let mut doc = self.undo_scope("Delete");
+        for &part in parts {
+            doc.remove_part(part);
+        }
+    }
+
     /// [`remove_part`](Self::remove_part) without history recording, shared
     /// with undo/redo replay.
     fn remove_part_inner(&mut self, id: PartId) {
@@ -1688,6 +1696,22 @@ mod tests {
         doc.redo().expect("redo group");
         let names: Vec<_> = doc.parts().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["sphere"]);
+    }
+
+    #[test]
+    fn removing_several_parts_is_one_undo_step() {
+        let (mut doc, parts) = crate::testing::doc_with_boxes(3);
+        let ids: Vec<_> = parts.iter().map(|&(part, _)| part).collect();
+
+        doc.remove_parts(&ids);
+        assert_eq!(doc.parts().count(), 0);
+        assert_eq!(doc.undo_label(), Some("Delete"));
+
+        doc.undo().expect("undo succeeds");
+        assert_eq!(doc.parts().count(), 3, "one undo restores every part");
+        for &(part, node) in &parts {
+            assert_eq!(doc.node_for_part(part), Some(node));
+        }
     }
 
     #[test]

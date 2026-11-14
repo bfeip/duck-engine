@@ -1,6 +1,5 @@
 mod construction;
 mod cursor;
-mod delete;
 mod document;
 mod geometry;
 mod grid;
@@ -40,7 +39,7 @@ use crate::tools::{
     BooleanTool, BoxTool, CircleTool, CylinderTool, DraftTool, DuplicateTool, ExtrudeTool,
     FilletTool, HollowTool, JoinTool, LoftTool, PathKind, PathTool, RadialArrayTool, RectangleTool,
     RectangularArrayTool, RevolveTool, SphereTool, ThickenTool, ToolId, ToolManager,
-    TransformMode, TransformTool, UnjoinTool, Workspace,
+    TransformMode, TransformTool, UnjoinTool, Workspace, selected_parts,
 };
 use crate::notifications::Notifications;
 use crate::platform::Host;
@@ -431,15 +430,23 @@ impl<'a> ViewerState<'a> {
     }
 
     /// Deletes the selected parts, discarding any in-progress tool first.
+    /// Selected faces, edges and points delete nothing.
     fn delete_selection(&mut self) {
         // Deactivating the tool tears down its preview, showing again what it
         // hid, before the parts go away.
         self.tools.discard_active();
         let selection = self.viewer.selection_mut(self.view_id).expect("main view");
-        let deleted = delete::delete_selected_parts(&self.document, selection);
-        if deleted > 0 {
-            let plural = if deleted == 1 { "" } else { "s" };
-            self.notifications.info(format!("Deleted {deleted} part{plural}"));
+        let mut document = self.document.lock().unwrap();
+        let nodes = selected_parts(selection, &document);
+        let parts: Vec<_> = nodes.iter().filter_map(|&node| document.part_for_node(node)).collect();
+        document.remove_parts(&parts);
+        for &node in &nodes {
+            selection.remove_node(node);
+        }
+        if !parts.is_empty() {
+            let count = parts.len();
+            let plural = if count == 1 { "" } else { "s" };
+            self.notifications.info(format!("Deleted {count} part{plural}"));
         }
     }
 

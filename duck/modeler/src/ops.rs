@@ -3,7 +3,6 @@
 
 pub mod array;
 pub mod boolean;
-pub mod delete;
 pub mod draft;
 pub mod duplicate;
 pub mod extrude;
