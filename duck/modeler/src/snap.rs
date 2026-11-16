@@ -1,5 +1,5 @@
 //! Snapping system: operators resolve a cursor ray to a meaningful world
-//! position (and, possibly orientation) by consulting a set of pluggable
+//! position (and possibly orientation) by consulting a set of pluggable
 //! [`SnapProvider`]s.
 //!
 //! # Design
@@ -8,15 +8,17 @@
 //! active construction context) and the [`Document`] (its scene, and the B-rep
 //! behind each part), it proposes [`Candidate`]s: each a [`Snap`] and the point
 //! the cursor found it at. The [`SnapEngine`] runs every enabled/requested
-//! provider, then **ranks** the candidates by *tier first, then screen-space
-//! distance from the cursor to where each was found*, returning the single best
+//! provider, then **ranks** the candidates by tier first, then screen-space
+//! distance from the cursor to where each was found, returning the single best
 //! [`Snap`].
 //!
-//! Most snaps are found where they are. A snap that relates what is under the
-//! cursor to the [`Stroke`] a tool is drawing lands elsewhere: hovering anywhere
-//! on an edge offers the foot of a perpendicular from the stroke's last point.
-//! Such a relation ranks one tier above the element it was found on, and of
-//! several found at one point, the one landing nearest the cursor wins.
+//! A snap is usually found at its own position: the cursor finds a corner by
+//! coming near that corner. A snap that relates what is under the cursor to
+//! the [`Stroke`] a tool is drawing can lie elsewhere: hovering anywhere on an
+//! edge offers the foot of a perpendicular from the stroke's last point,
+//! wherever along the edge that foot falls. Such a relation ranks one tier
+//! above the element it was found on, and of several found at one point, the
+//! one whose position is nearest the cursor wins.
 //!
 //! The construction plane is an always-present, lowest-tier fallback, so an
 //! operator constrained to that plane always gets a position — but any
@@ -298,9 +300,10 @@ impl Snap {
 #[derive(Debug, Clone, Copy)]
 pub struct Candidate {
     pub snap: Snap,
-    /// Where under the cursor the snap was found, which ranks it: the snap
-    /// itself, unless it relates what is there to the stroke, such as the foot
-    /// of a perpendicular elsewhere on the hovered edge.
+    /// The point near the cursor the snap was found at, which ranks it. It is
+    /// the snap's position, unless the snap relates what is there to the
+    /// stroke: the foot of a perpendicular is found wherever the cursor hovers
+    /// its edge.
     pub found_at: Point3,
 }
 
