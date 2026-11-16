@@ -6,19 +6,16 @@
 //!
 //! A provider is a pure strategy: given a [`SnapInput`] (the cursor ray plus the
 //! active construction context) and the [`Document`] (its scene, and the B-rep
-//! behind each part), it proposes [`Candidate`]s: each a [`Snap`] and the point
-//! the cursor found it at. The [`SnapEngine`] runs every enabled/requested
-//! provider, then **ranks** the candidates by tier first, then screen-space
-//! distance from the cursor to where each was found, returning the single best
+//! behind each part), it proposes candidate [`Snap`]s. The [`SnapEngine`] runs
+//! every enabled/requested provider, then **ranks** the candidates by tier
+//! first, then screen-space distance to the cursor, returning the single best
 //! [`Snap`].
 //!
-//! A snap is usually found at its own position: the cursor finds a corner by
-//! coming near that corner. A snap that relates what is under the cursor to
-//! the [`Stroke`] a tool is drawing can lie elsewhere: hovering anywhere on an
-//! edge offers the foot of a perpendicular from the stroke's last point,
-//! wherever along the edge that foot falls. Such a relation ranks one tier
-//! above the element it was found on, and of several found at one point, the
-//! one whose position is nearest the cursor wins.
+//! While a tool draws a [`Stroke`], the edges near the cursor and the face
+//! under it also relate to the stroke's last point: the point closest to it,
+//! the foot of a perpendicular from it. Such a relation is a snap like any
+//! other, taken only with the cursor within the pixel tolerance of it, and
+//! ranks one tier above the element it lies on.
 //!
 //! The construction plane is an always-present, lowest-tier fallback, so an
 //! operator constrained to that plane always gets a position — but any
@@ -148,14 +145,14 @@ enum SnapTier {
     /// A point on an existing geometry face (real geometry beats the grid, but
     /// any edge or feature within tolerance still wins over a mid-face point).
     Face,
-    /// A point the hovered face relates the stroke to (it beats the face it
-    /// was found on, but an edge within tolerance still wins).
+    /// A point a face relates the stroke to (it beats the face it lies on, but
+    /// an edge within tolerance still wins).
     FaceRelation,
     /// A point on an existing geometry edge/wire (real geometry beats the grid,
     /// but a discrete corner still wins over a mid-edge point).
     Edge,
-    /// A point the hovered edge relates the stroke to (it beats the edge it was
-    /// found on, but a feature under the cursor still wins).
+    /// A point an edge relates the stroke to (it beats the edge it lies on, but
+    /// a feature within tolerance still wins).
     EdgeRelation,
     /// A geometry feature or the frame origin (a deliberate, high-value target).
     Feature,
@@ -296,24 +293,7 @@ impl Snap {
     }
 }
 
-/// A snap a provider proposes, and the point the cursor found it at.
-#[derive(Debug, Clone, Copy)]
-pub struct Candidate {
-    pub snap: Snap,
-    /// The point near the cursor the snap was found at, which ranks it. It is
-    /// the snap's position, unless the snap relates what is there to the
-    /// stroke: the foot of a perpendicular is found wherever the cursor hovers
-    /// its edge.
-    pub found_at: Point3,
-}
-
-impl From<Snap> for Candidate {
-    fn from(snap: Snap) -> Self {
-        Self { snap, found_at: snap.position }
-    }
-}
-
-/// A strategy that proposes [`Candidate`]s for a given input.
+/// A strategy that proposes candidate [`Snap`]s for a given input.
 ///
 /// Implementors are pure: all live context arrives via the arguments. Register
 /// one with [`SnapEngine::add_provider`] to add a new kind of snap.
@@ -323,7 +303,7 @@ pub trait SnapProvider {
     fn produces(&self) -> SnapFlags;
 
     /// Candidate snaps found for `input`, of the kinds it requests.
-    fn collect(&self, input: &SnapInput, document: &Document, settings: &SnapSettings) -> Vec<Candidate>;
+    fn collect(&self, input: &SnapInput, document: &Document, settings: &SnapSettings) -> Vec<Snap>;
 }
 
 /// User-facing snap configuration.
@@ -407,17 +387,15 @@ impl SnapEngine {
             }
         }
         // A provider may emit several kinds; keep only the active ones.
-        candidates.retain(|c| active.contains(c.snap.kind.flag()));
+        candidates.retain(|c| active.contains(c.kind.flag()));
 
         self.rank(input, &candidates)
     }
 
-    /// Ranks candidates by `(tier, then nearest screen distance)`, measured
-    /// where each was found, dropping any behind the camera or — for
-    /// non-fallback kinds — found beyond the pixel tolerance. Of two found at
-    /// one place on screen, the nearer the eye wins, then the one landing
-    /// nearer the cursor.
-    fn rank(&self, input: &SnapInput, candidates: &[Candidate]) -> Option<Snap> {
+    /// Ranks candidates by `(tier, then nearest screen distance)`, dropping any
+    /// behind the camera or — for non-fallback kinds — beyond the pixel
+    /// tolerance. Of two that coincide on screen, the nearer the eye wins.
+    fn rank(&self, input: &SnapInput, candidates: &[Snap]) -> Option<Snap> {
         /// Screen distance within which two candidates are one place.
         const COINCIDENT: f32 = 1.0;
         struct Ranked {
@@ -425,37 +403,29 @@ impl SnapEngine {
             screen: (f32, f32),
             dist: f32,
             depth: Real,
-            /// Screen distance from the cursor to where the snap lands.
-            reach: f32,
             snap: Snap,
         }
 
         let cam = input.camera;
         let view = cam.forward();
         let (vw, vh) = input.viewport;
-        let depth_of = |p: Point3| (p - cam.eye).dot(view);
-        let on_screen = |p: Point3| {
-            let screen = cam.project_point_screen(p, vw, vh);
-            let screen = (screen.x as f32, screen.y as f32);
-            let dist = (screen.0 - input.cursor.0).hypot(screen.1 - input.cursor.1);
-            (screen, dist)
-        };
 
         let mut best: Option<Ranked> = None;
-        for &Candidate { snap, found_at } in candidates {
+        for &snap in candidates {
             // Reject candidates behind the camera; their projection is meaningless.
-            let depth = depth_of(found_at);
-            if depth <= 0.0 || depth_of(snap.position) <= 0.0 {
+            let depth = (snap.position - cam.eye).dot(view);
+            if depth <= 0.0 {
                 continue;
             }
-            let (screen, dist) = on_screen(found_at);
+            let screen = cam.project_point_screen(snap.position, vw, vh);
+            let screen = (screen.x as f32, screen.y as f32);
+            let dist = (screen.0 - input.cursor.0).hypot(screen.1 - input.cursor.1);
 
             // The fallback projects onto the cursor itself, so it is never gated;
-            // every real snap must be found within tolerance.
+            // every real snap must be within tolerance.
             if snap.kind != SnapKind::ConstructionPlane && dist > self.settings.pixel_tolerance {
                 continue;
             }
-            let reach = if found_at == snap.position { dist } else { on_screen(snap.position).1 };
 
             let tier = snap.tier();
             let better = match &best {
@@ -464,13 +434,13 @@ impl SnapEngine {
                 Some(best) => {
                     let apart = (screen.0 - best.screen.0).hypot(screen.1 - best.screen.1);
                     match apart <= COINCIDENT {
-                        true => depth.total_cmp(&best.depth).then(reach.total_cmp(&best.reach)).is_lt(),
+                        true => depth < best.depth,
                         false => dist < best.dist,
                     }
                 }
             };
             if better {
-                best = Some(Ranked { tier, screen, dist, depth, reach, snap });
+                best = Some(Ranked { tier, screen, dist, depth, snap });
             }
         }
 
@@ -594,8 +564,8 @@ mod tests {
             .unproject_point_screen(cursor.0 + 3.0, cursor.1, 0.5, 800, 600)
             .unwrap();
         let candidates = vec![
-            Snap::new(guide_world, SnapKind::GridGuide).into(),
-            Snap::new(corner, SnapKind::Corner).into(),
+            Snap::new(guide_world, SnapKind::GridGuide),
+            Snap::new(corner, SnapKind::Corner),
         ];
         let plane = Plane::xz();
         let grid = GridConfig::default();
@@ -614,7 +584,7 @@ mod tests {
         let through = cam.unproject_point_screen(x + 0.5, y, 0.5, 800, 600).unwrap();
         let back = cam.eye + (through - cam.eye).normalize() * 15.0;
         let cursor = (x + 0.6, y);
-        let corner = |position| Candidate::from(Snap::new(position, SnapKind::Corner));
+        let corner = |position| Snap::new(position, SnapKind::Corner);
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let inp = input(&cam, &plane, &grid, cursor);
@@ -623,11 +593,16 @@ mod tests {
         }
     }
 
-    /// A `kind` relation on an element of `element` kind, found at `found_at`
-    /// and landing at `position`.
-    fn relation(kind: SnapKind, element: SubGeometryKind, position: Point3, found_at: Point3) -> Candidate {
+    /// A `kind` relation at `position`, on an element of `element` kind.
+    fn relation(kind: SnapKind, element: SubGeometryKind, position: Point3) -> Snap {
         let on = PartElement { part: PartId::new(), element: SubGeometryElement::new(element, 0) };
-        Candidate { snap: Snap::new(position, kind).with_on(on), found_at }
+        Snap::new(position, kind).with_on(on)
+    }
+
+    /// The world point `pixels` to the right of `point` on screen.
+    fn beside(cam: &PositionedCamera, point: Point3, pixels: f32) -> Point3 {
+        let (x, y) = screen_of(cam, point);
+        cam.unproject_point_screen(x + pixels, y, 0.5, 800, 600).unwrap()
     }
 
     #[test]
@@ -662,24 +637,23 @@ mod tests {
     fn a_relation_names_what_it_relates_to() {
         let at = Point3::new(1.0, 0.0, 0.0);
         let plane = Plane::xz();
-        let foot = relation(SnapKind::Perpendicular, SubGeometryKind::Edge, at, at).snap;
+        let foot = relation(SnapKind::Perpendicular, SubGeometryKind::Edge, at);
         assert_eq!(foot.describe(&plane), "Perpendicular to edge");
-        let nearest = relation(SnapKind::Closest, SubGeometryKind::Face, at, at).snap;
+        let nearest = relation(SnapKind::Closest, SubGeometryKind::Face, at);
         assert_eq!(nearest.describe(&plane), "Closest on face");
     }
 
     #[test]
-    fn a_relation_found_under_the_cursor_beats_the_edge_it_lies_on() {
+    fn a_relation_near_the_cursor_beats_the_edge_it_lies_on() {
         let cam = test_camera();
         let engine = bare_engine();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let under = Point3::new(0.0, 0.0, 0.0);
-        // Far beyond the pixel tolerance of the cursor.
-        let foot = Point3::new(3.0, 0.0, 0.0);
+        let foot = beside(&cam, under, 3.0);
         let candidates = [
-            Snap::new(under, SnapKind::Edge).into(),
-            relation(SnapKind::Perpendicular, SubGeometryKind::Edge, foot, under),
+            Snap::new(under, SnapKind::Edge),
+            relation(SnapKind::Perpendicular, SubGeometryKind::Edge, foot),
         ];
         let inp = input(&cam, &plane, &grid, screen_of(&cam, under));
 
@@ -690,39 +664,40 @@ mod tests {
     }
 
     #[test]
-    fn a_corner_under_the_cursor_beats_a_relation() {
+    fn a_relation_beyond_tolerance_leaves_the_edge_it_lies_on() {
+        let cam = test_camera();
+        let engine = bare_engine();
+        let plane = Plane::xz();
+        let grid = GridConfig::default();
+        let under = Point3::new(0.0, 0.0, 0.0);
+        let foot = beside(&cam, under, engine.settings.pixel_tolerance + 1.0);
+        let candidates = [
+            Snap::new(under, SnapKind::Edge),
+            relation(SnapKind::Perpendicular, SubGeometryKind::Edge, foot),
+        ];
+        let inp = input(&cam, &plane, &grid, screen_of(&cam, under));
+
+        assert_eq!(engine.rank(&inp, &candidates).unwrap().kind, SnapKind::Edge);
+    }
+
+    #[test]
+    fn a_corner_near_the_cursor_beats_a_nearer_relation() {
         let cam = test_camera();
         let engine = bare_engine();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let under = Point3::new(0.0, 0.0, 0.0);
         let candidates = [
-            relation(SnapKind::Closest, SubGeometryKind::Edge, Point3::new(3.0, 0.0, 0.0), under),
-            Snap::new(under, SnapKind::Corner).into(),
+            relation(SnapKind::Closest, SubGeometryKind::Edge, under),
+            Snap::new(beside(&cam, under, 3.0), SnapKind::Corner),
         ];
         let inp = input(&cam, &plane, &grid, screen_of(&cam, under));
 
         assert_eq!(engine.rank(&inp, &candidates).unwrap().kind, SnapKind::Corner);
     }
 
-    #[test]
-    fn of_relations_found_at_one_point_the_one_landing_nearer_wins() {
-        let cam = test_camera();
-        let engine = bare_engine();
-        let plane = Plane::xz();
-        let grid = GridConfig::default();
-        let under = Point3::new(0.0, 0.0, 0.0);
-        let near = Point3::new(-0.5, 0.0, 0.0);
-        let foot = |at| relation(SnapKind::Perpendicular, SubGeometryKind::Edge, at, under);
-        let inp = input(&cam, &plane, &grid, screen_of(&cam, under));
-
-        for candidates in [[foot(Point3::new(3.0, 0.0, 0.0)), foot(near)], [foot(near), foot(Point3::new(3.0, 0.0, 0.0))]] {
-            assert_eq!(engine.rank(&inp, &candidates).unwrap().position, near);
-        }
-    }
-
-    /// The face under the cursor is nearer it than the edge beside, but an
-    /// edge's relation outranks the face's, as the edge outranks the face.
+    /// The face's relation is under the cursor and the edge's beside it, but
+    /// an edge's relation outranks the face's, as the edge outranks the face.
     #[test]
     fn an_edge_relation_beats_a_face_relation() {
         let cam = test_camera();
@@ -730,13 +705,11 @@ mod tests {
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let under = Point3::new(0.0, 0.0, 0.0);
-        let cursor = screen_of(&cam, under);
-        let beside = cam.unproject_point_screen(cursor.0 + 3.0, cursor.1, 0.5, 800, 600).unwrap();
         let candidates = [
-            relation(SnapKind::Closest, SubGeometryKind::Face, Point3::new(0.0, 2.0, 0.0), under),
-            relation(SnapKind::Closest, SubGeometryKind::Edge, Point3::new(2.0, 0.0, 0.0), beside),
+            relation(SnapKind::Closest, SubGeometryKind::Face, under),
+            relation(SnapKind::Closest, SubGeometryKind::Edge, beside(&cam, under, 3.0)),
         ];
-        let inp = input(&cam, &plane, &grid, cursor);
+        let inp = input(&cam, &plane, &grid, screen_of(&cam, under));
 
         let snap = engine.rank(&inp, &candidates).unwrap();
 
@@ -744,10 +717,11 @@ mod tests {
     }
 
     /// Looking down on a 2-unit box centred on the origin, with the last point
-    /// out beyond its top edge z = 1: hovering that edge anywhere snaps square
-    /// onto it from the last point.
+    /// out beyond its top edge z = 1: the cursor snaps square onto that edge
+    /// near the foot of the perpendicular, and anywhere else along it, onto
+    /// the edge where it is.
     #[test]
-    fn hovering_an_edge_snaps_onto_it_square_from_the_last_point() {
+    fn an_edge_relates_to_the_last_point_only_near_the_relation() {
         const EPSILON: Real = 1e-6;
         let cam = top_down_camera();
         let engine = SnapEngine::with_defaults();
@@ -756,17 +730,26 @@ mod tests {
         let grid = GridConfig::default();
         let mut stroke = Stroke::new(true);
         stroke.place(Snap::new(Point3::new(0.3, 1.0, 4.0), SnapKind::ConstructionPlane));
-        // Clear of the edge's corner and midpoint.
-        let mut inp = input(&cam, &plane, &grid, screen_of(&cam, Point3::new(-0.6, 1.0, 1.0)));
+        let foot = Point3::new(0.3, 1.0, 1.0);
+        // Both clear of the edge's corners and midpoint; the first within the
+        // pixel tolerance of the foot, the second far along the edge from it.
+        let near = Point3::new(0.35, 1.0, 1.0);
+        let far = Point3::new(-0.6, 1.0, 1.0);
 
+        let mut inp = input(&cam, &plane, &grid, screen_of(&cam, near));
         assert_eq!(engine.snap(&inp, &document).unwrap().kind, SnapKind::Edge, "no stroke, no relation");
 
         inp.stroke = Some(&stroke);
         let snap = engine.snap(&inp, &document).unwrap();
-
         assert!(matches!(snap.kind, SnapKind::Closest | SnapKind::Perpendicular), "{snap:?}");
-        assert!((snap.position - Point3::new(0.3, 1.0, 1.0)).magnitude() < EPSILON, "{:?}", snap.position);
+        assert!((snap.position - foot).magnitude() < EPSILON, "{:?}", snap.position);
         assert_eq!(snap.on.map(|on| on.element.kind), Some(SubGeometryKind::Edge));
+
+        let mut inp = input(&cam, &plane, &grid, screen_of(&cam, far));
+        inp.stroke = Some(&stroke);
+        let snap = engine.snap(&inp, &document).unwrap();
+        assert_eq!(snap.kind, SnapKind::Edge);
+        assert!((snap.position - far).magnitude() < EPSILON, "{:?}", snap.position);
     }
 
     #[test]
@@ -780,8 +763,8 @@ mod tests {
         let far = cam.unproject_point_screen(700.0, 500.0, 0.5, 800, 600).unwrap();
         let fallback = cam.unproject_point_screen(cursor.0, cursor.1, 0.5, 800, 600).unwrap();
         let candidates = vec![
-            Snap::new(far, SnapKind::Corner).into(),
-            Snap::new(fallback, SnapKind::ConstructionPlane).into(),
+            Snap::new(far, SnapKind::Corner),
+            Snap::new(fallback, SnapKind::ConstructionPlane),
         ];
         let inp = input(&cam, &plane, &grid, cursor);
         assert_eq!(
@@ -798,7 +781,7 @@ mod tests {
         let grid = GridConfig::default();
         let cursor = (400.0, 300.0);
         // Behind the camera (eye at z=10 looking toward −z; z=20 is behind it).
-        let candidates = vec![Snap::new(Point3::new(0.0, 0.0, 20.0), SnapKind::Corner).into()];
+        let candidates = vec![Snap::new(Point3::new(0.0, 0.0, 20.0), SnapKind::Corner)];
         let inp = input(&cam, &plane, &grid, cursor);
         assert!(engine.rank(&inp, &candidates).is_none());
     }
@@ -831,7 +814,7 @@ mod tests {
             SnapFlags::all()
         }
 
-        fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Candidate> {
+        fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
             self.0.set(input.requested);
             Vec::new()
         }

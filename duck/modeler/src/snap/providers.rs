@@ -6,7 +6,7 @@ use duck_engine_viewer::scene::geom_query::PickView;
 use duck_engine_viewer::scene::resource::PrimitiveFlags;
 
 use super::stroke::{edge_relations, face_relations, Stroke};
-use super::{Candidate, Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
+use super::{Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
 use crate::document::{CadPart, Document};
 use crate::geometry::{near_cursor, CurvePoint, Cursor, PartEdge, PartFace, SegmentHit, SurfacePoint};
 
@@ -19,9 +19,9 @@ impl SnapProvider for ConstructionPlaneSnap {
         SnapFlags::CONSTRUCTION_PLANE
     }
 
-    fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Candidate> {
+    fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
         match input.ray.intersect_plane(input.plane) {
-            Some((_, position)) => vec![Snap::new(position, SnapKind::ConstructionPlane).into()],
+            Some((_, position)) => vec![Snap::new(position, SnapKind::ConstructionPlane)],
             None => Vec::new(),
         }
     }
@@ -36,8 +36,8 @@ impl SnapProvider for OriginSnap {
         SnapFlags::ORIGIN
     }
 
-    fn collect(&self, _input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Candidate> {
-        vec![Snap::new(Point3::origin(), SnapKind::Origin).into()]
+    fn collect(&self, _input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
+        vec![Snap::new(Point3::origin(), SnapKind::Origin)]
     }
 }
 
@@ -50,7 +50,7 @@ impl SnapProvider for GridSnap {
         SnapFlags::GRID_AXIS | SnapFlags::GRID_GUIDE
     }
 
-    fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Candidate> {
+    fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
         let (u, v) = input.plane.basis();
         let origin = input.plane.project_point(Point3::origin());
         let n = input.plane.normal.normalize();
@@ -66,7 +66,7 @@ impl SnapProvider for GridSnap {
                 .ray
                 .closest_approach_to_segment(origin - dir * half, origin + dir * half)
             {
-                out.push(Snap::new(approach.closest_on_segment, SnapKind::GridAxis).with_direction(dir).into());
+                out.push(Snap::new(approach.closest_on_segment, SnapKind::GridAxis).with_direction(dir));
             }
         }
 
@@ -77,7 +77,7 @@ impl SnapProvider for GridSnap {
             let rel = hit - origin;
             let cu = (rel.dot(u) / spacing).round() * spacing;
             let cv = (rel.dot(v) / spacing).round() * spacing;
-            out.push(Snap::new(origin + u * cu + v * cv, SnapKind::GridGuide).into());
+            out.push(Snap::new(origin + u * cu + v * cv, SnapKind::GridGuide));
         };
 
         out
@@ -109,7 +109,7 @@ impl SnapProvider for GeometrySnap {
             | RELATION_KINDS
     }
 
-    fn collect(&self, input: &SnapInput, document: &Document, settings: &SnapSettings) -> Vec<Candidate> {
+    fn collect(&self, input: &SnapInput, document: &Document, settings: &SnapSettings) -> Vec<Snap> {
         let mut kinds = input.requested & self.produces();
         let stroke = input.stroke.filter(|stroke| !stroke.is_empty());
         if stroke.is_none() {
@@ -126,12 +126,12 @@ impl SnapProvider for GeometrySnap {
         // tie-break between overlapping shapes: keep only the hit nearest along
         // the ray (the visible surface), and offer only that face's centre and
         // relations.
-        let mut candidates: Vec<Candidate> = Vec::new();
+        let mut candidates: Vec<Snap> = Vec::new();
         let mut nearest_face = None;
         let mut nearest_d2 = Real::INFINITY;
         for near in near_cursor(document.scene(), &cursor, sought(kinds), input.exclude_nodes) {
             let part = document.part_at(near.node);
-            candidates.extend(near.corners.iter().map(|&corner| Candidate::from(Snap::new(corner, SnapKind::Corner))));
+            candidates.extend(near.corners.iter().map(|&corner| Snap::new(corner, SnapKind::Corner)));
             if kinds.contains(SnapFlags::CENTER) && near.shown.contains(PrimitiveFlags::LINES) {
                 if let Some(part) = part {
                     collect_circle_centers(part, &mut candidates);
@@ -151,14 +151,14 @@ impl SnapProvider for GeometrySnap {
             let snap = Snap::new(hit.point, SnapKind::Face).with_direction(hit.normal);
             let snap = Snap { on: face.map(|face| face.element()), ..snap };
             if kinds.contains(SnapFlags::FACE) {
-                candidates.push(snap.into());
+                candidates.push(snap);
             }
             if let Some(face) = face {
                 if kinds.contains(SnapFlags::FACE_CENTER) {
-                    candidates.extend(face_center(&face).map(Candidate::from));
+                    candidates.extend(face_center(&face));
                 }
                 if let Some(stroke) = stroke {
-                    face_relations(&face, snap.position, stroke, kinds, &mut candidates);
+                    face_relations(&face, stroke, kinds, &mut candidates);
                 }
             }
         }
@@ -167,9 +167,9 @@ impl SnapProvider for GeometrySnap {
         // mesh). Guard on kind so an edge candidate is never merged into a corner.
         const EPSILON: Real = 1e-10;
         candidates.dedup_by(|a, b| {
-            a.snap.kind == SnapKind::Corner
-                && b.snap.kind == SnapKind::Corner
-                && (a.snap.position - b.snap.position).magnitude() < EPSILON
+            a.kind == SnapKind::Corner
+                && b.kind == SnapKind::Corner
+                && (a.position - b.position).magnitude() < EPSILON
         });
         candidates
     }
@@ -200,7 +200,7 @@ fn edge_snaps(
     kinds: SnapFlags,
     stroke: Option<&Stroke>,
     document: &Document,
-    out: &mut Vec<Candidate>,
+    out: &mut Vec<Snap>,
 ) {
     let on_tessellation =
         |segment: &SegmentHit| Snap::new(segment.point, SnapKind::Edge).with_direction(segment.direction);
@@ -217,7 +217,7 @@ fn edge_snaps(
                     None => nearest.push((element, segment)),
                 }
             }
-            None if kinds.contains(SnapFlags::EDGE) => out.push(on_tessellation(segment).into()),
+            None if kinds.contains(SnapFlags::EDGE) => out.push(on_tessellation(segment)),
             _ => {}
         }
     }
@@ -229,16 +229,16 @@ fn edge_snaps(
             Ok(edge) => edge,
             Err(e) => {
                 log::debug!("Edge snap left on its tessellation: {e}");
-                out.push(snap.into());
+                out.push(snap);
                 continue;
             }
         };
         let snap = onto_edge(edge, snap);
         if kinds.contains(SnapFlags::EDGE) {
-            out.push(snap.into());
+            out.push(snap);
         }
         if let Some(stroke) = stroke {
-            edge_relations(&edge, snap.position, stroke, kinds, document, out);
+            edge_relations(&edge, stroke, kinds, document, out);
         }
     }
 
@@ -289,13 +289,13 @@ fn onto_edge(edge: PartEdge, snap: Snap) -> Snap {
 
 /// Pushes the midpoint of each of `part`'s `edges` (element indices) into `out`,
 /// taken on the B-rep curve, with the curve's tangent there.
-fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Candidate>) {
+fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Snap>) {
     for &index in edges {
         let midpoint = PartEdge::new(part, index).and_then(|edge| Ok((edge, edge.midpoint()?)));
         match midpoint {
             Ok((edge, CurvePoint { point, tangent })) => {
                 let midpoint = Snap::new(point, SnapKind::Midpoint).with_direction(tangent);
-                out.push(midpoint.with_on(edge.element()).into());
+                out.push(midpoint.with_on(edge.element()));
             }
             Err(e) => log::debug!("No midpoint snap on edge {index} of {}: {e}", part.name),
         }
@@ -304,10 +304,10 @@ fn collect_edge_midpoints(part: &CadPart, edges: &[u32], out: &mut Vec<Candidate
 
 /// Pushes the centre of each of `part`'s circular edges into `out`, along the
 /// circle's axis.
-fn collect_circle_centers(part: &CadPart, out: &mut Vec<Candidate>) {
+fn collect_circle_centers(part: &CadPart, out: &mut Vec<Snap>) {
     for index in 0..part.elements().edges().len() as u32 {
         if let Some(circle) = PartEdge::new(part, index).ok().and_then(|edge| edge.circle()) {
-            out.push(Snap::new(circle.center, SnapKind::Center).with_direction(circle.normal).into());
+            out.push(Snap::new(circle.center, SnapKind::Center).with_direction(circle.normal));
         }
     }
 }
@@ -359,8 +359,7 @@ mod tests {
 
     /// The snaps `provider` proposes for `input`.
     fn proposed(provider: &dyn SnapProvider, input: &SnapInput, document: &Document) -> Vec<Snap> {
-        let candidates = provider.collect(input, document, &SnapSettings::default());
-        candidates.into_iter().map(|candidate| candidate.snap).collect()
+        provider.collect(input, document, &SnapSettings::default())
     }
 
     /// Screen pixel a world point projects to under the test viewport (800×600).

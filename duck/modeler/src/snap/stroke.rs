@@ -6,7 +6,7 @@
 
 use duck_engine_viewer::common::{InnerSpace, MetricSpace, Point3, Ray, Real, Vector3, EPSILON};
 
-use super::{Candidate, Snap, SnapFlags, SnapInput, SnapKind, SnapProvider, SnapSettings};
+use super::{Snap, SnapFlags, SnapInput, SnapKind, SnapProvider, SnapSettings};
 use crate::document::Document;
 use crate::geometry::{CurvePoint, PartEdge, PartFace};
 
@@ -106,13 +106,13 @@ impl SnapProvider for StrokeSnap {
         SnapFlags::WIRE_START | SnapFlags::AXIS_ALIGNED | SnapFlags::PARALLEL
     }
 
-    fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Candidate> {
+    fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
         let Some(stroke) = input.stroke else { return Vec::new() };
         let (Some(first), Some(last)) = (stroke.placed.first(), stroke.last()) else { return Vec::new() };
         let mut out = Vec::new();
         // It takes three points to enclose anything.
         if stroke.len() >= 3 && input.requested.contains(SnapFlags::WIRE_START) {
-            out.push(Snap::new(first.position, SnapKind::WireStart).into());
+            out.push(Snap::new(first.position, SnapKind::WireStart));
         }
         if input.requested.contains(SnapFlags::AXIS_ALIGNED) {
             let (u, v) = input.plane.basis();
@@ -131,29 +131,26 @@ impl SnapProvider for StrokeSnap {
 
 /// The point of the line through `origin` along unit `direction` that `ray`
 /// passes nearest, as a `kind` snap along the line.
-fn along(ray: &Ray, origin: Point3, direction: Vector3, kind: SnapKind) -> Option<Candidate> {
+fn along(ray: &Ray, origin: Point3, direction: Vector3, kind: SnapKind) -> Option<Snap> {
     let t = ray.closest_param_on_axis(origin, direction)?;
-    Some(Snap::new(origin + direction * t, kind).with_direction(direction).into())
+    Some(Snap::new(origin + direction * t, kind).with_direction(direction))
 }
 
-/// Pushes into `out` the `kinds` of snap relating `edge`, hovered at `found`,
-/// to `stroke`'s last point: the edge's point closest to it, the feet of its
-/// perpendiculars from it, and on a straight stroke, the points where segments
-/// from the circle it lies on touch the edge's, tangent to both.
+/// Pushes into `out` the `kinds` of snap relating `edge` to `stroke`'s last
+/// point: the edge's point closest to it, the feet of its perpendiculars from
+/// it, and on a straight stroke, the points where segments from the circle it
+/// lies on touch the edge's, tangent to both.
 pub(super) fn edge_relations(
     edge: &PartEdge,
-    found: Point3,
     stroke: &Stroke,
     kinds: SnapFlags,
     document: &Document,
-    out: &mut Vec<Candidate>,
+    out: &mut Vec<Snap>,
 ) {
     let Some(last) = stroke.last() else { return };
     let from = last.position;
-    let relation = |kind, at: CurvePoint| Candidate {
-        snap: Snap::new(at.point, kind).with_direction(at.tangent).with_on(edge.element()),
-        found_at: found,
-    };
+    let relation =
+        |kind, at: CurvePoint| Snap::new(at.point, kind).with_direction(at.tangent).with_on(edge.element());
 
     if kinds.contains(SnapFlags::CLOSEST) {
         match edge.nearest(from) {
@@ -177,30 +174,23 @@ pub(super) fn edge_relations(
             let snap = Snap::new(touches, SnapKind::TangentTangent)
                 .with_direction((touches - leaves).normalize())
                 .with_on(edge.element());
-            out.push(Candidate { snap: Snap { moves_last: Some(leaves), ..snap }, found_at: found });
+            out.push(Snap { moves_last: Some(leaves), ..snap });
         }
     }
 }
 
-/// Pushes into `out` the `kinds` of snap relating `face`, hovered at `found`,
-/// to `stroke`'s last point: the face's point closest to it, and the feet of
-/// its perpendiculars from it.
-pub(super) fn face_relations(
-    face: &PartFace,
-    found: Point3,
-    stroke: &Stroke,
-    kinds: SnapFlags,
-    out: &mut Vec<Candidate>,
-) {
+/// Pushes into `out` the `kinds` of snap relating `face` to `stroke`'s last
+/// point: the face's point closest to it, and the feet of its perpendiculars
+/// from it.
+pub(super) fn face_relations(face: &PartFace, stroke: &Stroke, kinds: SnapFlags, out: &mut Vec<Snap>) {
     let Some(last) = stroke.last() else { return };
     let from = last.position;
     let relation = |kind, point: Point3| {
         let snap = Snap::new(point, kind).with_on(face.element());
-        let snap = match face.normal_at(point) {
+        match face.normal_at(point) {
             Ok(normal) => snap.with_direction(normal),
             Err(_) => snap,
-        };
-        Candidate { snap, found_at: found }
+        }
     };
 
     if kinds.contains(SnapFlags::CLOSEST) {
@@ -306,8 +296,7 @@ mod tests {
             stroke: Some(stroke),
         };
         let document = Document::new(Scene::default());
-        let candidates = StrokeSnap.collect(&input, &document, &SnapSettings::default());
-        candidates.into_iter().map(|candidate| candidate.snap).collect()
+        StrokeSnap.collect(&input, &document, &SnapSettings::default())
     }
 
     fn of_kind(snaps: &[Snap], kind: SnapKind) -> Vec<Snap> {
@@ -331,8 +320,8 @@ mod tests {
 
     fn relations(edge: &PartEdge, stroke: &Stroke, kinds: SnapFlags, document: &Document) -> Vec<Snap> {
         let mut out = Vec::new();
-        edge_relations(edge, Point3::new(0.0, 0.0, 0.0), stroke, kinds, document, &mut out);
-        out.into_iter().map(|candidate| candidate.snap).collect()
+        edge_relations(edge, stroke, kinds, document, &mut out);
+        out
     }
 
     #[test]
@@ -451,12 +440,12 @@ mod tests {
         let stroke = stroke(false, &[at(3.0, 4.0, 0.5)]);
 
         let mut out = Vec::new();
-        face_relations(&face, Point3::new(0.0, 1.0, 0.0), &stroke, SnapFlags::CLOSEST | SnapFlags::PERPENDICULAR, &mut out);
+        face_relations(&face, &stroke, SnapFlags::CLOSEST | SnapFlags::PERPENDICULAR, &mut out);
 
         let [closest] = out.as_slice() else { panic!("expected only the closest: {out:?}") };
-        assert_eq!(closest.snap.kind, SnapKind::Closest);
-        assert!(close(closest.snap.position, Point3::new(1.0, 1.0, 0.5)), "{:?}", closest.snap.position);
-        assert_eq!(closest.snap.on.map(|on| on.element.kind), Some(SubGeometryKind::Face));
+        assert_eq!(closest.kind, SnapKind::Closest);
+        assert!(close(closest.position, Point3::new(1.0, 1.0, 0.5)), "{:?}", closest.position);
+        assert_eq!(closest.on.map(|on| on.element.kind), Some(SubGeometryKind::Face));
     }
 
     #[test]
