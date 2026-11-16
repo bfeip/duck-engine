@@ -129,11 +129,11 @@ const AXIS_TOLERANCE: Real = 1e-6;
 
 /// Ranking precedence, *defined by declaration order* (low → high): a higher
 /// tier always beats a lower one when both are within tolerance; ties break on
-/// screen distance, or on depth where they coincide on screen. Reordering these variants is the single place snap
-/// precedence is expressed.
+/// screen distance, or on depth where they coincide on screen. Reordering
+/// these variants is the single place snap precedence is expressed.
 ///
 /// (Rust derives [`Ord`] on a field-less enum by discriminant, i.e. declaration
-/// order, so `Free < Guide < Axis < ... < Feature`.)
+/// order, so `Free < Guide < Axis < ... < Keypoint`.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SnapTier {
     /// Free placement on the construction plane.
@@ -142,26 +142,28 @@ enum SnapTier {
     Guide,
     /// A line through a construction-frame or stroke point.
     Axis,
-    /// A point on an existing geometry face (real geometry beats the grid, but
-    /// any edge or feature within tolerance still wins over a mid-face point).
+    /// A point on a face, wherever the cursor is over it. Real geometry beats
+    /// the grid, but any edge or keypoint within tolerance still wins.
     Face,
-    /// A point a face relates the stroke to (it beats the face it lies on, but
-    /// an edge within tolerance still wins).
+    /// A point of a face defined by the stroke's last point, such as the foot
+    /// of the perpendicular from that point to the face. It beats the face it
+    /// lies on, but an edge within tolerance still wins.
     FaceRelation,
-    /// A point on an existing geometry edge/wire (real geometry beats the grid,
-    /// but a discrete corner still wins over a mid-edge point).
+    /// A point on an edge or wire, wherever the cursor is along it. Real
+    /// geometry beats the grid, but a keypoint within tolerance still wins.
     Edge,
-    /// A point an edge relates the stroke to (it beats the edge it lies on, but
-    /// a feature within tolerance still wins).
+    /// A point of an edge defined by the stroke's last point, such as the foot
+    /// of the perpendicular from that point to the edge. It beats the edge it
+    /// lies on, but a keypoint within tolerance still wins.
     EdgeRelation,
-    /// A geometry feature or the frame origin (a deliberate, high-value target).
-    Feature,
+    /// A single definite point: a corner, the middle of an edge, the centre of
+    /// a circle or a flat face, the frame origin, the stroke's first point.
+    Keypoint,
 }
 
 bitflags! {
     /// A *set* of snap kinds: which the engine has enabled, which an operator
-    /// requests, and which a provider can emit. Modeled on `NodeFlags` in the
-    /// scene crate — explicit bits, so nothing relies on enum discriminant order.
+    /// requests, and which a provider can emit.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct SnapFlags: u32 {
         const CONSTRUCTION_PLANE = 1 << 0;
@@ -288,7 +290,7 @@ impl Snap {
                 _ => SnapTier::EdgeRelation,
             },
             TangentTangent => SnapTier::EdgeRelation,
-            Origin | Corner | Midpoint | FaceCenter | Center | WireStart => SnapTier::Feature,
+            Origin | Corner | Midpoint | FaceCenter | Center | WireStart => SnapTier::Keypoint,
         }
     }
 }
@@ -525,7 +527,7 @@ mod tests {
         assert!(SnapTier::Face < SnapTier::FaceRelation);
         assert!(SnapTier::FaceRelation < SnapTier::Edge);
         assert!(SnapTier::Edge < SnapTier::EdgeRelation);
-        assert!(SnapTier::EdgeRelation < SnapTier::Feature);
+        assert!(SnapTier::EdgeRelation < SnapTier::Keypoint);
     }
 
     #[test]
