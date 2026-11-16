@@ -114,7 +114,7 @@ use crate::document::{Document, PartId};
 use crate::labels::Label;
 use crate::notifications::Notifications;
 use crate::preview::PreviewSession;
-use crate::snap::{Snap, SnapFlags, SnapInput, Stroke};
+use crate::snap::{Snap, SnapInput, Stroke};
 use crate::ui::icons::Icon;
 
 /// Static palette identity for a tool. All fields are `'static` so the
@@ -212,15 +212,9 @@ impl Workspace {
     ) -> Option<Snap> {
         let construction = self.construction.borrow();
         let input = SnapInput {
-            ray: ctx.camera.ray_from_screen_point(cursor.0, cursor.1, ctx.size.0, ctx.size.1),
-            cursor,
-            viewport: ctx.size,
-            camera: &*ctx.camera,
-            plane: &construction.construction_plane,
-            grid: &construction.grid,
-            requested: SnapFlags::all(),
             exclude_nodes: exclude,
             stroke,
+            ..SnapInput::new(&*ctx.camera, ctx.size, cursor, &construction.construction_plane, &construction.grid)
         };
         construction.snap.snap(&input, document)
     }

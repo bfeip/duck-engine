@@ -109,6 +109,7 @@ impl SnapProvider for StrokeSnap {
     fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
         let Some(stroke) = input.stroke else { return Vec::new() };
         let (Some(first), Some(last)) = (stroke.placed.first(), stroke.last()) else { return Vec::new() };
+        let ray = input.ray();
         let mut out = Vec::new();
         // It takes three points to enclose anything.
         if stroke.len() >= 3 && input.requested.contains(SnapFlags::WIRE_START) {
@@ -117,12 +118,12 @@ impl SnapProvider for StrokeSnap {
         if input.requested.contains(SnapFlags::AXIS_ALIGNED) {
             let (u, v) = input.plane.basis();
             for axis in [u, v, input.plane.normal.normalize()] {
-                out.extend(along(&input.ray, last.position, axis, SnapKind::AxisAligned));
+                out.extend(along(&ray, last.position, axis, SnapKind::AxisAligned));
             }
         }
         if stroke.straight && input.requested.contains(SnapFlags::PARALLEL) {
             for direction in stroke.parallels() {
-                out.extend(along(&input.ray, last.position, direction, SnapKind::Parallel));
+                out.extend(along(&ray, last.position, direction, SnapKind::Parallel));
             }
         }
         out
@@ -269,32 +270,27 @@ mod tests {
         stroke
     }
 
+    /// A camera looking straight down −Y, orthographic, so the ray through
+    /// the cursor is vertical.
     fn camera() -> PositionedCamera {
         PositionedCamera {
             eye: Point3::new(0.0, 10.0, 0.0),
             target: Point3::new(0.0, 0.0, 0.0),
             up: Vector3::new(0.0, 0.0, -1.0),
             aspect: 4.0 / 3.0,
-            projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 1000.0 },
+            projection: Projection::Orthographic { half_height: 6.0, half_depth: 50.0 },
         }
     }
 
-    /// The stroke's own snaps for a ray straight down through `(x, z)`.
+    /// The stroke's own snaps with the cursor over `(x, z)`: for a ray
+    /// straight down through it.
     fn stroke_snaps(stroke: &Stroke, x: Real, z: Real) -> Vec<Snap> {
         let cam = camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let input = SnapInput {
-            ray: Ray::new(Point3::new(x, 10.0, z), Vector3::new(0.0, -1.0, 0.0)),
-            cursor: (0.0, 0.0),
-            viewport: (800, 600),
-            camera: &cam,
-            plane: &plane,
-            grid: &grid,
-            requested: SnapFlags::all(),
-            exclude_nodes: &[],
-            stroke: Some(stroke),
-        };
+        let cursor = cam.project_point_screen(Point3::new(x, 0.0, z), 800, 600);
+        let cursor = (cursor.x as f32, cursor.y as f32);
+        let input = SnapInput { stroke: Some(stroke), ..SnapInput::new(&cam, (800, 600), cursor, &plane, &grid) };
         let document = Document::new(Scene::default());
         StrokeSnap.collect(&input, &document, &SnapSettings::default())
     }

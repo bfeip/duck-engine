@@ -20,7 +20,7 @@ impl SnapProvider for ConstructionPlaneSnap {
     }
 
     fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
-        match input.ray.intersect_plane(input.plane) {
+        match input.ray().intersect_plane(input.plane) {
             Some((_, position)) => vec![Snap::new(position, SnapKind::ConstructionPlane)],
             None => Vec::new(),
         }
@@ -54,6 +54,7 @@ impl SnapProvider for GridSnap {
         let (u, v) = input.plane.basis();
         let origin = input.plane.project_point(Point3::origin());
         let n = input.plane.normal.normalize();
+        let ray = input.ray();
         // Treat the axes as long segments spanning the visible grid.
         let half = (input.grid.size * 0.5).max(input.grid.minor_spacing);
 
@@ -62,17 +63,14 @@ impl SnapProvider for GridSnap {
         // Principal axes through the origin: snap to the closest point on each
         // axis line to the cursor ray (the same primitive edge snapping reuses).
         for dir in [u, v, n] {
-            if let Some(approach) = input
-                .ray
-                .closest_approach_to_segment(origin - dir * half, origin + dir * half)
-            {
+            if let Some(approach) = ray.closest_approach_to_segment(origin - dir * half, origin + dir * half) {
                 out.push(Snap::new(approach.closest_on_segment, SnapKind::GridAxis).with_direction(dir));
             }
         }
 
         // Guide point: round the in-plane ray hit to the nearest gridline
         // intersection.
-        if let Some((_, hit)) = input.ray.intersect_plane(input.plane) {
+        if let Some((_, hit)) = ray.intersect_plane(input.plane) {
             let spacing = input.grid.minor_spacing.max(Real::EPSILON);
             let rel = hit - origin;
             let cu = (rel.dot(u) / spacing).round() * spacing;
@@ -118,7 +116,7 @@ impl SnapProvider for GeometrySnap {
         let cursor = Cursor {
             view: PickView { camera: input.camera, viewport: input.viewport },
             at: input.cursor,
-            ray: input.ray,
+            ray: input.ray(),
             reach: settings.pixel_tolerance,
         };
 
@@ -139,7 +137,7 @@ impl SnapProvider for GeometrySnap {
             }
             edge_snaps(&near.segments, part, kinds, stroke, document, &mut candidates);
             if let Some(hit) = near.face {
-                let d2 = (hit.point - input.ray.origin).magnitude2();
+                let d2 = (hit.point - cursor.ray.origin).magnitude2();
                 if d2 < nearest_d2 {
                     nearest_d2 = d2;
                     nearest_face = Some((near.node, hit));
@@ -315,7 +313,7 @@ fn collect_circle_centers(part: &CadPart, out: &mut Vec<Snap>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_viewer::common::{Plane, Ray, Transform, Vector3};
+    use duck_engine_viewer::common::{Plane, Transform, Vector3};
     use duck_engine_viewer::scene::cad::CadTessellationOptions;
     use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
     use duck_engine_viewer::scene::resource::{
@@ -334,29 +332,6 @@ mod tests {
         (a - b).magnitude2() < EPSILON * EPSILON
     }
 
-    /// A `SnapInput` with the ray and cursor supplied directly. Grid/wire providers
-    /// ignore the cursor; `GeometrySnap` uses it (and the camera) to cull, so tests
-    /// hitting geometry must pass the cursor where that geometry projects.
-    fn input_with_ray<'a>(
-        ray: Ray,
-        cursor: (f32, f32),
-        cam: &'a PositionedCamera,
-        plane: &'a Plane,
-        grid: &'a GridConfig,
-    ) -> SnapInput<'a> {
-        SnapInput {
-            ray,
-            cursor,
-            viewport: (800, 600),
-            camera: cam,
-            plane,
-            grid,
-            requested: SnapFlags::all(),
-            exclude_nodes: &[],
-            stroke: None,
-        }
-    }
-
     /// The snaps `provider` proposes for `input`.
     fn proposed(provider: &dyn SnapProvider, input: &SnapInput, document: &Document) -> Vec<Snap> {
         provider.collect(input, document, &SnapSettings::default())
@@ -368,24 +343,26 @@ mod tests {
         (s.x as f32, s.y as f32)
     }
 
-    fn dummy_camera() -> PositionedCamera {
+    /// A camera looking straight down −Y, orthographic, so the ray through
+    /// the pixel a point projects to drops straight onto that point.
+    fn overhead_camera() -> PositionedCamera {
         PositionedCamera {
             eye: Point3::new(0.0, 10.0, 0.0),
             target: Point3::origin(),
             up: Vector3::new(0.0, 0.0, -1.0),
             aspect: 4.0 / 3.0,
-            projection: Projection::Perspective { fovy: 45.0, znear: 0.01, zfar: 1000.0 },
+            projection: Projection::Orthographic { half_height: 6.0, half_depth: 50.0 },
         }
     }
 
     #[test]
     fn grid_guide_rounds_to_nearest_intersection() {
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz(); // u = +X, v = +Z, origin at world origin
         let grid = GridConfig::default(); // minor_spacing = 5.0
         // Ray straight down hitting the XZ plane at (5.2, 0, -3.1).
-        let ray = Ray::new(Point3::new(5.2, 10.0, -3.1), Vector3::new(0.0, -1.0, 0.0));
-        let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
+        let over = screen_of(&cam, Point3::new(5.2, 0.0, -3.1));
+        let inp = SnapInput::new(&cam, (800, 600), over, &plane, &grid);
 
         let snaps = proposed(&GridSnap, &inp, &Document::new(Scene::default()));
 
@@ -399,13 +376,13 @@ mod tests {
 
     #[test]
     fn grid_axis_snaps_to_principal_axis_line() {
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         // Vertical ray near the X axis: the X-axis closest point is directly
         // below the ray's x, on the axis (y = z = 0).
-        let ray = Ray::new(Point3::new(7.0, 10.0, -1.5), Vector3::new(0.0, -1.0, 0.0));
-        let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
+        let over = screen_of(&cam, Point3::new(7.0, 0.0, -1.5));
+        let inp = SnapInput::new(&cam, (800, 600), over, &plane, &grid);
 
         let snaps = proposed(&GridSnap, &inp, &Document::new(Scene::default()));
 
@@ -449,13 +426,12 @@ mod tests {
             )
             .expect("instance node");
 
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         // Ray straight down at x=3, z=2: closest point on the segment is (3,0,2).
         let hit = Point3::new(3.0, 0.0, 2.0);
-        let ray = Ray::new(Point3::new(3.0, 10.0, 2.0), Vector3::new(0.0, -1.0, 0.0));
-        let inp = input_with_ray(ray, screen_of(&cam, hit), &cam, &plane, &grid);
+        let inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, hit), &plane, &grid);
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
 
@@ -511,13 +487,12 @@ mod tests {
             Vector3::new(0.0, 0.0, 2.0),
         );
 
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         // Ray straight down at (3, 4): local hit (3, 0, 2) is inside the triangle.
         let hit = Point3::new(3.0, 0.0, 4.0);
-        let ray = Ray::new(Point3::new(3.0, 10.0, 4.0), Vector3::new(0.0, -1.0, 0.0));
-        let inp = input_with_ray(ray, screen_of(&cam, hit), &cam, &plane, &grid);
+        let inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, hit), &plane, &grid);
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
 
@@ -540,11 +515,10 @@ mod tests {
         add_triangle_node(document.scene(), positions, normals, Vector3::new(0.0, 0.0, 0.0));
         add_triangle_node(document.scene(), positions, normals, Vector3::new(0.0, 2.0, 0.0));
 
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let ray = Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let inp = input_with_ray(ray, screen_of(&cam, Point3::origin()), &cam, &plane, &grid);
+        let inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, Point3::origin()), &plane, &grid);
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
 
@@ -565,12 +539,11 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0),
         );
 
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let hit = Point3::new(2.0, 0.0, 2.0);
-        let ray = Ray::new(Point3::new(2.0, 10.0, 2.0), Vector3::new(0.0, -1.0, 0.0));
-        let inp = input_with_ray(ray, screen_of(&cam, hit), &cam, &plane, &grid);
+        let inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, hit), &plane, &grid);
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
 
@@ -621,13 +594,12 @@ mod tests {
     #[test]
     fn far_cursor_culls_the_node() {
         let (document, _node) = scene_with_edge();
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         // The edge projects around screen center; a top-left cursor is well outside
         // its (tolerance-inflated) screen bounds, so the broad phase must cull it.
-        let ray = Ray::new(Point3::new(5.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let inp = input_with_ray(ray, (0.0, 0.0), &cam, &plane, &grid);
+        let inp = SnapInput::new(&cam, (800, 600), (0.0, 0.0), &plane, &grid);
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
         assert!(snaps.is_empty(), "far cursor should cull the node: {snaps:?}");
@@ -636,12 +608,11 @@ mod tests {
     #[test]
     fn requested_flags_gate_which_kinds_are_produced() {
         let (document, _node) = scene_with_edge();
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let mid = Point3::new(5.0, 0.0, 0.0);
-        let ray = Ray::new(Point3::new(5.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, mid), &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, mid), &plane, &grid);
 
         inp.requested = SnapFlags::CORNER;
         let corners = proposed(&GeometrySnap, &inp, &document);
@@ -657,26 +628,25 @@ mod tests {
     #[test]
     fn excluded_and_invisible_nodes_yield_no_snaps() {
         let (document, node) = scene_with_edge();
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let mid = Point3::new(5.0, 0.0, 0.0);
-        let ray = Ray::new(Point3::new(5.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
         let cursor = screen_of(&cam, mid);
 
         // Baseline: visible, not excluded → snaps present.
-        let base = input_with_ray(ray, cursor, &cam, &plane, &grid);
+        let base = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
         assert!(!proposed(&GeometrySnap, &base, &document).is_empty());
 
         // Excluded node → nothing.
         let excluded = [node];
-        let mut inp = input_with_ray(ray, cursor, &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
         inp.exclude_nodes = &excluded;
         assert!(proposed(&GeometrySnap, &inp, &document).is_empty());
 
         // Invisible node → nothing (the scene walk skips hidden subtrees).
         document.scene().set_node_visibility(node, Visibility::Invisible);
-        let inp = input_with_ray(ray, cursor, &cam, &plane, &grid);
+        let inp = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
         assert!(proposed(&GeometrySnap, &inp, &document).is_empty());
     }
 
@@ -685,12 +655,11 @@ mod tests {
         // A 2-unit box centred on the origin; the ray drops onto its top edge
         // x = 1, y = 1, off that edge's middle.
         let (document, _node) = doc_with_box();
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let on_edge = Point3::new(1.0, 1.0, 0.5);
-        let ray = Ray::new(Point3::new(1.0, 10.0, 0.5), Vector3::new(0.0, -1.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, on_edge), &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, on_edge), &plane, &grid);
         inp.requested = SnapFlags::MIDPOINT;
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
@@ -712,12 +681,11 @@ mod tests {
         // A radius-2 cylinder standing on the XZ plane; the ray drops onto both
         // rims at x = 2.
         let (document, _node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 2.0, DVec3::Y, 1.0));
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let on_rim = Point3::new(2.0, 1.0, 0.0);
-        let ray = Ray::new(Point3::new(2.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, on_rim), &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, on_rim), &plane, &grid);
         inp.requested = SnapFlags::MIDPOINT;
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
@@ -739,12 +707,11 @@ mod tests {
         // A radius-2 cylinder standing on the XZ plane; the ray drops onto
         // both rims a radian round from the seam.
         let (document, _node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 2.0, DVec3::Y, 1.0));
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let (x, z) = (2.0 * (1.0 as Real).cos(), 2.0 * (1.0 as Real).sin());
-        let ray = Ray::new(Point3::new(x, 10.0, z), Vector3::new(0.0, -1.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, Point3::new(x, 1.0, z)), &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, Point3::new(x, 1.0, z)), &plane, &grid);
         inp.requested = SnapFlags::EDGE;
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
@@ -770,12 +737,11 @@ mod tests {
         let cam = PositionedCamera {
             eye: Point3::new(x as Real, 10.0, 0.0),
             target: Point3::new(x as Real, 0.0, 0.0),
-            ..dummy_camera()
+            ..overhead_camera()
         };
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let ray = Ray::new(on_edge + Vector3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, on_edge), &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, on_edge), &plane, &grid);
         inp.requested = SnapFlags::EDGE;
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
@@ -793,12 +759,11 @@ mod tests {
     #[test]
     fn meshes_that_are_not_parts_have_no_midpoints() {
         let (document, _node) = scene_with_edge();
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let mid = Point3::new(5.0, 0.0, 0.0);
-        let ray = Ray::new(Point3::new(5.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let inp = input_with_ray(ray, screen_of(&cam, mid), &cam, &plane, &grid);
+        let inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, mid), &plane, &grid);
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
 
@@ -811,11 +776,10 @@ mod tests {
     /// kinds `requested`.
     fn cylinder_centers(requested: SnapFlags) -> Vec<Snap> {
         let (document, _node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 2.0, DVec3::Y, 1.0));
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let ray = Ray::new(Point3::new(0.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, Point3::new(0.0, 1.0, 0.0)), &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, Point3::new(0.0, 1.0, 0.0)), &plane, &grid);
         inp.requested = requested;
 
         let snaps = proposed(&GeometrySnap, &inp, &document);
@@ -848,12 +812,11 @@ mod tests {
     #[test]
     fn meshes_that_are_not_parts_have_no_centers() {
         let (document, _node) = scene_with_edge();
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let mid = Point3::new(5.0, 0.0, 0.0);
-        let ray = Ray::new(Point3::new(5.0, 10.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, mid), &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, mid), &plane, &grid);
         inp.requested = SnapFlags::CENTER;
 
         assert!(proposed(&GeometrySnap, &inp, &document).is_empty());
@@ -861,11 +824,10 @@ mod tests {
 
     /// Face-centre candidates for a ray straight down through `(x, z)`.
     fn face_centers_below(document: &Document, x: Real, z: Real) -> Vec<Snap> {
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let ray = Ray::new(Point3::new(x, 10.0, z), Vector3::new(0.0, -1.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, Point3::new(x, 0.0, z)), &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, Point3::new(x, 0.0, z)), &plane, &grid);
         inp.requested = SnapFlags::FACE_CENTER;
 
         let snaps = proposed(&GeometrySnap, &inp, document);
@@ -891,12 +853,11 @@ mod tests {
         let normal = center.direction.expect("a face centre carries the face normal");
         assert!((normal - Vector3::new(0.0, 1.0, 0.0)).magnitude() < EPSILON, "{normal:?}");
 
-        let cam = dummy_camera();
+        let cam = overhead_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let on_edge = Point3::new(4.0, 1.0, 0.5);
-        let ray = Ray::new(Point3::new(4.0, 10.0, 0.5), Vector3::new(0.0, -1.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, on_edge), &cam, &plane, &grid);
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, on_edge), &plane, &grid);
         inp.requested = SnapFlags::MIDPOINT;
         let snaps = proposed(&GeometrySnap, &inp, &document);
         let midpoint = snaps
@@ -932,13 +893,17 @@ mod tests {
     fn curved_faces_have_no_center() {
         // A radius-2 cylinder standing on the XZ plane, 1 tall.
         let (document, _node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 2.0, DVec3::Y, 1.0));
-        let cam = dummy_camera();
         let plane = Plane::xz();
         let grid = GridConfig::default();
         // Sideways onto the curved face, clear of the seam.
         let on_side = Point3::new((4.0 - 0.09 as Real).sqrt(), 0.5, 0.3);
-        let ray = Ray::new(Point3::new(10.0, 0.5, 0.3), Vector3::new(-1.0, 0.0, 0.0));
-        let mut inp = input_with_ray(ray, screen_of(&cam, on_side), &cam, &plane, &grid);
+        let cam = PositionedCamera {
+            eye: Point3::new(10.0, 0.5, 0.3),
+            target: Point3::new(0.0, 0.5, 0.3),
+            up: Vector3::new(0.0, 1.0, 0.0),
+            ..overhead_camera()
+        };
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, on_side), &plane, &grid);
         inp.requested = SnapFlags::FACE | SnapFlags::FACE_CENTER;
 
         let snaps = proposed(&GeometrySnap, &inp, &document);

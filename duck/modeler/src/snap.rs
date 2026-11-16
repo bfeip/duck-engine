@@ -4,8 +4,8 @@
 //!
 //! # Design
 //!
-//! A provider is a pure strategy: given a [`SnapInput`] (the cursor ray plus the
-//! active construction context) and the [`Document`] (its scene, and the B-rep
+//! A provider is a pure strategy: given a [`SnapInput`] (the cursor in its view
+//! plus the active construction context) and the [`Document`] (its scene, and the B-rep
 //! behind each part), it proposes candidate [`Snap`]s. The [`SnapEngine`] runs
 //! every enabled/requested provider, then **ranks** the candidates by tier
 //! first, then screen-space distance to the cursor, returning the single best
@@ -189,8 +189,6 @@ bitflags! {
 /// construction context. Cheap to build each cursor move; everything is borrowed
 /// so changing the construction plane at runtime needs no provider rebuild.
 pub struct SnapInput<'a> {
-    /// Camera ray through the cursor, in world space.
-    pub ray: Ray,
     /// Cursor position in screen pixels.
     pub cursor: (f32, f32),
     /// Viewport size in pixels (width, height).
@@ -209,6 +207,26 @@ pub struct SnapInput<'a> {
     /// The path the calling tool is drawing, for the snaps that relate the
     /// next point to those placed before it; `None` if it draws none.
     pub stroke: Option<&'a Stroke>,
+}
+
+impl<'a> SnapInput<'a> {
+    /// The input for `cursor` in a `viewport`-sized view through `camera`,
+    /// constructing on `plane` with `grid`: every kind requested, no node
+    /// ignored, no stroke.
+    pub fn new(
+        camera: &'a PositionedCamera,
+        viewport: (u32, u32),
+        cursor: (f32, f32),
+        plane: &'a Plane,
+        grid: &'a GridConfig,
+    ) -> Self {
+        Self { cursor, viewport, camera, plane, grid, requested: SnapFlags::all(), exclude_nodes: &[], stroke: None }
+    }
+
+    /// The camera ray through the cursor, in world space.
+    pub fn ray(&self) -> Ray {
+        self.camera.ray_from_screen_point(self.cursor.0, self.cursor.1, self.viewport.0, self.viewport.1)
+    }
 }
 
 /// A snap location: where the cursor snaps to, and what it locks onto there.
@@ -475,25 +493,6 @@ mod tests {
         }
     }
 
-    fn input<'a>(
-        cam: &'a PositionedCamera,
-        plane: &'a Plane,
-        grid: &'a GridConfig,
-        cursor: (f32, f32),
-    ) -> SnapInput<'a> {
-        SnapInput {
-            ray: cam.ray_from_screen_point(cursor.0, cursor.1, 800, 600),
-            cursor,
-            viewport: (800, 600),
-            camera: cam,
-            plane,
-            grid,
-            requested: SnapFlags::all(),
-            exclude_nodes: &[],
-            stroke: None,
-        }
-    }
-
     /// The screen pixel a world point projects to, used to aim candidates/cursor.
     fn screen_of(cam: &PositionedCamera, p: Point3) -> (f32, f32) {
         let s = cam.project_point_screen(p, 800, 600);
@@ -571,7 +570,7 @@ mod tests {
         ];
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let inp = input(&cam, &plane, &grid, cursor);
+        let inp = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
         assert_eq!(engine.rank(&inp, &candidates).unwrap().kind, SnapKind::Corner);
     }
 
@@ -589,7 +588,7 @@ mod tests {
         let corner = |position| Snap::new(position, SnapKind::Corner);
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let inp = input(&cam, &plane, &grid, cursor);
+        let inp = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
         for candidates in [[corner(front), corner(back)], [corner(back), corner(front)]] {
             assert_eq!(engine.rank(&inp, &candidates).unwrap().position, front);
         }
@@ -657,7 +656,7 @@ mod tests {
             Snap::new(under, SnapKind::Edge),
             relation(SnapKind::Perpendicular, SubGeometryKind::Edge, foot),
         ];
-        let inp = input(&cam, &plane, &grid, screen_of(&cam, under));
+        let inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, under), &plane, &grid);
 
         let snap = engine.rank(&inp, &candidates).unwrap();
 
@@ -677,7 +676,7 @@ mod tests {
             Snap::new(under, SnapKind::Edge),
             relation(SnapKind::Perpendicular, SubGeometryKind::Edge, foot),
         ];
-        let inp = input(&cam, &plane, &grid, screen_of(&cam, under));
+        let inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, under), &plane, &grid);
 
         assert_eq!(engine.rank(&inp, &candidates).unwrap().kind, SnapKind::Edge);
     }
@@ -693,7 +692,7 @@ mod tests {
             relation(SnapKind::Closest, SubGeometryKind::Edge, under),
             Snap::new(beside(&cam, under, 3.0), SnapKind::Corner),
         ];
-        let inp = input(&cam, &plane, &grid, screen_of(&cam, under));
+        let inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, under), &plane, &grid);
 
         assert_eq!(engine.rank(&inp, &candidates).unwrap().kind, SnapKind::Corner);
     }
@@ -711,7 +710,7 @@ mod tests {
             relation(SnapKind::Closest, SubGeometryKind::Face, under),
             relation(SnapKind::Closest, SubGeometryKind::Edge, beside(&cam, under, 3.0)),
         ];
-        let inp = input(&cam, &plane, &grid, screen_of(&cam, under));
+        let inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, under), &plane, &grid);
 
         let snap = engine.rank(&inp, &candidates).unwrap();
 
@@ -738,7 +737,7 @@ mod tests {
         let near = Point3::new(0.35, 1.0, 1.0);
         let far = Point3::new(-0.6, 1.0, 1.0);
 
-        let mut inp = input(&cam, &plane, &grid, screen_of(&cam, near));
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, near), &plane, &grid);
         assert_eq!(engine.snap(&inp, &document).unwrap().kind, SnapKind::Edge, "no stroke, no relation");
 
         inp.stroke = Some(&stroke);
@@ -747,7 +746,7 @@ mod tests {
         assert!((snap.position - foot).magnitude() < EPSILON, "{:?}", snap.position);
         assert_eq!(snap.on.map(|on| on.element.kind), Some(SubGeometryKind::Edge));
 
-        let mut inp = input(&cam, &plane, &grid, screen_of(&cam, far));
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, far), &plane, &grid);
         inp.stroke = Some(&stroke);
         let snap = engine.snap(&inp, &document).unwrap();
         assert_eq!(snap.kind, SnapKind::Edge);
@@ -768,7 +767,7 @@ mod tests {
             Snap::new(far, SnapKind::Corner),
             Snap::new(fallback, SnapKind::ConstructionPlane),
         ];
-        let inp = input(&cam, &plane, &grid, cursor);
+        let inp = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
         assert_eq!(
             engine.rank(&inp, &candidates).unwrap().kind,
             SnapKind::ConstructionPlane
@@ -784,7 +783,7 @@ mod tests {
         let cursor = (400.0, 300.0);
         // Behind the camera (eye at z=10 looking toward −z; z=20 is behind it).
         let candidates = vec![Snap::new(Point3::new(0.0, 0.0, 20.0), SnapKind::Corner)];
-        let inp = input(&cam, &plane, &grid, cursor);
+        let inp = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
         assert!(engine.rank(&inp, &candidates).is_none());
     }
 
@@ -801,7 +800,7 @@ mod tests {
         // Aim straight at the origin; with snapping on this would be Origin, but
         // disabled it must fall through to the construction plane.
         let cursor = screen_of(&cam, Point3::new(0.0, 0.0, 0.0));
-        let inp = input(&cam, &plane, &grid, cursor);
+        let inp = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
         assert_eq!(
             engine.snap(&inp, &document).unwrap().kind,
             SnapKind::ConstructionPlane
@@ -832,7 +831,7 @@ mod tests {
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let document = Document::new(Scene::default());
-        let mut inp = input(&cam, &plane, &grid, (400.0, 300.0));
+        let mut inp = SnapInput::new(&cam, (800, 600), (400.0, 300.0), &plane, &grid);
         inp.requested = SnapFlags::CORNER | SnapFlags::FACE;
 
         engine.snap(&inp, &document);
@@ -851,7 +850,7 @@ mod tests {
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let cursor = screen_of(&cam, Point3::new(1.0, 1.0, 0.05));
-        let inp = input(&cam, &plane, &grid, cursor);
+        let inp = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
 
         let snap = engine.snap(&inp, &document).unwrap();
 
@@ -872,7 +871,7 @@ mod tests {
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let cursor = screen_of(&cam, Point3::new(3.05, 2.0, 0.05));
-        let inp = input(&cam, &plane, &grid, cursor);
+        let inp = SnapInput::new(&cam, (800, 600), cursor, &plane, &grid);
 
         let snap = engine.snap(&inp, &document).unwrap();
 
@@ -895,7 +894,7 @@ mod tests {
         let (document, _node) = crate::testing::doc_with_shape(cylinder);
         let plane = Plane::xz();
         let grid = GridConfig::default();
-        let mut inp = input(&cam, &plane, &grid, screen_of(&cam, Point3::new(3.02, 1.0, 0.0)));
+        let mut inp = SnapInput::new(&cam, (800, 600), screen_of(&cam, Point3::new(3.02, 1.0, 0.0)), &plane, &grid);
         inp.requested = SnapFlags::CENTER;
 
         let snap = engine.snap(&inp, &document).unwrap();
