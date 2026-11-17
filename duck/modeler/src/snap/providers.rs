@@ -210,7 +210,7 @@ fn edge_snaps(
             // A part's edge also relates to the stroke.
             Some(element) if kinds.intersects(SnapFlags::EDGE | RELATION_KINDS) => {
                 match nearest.iter_mut().find(|(found, _)| *found == element) {
-                    Some(best) if segment.distance < best.1.distance => best.1 = segment,
+                    Some((_, best)) if segment.distance < best.distance => *best = segment,
                     Some(_) => {}
                     None => nearest.push((element, segment)),
                 }

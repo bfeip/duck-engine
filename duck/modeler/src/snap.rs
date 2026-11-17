@@ -225,7 +225,9 @@ impl<'a> SnapInput<'a> {
 
     /// The camera ray through the cursor, in world space.
     pub fn ray(&self) -> Ray {
-        self.camera.ray_from_screen_point(self.cursor.0, self.cursor.1, self.viewport.0, self.viewport.1)
+        let (x, y) = self.cursor;
+        let (width, height) = self.viewport;
+        self.camera.ray_from_screen_point(x, y, width, height)
     }
 }
 
@@ -293,8 +295,7 @@ impl Snap {
         }
     }
 
-    /// How this snap ranks. A relation ranks one tier above the element it
-    /// lies on.
+    /// How this snap ranks. See [`SnapTier`].
     fn tier(&self) -> SnapTier {
         use SnapKind::*;
         match self.kind {
@@ -396,7 +397,7 @@ impl SnapEngine {
         } else {
             SnapFlags::empty()
         };
-        active |= SnapFlags::CONSTRUCTION_PLANE;
+        active |= SnapFlags::CONSTRUCTION_PLANE; // Fallback, always active
         let input = &SnapInput { requested: active, ..*input };
 
         let mut candidates = Vec::new();
@@ -429,6 +430,7 @@ impl SnapEngine {
         let cam = input.camera;
         let view = cam.forward();
         let (vw, vh) = input.viewport;
+        let (cursor_x, cursor_y) = input.cursor;
 
         let mut best: Option<Ranked> = None;
         for &snap in candidates {
@@ -438,8 +440,8 @@ impl SnapEngine {
                 continue;
             }
             let screen = cam.project_point_screen(snap.position, vw, vh);
-            let screen = (screen.x as f32, screen.y as f32);
-            let dist = (screen.0 - input.cursor.0).hypot(screen.1 - input.cursor.1);
+            let (screen_x, screen_y) = (screen.x as f32, screen.y as f32);
+            let dist = (screen_x - cursor_x).hypot(screen_y - cursor_y);
 
             // The fallback projects onto the cursor itself, so it is never gated;
             // every real snap must be within tolerance.
@@ -452,7 +454,8 @@ impl SnapEngine {
                 None => true,
                 Some(best) if tier != best.tier => tier > best.tier,
                 Some(best) => {
-                    let apart = (screen.0 - best.screen.0).hypot(screen.1 - best.screen.1);
+                    let (best_x, best_y) = best.screen;
+                    let apart = (screen_x - best_x).hypot(screen_y - best_y);
                     match apart <= COINCIDENT {
                         true => depth < best.depth,
                         false => dist < best.dist,
@@ -460,7 +463,7 @@ impl SnapEngine {
                 }
             };
             if better {
-                best = Some(Ranked { tier, screen, dist, depth, snap });
+                best = Some(Ranked { tier, screen: (screen_x, screen_y), dist, depth, snap });
             }
         }
 
@@ -866,8 +869,8 @@ mod tests {
         // its top face y = 2.
         let cam = top_down_camera();
         let engine = SnapEngine::with_defaults();
-        let corners = (DVec3::new(2.0, 0.0, -1.0), DVec3::new(4.0, 2.0, 1.0));
-        let (document, _node) = crate::testing::doc_with_shape(Shape::box_from_corners(corners.0, corners.1));
+        let (low, high) = (DVec3::new(2.0, 0.0, -1.0), DVec3::new(4.0, 2.0, 1.0));
+        let (document, _node) = crate::testing::doc_with_shape(Shape::box_from_corners(low, high));
         let plane = Plane::xz();
         let grid = GridConfig::default();
         let cursor = screen_of(&cam, Point3::new(3.05, 2.0, 0.05));
