@@ -107,14 +107,14 @@ impl SnapProvider for GeometrySnap {
             | SnapFlags::CENTER
             | SnapFlags::FACE
             | SnapFlags::FACE_CENTER
-            | RELATION_KINDS
+            | SnapFlags::STROKE_RELATIONS
     }
 
     fn collect(&self, input: &SnapInput, document: &Document, settings: &SnapSettings) -> Vec<Snap> {
         let mut kinds = input.requested & self.produces();
         let stroke = input.stroke.filter(|stroke| !stroke.is_empty());
         if stroke.is_none() {
-            kinds -= RELATION_KINDS;
+            kinds -= SnapFlags::STROKE_RELATIONS;
         }
         let cursor = Cursor {
             view: PickView { camera: input.camera, viewport: input.viewport },
@@ -130,15 +130,19 @@ impl SnapProvider for GeometrySnap {
         let mut candidates: Vec<Snap> = Vec::new();
         let mut nearest_face = None;
         let mut nearest_d2 = Real::INFINITY;
-        for near in near_cursor(document.scene(), &cursor, sought(kinds), input.exclude_nodes) {
+        for near in near_cursor(document.scene(), &cursor, sought_primitives(kinds), input.exclude_nodes) {
             let part = document.part_at(near.node);
+            // Every corner of the mesh; ranking decides which are near enough.
             candidates.extend(near.corners.iter().map(|&corner| Snap::new(corner, SnapKind::Corner)));
+            // The centres of the part's circles, if its edges are drawn.
             if kinds.contains(SnapFlags::CENTER) && near.shown.contains(PrimitiveFlags::LINES) {
                 if let Some(part) = part {
                     collect_circle_centers(part, &mut candidates);
                 }
             }
-            edge_snaps(&near.segments, part, kinds, stroke, document, &mut candidates);
+            // The edges within reach, and how they relate to the stroke.
+            collect_edge_snaps(&near.segments, part, kinds, stroke, document, &mut candidates);
+            // Faces wait for the loop to end: only the nearest one counts.
             if let Some(hit) = near.face {
                 let d2 = (hit.point - cursor.ray.origin).magnitude2();
                 if d2 < nearest_d2 {
@@ -147,6 +151,8 @@ impl SnapProvider for GeometrySnap {
                 }
             }
         }
+        // The visible face: the hit on it, its centre, and how it relates to
+        // the stroke.
         if let Some((node, hit)) = nearest_face {
             let face = document.part_at(node).and_then(|part| PartFace::new(part, hit.element?).ok());
             let snap = Snap::new(hit.point, SnapKind::Face).with_direction(hit.normal);
@@ -176,82 +182,16 @@ impl SnapProvider for GeometrySnap {
     }
 }
 
-/// The kinds relating what is under the cursor to a stroke.
-const RELATION_KINDS: SnapFlags =
-    SnapFlags::CLOSEST.union(SnapFlags::PERPENDICULAR).union(SnapFlags::TANGENT_TANGENT);
-
 /// The primitives `kinds` are found on: triangles where the cursor ray meets a
 /// face, lines for the segments near it, points for corners.
-fn sought(kinds: SnapFlags) -> PrimitiveFlags {
+fn sought_primitives(kinds: SnapFlags) -> PrimitiveFlags {
     let on_faces = SnapFlags::FACE | SnapFlags::FACE_CENTER | SnapFlags::CLOSEST | SnapFlags::PERPENDICULAR;
-    let on_segments = SnapFlags::EDGE | SnapFlags::MIDPOINT | RELATION_KINDS;
+    let on_segments = SnapFlags::EDGE | SnapFlags::MIDPOINT | SnapFlags::STROKE_RELATIONS;
     let mut sought = PrimitiveFlags::empty();
     sought.set(PrimitiveFlags::TRIANGLES, kinds.intersects(on_faces));
     sought.set(PrimitiveFlags::LINES, kinds.intersects(on_segments));
     sought.set(PrimitiveFlags::POINTS, kinds.contains(SnapFlags::CORNER));
     sought
-}
-
-/// Pushes into `out` the `kinds` of snap found on the `segments` near the
-/// cursor on one mesh, `part`'s if it is a part's: onto its edges, their
-/// midpoints, and with a `stroke`, what relates them to its last point.
-fn edge_snaps(
-    segments: &[SegmentHit],
-    part: Option<&CadPart>,
-    kinds: SnapFlags,
-    stroke: Option<&Stroke>,
-    document: &Document,
-    out: &mut Vec<Snap>,
-) {
-    let on_tessellation =
-        |segment: &SegmentHit| Snap::new(segment.point, SnapKind::Edge).with_direction(segment.direction);
-    // A part's edge is found once, from its segment nearest the ray, on its
-    // B-rep; any other segment is snapped onto as it is.
-    let mut nearest: Vec<(u32, &SegmentHit)> = Vec::new();
-    for segment in segments {
-        match segment.element.filter(|_| part.is_some()) {
-            // A part's edge also relates to the stroke.
-            Some(element) if kinds.intersects(SnapFlags::EDGE | RELATION_KINDS) => {
-                match nearest.iter_mut().find(|(found, _)| *found == element) {
-                    Some((_, best)) if segment.distance < best.distance => *best = segment,
-                    Some(_) => {}
-                    None => nearest.push((element, segment)),
-                }
-            }
-            None if kinds.contains(SnapFlags::EDGE) => out.push(on_tessellation(segment)),
-            _ => {}
-        }
-    }
-    let Some(part) = part else { return };
-
-    for (index, segment) in nearest {
-        let snap = on_tessellation(segment);
-        let edge = match PartEdge::new(part, index) {
-            Ok(edge) => edge,
-            Err(e) => {
-                log::debug!("Edge snap left on its tessellation: {e}");
-                out.push(snap);
-                continue;
-            }
-        };
-        let snap = onto_edge(edge, snap);
-        if kinds.contains(SnapFlags::EDGE) {
-            out.push(snap);
-        }
-        if let Some(stroke) = stroke {
-            edge_relations(&edge, stroke, kinds, document, out);
-        }
-    }
-
-    if kinds.contains(SnapFlags::MIDPOINT) {
-        // An edge's midpoint lies on (or within tessellation deflection of) one
-        // of its segments, so every edge whose midpoint could rank has a
-        // segment here.
-        let mut edges: Vec<u32> = segments.iter().filter_map(|segment| segment.element).collect();
-        edges.sort_unstable();
-        edges.dedup();
-        collect_edge_midpoints(part, &edges, out);
-    }
 }
 
 /// The centre of `face` if it is flat, along its outward normal.
@@ -273,8 +213,8 @@ fn face_center(face: &PartFace) -> Option<Snap> {
 /// `snap`, made on the tessellation of `edge`, moved onto the edge's B-rep
 /// curve and along its tangent there. It stays where it was if the edge has no
 /// curve to project onto.
-fn onto_edge(edge: PartEdge, snap: Snap) -> Snap {
-    let snap = snap.with_on(edge.element());
+fn onto_brep_edge(edge: PartEdge, tess_snap: Snap) -> Snap {
+    let snap = tess_snap.with_on(edge.element());
     match edge.nearest(snap.position) {
         Ok(CurvePoint { point, tangent }) => Snap {
             position: point,
@@ -285,6 +225,71 @@ fn onto_edge(edge: PartEdge, snap: Snap) -> Snap {
             log::debug!("Edge snap on {edge} left on its tessellation: {e}");
             snap
         }
+    }
+}
+
+/// Pushes into `out` the `kinds` of snap found on the `segments` near the
+/// cursor on one mesh, `part`'s if it is a part's: onto its edges, their
+/// midpoints, and with a `stroke`, what relates them to its last point.
+fn collect_edge_snaps(
+    segments: &[SegmentHit],
+    part: Option<&CadPart>,
+    kinds: SnapFlags,
+    stroke: Option<&Stroke>,
+    document: &Document,
+    out: &mut Vec<Snap>,
+) {
+    let snap_on_tessellation =
+        |segment: &SegmentHit| Snap::new(segment.point, SnapKind::Edge).with_direction(segment.direction);
+    // A part's edge is found once, from its segment nearest the ray, on its
+    // B-rep; any other segment is snapped onto as it is.
+    let mut nearest: Vec<(u32, &SegmentHit)> = Vec::new();
+    for segment in segments {
+        match segment.element.filter(|_| part.is_some()) {
+            // A part's edge also relates to the stroke.
+            Some(element) if kinds.intersects(SnapFlags::EDGE | SnapFlags::STROKE_RELATIONS) => {
+                match nearest.iter_mut().find(|(found, _)| *found == element) {
+                    Some((_, best)) if segment.distance < best.distance => *best = segment,
+                    Some(_) => {}
+                    None => nearest.push((element, segment)),
+                }
+            }
+            None if kinds.contains(SnapFlags::EDGE) => out.push(snap_on_tessellation(segment)),
+            _ => {}
+        }
+    }
+    let Some(part) = part else { return };
+
+    // Each part edge near the cursor: snap onto its B-rep curve and relate it
+    // to the stroke. An edge the part cannot resolve keeps the snap on its
+    // tessellation.
+    for (index, segment) in nearest {
+        let snap = snap_on_tessellation(segment);
+        let edge = match PartEdge::new(part, index) {
+            Ok(edge) => edge,
+            Err(e) => {
+                log::debug!("Edge snap left on its tessellation: {e}");
+                out.push(snap);
+                continue;
+            }
+        };
+        let snap = onto_brep_edge(edge, snap);
+        if kinds.contains(SnapFlags::EDGE) {
+            out.push(snap);
+        }
+        if let Some(stroke) = stroke {
+            edge_relations(&edge, stroke, kinds, document, out);
+        }
+    }
+
+    if kinds.contains(SnapFlags::MIDPOINT) {
+        // An edge's midpoint lies on (or within tessellation deflection of) one
+        // of its segments, so every edge whose midpoint could rank has a
+        // segment here.
+        let mut edges: Vec<u32> = segments.iter().filter_map(|segment| segment.element).collect();
+        edges.sort_unstable();
+        edges.dedup();
+        collect_edge_midpoints(part, &edges, out);
     }
 }
 

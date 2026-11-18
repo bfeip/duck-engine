@@ -56,11 +56,13 @@ pub struct SegmentHit {
     pub element: Option<u32>,
 }
 
-/// What each mesh of `scene` shows near `cursor`, of the primitives sought:
-/// `TRIANGLES` for the face under the cursor, `LINES` for the segments within
-/// its reach, `POINTS` for the mesh's corners. Every mesh whose bounds come
-/// within reach is reported, but for the `exclude` nodes and the subtrees
-/// [`pick_all`] skips; hidden primitives are not found.
+/// What each mesh of `scene` shows near `cursor`, of the primitives `seek`
+/// names.
+///
+/// `TRIANGLES` seeks the face under the cursor, `LINES` the segments within its
+/// reach, and `POINTS` the mesh's corners. Every mesh whose bounds come within
+/// reach is reported, but for the `exclude` nodes and the subtrees [`pick_all`]
+/// skips; hidden primitives are not found.
 pub fn near_cursor(scene: &Scene, cursor: &Cursor, seek: PrimitiveFlags, exclude: &[NodeId]) -> Vec<NearMesh> {
     let probe = Probe {
         ray: cursor.ray,

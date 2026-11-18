@@ -182,6 +182,9 @@ bitflags! {
         const CLOSEST            = 1 << 13;
         const PERPENDICULAR      = 1 << 14;
         const TANGENT_TANGENT    = 1 << 15;
+
+        /// The kinds relating what is under the cursor to a stroke.
+        const STROKE_RELATIONS = Self::CLOSEST.bits() | Self::PERPENDICULAR.bits() | Self::TANGENT_TANGENT.bits();
     }
 }
 
