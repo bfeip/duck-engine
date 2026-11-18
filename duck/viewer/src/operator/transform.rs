@@ -803,7 +803,6 @@ mod tests {
     use crate::scene::Projection;
     use crate::selection::SelectionItem;
 
-    const EPSILON: Real = 1e-6;
     /// Pixel round trips project and unproject through separate matrix
     /// inversions, so they hold to a small fraction of a pixel.
     const PIXEL_EPSILON: f32 = 0.05;

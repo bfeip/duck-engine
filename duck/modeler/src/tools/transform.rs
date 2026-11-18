@@ -588,6 +588,7 @@ impl FaceTweak {
 mod tests {
     use duck_engine_viewer::common::{
         consts, quaternion_from_axis_angle_safe, Axis, EuclideanSpace, InnerSpace, LengthUnit,
+        EPSILON,
     };
     use duck_engine_viewer::input::{KeyEvent, Modifiers, NamedKey};
     use glam::DVec3;
@@ -597,8 +598,6 @@ mod tests {
         face_item_along, key, named_key, volume, workspace_with_box, workspace_with_box_and_cube,
         ViewState,
     };
-
-    const EPSILON: Real = 1e-6;
 
     fn node_position(ws: &Workspace, node: NodeId) -> Point3 {
         let scene = ws.document.lock().unwrap().scene().clone();

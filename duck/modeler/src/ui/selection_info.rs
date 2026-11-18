@@ -448,14 +448,12 @@ fn edge_element(index: u32, edge: &Edge) -> Element {
 mod tests {
     use super::*;
     use duck_engine_scene::cad::{CadTessellationOptions, ShapeElements};
-    use duck_engine_scene::common::Transform;
+    use duck_engine_scene::common::{Transform, EPSILON};
     use duck_engine_scene::resource::SubGeometryElement;
     use duck_engine_scene::Scene;
     use opencascade::primitives::Shape;
 
     use crate::testing::{bite_rim, doc_with_bitten_ball};
-
-    const EPSILON: Real = 1e-6;
 
     /// A document with one part per shape, and the parts' nodes.
     fn document_with(shapes: impl IntoIterator<Item = Shape>) -> (Document, Vec<NodeId>) {

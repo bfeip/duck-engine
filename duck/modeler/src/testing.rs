@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::common::{
-    InnerSpace, Matrix4, Plane, Point3, Ray, Real, RgbaColor, Transform, Vector3,
+    InnerSpace, Matrix4, Plane, Point3, Ray, RgbaColor, Transform, Vector3, EPSILON,
 };
 use duck_engine_scene::resource::{NodeId, SubGeometryElement, SubGeometryKind, Visibility};
 use duck_engine_scene::{PositionedCamera, Projection, Scene};
@@ -50,7 +50,6 @@ pub fn doc_with_cylinder() -> (Document, PartId, NodeId) {
 
 /// Asserts the rigid frame `actual` is the placement `expected`.
 pub fn assert_frame(actual: Transform, expected: &Matrix4) {
-    const EPSILON: Real = 1e-6;
     let actual = actual.to_matrix();
     let close = (0..4).all(|c| (0..4).all(|r| (actual[c][r] - expected[c][r]).abs() < EPSILON));
     assert!(close, "frame {actual:?} is not {expected:?}");
@@ -131,7 +130,7 @@ pub fn rim(document: &Document, center: Point3) -> PartEdge<'_> {
     document
         .parts()
         .find_map(|part| {
-            let about = |(c, _): (Point3, Vector3)| (c - center).magnitude() < 1e-6;
+            let about = |(c, _): (Point3, Vector3)| (c - center).magnitude() < EPSILON;
             let index = part.elements().edges().iter().position(|edge| edge.circle_axis().is_some_and(about))?;
             PartEdge::new(part, index as u32).ok()
         })

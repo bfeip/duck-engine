@@ -1,5 +1,5 @@
 use anyhow::{ensure, Context, Result};
-use duck_engine_scene::common::{consts, InnerSpace, MetricSpace, Point3, Real, Vector3};
+use duck_engine_scene::common::{consts, InnerSpace, MetricSpace, Point3, Real, Vector3, EPSILON};
 use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::{Compound, Shape, Wire};
 
@@ -7,13 +7,6 @@ use crate::document::{
     dvec3_to_point3, has_solid, interactive_fuzz, point3_to_dvec3, vec3_to_dvec3, Document,
     SourceFate,
 };
-
-/// A sweep at or below this many radians is degenerate: there is nothing to
-/// revolve.
-const MIN_ANGLE: Real = 1e-6;
-
-/// Axis picks closer together than this define no direction.
-const MIN_AXIS_LENGTH: Real = 1e-6;
 
 /// What a revolve sweeps, on one part, identified the way the selection system
 /// reports it: by tessellation order within the part's mesh, primary first.
@@ -113,18 +106,18 @@ impl RevolveParams {
     pub fn line(&self) -> Option<(Point3, Vector3)> {
         let Axis::Through(from, to) = self.axis else { return None };
         let along = to - from;
-        (along.magnitude() > MIN_AXIS_LENGTH).then(|| (from, along.normalize()))
+        (along.magnitude() > EPSILON).then(|| (from, along.normalize()))
     }
 
     /// Whether the revolve has no axis yet, or too small a sweep to build.
     pub fn is_degenerate(&self) -> bool {
-        self.line().is_none() || self.angle.abs() <= MIN_ANGLE
+        self.line().is_none() || self.angle.abs() <= EPSILON
     }
 }
 
 /// Whether `from` and `to` are far enough apart to pick an axis.
 pub fn spans_axis(from: Point3, to: Point3) -> bool {
-    from.distance(to) > MIN_AXIS_LENGTH
+    from.distance(to) > EPSILON
 }
 
 /// The shape the target sweeps: its faces, or its edges, those of a sketch

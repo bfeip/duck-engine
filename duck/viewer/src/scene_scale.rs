@@ -3,13 +3,10 @@
 //! These functions help ensure consistent navigation behavior regardless of model size
 //! by computing scale factors from scene bounding boxes.
 
-use crate::common::{Aabb, Real};
+use crate::common::{Aabb, Real, EPSILON};
 
 /// Default model radius when scene is empty or has zero-sized bounds.
 const DEFAULT_MODEL_RADIUS: Real = 1.0;
-
-/// Minimum model radius to prevent issues with very small models.
-const MIN_MODEL_RADIUS: Real = 1e-6;
 
 /// Maximum model radius to prevent issues with very large models.
 const MAX_MODEL_RADIUS: Real = 1e9;
@@ -23,7 +20,7 @@ pub fn model_radius_from_bounds(bounds: Option<&Aabb>) -> Real {
         Some(aabb) => {
             let radius = aabb.bounding_sphere_radius();
             if radius > 0.0 {
-                radius.clamp(MIN_MODEL_RADIUS, MAX_MODEL_RADIUS)
+                radius.clamp(EPSILON, MAX_MODEL_RADIUS)
             } else {
                 DEFAULT_MODEL_RADIUS
             }
@@ -99,7 +96,7 @@ mod tests {
             Point3::new(1e-10, 1e-10, 1e-10),
         );
         let radius = model_radius_from_bounds(Some(&bounds));
-        assert!(radius >= MIN_MODEL_RADIUS);
+        assert!(radius >= EPSILON);
     }
 
     #[test]

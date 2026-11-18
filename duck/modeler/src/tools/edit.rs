@@ -3,14 +3,10 @@
 
 use std::ops::RangeInclusive;
 
-use duck_engine_viewer::common::{consts, InnerSpace, LengthDisplay, Plane, Point3, Real, Vector3};
+use duck_engine_viewer::common::{consts, InnerSpace, LengthDisplay, Plane, Point3, Real, Vector3, EPSILON};
 use duck_engine_viewer::operator::{DragKind, Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape};
 
 use crate::ui::length_value;
-
-/// Smallest value a dimension field accepts. Anything at or below it is
-/// degenerate and can't be built.
-pub(super) const MIN_DIMENSION: Real = 1e-6;
 
 /// Settings a tool holds live, as preview geometry, until they are applied.
 ///
@@ -139,14 +135,14 @@ pub(super) fn error_line(ui: &mut egui::Ui, error: &str) {
 }
 
 /// One labelled dimension row of a panel's grid: a length, shown in `units`,
-/// that must stay above [`MIN_DIMENSION`]. Returns true when the value changed.
+/// that must stay above [`EPSILON`]. Returns true when the value changed.
 pub(super) fn dimension_field(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut Real,
     units: LengthDisplay,
 ) -> bool {
-    length_field(ui, label, value, MIN_DIMENSION..=Real::MAX, units)
+    length_field(ui, label, value, EPSILON..=Real::MAX, units)
 }
 
 /// One labelled length row of a panel's grid, held within `range` and shown in
@@ -182,10 +178,10 @@ pub(super) fn angle_field(ui: &mut egui::Ui, label: &str, radians: &mut Real, li
     changed
 }
 
-/// A dimension moved by `delta`, held at or above [`MIN_DIMENSION`] so a grip
+/// A dimension moved by `delta`, held at or above [`EPSILON`] so a grip
 /// dragged past the opposite face flattens the shape rather than inverting it.
 pub(super) fn grip_dimension(from: Real, delta: Real) -> Real {
-    (from + delta).max(MIN_DIMENSION)
+    (from + delta).max(EPSILON)
 }
 
 /// The arm an angle grip swings on: from its pivot on an axis, square to the
@@ -203,10 +199,10 @@ impl Lever {
     pub(super) fn new(origin: Point3, axis: Vector3, end: Point3, size: Real) -> Self {
         let pivot = origin + axis * (end - origin).dot(axis);
         let arm = end - pivot;
-        let arm = if arm.magnitude() > MIN_DIMENSION {
+        let arm = if arm.magnitude() > EPSILON {
             arm
         } else {
-            Plane::from_point(axis, pivot).basis().0 * size.max(MIN_DIMENSION)
+            Plane::from_point(axis, pivot).basis().0 * size.max(EPSILON)
         };
         Self { pivot, axis, arm }
     }

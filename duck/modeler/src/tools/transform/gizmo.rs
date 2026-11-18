@@ -111,11 +111,9 @@ pub fn handles(mode: TransformMode, frame: &Frame, space: Space) -> Vec<Handle> 
 
 #[cfg(test)]
 mod tests {
-    use duck_engine_viewer::common::{consts, quaternion_from_axis_angle_safe, InnerSpace, Point3, Vector3};
+    use duck_engine_viewer::common::{consts, quaternion_from_axis_angle_safe, InnerSpace, Point3, Vector3, EPSILON};
 
     use super::*;
-
-    const EPSILON: Real = 1e-6;
 
     fn frame() -> Frame {
         Frame {

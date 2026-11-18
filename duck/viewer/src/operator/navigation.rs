@@ -440,7 +440,7 @@ impl Operator for NavigationOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{Point3, Vector3};
+    use crate::common::{Point3, Vector3, EPSILON};
 
     const MODEL_RADIUS: Real = 10.0;
 
@@ -475,7 +475,7 @@ mod tests {
         let radius = zoom(&mut cam, 1.0, MODEL_RADIUS);
 
         assert!(radius < 20.0, "zooming in shortens the radius, got {radius}");
-        assert!((cam.length() - 20.0).abs() < 1e-6, "the caller places the eye, not `zoom`");
+        assert!((cam.length() - 20.0).abs() < EPSILON, "the caller places the eye, not `zoom`");
     }
 
     #[test]
@@ -483,12 +483,12 @@ mod tests {
         let mut cam = camera(Projection::Orthographic { half_height: 8.0, half_depth: 100.0 });
         let radius = zoom(&mut cam, 1.0, MODEL_RADIUS);
 
-        assert!((radius - 20.0).abs() < 1e-6, "the eye must not advance into the model");
+        assert!((radius - 20.0).abs() < EPSILON, "the eye must not advance into the model");
         let Projection::Orthographic { half_height, half_depth } = cam.projection else {
             panic!("projection kind changed")
         };
         assert!(half_height < 8.0, "zooming in shrinks the extent, got {half_height}");
-        assert!((half_depth - 100.0).abs() < 1e-6, "the slab depth is not a zoom control");
+        assert!((half_depth - 100.0).abs() < EPSILON, "the slab depth is not a zoom control");
     }
 
     #[test]

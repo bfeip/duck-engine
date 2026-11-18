@@ -848,7 +848,6 @@ mod tests {
     use super::*;
     use crate::testing::{key, named_key};
 
-    const EPSILON: Real = 1e-6;
     /// Pixel round trips project and unproject through separate matrix
     /// inversions, so they hold to a small fraction of a pixel rather than to
     /// `EPSILON` — still far tighter than the tens of pixels these tests catch.

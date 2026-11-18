@@ -80,7 +80,7 @@ impl Default for Transform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SquareMatrix, Point3, Quaternion, Vector3};
+    use crate::{SquareMatrix, Point3, Quaternion, Vector3, EPSILON};
     use cgmath::assert_relative_eq;
 
     #[test]
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn test_identity_matrix() {
         let matrix = Transform::IDENTITY.to_matrix();
-        assert_relative_eq!(matrix, Matrix4::from_value(1.0), epsilon = 1e-6);
+        assert_relative_eq!(matrix, Matrix4::from_value(1.0), epsilon = EPSILON);
     }
 
     #[test]

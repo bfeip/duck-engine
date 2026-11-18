@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_scene::common::{consts, EuclideanSpace, InnerSpace, Matrix4, Point3, Rad, Real, Vector3, Zero};
+use duck_engine_scene::common::{consts, EuclideanSpace, InnerSpace, Matrix4, Point3, Rad, Real, Vector3, Zero, EPSILON};
 
 use crate::document::{Document, PartId};
 use crate::ops::duplicate::duplicate_parts;
@@ -103,9 +103,6 @@ pub fn rectangular_array(doc: &mut Document, sources: &[PartId], array: &Rectang
     duplicate_parts(&mut doc, sources, &array.placements())
 }
 
-/// A turn, in radians, too small to tell two members apart.
-const MIN_TURN: Real = 1e-6;
-
 /// Evenly turned members about an axis, the first at the source.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AngularAxis {
@@ -123,7 +120,7 @@ impl AngularAxis {
     pub fn step(&self, mode: ArrayMode) -> Real {
         match mode {
             ArrayMode::Extent if self.count < 2 => 0.0,
-            ArrayMode::Extent if self.angle.abs() >= consts::TAU - MIN_TURN => {
+            ArrayMode::Extent if self.angle.abs() >= consts::TAU - EPSILON => {
                 self.angle.signum() * consts::TAU / self.count as Real
             }
             ArrayMode::Extent => self.angle / (self.count - 1) as Real,
@@ -135,7 +132,7 @@ impl AngularAxis {
     /// whose step is too small to tell its members apart has the source alone.
     fn members(&self, mode: ArrayMode) -> Vec<Real> {
         let step = self.step(mode);
-        if step.abs() <= MIN_TURN {
+        if step.abs() <= EPSILON {
             return vec![0.0];
         }
         (0..self.count.max(1)).map(|i| step * i as Real).collect()
@@ -151,7 +148,7 @@ impl AngularAxis {
             (ArrayMode::Extent, ArrayMode::Spacing) => self.step(from),
             (ArrayMode::Spacing, ArrayMode::Extent) => {
                 let around = self.angle * count;
-                match (around.abs() - consts::TAU).abs() <= MIN_TURN {
+                match (around.abs() - consts::TAU).abs() <= EPSILON {
                     true => around,
                     false => self.angle * (count - 1.0),
                 }
@@ -221,8 +218,6 @@ mod tests {
     use duck_engine_scene::common::{transform_point, Deg, Transform};
     use duck_engine_scene::Scene;
     use opencascade::primitives::Shape;
-
-    const EPSILON: Real = 1e-6;
 
     fn array(mode: ArrayMode, first: (u32, Vector3), second: (u32, Vector3)) -> RectangularArray {
         let axis = |(count, reach)| ArrayAxis { count, reach };

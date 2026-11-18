@@ -273,15 +273,13 @@ fn inflate(aabb: &Aabb, amount: Real) -> Aabb {
 
 #[cfg(test)]
 mod tests {
-    use duck_engine_common::{array_to_point3, InnerSpace, Point3, Real, Vector3};
+    use duck_engine_common::{array_to_point3, InnerSpace, Point3, Real, Vector3, EPSILON};
 
     use crate::common::Ray;
     use crate::geom_query::mesh_intersection;
     use crate::resource::{Mesh, MeshPrimitive, PrimitiveType, Vertex};
 
     use super::MeshSpatialIndex;
-
-    const EPSILON: Real = 1e-6;
 
     /// Deterministic xorshift PRNG so failures reproduce.
     struct Rng(u32);

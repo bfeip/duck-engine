@@ -1,5 +1,5 @@
 use anyhow::{ensure, Context, Result};
-use duck_engine_scene::common::{EuclideanSpace, InnerSpace, Point3, Real, Vector3};
+use duck_engine_scene::common::{EuclideanSpace, InnerSpace, Point3, Real, Vector3, EPSILON};
 use duck_engine_scene::resource::NodeId;
 use opencascade::history::ShapeHistory;
 use opencascade::primitives::{Face, JoinType, Shape};
@@ -7,9 +7,6 @@ use opencascade::primitives::{Face, JoinType, Shape};
 use crate::document::{dvec3_to_point3, has_solid, vec3_to_dvec3, Document, SourceFate};
 use crate::geometry::{PartFace, SurfacePoint};
 use crate::ops::OFFSET_TOLERANCE;
-
-/// A distance at or below this is degenerate: there is nothing to extrude.
-const MIN_DISTANCE: Real = 1e-6;
 
 /// A draft at or below this many radians leaves the walls straight; OCCT
 /// ignores anything smaller.
@@ -126,7 +123,7 @@ impl ExtrudeParams {
 
     /// Whether the extrusion is too short to build.
     pub fn is_degenerate(&self) -> bool {
-        self.distance.abs() <= MIN_DISTANCE
+        self.distance.abs() <= EPSILON
     }
 
     /// Whether the side walls taper.

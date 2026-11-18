@@ -1,13 +1,10 @@
 use anyhow::{ensure, Context, Result};
-use duck_engine_scene::common::{Point3, Real, Vector3};
+use duck_engine_scene::common::{Point3, Real, Vector3, EPSILON};
 use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::{Shape, ShapeType};
 use opencascade::FilletError;
 
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, unwrap_single_solid, Document};
-
-/// A size at or below this is degenerate: there is nothing to round or bevel.
-const MIN_SIZE: Real = 1e-6;
 
 /// Two face normals summing to less than this fold back onto each other,
 /// leaving no corner to bisect.
@@ -123,7 +120,7 @@ impl FilletParams {
 
     /// Whether the blend is too small to build.
     pub fn is_degenerate(&self) -> bool {
-        self.size <= MIN_SIZE
+        self.size <= EPSILON
     }
 }
 

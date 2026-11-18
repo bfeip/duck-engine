@@ -17,17 +17,12 @@ use std::fmt;
 
 use anyhow::{ensure, Result};
 use duck_engine_scene::cad::EdgeElement;
-use duck_engine_scene::common::{InnerSpace, MetricSpace, Point3, Real, Vector3};
+use duck_engine_scene::common::{InnerSpace, MetricSpace, Point3, Real, Vector3, EPSILON};
 use duck_engine_scene::resource::{SubGeometryElement, SubGeometryKind};
 use glam::DVec3;
 use opencascade::primitives::{EdgePoint, EdgeType, Face, FaceType, Vertex};
 
 use crate::document::{dvec3_to_point3, dvec3_to_vec3, point3_to_dvec3, CadPart, Document, PartId};
-
-/// How far out of one plane two circles may lie and still share it: the sine
-/// of the angle between their normals, and the gap between their planes
-/// relative to their size.
-const COPLANAR: Real = 1e-6;
 
 /// The factor from `part`'s B-rep to the world, which tessellation scales it
 /// into.
@@ -95,8 +90,8 @@ impl Circle {
     pub fn common_tangents(&self, other: &Circle) -> Vec<(Point3, Point3)> {
         let between = other.center - self.center;
         let distance = between.magnitude();
-        let tolerance = COPLANAR * (self.radius + other.radius + distance);
-        let coplanar = self.normal.cross(other.normal).magnitude() <= COPLANAR
+        let tolerance = EPSILON * (self.radius + other.radius + distance);
+        let coplanar = self.normal.cross(other.normal).magnitude() <= EPSILON
             && between.dot(self.normal).abs() <= tolerance;
         if !coplanar || distance <= Real::EPSILON {
             return Vec::new();
@@ -288,8 +283,6 @@ mod tests {
     use opencascade::primitives::Shape;
 
     use crate::testing::{bite_rim, doc_with_bitten_ball, doc_with_box, doc_with_shape, face_along, rim};
-
-    const EPSILON: Real = 1e-6;
 
     fn close(a: Point3, b: Point3) -> bool {
         a.distance(b) < EPSILON

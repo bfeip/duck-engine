@@ -47,7 +47,7 @@ pub use stroke::Stroke;
 
 use bitflags::bitflags;
 
-use duck_engine_viewer::common::{Axis, InnerSpace, Plane, Point3, Ray, Real, Vector3};
+use duck_engine_viewer::common::{Axis, InnerSpace, Plane, Point3, Ray, Real, Vector3, EPSILON};
 use duck_engine_viewer::scene::PositionedCamera;
 use duck_engine_viewer::scene::resource::{NodeId, SubGeometryKind};
 
@@ -122,10 +122,6 @@ impl SnapKind {
         }
     }
 }
-
-/// How far a direction may turn off a world axis, as `1 - cos θ` (about
-/// 0.08°), and still lie along it.
-const AXIS_TOLERANCE: Real = 1e-6;
 
 /// Ranking precedence, *defined by declaration order* (low → high): a higher
 /// tier always beats a lower one when both are within tolerance; ties break on
@@ -269,14 +265,14 @@ impl Snap {
     /// what a relation relates to. `construction` is the construction plane.
     pub fn describe(&self, construction: &Plane) -> String {
         use SnapKind::*;
-        let axis = self.direction.and_then(|direction| Axis::along(direction, AXIS_TOLERANCE));
+        let axis = self.direction.and_then(|direction| Axis::along(direction, EPSILON));
         let on = self.on.map(|on| match on.element.kind {
             SubGeometryKind::Face => "face",
             SubGeometryKind::Edge => "edge",
             SubGeometryKind::Pointset => "point",
         });
         match self.kind {
-            ConstructionPlane => match Axis::along(construction.normal, AXIS_TOLERANCE) {
+            ConstructionPlane => match Axis::along(construction.normal, EPSILON) {
                 Some(normal) => format!("{} plane", normal.plane_name()),
                 None => "Plane".to_owned(),
             },
@@ -480,7 +476,6 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use duck_engine_viewer::common::Real;
     use duck_engine_viewer::scene::resource::SubGeometryElement;
     use duck_engine_viewer::scene::{Projection, Scene};
     use glam::DVec3;
@@ -729,7 +724,6 @@ mod tests {
     /// the edge where it is.
     #[test]
     fn an_edge_relates_to_the_last_point_only_near_the_relation() {
-        const EPSILON: Real = 1e-6;
         let cam = top_down_camera();
         let engine = SnapEngine::with_defaults();
         let (document, _node) = crate::testing::doc_with_box();
@@ -847,7 +841,6 @@ mod tests {
 
     #[test]
     fn midpoint_beats_the_edge_it_lies_on() {
-        const EPSILON: Real = 1e-6;
         // Looking down on a 2-unit box centred on the origin, with the cursor
         // just off the middle of its top edge x = 1, y = 1.
         let cam = top_down_camera();
@@ -866,7 +859,6 @@ mod tests {
 
     #[test]
     fn face_center_beats_the_face_it_lies_on() {
-        const EPSILON: Real = 1e-6;
         // Looking down on a 2-unit box off the origin (whose snap would otherwise
         // tie with the centre on screen), with the cursor just off the middle of
         // its top face y = 2.
@@ -889,7 +881,6 @@ mod tests {
     /// cursor; the top one is in front.
     #[test]
     fn the_near_rim_center_beats_the_far_one() {
-        const EPSILON: Real = 1e-6;
         let cam = PositionedCamera {
             eye: Point3::new(3.0, 10.0, 0.0),
             target: Point3::new(3.0, 0.0, 0.0),

@@ -119,12 +119,10 @@ impl Primitive for SphereParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duck_engine_common::EPSILON;
 
     use crate::snap::SnapKind;
-    use crate::tools::edit::MIN_DIMENSION;
     use crate::testing::pointer_at;
-
-    const EPSILON: Real = 1e-6;
 
     /// A sphere whose polar axis is aligned with no world axis, so a mistaken
     /// direction shows up.
@@ -233,7 +231,7 @@ mod tests {
         let grabbed = skewed_sphere();
         let mut params = grabbed;
         params.apply_handle(&drag(grabbed.axis * -50.0), &grabbed);
-        assert_eq!(params.radius, MIN_DIMENSION);
+        assert_eq!(params.radius, EPSILON);
     }
 
     /// A drag carries its total offset from the grab, so applying successive

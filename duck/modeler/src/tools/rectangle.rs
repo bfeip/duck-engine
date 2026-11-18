@@ -85,10 +85,9 @@ impl Primitive for RectangleParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duck_engine_common::EPSILON;
 
     use crate::testing::pointer_at;
-
-    const EPSILON: Real = 1e-6;
 
     #[test]
     fn a_corner_places_the_rectangle_about_its_centre() {

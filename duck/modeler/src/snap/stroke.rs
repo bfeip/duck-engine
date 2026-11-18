@@ -4,15 +4,11 @@
 //! tangent points of the hovered geometry ([`edge_relations`],
 //! [`face_relations`]).
 
-use duck_engine_viewer::common::{InnerSpace, MetricSpace, Point3, Ray, Real, Vector3, EPSILON};
+use duck_engine_viewer::common::{InnerSpace, MetricSpace, Point3, Ray, Vector3, EPSILON};
 
 use super::{Snap, SnapFlags, SnapInput, SnapKind, SnapProvider, SnapSettings};
 use crate::document::Document;
 use crate::geometry::{CurvePoint, PartEdge, PartFace};
-
-/// How far, relative to its radius, a point may lie off an arc and still be on
-/// it.
-const ON_ARC: Real = 1e-6;
 
 /// The points a tool has placed in the path it is drawing, for the snaps that
 /// relate the next point to them.
@@ -232,7 +228,7 @@ fn tangents_from(last: &Snap, edge: &PartEdge, document: &Document) -> Vec<(Poin
     tangents
         .into_iter()
         .filter(|&(leaves, touches)| {
-            from.holds(leaves, ON_ARC * leaving.radius) && edge.holds(touches, ON_ARC * touched.radius)
+            from.holds(leaves, EPSILON * leaving.radius) && edge.holds(touches, EPSILON * touched.radius)
         })
         .collect()
 }
@@ -240,7 +236,7 @@ fn tangents_from(last: &Snap, edge: &PartEdge, document: &Document) -> Vec<(Poin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_viewer::common::Plane;
+    use duck_engine_viewer::common::{Plane, Real};
     use duck_engine_viewer::scene::resource::SubGeometryKind;
     use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
     use glam::DVec3;
@@ -253,10 +249,8 @@ mod tests {
     use crate::grid::GridConfig;
     use crate::testing::{doc_with_box, doc_with_shape, rim};
 
-    const CLOSE: Real = 1e-6;
-
     fn close(a: Point3, b: Point3) -> bool {
-        (a - b).magnitude() < CLOSE
+        (a - b).magnitude() < EPSILON
     }
 
     fn at(x: Real, y: Real, z: Real) -> Snap {
@@ -388,7 +382,7 @@ mod tests {
 
         let parallels: Vec<Vector3> = stroke.parallels().collect();
         let [noted] = parallels.as_slice() else { panic!("expected the noted edge: {parallels:?}") };
-        assert!((noted - direction).magnitude() < CLOSE, "{noted:?}");
+        assert!((noted - direction).magnitude() < EPSILON, "{noted:?}");
     }
 
     #[test]
@@ -460,7 +454,7 @@ mod tests {
             .find(|snap| close(snap.position, Point3::new(4.0, 0.0, 1.0)))
             .unwrap_or_else(|| panic!("expected the outer tangent along z = 1: {tangents:?}"));
         assert!(close(outer.moves_last.unwrap(), Point3::new(0.0, 0.0, 1.0)), "{:?}", outer.moves_last);
-        assert!(outer.direction.is_some_and(|d| (d - Vector3::new(1.0, 0.0, 0.0)).magnitude() < CLOSE));
+        assert!(outer.direction.is_some_and(|d| (d - Vector3::new(1.0, 0.0, 0.0)).magnitude() < EPSILON));
 
         // Not on a curved stroke, and not from a point on no circle.
         assert!(relations(&to, &self::stroke(false, stroke.placed.as_slice()), SnapFlags::TANGENT_TANGENT, &document).is_empty());

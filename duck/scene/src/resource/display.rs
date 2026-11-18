@@ -184,8 +184,7 @@ fn screen_size_scale(
 mod tests {
     use super::*;
     use crate::Projection;
-
-    const EPSILON: Real = 1e-6;
+    use duck_engine_common::EPSILON;
 
     fn camera() -> PositionedCamera {
         PositionedCamera {

@@ -1,9 +1,7 @@
 //! Time-driven camera transitions, advanced by the viewer each update.
 
-use crate::common::Real;
+use crate::common::{Real, EPSILON};
 use crate::scene::PositionedCamera;
-
-const EPSILON: Real = 1e-6;
 
 /// An in-flight animated camera move for one view. The viewer advances it with
 /// the frame delta time and drops it as soon as the view's camera is written
@@ -119,6 +117,6 @@ mod tests {
         assert_eq!(smoothstep(1.0), 1.0);
         assert_eq!(smoothstep(-1.0), 0.0);
         assert_eq!(smoothstep(2.0), 1.0);
-        assert!((smoothstep(0.5) - 0.5).abs() < 1e-6);
+        assert!((smoothstep(0.5) - 0.5).abs() < EPSILON);
     }
 }

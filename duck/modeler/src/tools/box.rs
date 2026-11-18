@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{LengthDisplay, Plane, Point3, Real, Transform, Vector3};
+use duck_engine_common::{LengthDisplay, Plane, Point3, Real, Transform, Vector3, EPSILON};
 use duck_engine_viewer::operator::{Handle, HandleDrag, HandleId, HandleReach, HandleShape};
 use glam::dvec3;
 use opencascade::primitives::Shape;
@@ -8,7 +8,7 @@ use crate::ops::primitives::{prism, rectangle_corners};
 use crate::snap::Snap;
 use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
-use super::edit::{dimension_field, grip_dimension, Params, MIN_DIMENSION};
+use super::edit::{dimension_field, grip_dimension, Params};
 use super::primitive::{
     flat, footprint, height_along, seat, seated, unit_square, Next, Primitive, PrimitiveTool,
     Track,
@@ -151,7 +151,7 @@ impl Primitive for BoxParams {
             }
             BoxStage::Height { base, plane, width, depth } => {
                 let height = height_along(base, plane.normal, &pointer.ray);
-                let placed = (height.abs() > MIN_DIMENSION)
+                let placed = (height.abs() > EPSILON)
                     .then(|| BoxParams::from_pick(base, width, depth, height, plane));
                 Track {
                     cursor: Some(base + plane.normal * height),
@@ -206,8 +206,6 @@ mod tests {
 
     use crate::testing::skewed_plane;
     use crate::testing::pointer_at;
-
-    const EPSILON: Real = 1e-6;
 
     /// A drag of `offset` on the grip `id`, as the handle machinery reports it.
     fn drag(id: HandleId, offset: Vector3) -> HandleDrag {
@@ -401,7 +399,7 @@ mod tests {
 
         let mut params = grabbed;
         params.apply_handle(&drag(WIDTH_HANDLE, u * -50.0), &grabbed);
-        assert_eq!(params.width, MIN_DIMENSION);
+        assert_eq!(params.width, EPSILON);
         assert!(params.preview_transform().scale.x >= 0.0);
     }
 

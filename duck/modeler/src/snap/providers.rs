@@ -321,7 +321,7 @@ fn collect_circle_centers(part: &CadPart, out: &mut Vec<Snap>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_viewer::common::{Plane, Transform, Vector3};
+    use duck_engine_viewer::common::{self, Plane, Transform, Vector3};
     use duck_engine_viewer::scene::cad::CadTessellationOptions;
     use duck_engine_viewer::scene::{PositionedCamera, Projection, Scene};
     use duck_engine_viewer::scene::resource::{
@@ -685,7 +685,6 @@ mod tests {
     /// lies on it.
     #[test]
     fn midpoint_lies_on_a_curved_edge() {
-        const ON_CURVE: Real = 1e-6;
         // A radius-2 cylinder standing on the XZ plane; the ray drops onto both
         // rims at x = 2.
         let (document, _node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 2.0, DVec3::Y, 1.0));
@@ -701,9 +700,9 @@ mod tests {
         assert!(!snaps.is_empty(), "expected the rims' midpoints");
         for snap in &snaps {
             let radial = Vector3::new(snap.position.x, 0.0, snap.position.z);
-            assert!((radial.magnitude() - 2.0).abs() < ON_CURVE, "off the rim: {:?}", snap.position);
+            assert!((radial.magnitude() - 2.0).abs() < common::EPSILON, "off the rim: {:?}", snap.position);
             let tangent = snap.direction.expect("a midpoint carries the curve tangent");
-            assert!(tangent.y.abs() < ON_CURVE && tangent.dot(radial).abs() < ON_CURVE, "{tangent:?}");
+            assert!(tangent.y.abs() < common::EPSILON && tangent.dot(radial).abs() < common::EPSILON, "{tangent:?}");
         }
     }
 
@@ -711,7 +710,6 @@ mod tests {
     /// lies on the circle itself, along its tangent.
     #[test]
     fn edge_snaps_lie_on_a_curved_edge() {
-        const ON_CURVE: Real = 1e-6;
         // A radius-2 cylinder standing on the XZ plane; the ray drops onto
         // both rims a radian round from the seam.
         let (document, _node) = doc_with_shape(Shape::cylinder(DVec3::ZERO, 2.0, DVec3::Y, 1.0));
@@ -727,9 +725,9 @@ mod tests {
         assert_eq!(snaps.len(), 2, "one snap per rim: {snaps:?}");
         for snap in &snaps {
             let radial = Vector3::new(snap.position.x, 0.0, snap.position.z);
-            assert!((radial.magnitude() - 2.0).abs() < ON_CURVE, "off the rim: {:?}", snap.position);
+            assert!((radial.magnitude() - 2.0).abs() < common::EPSILON, "off the rim: {:?}", snap.position);
             let tangent = snap.direction.expect("an edge snap carries the curve tangent");
-            assert!(tangent.y.abs() < ON_CURVE && tangent.dot(radial).abs() < ON_CURVE, "{tangent:?}");
+            assert!(tangent.y.abs() < common::EPSILON && tangent.dot(radial).abs() < common::EPSILON, "{tangent:?}");
         }
     }
 

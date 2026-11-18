@@ -16,7 +16,7 @@
 //! - Escape or Cancel discards everything and leaves the tool.
 
 use anyhow::{Context, Result};
-use duck_engine_common::{InnerSpace, MetricSpace, Plane, Point3, Ray, Real, Transform, Vector3};
+use duck_engine_common::{InnerSpace, MetricSpace, Plane, Point3, Ray, Real, Transform, Vector3, EPSILON};
 use duck_engine_scene::resource::Visibility;
 use duck_engine_viewer::{
     event::{Event, EventContext},
@@ -30,7 +30,7 @@ use crate::labels::Label;
 use crate::ops::primitives::{circle, region};
 use crate::preview::PreviewSession;
 use crate::snap::Snap;
-use super::edit::{Edit, PanelAction, Params, MIN_DIMENSION};
+use super::edit::{Edit, PanelAction, Params};
 use super::{Gesture, ModelingTool, PanelContext, Pointer, ToolInfo, Workspace};
 
 /// Tessellation tolerance of the unit reference shapes, as a fraction of their
@@ -352,12 +352,12 @@ pub(super) fn footprint(center: Point3, corner: Point3, plane: &Plane) -> Option
     let (u, v) = plane.basis();
     let offset = corner - center;
     let (width, depth) = (2.0 * offset.dot(u).abs(), 2.0 * offset.dot(v).abs());
-    (width > MIN_DIMENSION && depth > MIN_DIMENSION).then_some((width, depth))
+    (width > EPSILON && depth > EPSILON).then_some((width, depth))
 }
 
 /// The radius from `center` out to `rim`; `None` if it is degenerate.
 pub(super) fn radius_to(center: Point3, rim: Point3) -> Option<Real> {
-    Some(center.distance(rim)).filter(|&radius| radius > MIN_DIMENSION)
+    Some(center.distance(rim)).filter(|&radius| radius > EPSILON)
 }
 
 /// How far along `axis` from `base` the `ray` passes closest, signed. Zero

@@ -70,7 +70,6 @@ impl Projection {
 
     /// Whether two projections are the same variant with near-equal parameters.
     pub fn approx_eq(&self, other: &Projection) -> bool {
-        const EPSILON: Real = 1e-6;
         let close = |a: Real, b: Real| (a - b).abs() <= EPSILON;
         match (*self, *other) {
             (
@@ -223,7 +222,7 @@ impl PositionedCamera {
         let bounding_radius = (size_x * size_x + size_y * size_y + size_z * size_z).sqrt() / 2.0;
 
         // Get current view direction (or default to -Z if eye == target)
-        let view_dir = if self.eye.distance(self.target) < 1e-6 {
+        let view_dir = if self.eye.distance(self.target) < EPSILON {
             Vector3::new(0.0, 0.0, -1.0)
         } else {
             (self.target - self.eye).normalize()
@@ -480,8 +479,6 @@ impl PositionedCamera {
 mod tests {
     use super::*;
     use duck_engine_common::{Point3, Vector3, Vector4, InnerSpace, SquareMatrix};
-
-    const EPSILON: Real = 1e-6;
 
     fn create_test_camera() -> PositionedCamera {
         PositionedCamera {

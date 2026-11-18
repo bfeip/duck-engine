@@ -1,5 +1,5 @@
 use anyhow::{ensure, Context, Result};
-use duck_engine_scene::common::{InnerSpace, Matrix3, Point3, Rad, Real, Vector3};
+use duck_engine_scene::common::{InnerSpace, Matrix3, Point3, Rad, Real, Vector3, EPSILON};
 use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::Shape;
 use opencascade::DraftError;
@@ -10,13 +10,6 @@ use crate::geometry::{PartFace, SurfacePoint};
 /// A change of angle at or below this many radians drafts nothing; OCCT
 /// ignores anything smaller.
 const MIN_DRAFT: Real = 1e-4;
-
-/// A face whose normal leans less than this from the pull lies along the
-/// neutral plane, with no line to hinge on.
-const MIN_HINGE: Real = 1e-6;
-
-/// A face centre this close to the neutral plane lies on it.
-const ON_PLANE: Real = 1e-6;
 
 /// The faces being drafted and the face they hinge on, all on one part,
 /// identified the way the selection system reports them: by tessellation order
@@ -66,11 +59,11 @@ impl DraftFrame {
 
         // Away from the neutral plane toward the drafted face. One straddling
         // the plane pulls into the material behind the neutral face.
-        let pull = if (centre - origin).dot(normal) > ON_PLANE { normal } else { -normal };
+        let pull = if (centre - origin).dot(normal) > EPSILON { normal } else { -normal };
 
         let axis = outward.cross(pull);
         ensure!(
-            axis.magnitude() > MIN_HINGE,
+            axis.magnitude() > EPSILON,
             "The face to draft lies parallel to the neutral face"
         );
         let axis = axis.normalize();
@@ -142,7 +135,7 @@ fn explained(error: opencascade::Error) -> anyhow::Error {
 mod tests {
     use super::*;
 
-    use duck_engine_scene::common::Vector3;
+    use duck_engine_scene::common::{self, Vector3};
     use glam::DVec3;
     use opencascade::primitives::{Edge, Face, FaceType, ShapeType, Wire};
 
@@ -277,7 +270,7 @@ mod tests {
             .expect("the drafted wall") as u32;
         let floor = face_along(&doc, node, DVec3::NEG_Y);
         let frame = DraftFrame::new(&doc, &target(node, floor, &[leaning])).expect("it resolves");
-        assert!((frame.initial - angle).abs() < 1e-6, "got {}°", frame.initial.to_degrees());
+        assert!((frame.initial - angle).abs() < common::EPSILON, "got {}°", frame.initial.to_degrees());
         assert!(DraftParams { angle, ..DraftParams::new(frame) }.is_degenerate());
     }
 

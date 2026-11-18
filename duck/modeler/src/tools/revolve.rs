@@ -185,7 +185,7 @@ impl Feature for Revolve {
 mod tests {
     use super::*;
 
-    use duck_engine_common::{InnerSpace, Point3, Real};
+    use duck_engine_common::{InnerSpace, Point3, Real, EPSILON};
     use duck_engine_scene::resource::Visibility;
     use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::operator::{HandleEvent, HandleReach};
@@ -195,8 +195,6 @@ mod tests {
         face_item, pointer_at, ViewState, visibility, workspace_with, workspace_with_box, xy_region,
     };
     use crate::tools::{Gesture, ModelingTool, Workspace};
-
-    const EPSILON: Real = 1e-6;
 
     fn point(x: Real, y: Real) -> Point3 {
         Point3::new(x, y, 0.0)

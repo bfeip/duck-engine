@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use duck_engine_viewer::{
-    common::{consts, InnerSpace, LengthDisplay, Plane, Point3, Ray, Vector3, Zero},
+    common::{consts, InnerSpace, LengthDisplay, Plane, Point3, Ray, Vector3, Zero, EPSILON},
     event::{Event, EventContext},
     operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, SelectionKinds},
     selection::SelectionManager,
@@ -9,7 +9,7 @@ use duck_engine_viewer::{
 use crate::ops::array::{radial_array, AngularAxis, ArrayAxis, ArrayMode, RadialArray};
 use crate::snap::Snap;
 use crate::tools::edit::{
-    angle_field, dimension_field, grip_dimension, Edit, Lever, PanelAction, Params, MIN_DIMENSION,
+    angle_field, dimension_field, grip_dimension, Edit, Lever, PanelAction, Params,
 };
 use crate::tools::{Gesture, ModelingTool, PanelContext, Pointer, ToolInfo, Workspace};
 use crate::ui::icons;
@@ -324,7 +324,7 @@ impl Layout {
             v - axis * v.dot(axis)
         };
         let reach = self.array.rings.reach.magnitude();
-        let reach = match from_axis.magnitude() > MIN_DIMENSION {
+        let reach = match from_axis.magnitude() > EPSILON {
             true if reach > 0.0 => from_axis.normalize_to(reach),
             true => from_axis,
             false => Vector3::zero(),
@@ -441,8 +441,6 @@ mod tests {
     use super::*;
     use crate::snap::SnapKind;
     use crate::testing::{drag, pointer_at, workspace_with_box};
-
-    const EPSILON: Real = 1e-6;
 
     /// The tool on a document holding a 2×2×2 box centred on the origin, with
     /// the box selected.

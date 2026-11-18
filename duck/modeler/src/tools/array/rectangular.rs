@@ -1,13 +1,13 @@
 use anyhow::{bail, Result};
 use duck_engine_viewer::{
-    common::{InnerSpace, LengthDisplay, Point3},
+    common::{InnerSpace, LengthDisplay, Point3, EPSILON},
     event::{Event, EventContext},
     operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, SelectionKinds},
     selection::SelectionManager,
 };
 
 use crate::ops::array::{rectangular_array, ArrayAxis, ArrayMode, RectangularArray};
-use crate::tools::edit::{dimension_field, grip_dimension, Edit, PanelAction, Params, MIN_DIMENSION};
+use crate::tools::edit::{dimension_field, grip_dimension, Edit, PanelAction, Params};
 use crate::tools::{Gesture, ModelingTool, PanelContext, Pointer, ToolInfo, Workspace};
 use crate::ui::icons;
 use super::{count_field, mode_field, ArrayPreview, Spot, MAX_COUNT};
@@ -307,7 +307,7 @@ impl Layout {
     /// along it; `None` where `point` is on the pivot.
     fn reaching(&self, axis: usize, point: Point3) -> Option<Self> {
         let reach = point - self.pivot;
-        if reach.magnitude() <= MIN_DIMENSION {
+        if reach.magnitude() <= EPSILON {
             return None;
         }
         let mut layout = *self;
@@ -373,13 +373,11 @@ impl Params for Layout {
 #[cfg(test)]
 mod tests {
     use duck_engine_scene::resource::NodeId;
-    use duck_engine_viewer::common::{Real, Vector3};
+    use duck_engine_viewer::common::Vector3;
     use duck_engine_viewer::selection::SelectionItem;
 
     use super::*;
     use crate::testing::{pointer_at, workspace_with_box};
-
-    const EPSILON: Real = 1e-6;
 
     /// The tool on a document holding a 2×2×2 box centred on the origin, with
     /// the box selected.

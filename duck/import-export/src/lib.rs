@@ -663,7 +663,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    use duck_engine_common::{Point3, Transform, Vector3};
+    use duck_engine_common::{Point3, Transform, Vector3, EPSILON};
     use duck_engine_scene::Projection;
     use duck_engine_scene::common::RgbaColor;
 
@@ -792,10 +792,10 @@ mod tests {
 
         // A light imported as a root node used to be rescaled with the tree;
         // as a sidecar it must still land in the same place.
-        assert!((lights[0].transform.position.x - 1.0).abs() < 1e-6);
+        assert!((lights[0].transform.position.x - 1.0).abs() < EPSILON);
         let Light::Point { range, .. } = lights[0].light else { panic!("expected a point light") };
         assert!((range - 0.5).abs() < 1e-6, "range is a world-unit length");
-        assert!((camera.eye.x - 2.0).abs() < 1e-6);
+        assert!((camera.eye.x - 2.0).abs() < EPSILON);
     }
 
     #[test]

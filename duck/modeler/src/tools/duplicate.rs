@@ -288,12 +288,10 @@ impl Copies {
 
 #[cfg(test)]
 mod tests {
-    use duck_engine_viewer::common::{InnerSpace, Point3, Real, Vector3};
+    use duck_engine_viewer::common::{InnerSpace, Point3, Vector3, EPSILON};
 
     use super::*;
     use crate::testing::workspace_with_box;
-
-    const EPSILON: Real = 1e-6;
 
     #[test]
     fn a_placed_copy_lands_at_the_delta_and_is_selected() {

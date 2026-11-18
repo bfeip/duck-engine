@@ -17,7 +17,8 @@ pub mod consts {
     pub use std::f32::consts::*;
 }
 
-/// Epsilon value for floating-point comparisons
+/// Tolerance for [`Real`] comparisons: of lengths and angles directly, or as
+/// a factor of a size.
 pub const EPSILON: Real = 1e-6;
 
 mod ray;
@@ -783,11 +784,11 @@ mod tests {
 
     #[test]
     fn test_axis_along_holds_within_the_tolerance_only() {
-        assert_eq!(Axis::along(-Vector3::unit_z() * 3.0, 1e-6), Some(Axis::Z));
+        assert_eq!(Axis::along(-Vector3::unit_z() * 3.0, EPSILON), Some(Axis::Z));
         // About 1.4° off X.
         let tilted = Vector3::new(1.0, 0.025, 0.0);
         assert_eq!(Axis::along(tilted, 1e-3), Some(Axis::X));
-        assert_eq!(Axis::along(tilted, 1e-6), None);
+        assert_eq!(Axis::along(tilted, EPSILON), None);
         assert_eq!(Axis::along(Vector3::new(0.0, 0.0, 0.0), 1e-3), None);
     }
 

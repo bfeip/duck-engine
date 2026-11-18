@@ -576,10 +576,8 @@ fn relative_to(frame: &Transform, transform: &Transform) -> Transform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_viewer::common::InnerSpace;
+    use duck_engine_viewer::common::{InnerSpace, EPSILON};
     use duck_engine_viewer::scene::Projection;
-
-    const EPSILON: Real = 1e-6;
 
     fn camera() -> PositionedCamera {
         PositionedCamera {

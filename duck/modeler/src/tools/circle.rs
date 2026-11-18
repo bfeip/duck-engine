@@ -80,10 +80,9 @@ impl Primitive for CircleParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duck_engine_common::EPSILON;
 
     use crate::testing::pointer_at;
-
-    const EPSILON: Real = 1e-6;
 
     #[test]
     fn a_point_on_the_rim_places_the_circle() {

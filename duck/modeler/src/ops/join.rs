@@ -210,7 +210,7 @@ mod tests {
     use super::*;
 
     use duck_engine_scene::cad::CadTessellationOptions;
-    use duck_engine_scene::common::Transform;
+    use duck_engine_scene::common::{Transform, EPSILON};
     use glam::DVec3;
 
     use crate::document::PartKind;
@@ -346,7 +346,7 @@ mod tests {
         let far = add(&mut doc, "far", xy_region(&[(10.0, 0.0), (11.0, 0.0), (11.0, 1.0), (10.0, 1.0)]));
         let far_part = doc.part_for_node(far).unwrap();
 
-        let join = build_join(&doc, &[side, far, front], 1e-6).expect("the sides join");
+        let join = build_join(&doc, &[side, far, front], EPSILON).expect("the sides join");
         assert_eq!(join.groups.len(), 1);
         assert_eq!(join.groups[0].sources, [side, front]);
         commit_join(&mut doc, &join).expect("the join commits");
@@ -372,7 +372,7 @@ mod tests {
         let (mut doc, solid) = doc_with_box();
         let square = add(&mut doc, "square", xy_region(&[(5.0, 0.0), (6.0, 0.0), (6.0, 1.0), (5.0, 1.0)]));
 
-        let Err(error) = build_join(&doc, &[solid, square], 1e-6) else {
+        let Err(error) = build_join(&doc, &[solid, square], EPSILON) else {
             panic!("a lone square joins nothing");
         };
         assert!(error.to_string().contains("Nothing to join"), "got {error}");
@@ -387,7 +387,7 @@ mod tests {
         let right =
             add(&mut doc, "right", xy_region(&[(1.0 + gap, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0 + gap, 1.0)]));
 
-        assert!(build_join(&doc, &[left, right], 1e-6).is_err(), "the gap is wider than the tolerance");
+        assert!(build_join(&doc, &[left, right], EPSILON).is_err(), "the gap is wider than the tolerance");
         let join = build_join(&doc, &[left, right], 1e-3).expect("the gap is within the tolerance");
         assert_eq!(join.groups.len(), 1);
         assert_eq!(join.groups[0].shape.shape_type(), ShapeType::Shell);
