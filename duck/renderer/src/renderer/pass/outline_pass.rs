@@ -133,11 +133,14 @@ impl TierPipelines {
     }
 }
 
-/// Renders highlighted geometry — faces, lines and points — into the two
-/// channels of the [`aux::OUTLINE_MASK`](super::aux::OUTLINE_MASK) attachment
-/// (red = primary tier, green = secondary), depth-tested against the scene
-/// depth buffer so occluded geometry is not outlined. A node without faces,
-/// such as a wire, is thereby outlined as a stroke along its lines.
+/// Renders highlighted geometry into the outline mask, depth-tested so
+/// occluded geometry is not outlined.
+///
+/// Faces, lines and points all write into the two channels of the
+/// [`aux::OUTLINE_MASK`](super::aux::OUTLINE_MASK) attachment (red = primary
+/// tier, green = secondary), tested against the scene depth buffer. A node
+/// without faces, such as a wire, is thereby outlined as a stroke along its
+/// lines.
 ///
 /// Belongs between the face and line geometry passes: the mask must depth-test
 /// against faces only, since lines write unbiased depth that would punch holes

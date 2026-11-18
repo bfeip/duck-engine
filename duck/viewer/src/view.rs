@@ -188,6 +188,7 @@ pub fn default_headlight_rig() -> Vec<PositionedLight> {
 }
 
 /// One independently rendered, independently interactive region of a viewer.
+///
 /// See the [module docs](self) for the concept; create views with
 /// [`Viewer::add_view`](crate::Viewer::add_view) and mutate them through
 /// [`Viewer::view_mut`](crate::Viewer::view_mut). State shared with other views

@@ -9,9 +9,11 @@ pub struct RgbaPixels {
     pub data: Vec<u8>,
 }
 
-/// Owns the frame-agnostic per-frame machinery: the GPU handles, the shared
-/// frame targets, the active workflow, and an optional readback target for
-/// headless rendering. Knows nothing about what a frame contains.
+/// Owns the per-frame rendering machinery, knowing nothing about what a frame
+/// contains.
+///
+/// That machinery is the GPU handles, the shared frame targets, the active
+/// workflow, and an optional readback target for headless rendering.
 ///
 /// The caller builds an `F::Frame<'_>` from its own state each frame and hands
 /// it to [`render`](Self::render). Because the frame is built from the

@@ -11,8 +11,10 @@ use crate::{
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// A [`Viewer`] that renders into an owned offscreen texture instead of a
-/// surface. The texture is sampleable (`TEXTURE_BINDING`), so consumers can
-/// display it inside a UI panel (e.g. `egui::Image` via
+/// surface.
+///
+/// The texture is sampleable (`TEXTURE_BINDING`), so consumers can display it
+/// inside a UI panel (e.g. `egui::Image` via
 /// `egui_wgpu::Renderer::register_native_texture`) or copy it out.
 ///
 /// The texture is `Rgba8Unorm` and holds display-ready, gamma-encoded color:

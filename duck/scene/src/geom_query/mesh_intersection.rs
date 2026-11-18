@@ -74,9 +74,10 @@ impl Containment {
 }
 
 /// Result of a volume-mesh intersection test: where each of the mesh's
-/// primitives lies relative to the volume, indexed like [`Mesh::triangles`],
-/// [`Mesh::segments`] and [`Mesh::points`] (and so like a
-/// [`Topology`](crate::resource::Topology)'s ranges).
+/// primitives lies relative to the volume.
+///
+/// Indexed like [`Mesh::triangles`], [`Mesh::segments`] and [`Mesh::points`]
+/// (and so like a [`Topology`](crate::resource::Topology)'s ranges).
 #[derive(Debug, Clone)]
 pub struct MeshVolumeHit {
     pub triangles: Vec<Containment>,

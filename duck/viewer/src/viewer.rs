@@ -41,10 +41,12 @@ struct PointerCapture {
     holds: usize,
 }
 
-/// Surface-free core viewer. Hosts any number of [`View`]s, routes input to
-/// them, renders each into its own texture, and composites the result into an
-/// sRGB [`wgpu::TextureView`] via [`render_to_target`](Self::render_to_target).
-/// 
+/// Surface-free core viewer: hosts any number of [`View`]s and composites them
+/// into one target.
+///
+/// It routes input to the views, renders each into its own texture, and
+/// composites the result into an sRGB [`wgpu::TextureView`] via
+/// [`render_to_target`](Self::render_to_target).
 /// The concrete output target (a window surface or an offscreen texture) is
 /// owned by a wrapper such as [`SurfacedViewer`](crate::SurfacedViewer) or
 /// [`OffscreenViewer`](crate::OffscreenViewer).

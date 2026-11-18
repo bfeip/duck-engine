@@ -6,7 +6,7 @@
 //! anti-aliased dot. Billboarding and constant-pixel scaling are handled by the
 //! renderer via [`DisplayBehavior`], so this module only places the node and
 //! lets the render-time presentation do the rest. The dot's color is settable
-//! ([`Cursor3d::set_color`]); it tints a white disc texture via the material's
+//! ([`Cursor3d::_set_color`]); it tints a white disc texture via the material's
 //! base-color factor.
 
 use duck_engine_viewer::common::{Point3, RgbaColor, Transform};
@@ -36,7 +36,7 @@ const DOT_TEXTURE_SIZE: u32 = 64;
 pub struct Cursor3d {
     /// Owning handle: keeps the marker (and its mesh/material/texture) alive.
     node: Option<NodeHandle>,
-    /// Material backing the dot; kept so [`set_color`](Self::set_color) can
+    /// Material backing the dot; kept so [`_set_color`](Self::_set_color) can
     /// retint the white disc.
     material: Option<FaceMaterialHandle>,
     /// Desired dot color; applied to the material as its base-color factor.

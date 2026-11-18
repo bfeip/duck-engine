@@ -335,11 +335,12 @@ fn tessellate_finish(
     Ok(node)
 }
 
-/// Re-tessellates a shape, given as its [`ShapeElements`], into an existing `node`
-/// in the rigid `frame`, preserving its [`NodeId`] and reusing its material
-/// slots, and places the node at the frame. The node must already carry an
-/// instance; the previous mesh and instance are released and removed unless
-/// shared.
+/// Re-tessellates a shape into an existing `node`, preserving its [`NodeId`].
+///
+/// The shape, given as its [`ShapeElements`], is tessellated in the rigid
+/// `frame`; the node is placed at the frame and reuses its material slots. The
+/// node must already carry an instance; the previous mesh and instance are
+/// released and removed unless shared.
 ///
 /// Because the material slots are reused verbatim, the node keeps whichever
 /// materials it was first tessellated with, even if the shape's

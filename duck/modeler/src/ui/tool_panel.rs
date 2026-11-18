@@ -1,5 +1,5 @@
 //! The active tool's floating options window. The `ui` module owns the window
-//! chrome; the tool fills only the body via [`ModelingTool::panel_ui`].
+//! chrome; the tool fills only the body via [`ModelingTool::panel_ui`](crate::tools::ModelingTool::panel_ui).
 
 use duck_engine_viewer::selection::SelectionManager;
 

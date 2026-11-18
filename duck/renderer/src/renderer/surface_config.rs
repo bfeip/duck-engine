@@ -67,8 +67,10 @@ impl MaterialTextureSlot {
     }
 }
 
-/// Which texture channels a variant binds — one presence flag per
-/// [`MaterialTextureSlot`]. Keys the material bind-group-layout cache; iterate
+/// Which texture channels a variant binds: one presence flag per
+/// [`MaterialTextureSlot`].
+///
+/// Keys the material bind-group-layout cache; iterate
 /// [`slots`](TexturePresence::slots) to walk the present channels in binding order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct TexturePresence {

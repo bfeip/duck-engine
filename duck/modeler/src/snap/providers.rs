@@ -82,18 +82,21 @@ impl SnapProvider for GridSnap {
     }
 }
 
-/// Snaps to existing geometry: B-rep corners (vertices, [`SnapKind::Corner`]),
-/// points along edges/wires ([`SnapKind::Edge`]), edge midpoints from the
-/// part's B-rep ([`SnapKind::Midpoint`]), the centres of a part's circular
-/// edges ([`SnapKind::Center`]), ray–surface hits on faces
-/// ([`SnapKind::Face`]), and the centre of the flat face hit
-/// ([`SnapKind::FaceCenter`]). With a stroke, the part edges near the cursor
-/// and the face under it also relate it to the stroke's last point
-/// ([`edge_relations`], [`face_relations`]). All kinds share one scene walk
-/// ([`near_cursor`]), the expensive part, so they cost a single traversal.
+/// Snaps to the existing geometry near the cursor: its corners, edges and
+/// faces.
 ///
-/// Centres are offered for the parts the walk reaches near the cursor, so the
-/// centre of an arc that lies off its part's bounds is missed.
+/// The kinds are B-rep corners ([`SnapKind::Corner`]), points along edges and
+/// wires ([`SnapKind::Edge`]), edge midpoints from the part's B-rep
+/// ([`SnapKind::Midpoint`]), the centres of a part's circular edges
+/// ([`SnapKind::Center`]), ray–surface hits on faces ([`SnapKind::Face`]) and
+/// the centre of the flat face hit ([`SnapKind::FaceCenter`]). With a stroke,
+/// the part edges near the cursor and the face under it also relate it to the
+/// stroke's last point ([`edge_relations`], [`face_relations`]).
+///
+/// All kinds share one scene walk ([`near_cursor`]), the expensive part, so
+/// they cost a single traversal. Centres are offered for the parts the walk
+/// reaches near the cursor, so the centre of an arc that lies off its part's
+/// bounds is missed.
 pub(crate) struct GeometrySnap;
 
 impl SnapProvider for GeometrySnap {
