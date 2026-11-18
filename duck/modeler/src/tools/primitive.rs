@@ -363,7 +363,7 @@ pub(super) fn radius_to(center: Point3, rim: Point3) -> Option<Real> {
 /// How far along `axis` from `base` the `ray` passes closest, signed. Zero
 /// where the ray runs along the axis.
 pub(super) fn height_along(base: Point3, axis: Vector3, ray: &Ray) -> Real {
-    ray.closest_param_on_axis(base, axis).unwrap_or(0.0)
+    ray.closest_param_on_axis(&Ray::new(base, axis)).unwrap_or(0.0)
 }
 
 /// A part's frame seated on `plane` at `origin`: local Y along the plane's

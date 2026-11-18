@@ -1,6 +1,6 @@
 use duck_engine_common::{array_to_point3, InnerSpace, Point3, Real};
 
-use crate::common::{ConvexPolyhedron, Ray};
+use crate::common::{ConvexPolyhedron, Ray, TriangleIntersection};
 use crate::resource::{Mesh, PrimitiveType, PrimitiveFlags, SubGeometryKind};
 
 /// Result of a ray-triangle intersection test in local mesh space.
@@ -112,11 +112,11 @@ pub fn intersect_ray(mesh: &Mesh, ray: &Ray) -> Vec<TriangleMeshHit> {
         let p1 = array_to_point3(v1.position);
         let p2 = array_to_point3(v2.position);
 
-        if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2) {
+        if let Some(TriangleIntersection { t, point, u, v }) = ray.intersect_triangle(p0, p1, p2) {
             let w = 1.0 - u - v;
             hits.push(TriangleMeshHit {
                 distance: t,
-                hit_point: ray.point_at(t),
+                hit_point: point,
                 triangle_index,
                 barycentric: (u, v, w),
             });
@@ -138,12 +138,12 @@ pub fn intersect_ray_nearest(mesh: &Mesh, ray: &Ray) -> Option<TriangleMeshHit> 
         let p1 = array_to_point3(v1.position);
         let p2 = array_to_point3(v2.position);
 
-        if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2)
+        if let Some(TriangleIntersection { t, point, u, v }) = ray.intersect_triangle(p0, p1, p2)
             && nearest.as_ref().is_none_or(|n| t < n.distance) {
                 let w = 1.0 - u - v;
                 nearest = Some(TriangleMeshHit {
                     distance: t,
-                    hit_point: ray.point_at(t),
+                    hit_point: point,
                     triangle_index,
                     barycentric: (u, v, w),
                 });

@@ -15,6 +15,33 @@ pub struct SegmentApproach {
     pub distance: Real,
 }
 
+/// Where a ray meets a surface.
+///
+/// Returned by [`Ray::intersect_plane`].
+#[derive(Debug, Copy, Clone)]
+pub struct RayIntersection {
+    /// Distance along the ray to the hit
+    pub t: Real,
+    /// The hit point
+    pub point: Point3,
+}
+
+/// Where a ray meets a triangle.
+///
+/// Returned by [`Ray::intersect_triangle`]. In barycentric coordinates the hit
+/// is `(1 − u − v)·v0 + u·v1 + v·v2`.
+#[derive(Debug, Copy, Clone)]
+pub struct TriangleIntersection {
+    /// Distance along the ray to the hit
+    pub t: Real,
+    /// The hit point
+    pub point: Point3,
+    /// Weight of `v1`
+    pub u: Real,
+    /// Weight of `v2`
+    pub v: Real,
+}
+
 /// A ray in 3D space, defined by an origin point and a direction vector.
 #[derive(Debug, Copy, Clone)]
 pub struct Ray {
@@ -118,18 +145,18 @@ impl Ray {
         Some(SegmentApproach { t: ray_t, closest_on_segment, distance })
     }
 
-    /// Finds the signed parameter `t` such that `origin + t * dir.normalize()` is
-    /// the point on the infinite axis line closest to this ray.
+    /// Finds the signed parameter `t` such that `axis.point_at(t)` is the point
+    /// on the infinite line through `axis` closest to this ray.
     ///
     /// `t` is in world-space units and may be negative (the closest point lies
-    /// behind `origin` along `dir`). Useful for turning a cursor pick ray into an
+    /// behind `axis.origin`). Useful for turning a cursor pick ray into an
     /// extrusion length along a fixed axis.
     ///
     /// Returns `None` if the ray and the axis are (near-)parallel.
-    pub fn closest_param_on_axis(&self, origin: Point3, dir: Vector3) -> Option<Real> {
-        let v = dir.normalize();
+    pub fn closest_param_on_axis(&self, axis: &Ray) -> Option<Real> {
+        let v = axis.direction; // unit
         let u = self.direction; // unit
-        let w0 = self.origin - origin;
+        let w0 = self.origin - axis.origin;
 
         let b = u.dot(v);
         let denom = 1.0 - b * b; // a*c - b² with a = c = 1 (both unit)
@@ -143,9 +170,8 @@ impl Ray {
     }
 
     /// Finds the intersection of the ray with a plane.
-    /// Returns `Some((t, point))` where `t` is the distance along the ray.
     /// Returns `None` if the ray is parallel to the plane or points away from it.
-    pub fn intersect_plane(&self, plane: &Plane) -> Option<(Real, Point3)> {
+    pub fn intersect_plane(&self, plane: &Plane) -> Option<RayIntersection> {
         let denom = plane.normal.dot(self.direction);
 
         if denom.abs() < EPSILON {
@@ -158,15 +184,10 @@ impl Ray {
             return None;
         }
 
-        let point = self.origin + self.direction * t;
-        Some((t, point))
+        Some(RayIntersection { t, point: self.point_at(t) })
     }
 
     /// Tests if a ray intersects a triangle using the Möller-Trumbore algorithm.
-    ///
-    /// Returns Some((t, u, v)) if the ray hits the triangle, where:
-    /// - t: distance along the ray
-    /// - u, v: barycentric coordinates (w = 1 - u - v)
     ///
     /// Returns None if there's no intersection or if the intersection is behind the ray origin.
     pub fn intersect_triangle(
@@ -174,7 +195,7 @@ impl Ray {
         v0: Point3,
         v1: Point3,
         v2: Point3,
-    ) -> Option<(Real, Real, Real)> {
+    ) -> Option<TriangleIntersection> {
         let edge1 = v1 - v0;
         let edge2 = v2 - v0;
         let h = self.direction.cross(edge2);
@@ -218,9 +239,12 @@ impl Ray {
         let t = inv_det * edge2.dot(q);
 
         if t > EPSILON {
-            let u = s_dot_h * inv_det;
-            let v = dir_dot_q * inv_det;
-            Some((t, u, v))
+            Some(TriangleIntersection {
+                t,
+                point: self.point_at(t),
+                u: s_dot_h * inv_det,
+                v: dir_dot_q * inv_det,
+            })
         } else {
             None
         }
@@ -244,29 +268,25 @@ mod tests {
         // Ray points straight down at x = 3; axis is the world X line through origin.
         // The closest point on the axis is (3, 0, 0), i.e. t = 3.
         let ray = Ray::new(Point3::new(3.0, 5.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let t = ray
-            .closest_param_on_axis(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0))
-            .expect("ray is perpendicular to axis");
+        let axis = Ray::new(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0));
+        let t = ray.closest_param_on_axis(&axis).expect("ray is perpendicular to axis");
         assert!((t - 3.0).abs() < 1e-4, "expected t≈3, got {t}");
     }
 
     #[test]
-    fn test_closest_param_on_axis_is_signed_and_scale_independent() {
-        // Closest point is behind the axis origin → negative t; magnitude in world units
-        // regardless of the (non-unit) axis vector length.
+    fn test_closest_param_on_axis_is_signed() {
+        // Closest point is behind the axis origin → negative t, in world units.
         let ray = Ray::new(Point3::new(-2.0, 4.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
-        let t = ray
-            .closest_param_on_axis(Point3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0))
-            .expect("ray is perpendicular to axis");
+        let axis = Ray::new(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0));
+        let t = ray.closest_param_on_axis(&axis).expect("ray is perpendicular to axis");
         assert!((t - -2.0).abs() < 1e-4, "expected t≈-2, got {t}");
     }
 
     #[test]
     fn test_closest_param_on_axis_parallel_is_none() {
         let ray = Ray::new(Point3::new(0.0, 1.0, 0.0), Vector3::new(1.0, 0.0, 0.0));
-        assert!(ray
-            .closest_param_on_axis(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0))
-            .is_none());
+        let axis = Ray::new(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0));
+        assert!(ray.closest_param_on_axis(&axis).is_none());
     }
 
     #[test]
@@ -376,7 +396,7 @@ mod tests {
         let result = ray.intersect_triangle(v0, v1, v2);
         assert!(result.is_some());
 
-        let (t, u, v) = result.unwrap();
+        let TriangleIntersection { t, u, v, .. } = result.unwrap();
         assert!(t > 0.0); // Hit is in front of ray
         assert!(u >= 0.0 && u <= 1.0);
         assert!(v >= 0.0 && v <= 1.0);
@@ -430,7 +450,7 @@ mod tests {
         let result = ray.intersect_triangle(v0, v1, v2);
         assert!(result.is_some());
 
-        let (_t, u, v) = result.unwrap();
+        let TriangleIntersection { u, v, .. } = result.unwrap();
         // At v0: u=0, v=0
         assert!(u.abs() < EPSILON);
         assert!(v.abs() < EPSILON);
@@ -458,7 +478,7 @@ mod tests {
             let result = ray.intersect_triangle(v0, v1, v2);
             assert!(result.is_some(), "Should hit vertex {:?}", vertex);
 
-            let (_t, u, v) = result.unwrap();
+            let TriangleIntersection { u, v, .. } = result.unwrap();
             assert!((u - expected_u).abs() < 0.01, "u mismatch at vertex {:?}", vertex);
             assert!((v - expected_v).abs() < 0.01, "v mismatch at vertex {:?}", vertex);
         }
@@ -476,7 +496,7 @@ mod tests {
         let result = ray.intersect_triangle(v0, v1, v2);
         assert!(result.is_some());
 
-        let (_t, u, v) = result.unwrap();
+        let TriangleIntersection { u, v, .. } = result.unwrap();
         let w = 1.0 - u - v;
 
         // At center: u ≈ 1/3, v ≈ 1/3, w ≈ 1/3
@@ -512,7 +532,7 @@ mod tests {
         let result = ray.intersect_triangle(v0, v1, v2);
         assert!(result.is_some());
 
-        let (t, _u, _v) = result.unwrap();
+        let t = result.unwrap().t;
         // Distance should be approximately 5
         assert!((t - 5.0).abs() < 0.01);
     }
@@ -553,6 +573,19 @@ mod tests {
     }
 
     #[test]
+    fn test_ray_triangle_point() {
+        let v0 = Point3::new(0.0, 0.0, 0.0);
+        let v1 = Point3::new(1.0, 0.0, 0.0);
+        let v2 = Point3::new(0.0, 1.0, 0.0);
+
+        let ray = Ray::new(Point3::new(0.25, 0.5, -2.0), Vector3::new(0.0, 0.0, 1.0));
+        let TriangleIntersection { point, u, v, .. } = ray.intersect_triangle(v0, v1, v2).unwrap();
+        assert!((point - Point3::new(0.25, 0.5, 0.0)).magnitude() < EPSILON);
+        let weighted = v0 + (v1 - v0) * u + (v2 - v0) * v;
+        assert!((point - weighted).magnitude() < EPSILON);
+    }
+
+    #[test]
     fn test_ray_triangle_outside_bounds() {
         let v0 = Point3::new(0.0, 0.0, 0.0);
         let v1 = Point3::new(1.0, 0.0, 0.0);
@@ -583,7 +616,7 @@ mod tests {
         let result = ray.intersect_plane(&plane);
         assert!(result.is_some());
 
-        let (t, point) = result.unwrap();
+        let RayIntersection { t, point } = result.unwrap();
         assert!((t - 1.0).abs() < EPSILON);
         assert!(point.y.abs() < EPSILON);
     }
@@ -614,7 +647,7 @@ mod tests {
         let target = Point3::new(12.345, 0.0, 67.891);
         let ray = Ray::new(origin, target - origin);
 
-        let (_, point) = ray.intersect_plane(&plane).unwrap();
+        let point = ray.intersect_plane(&plane).unwrap().point;
         assert!(point.y.abs() < 1e-9, "hit is {} off the plane", point.y);
         assert!((point - target).magnitude() < 1e-9);
     }

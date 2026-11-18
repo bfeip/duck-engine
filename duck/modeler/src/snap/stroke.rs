@@ -133,8 +133,9 @@ impl SnapProvider for StrokeSnap {
 /// The point of the line through `origin` along unit `direction` that `ray`
 /// passes nearest, as a `kind` snap along the line.
 fn along(ray: &Ray, origin: Point3, direction: Vector3, kind: SnapKind) -> Option<Snap> {
-    let t = ray.closest_param_on_axis(origin, direction)?;
-    Some(Snap::new(origin + direction * t, kind).with_direction(direction))
+    let line = Ray::new(origin, direction);
+    let t = ray.closest_param_on_axis(&line)?;
+    Some(Snap::new(line.point_at(t), kind).with_direction(direction))
 }
 
 /// Pushes into `out` the `kinds` of snap relating `edge` to `stroke`'s last

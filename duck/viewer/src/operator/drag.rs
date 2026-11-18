@@ -42,13 +42,14 @@ impl DragGeometry {
         match self {
             // `intersect_plane` already rejects both near-parallel rays and
             // solutions behind the origin.
-            DragGeometry::Plane(plane) => ray.intersect_plane(plane).map(|(_, point)| point),
+            DragGeometry::Plane(plane) => ray.intersect_plane(plane).map(|hit| hit.point),
             DragGeometry::Axis { origin, direction } => {
                 if direction.magnitude2() < EPSILON {
                     return None;
                 }
-                let t = ray.closest_param_on_axis(*origin, *direction)?;
-                let point = origin + direction * t;
+                let axis = Ray { origin: *origin, direction: *direction };
+                let t = ray.closest_param_on_axis(&axis)?;
+                let point = axis.point_at(t);
                 ((point - ray.origin).dot(ray.direction) > 0.0).then_some(point)
             }
         }

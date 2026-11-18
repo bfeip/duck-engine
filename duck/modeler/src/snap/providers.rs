@@ -21,7 +21,7 @@ impl SnapProvider for ConstructionPlaneSnap {
 
     fn collect(&self, input: &SnapInput, _document: &Document, _settings: &SnapSettings) -> Vec<Snap> {
         match input.ray().intersect_plane(input.plane) {
-            Some((_, position)) => vec![Snap::new(position, SnapKind::ConstructionPlane)],
+            Some(hit) => vec![Snap::new(hit.point, SnapKind::ConstructionPlane)],
             None => Vec::new(),
         }
     }
@@ -70,9 +70,9 @@ impl SnapProvider for GridSnap {
 
         // Guide point: round the in-plane ray hit to the nearest gridline
         // intersection.
-        if let Some((_, hit)) = ray.intersect_plane(input.plane) {
+        if let Some(hit) = ray.intersect_plane(input.plane) {
             let spacing = input.grid.minor_spacing.max(Real::EPSILON);
-            let rel = hit - origin;
+            let rel = hit.point - origin;
             let cu = (rel.dot(u) / spacing).round() * spacing;
             let cv = (rel.dot(v) / spacing).round() * spacing;
             out.push(Snap::new(origin + u * cu + v * cv, SnapKind::GridGuide));

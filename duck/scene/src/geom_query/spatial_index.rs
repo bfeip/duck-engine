@@ -4,7 +4,7 @@
 
 use duck_engine_common::{array_to_point3, Point3, Real};
 
-use crate::common::{Aabb, Ray, SegmentApproach};
+use crate::common::{Aabb, Ray, SegmentApproach, TriangleIntersection};
 use crate::resource::Mesh;
 
 use super::mesh_intersection::TriangleMeshHit;
@@ -74,12 +74,12 @@ impl MeshSpatialIndex {
                 let p0 = array_to_point3(v0.position);
                 let p1 = array_to_point3(v1.position);
                 let p2 = array_to_point3(v2.position);
-                if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2)
+                if let Some(TriangleIntersection { t, point, u, v }) = ray.intersect_triangle(p0, p1, p2)
                     && t < best_distance.get() {
                         best_distance.set(t);
                         best = Some(TriangleMeshHit {
                             distance: t,
-                            hit_point: ray.point_at(t),
+                            hit_point: point,
                             triangle_index,
                             barycentric: (u, v, 1.0 - u - v),
                         });
@@ -101,10 +101,10 @@ impl MeshSpatialIndex {
             let p0 = array_to_point3(v0.position);
             let p1 = array_to_point3(v1.position);
             let p2 = array_to_point3(v2.position);
-            if let Some((t, u, v)) = ray.intersect_triangle(p0, p1, p2) {
+            if let Some(TriangleIntersection { t, point, u, v }) = ray.intersect_triangle(p0, p1, p2) {
                 out.push(TriangleMeshHit {
                     distance: t,
-                    hit_point: ray.point_at(t),
+                    hit_point: point,
                     triangle_index,
                     barycentric: (u, v, 1.0 - u - v),
                 });

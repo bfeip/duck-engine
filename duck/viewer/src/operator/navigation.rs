@@ -26,8 +26,8 @@ pub(super) fn pan(dx: f32, dy: f32, camera: &mut PositionedCamera, viewport: (u3
     let screen = camera.project_point_screen(pivot, width, height);
     let diff_ray =
         camera.ray_from_screen_point(screen.x as f32 - dx, screen.y as f32 - dy, width, height);
-    if let Some((_, new_pivot)) = diff_ray.intersect_plane(&movement_plane) {
-        let offset = new_pivot - pivot;
+    if let Some(hit) = diff_ray.intersect_plane(&movement_plane) {
+        let offset = hit.point - pivot;
         camera.eye += offset;
         camera.target += offset;
     }
