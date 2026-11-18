@@ -434,7 +434,7 @@ impl Params for Layout {
 #[cfg(test)]
 mod tests {
     use duck_engine_scene::resource::NodeId;
-    use duck_engine_viewer::common::Real;
+    use duck_engine_viewer::common::{coincident, Real};
     use duck_engine_viewer::input::Modifiers;
     use duck_engine_viewer::selection::SelectionItem;
 
@@ -471,7 +471,7 @@ mod tests {
     }
 
     fn contains(points: &[Point3], point: Point3) -> bool {
-        points.iter().any(|p| (p - point).magnitude() < EPSILON)
+        points.iter().any(|&p| coincident(p, point))
     }
 
     fn part_count(ws: &Workspace) -> usize {

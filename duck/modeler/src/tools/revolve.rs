@@ -1,5 +1,5 @@
 use anyhow::Result;
-use duck_engine_common::{consts, LengthDisplay};
+use duck_engine_common::{coincident, consts, LengthDisplay};
 use duck_engine_scene::resource::{NodeId, SubGeometryKind};
 use duck_engine_viewer::{
     operator::{Handle, HandleDrag, HandleId, SelectionKinds},
@@ -9,9 +9,7 @@ use opencascade::primitives::Shape;
 
 use crate::construction::ConstructionOptions;
 use crate::document::{Document, SourceFate};
-use crate::ops::revolve::{
-    build_revolve, spans_axis, Axis, Profile, RevolveFrame, RevolveParams, RevolveTarget,
-};
+use crate::ops::revolve::{build_revolve, Axis, Profile, RevolveFrame, RevolveParams, RevolveTarget};
 use crate::tools::{Pointer, ToolInfo};
 use crate::ui::icons;
 use super::edit::{angle_field, Lever, Params};
@@ -174,7 +172,7 @@ impl Feature for Revolve {
         let at = pointer.snap?.position;
         let axis = match params.axis {
             Axis::Unpicked => Axis::From(at),
-            Axis::From(start) if spans_axis(start, at) => Axis::Through(start, at),
+            Axis::From(start) if !coincident(start, at) => Axis::Through(start, at),
             Axis::From(_) | Axis::Through(..) => return None,
         };
         Some(RevolveParams { axis, ..*params })

@@ -1,11 +1,11 @@
 //! The built-in [`SnapProvider`]s. Each is a stateless strategy; all live
 //! context arrives through [`SnapInput`] and the [`Document`].
 
-use duck_engine_viewer::common::{EuclideanSpace, InnerSpace, Point3, Real};
+use duck_engine_viewer::common::{coincident, EuclideanSpace, InnerSpace, Point3, Real};
 use duck_engine_viewer::scene::geom_query::PickView;
 use duck_engine_viewer::scene::resource::PrimitiveFlags;
 
-use super::stroke::{edge_relations, face_relations, Stroke};
+use super::stroke::{collect_edge_relations, collect_face_relations, Stroke};
 use super::{Snap, SnapInput, SnapKind, SnapFlags, SnapProvider, SnapSettings};
 use crate::document::{CadPart, Document};
 use crate::geometry::{near_cursor, CurvePoint, Cursor, PartEdge, PartFace, SegmentHit, SurfacePoint};
@@ -165,18 +165,15 @@ impl SnapProvider for GeometrySnap {
                     candidates.extend(face_center(&face));
                 }
                 if let Some(stroke) = stroke {
-                    face_relations(&face, stroke, kinds, &mut candidates);
+                    collect_face_relations(&face, stroke, kinds, &mut candidates);
                 }
             }
         }
 
         // Collapse coincident corners (shared B-rep vertices emitted by the same
         // mesh). Guard on kind so an edge candidate is never merged into a corner.
-        const EPSILON: Real = 1e-10;
         candidates.dedup_by(|a, b| {
-            a.kind == SnapKind::Corner
-                && b.kind == SnapKind::Corner
-                && (a.position - b.position).magnitude() < EPSILON
+            a.kind == SnapKind::Corner && b.kind == SnapKind::Corner && coincident(a.position, b.position)
         });
         candidates
     }
@@ -278,7 +275,7 @@ fn collect_edge_snaps(
             out.push(snap);
         }
         if let Some(stroke) = stroke {
-            edge_relations(&edge, stroke, kinds, document, out);
+            collect_edge_relations(&edge, stroke, kinds, document, out);
         }
     }
 

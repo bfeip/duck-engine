@@ -126,6 +126,11 @@ impl RgbaColor {
     }
 }
 
+/// Whether `a` and `b` are the same point, within [`EPSILON`].
+pub fn coincident(a: Point3, b: Point3) -> bool {
+    a.distance(b) <= EPSILON
+}
+
 /// Computes the normal matrix from a world transform matrix.
 ///
 /// The normal matrix is the inverse-transpose of the upper-left 3x3 portion
@@ -388,6 +393,14 @@ impl Axis {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_coincident_holds_within_epsilon_only() {
+        let a = Point3::new(1.0, 2.0, 3.0);
+        assert!(coincident(a, a));
+        assert!(coincident(a, a + Vector3::unit_x() * (EPSILON / 2.0)));
+        assert!(!coincident(a, a + Vector3::unit_x() * (EPSILON * 2.0)));
+    }
 
     // ===== compute_normal_matrix Tests =====
 

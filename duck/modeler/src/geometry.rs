@@ -278,15 +278,11 @@ impl<'a> PartVertex<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duck_engine_scene::common::{Deg, Matrix4};
+    use duck_engine_scene::common::{coincident, Deg, Matrix4};
     use duck_engine_scene::resource::NodeId;
     use opencascade::primitives::Shape;
 
     use crate::testing::{bite_rim, doc_with_bitten_ball, doc_with_box, doc_with_shape, face_along, rim};
-
-    fn close(a: Point3, b: Point3) -> bool {
-        a.distance(b) < EPSILON
-    }
 
     fn origin() -> Point3 {
         Point3::new(0.0, 0.0, 0.0)
@@ -311,7 +307,7 @@ mod tests {
 
         let nearest = rim.nearest(Point3::new(5.0, 0.0, 0.0)).unwrap();
 
-        assert!(close(nearest.point, Point3::new(2.0, 0.0, 0.0)), "{:?}", nearest.point);
+        assert!(coincident(nearest.point, Point3::new(2.0, 0.0, 0.0)), "{:?}", nearest.point);
         let tangent = nearest.tangent;
         assert!((tangent.magnitude() - 1.0).abs() < EPSILON, "{tangent:?}");
         assert!(tangent.x.abs() < EPSILON && tangent.y.abs() < EPSILON, "{tangent:?}");
@@ -327,7 +323,7 @@ mod tests {
         feet.sort_by(|a, b| a.x.total_cmp(&b.x));
 
         assert_eq!(feet.len(), 2, "{feet:?}");
-        assert!(close(feet[0], Point3::new(-2.0, 0.0, 0.0)) && close(feet[1], Point3::new(2.0, 0.0, 0.0)), "{feet:?}");
+        assert!(coincident(feet[0], Point3::new(-2.0, 0.0, 0.0)) && coincident(feet[1], Point3::new(2.0, 0.0, 0.0)), "{feet:?}");
     }
 
     #[test]
@@ -342,7 +338,7 @@ mod tests {
         assert!((direction - (end - start).normalize()).magnitude() < EPSILON, "{direction:?}");
 
         let middle = edge.midpoint().unwrap();
-        assert!(close(middle.point, start + (end - start) * 0.5), "{:?}", middle.point);
+        assert!(coincident(middle.point, start + (end - start) * 0.5), "{:?}", middle.point);
         assert!((middle.tangent - direction).magnitude() < EPSILON, "{:?}", middle.tangent);
         assert!(edge.circle().is_none());
     }
@@ -354,7 +350,7 @@ mod tests {
 
         let circle = rim.circle().expect("a rim is a circle");
 
-        assert!(close(circle.center, origin()), "{:?}", circle.center);
+        assert!(coincident(circle.center, origin()), "{:?}", circle.center);
         assert!((circle.normal.y.abs() - 1.0).abs() < EPSILON, "{:?}", circle.normal);
         assert!((circle.radius - 2.0).abs() < EPSILON, "{}", circle.radius);
         assert!(rim.direction().is_none());
@@ -400,14 +396,14 @@ mod tests {
         let top = face(&document, node, DVec3::Y);
         let beside = Point3::new(3.0, 4.0, 0.5);
 
-        assert!(close(top.nearest(beside).unwrap(), Point3::new(1.0, 1.0, 0.5)));
+        assert!(coincident(top.nearest(beside).unwrap(), Point3::new(1.0, 1.0, 0.5)));
         assert!(top.feet(beside).unwrap().is_empty(), "no perpendicular lands inside the face");
 
         let above = Point3::new(0.3, 4.0, 0.2);
         let feet = top.feet(above).unwrap();
         let [foot] = feet.as_slice() else { panic!("expected one foot: {feet:?}") };
-        assert!(close(*foot, Point3::new(0.3, 1.0, 0.2)), "{foot:?}");
-        assert!(close(top.nearest(above).unwrap(), *foot));
+        assert!(coincident(*foot, Point3::new(0.3, 1.0, 0.2)), "{foot:?}");
+        assert!(coincident(top.nearest(above).unwrap(), *foot));
     }
 
     #[test]
@@ -418,7 +414,7 @@ mod tests {
         let SurfacePoint { point, normal } = top.centroid().unwrap();
 
         assert!(top.is_flat());
-        assert!(close(point, Point3::new(0.0, 1.0, 0.0)), "{point:?}");
+        assert!(coincident(point, Point3::new(0.0, 1.0, 0.0)), "{point:?}");
         assert!((normal - Vector3::unit_y()).magnitude() < EPSILON, "{normal:?}");
     }
 
@@ -475,7 +471,7 @@ mod tests {
         document.bake_transform(part, moved).expect("the move bakes");
 
         let top = face(&document, node, DVec3::Y).centroid().unwrap();
-        assert!(close(top.point, Point3::new(3.0, 1.0, 0.0)), "{:?}", top.point);
+        assert!(coincident(top.point, Point3::new(3.0, 1.0, 0.0)), "{:?}", top.point);
 
         // Each edge's middle is on two of the moved box's faces.
         let part = document.part_at(node).unwrap();

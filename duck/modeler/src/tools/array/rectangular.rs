@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use duck_engine_viewer::{
-    common::{InnerSpace, LengthDisplay, Point3, EPSILON},
+    common::{coincident, InnerSpace, LengthDisplay, Point3},
     event::{Event, EventContext},
     operator::{Handle, HandleDrag, HandleEvent, HandleId, HandleReach, HandleShape, SelectionKinds},
     selection::SelectionManager,
@@ -306,10 +306,10 @@ impl Layout {
     /// This layout with `axis` reaching to `point`, and at least two members
     /// along it; `None` where `point` is on the pivot.
     fn reaching(&self, axis: usize, point: Point3) -> Option<Self> {
-        let reach = point - self.pivot;
-        if reach.magnitude() <= EPSILON {
+        if coincident(point, self.pivot) {
             return None;
         }
+        let reach = point - self.pivot;
         let mut layout = *self;
         let picked = &mut layout.array.axes[axis];
         *picked = ArrayAxis { count: picked.count.max(2), reach };
@@ -373,7 +373,7 @@ impl Params for Layout {
 #[cfg(test)]
 mod tests {
     use duck_engine_scene::resource::NodeId;
-    use duck_engine_viewer::common::Vector3;
+    use duck_engine_viewer::common::{Vector3, EPSILON};
     use duck_engine_viewer::selection::SelectionItem;
 
     use super::*;

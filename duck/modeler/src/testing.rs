@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use duck_engine_scene::cad::CadTessellationOptions;
 use duck_engine_scene::common::{
-    InnerSpace, Matrix4, Plane, Point3, Ray, RgbaColor, Transform, Vector3, EPSILON,
+    coincident, InnerSpace, Matrix4, Plane, Point3, Ray, RgbaColor, Transform, Vector3, EPSILON,
 };
 use duck_engine_scene::resource::{NodeId, SubGeometryElement, SubGeometryKind, Visibility};
 use duck_engine_scene::{PositionedCamera, Projection, Scene};
@@ -130,7 +130,7 @@ pub fn rim(document: &Document, center: Point3) -> PartEdge<'_> {
     document
         .parts()
         .find_map(|part| {
-            let about = |(c, _): (Point3, Vector3)| (c - center).magnitude() < EPSILON;
+            let about = |(c, _): (Point3, Vector3)| coincident(c, center);
             let index = part.elements().edges().iter().position(|edge| edge.circle_axis().is_some_and(about))?;
             PartEdge::new(part, index as u32).ok()
         })

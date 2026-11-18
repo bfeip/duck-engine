@@ -1,6 +1,6 @@
 use duck_engine_common::{
-    ConvexPolyhedron, Deg, InnerSpace, Matrix3, Matrix4, MetricSpace, Plane, Point3, Quaternion,
-    Real, SquareMatrix, Vector3, EPSILON, ortho, perspective,
+    coincident, ConvexPolyhedron, Deg, InnerSpace, Matrix3, Matrix4, MetricSpace, Plane, Point3,
+    Quaternion, Real, SquareMatrix, Vector3, EPSILON, ortho, perspective,
 };
 
 /// Matrix to convert from OpenGL clip-space depth [-1, 1] to WGPU depth [0, 1].
@@ -222,7 +222,7 @@ impl PositionedCamera {
         let bounding_radius = (size_x * size_x + size_y * size_y + size_z * size_z).sqrt() / 2.0;
 
         // Get current view direction (or default to -Z if eye == target)
-        let view_dir = if self.eye.distance(self.target) < EPSILON {
+        let view_dir = if coincident(self.eye, self.target) {
             Vector3::new(0.0, 0.0, -1.0)
         } else {
             (self.target - self.eye).normalize()

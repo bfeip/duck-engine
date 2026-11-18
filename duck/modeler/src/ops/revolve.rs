@@ -1,5 +1,5 @@
 use anyhow::{ensure, Context, Result};
-use duck_engine_scene::common::{consts, InnerSpace, MetricSpace, Point3, Real, Vector3, EPSILON};
+use duck_engine_scene::common::{coincident, consts, InnerSpace, MetricSpace, Point3, Real, Vector3, EPSILON};
 use duck_engine_scene::resource::NodeId;
 use opencascade::primitives::{Compound, Shape, Wire};
 
@@ -105,19 +105,13 @@ impl RevolveParams {
     /// A point on the axis and its unit direction, once both ends are picked.
     pub fn line(&self) -> Option<(Point3, Vector3)> {
         let Axis::Through(from, to) = self.axis else { return None };
-        let along = to - from;
-        (along.magnitude() > EPSILON).then(|| (from, along.normalize()))
+        (!coincident(from, to)).then(|| (from, (to - from).normalize()))
     }
 
     /// Whether the revolve has no axis yet, or too small a sweep to build.
     pub fn is_degenerate(&self) -> bool {
         self.line().is_none() || self.angle.abs() <= EPSILON
     }
-}
-
-/// Whether `from` and `to` are far enough apart to pick an axis.
-pub fn spans_axis(from: Point3, to: Point3) -> bool {
-    from.distance(to) > EPSILON
 }
 
 /// The shape the target sweeps: its faces, or its edges, those of a sketch
@@ -180,7 +174,7 @@ pub fn build_revolve(doc: &Document, target: &RevolveTarget, params: &RevolvePar
     ensure!(!params.is_degenerate(), "The revolve has no sweep");
     let part = doc.part_at(target.node).context("The revolve target is not a known CAD part")?;
     let (from, to) = (onto_vertex(from, part.shape()), onto_vertex(to, part.shape()));
-    ensure!(spans_axis(from, to), "The axis has no length");
+    ensure!(!coincident(from, to), "The axis has no length");
 
     // OCCT turns only forward: a negative sweep turns forward about the
     // reversed axis.

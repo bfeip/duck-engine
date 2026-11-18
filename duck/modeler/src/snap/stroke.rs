@@ -4,7 +4,7 @@
 //! tangent points of the hovered geometry ([`edge_relations`],
 //! [`face_relations`]).
 
-use duck_engine_viewer::common::{InnerSpace, MetricSpace, Point3, Ray, Vector3, EPSILON};
+use duck_engine_viewer::common::{coincident, InnerSpace, Point3, Ray, Vector3, EPSILON};
 
 use super::{Snap, SnapFlags, SnapInput, SnapKind, SnapProvider, SnapSettings};
 use crate::document::Document;
@@ -138,7 +138,7 @@ fn along(ray: &Ray, origin: Point3, direction: Vector3, kind: SnapKind) -> Optio
 /// point: the edge's point closest to it, the feet of its perpendiculars from
 /// it, and on a straight stroke, the points where segments from the circle it
 /// lies on touch the edge's, tangent to both.
-pub(super) fn edge_relations(
+pub(super) fn collect_edge_relations(
     edge: &PartEdge,
     stroke: &Stroke,
     kinds: SnapFlags,
@@ -152,7 +152,7 @@ pub(super) fn edge_relations(
 
     if kinds.contains(SnapFlags::CLOSEST) {
         match edge.nearest(from) {
-            Ok(nearest) if apart(nearest.point, from) => out.push(relation(SnapKind::Closest, nearest)),
+            Ok(nearest) if !coincident(nearest.point, from) => out.push(relation(SnapKind::Closest, nearest)),
             Ok(_) => {}
             Err(e) => log::debug!("No closest snap on {edge}: {e}"),
         }
@@ -161,7 +161,7 @@ pub(super) fn edge_relations(
         match edge.feet(from) {
             Ok(feet) => out.extend(
                 feet.into_iter()
-                    .filter(|foot| apart(foot.point, from))
+                    .filter(|foot| !coincident(foot.point, from))
                     .map(|foot| relation(SnapKind::Perpendicular, foot)),
             ),
             Err(e) => log::debug!("No perpendicular snap on {edge}: {e}"),
@@ -180,7 +180,7 @@ pub(super) fn edge_relations(
 /// Pushes into `out` the `kinds` of snap relating `face` to `stroke`'s last
 /// point: the face's point closest to it, and the feet of its perpendiculars
 /// from it.
-pub(super) fn face_relations(face: &PartFace, stroke: &Stroke, kinds: SnapFlags, out: &mut Vec<Snap>) {
+pub(super) fn collect_face_relations(face: &PartFace, stroke: &Stroke, kinds: SnapFlags, out: &mut Vec<Snap>) {
     let Some(last) = stroke.last() else { return };
     let from = last.position;
     let relation = |kind, point: Point3| {
@@ -193,7 +193,7 @@ pub(super) fn face_relations(face: &PartFace, stroke: &Stroke, kinds: SnapFlags,
 
     if kinds.contains(SnapFlags::CLOSEST) {
         match face.nearest(from) {
-            Ok(point) if apart(point, from) => out.push(relation(SnapKind::Closest, point)),
+            Ok(point) if !coincident(point, from) => out.push(relation(SnapKind::Closest, point)),
             Ok(_) => {}
             Err(e) => log::debug!("No closest snap on {face}: {e}"),
         }
@@ -202,17 +202,12 @@ pub(super) fn face_relations(face: &PartFace, stroke: &Stroke, kinds: SnapFlags,
         match face.feet(from) {
             Ok(feet) => out.extend(
                 feet.into_iter()
-                    .filter(|&point| apart(point, from))
+                    .filter(|&point| !coincident(point, from))
                     .map(|point| relation(SnapKind::Perpendicular, point)),
             ),
             Err(e) => log::debug!("No perpendicular snap on {face}: {e}"),
         }
     }
-}
-
-/// Whether `point` is far enough from `from` to make a segment.
-fn apart(point: Point3, from: Point3) -> bool {
-    point.distance(from) > EPSILON
 }
 
 /// The segments from the circle `last` lies on to the circle `edge` is, tangent
@@ -248,10 +243,6 @@ mod tests {
     use crate::document::dvec3_to_vec3;
     use crate::grid::GridConfig;
     use crate::testing::{doc_with_box, doc_with_shape, rim};
-
-    fn close(a: Point3, b: Point3) -> bool {
-        (a - b).magnitude() < EPSILON
-    }
 
     fn at(x: Real, y: Real, z: Real) -> Snap {
         Snap::new(Point3::new(x, y, z), SnapKind::ConstructionPlane)
@@ -311,7 +302,7 @@ mod tests {
 
     fn relations(edge: &PartEdge, stroke: &Stroke, kinds: SnapFlags, document: &Document) -> Vec<Snap> {
         let mut out = Vec::new();
-        edge_relations(edge, stroke, kinds, document, &mut out);
+        collect_edge_relations(edge, stroke, kinds, document, &mut out);
         out
     }
 
@@ -337,7 +328,7 @@ mod tests {
         let three = stroke(false, &[at(0.0, 0.0, 0.0), at(2.0, 0.0, 0.0), at(1.0, 0.0, 2.0)]);
         let starts = of_kind(&stroke_snaps(&three, 0.1, 0.1), SnapKind::WireStart);
         let [start] = starts.as_slice() else { panic!("expected the start: {starts:?}") };
-        assert!(close(start.position, Point3::new(0.0, 0.0, 0.0)));
+        assert!(coincident(start.position, Point3::new(0.0, 0.0, 0.0)));
     }
 
     #[test]
@@ -349,9 +340,9 @@ mod tests {
         // Looking straight down N, only U (X) and V (Z) have a nearest point.
         assert_eq!(axes.len(), 2, "{axes:?}");
         let along_x = axes.iter().find(|snap| snap.direction.unwrap().x.abs() > 0.9).unwrap();
-        assert!(close(along_x.position, Point3::new(4.0, 0.0, 2.0)), "{:?}", along_x.position);
+        assert!(coincident(along_x.position, Point3::new(4.0, 0.0, 2.0)), "{:?}", along_x.position);
         let along_z = axes.iter().find(|snap| snap.direction.unwrap().z.abs() > 0.9).unwrap();
-        assert!(close(along_z.position, Point3::new(1.0, 0.0, 2.3)), "{:?}", along_z.position);
+        assert!(coincident(along_z.position, Point3::new(1.0, 0.0, 2.3)), "{:?}", along_z.position);
     }
 
     #[test]
@@ -361,7 +352,7 @@ mod tests {
         // Parallel to the first segment through (4, 0, 2): the cursor at (5, 3)
         // lies on it.
         let parallels = of_kind(&stroke_snaps(&stroke(true, &points), 5.0, 3.0), SnapKind::Parallel);
-        assert!(parallels.iter().any(|snap| close(snap.position, Point3::new(5.0, 0.0, 3.0))), "{parallels:?}");
+        assert!(parallels.iter().any(|snap| coincident(snap.position, Point3::new(5.0, 0.0, 3.0))), "{parallels:?}");
 
         assert!(of_kind(&stroke_snaps(&stroke(false, &points), 5.0, 3.0), SnapKind::Parallel).is_empty());
     }
@@ -408,14 +399,14 @@ mod tests {
         let closest = relations(&rim, &stroke, SnapFlags::CLOSEST, &document);
         let [closest] = closest.as_slice() else { panic!("expected one: {closest:?}") };
         assert_eq!(closest.kind, SnapKind::Closest);
-        assert!(close(closest.position, Point3::new(2.0, 0.0, 0.0)), "{:?}", closest.position);
+        assert!(coincident(closest.position, Point3::new(2.0, 0.0, 0.0)), "{:?}", closest.position);
         assert_eq!(closest.on, Some(rim.element()));
 
         let mut feet: Vec<Point3> =
             relations(&rim, &stroke, SnapFlags::PERPENDICULAR, &document).iter().map(|snap| snap.position).collect();
         feet.sort_by(|a, b| a.x.total_cmp(&b.x));
         assert_eq!(feet.len(), 2, "{feet:?}");
-        assert!(close(feet[0], Point3::new(-2.0, 0.0, 0.0)) && close(feet[1], Point3::new(2.0, 0.0, 0.0)), "{feet:?}");
+        assert!(coincident(feet[0], Point3::new(-2.0, 0.0, 0.0)) && coincident(feet[1], Point3::new(2.0, 0.0, 0.0)), "{feet:?}");
     }
 
     #[test]
@@ -431,11 +422,11 @@ mod tests {
         let stroke = stroke(false, &[at(3.0, 4.0, 0.5)]);
 
         let mut out = Vec::new();
-        face_relations(&face, &stroke, SnapFlags::CLOSEST | SnapFlags::PERPENDICULAR, &mut out);
+        collect_face_relations(&face, &stroke, SnapFlags::CLOSEST | SnapFlags::PERPENDICULAR, &mut out);
 
         let [closest] = out.as_slice() else { panic!("expected only the closest: {out:?}") };
         assert_eq!(closest.kind, SnapKind::Closest);
-        assert!(close(closest.position, Point3::new(1.0, 1.0, 0.5)), "{:?}", closest.position);
+        assert!(coincident(closest.position, Point3::new(1.0, 1.0, 0.5)), "{:?}", closest.position);
         assert_eq!(closest.on.map(|on| on.element.kind), Some(SubGeometryKind::Face));
     }
 
@@ -451,9 +442,9 @@ mod tests {
         assert_eq!(tangents.len(), 4, "{tangents:?}");
         let outer = tangents
             .iter()
-            .find(|snap| close(snap.position, Point3::new(4.0, 0.0, 1.0)))
+            .find(|snap| coincident(snap.position, Point3::new(4.0, 0.0, 1.0)))
             .unwrap_or_else(|| panic!("expected the outer tangent along z = 1: {tangents:?}"));
-        assert!(close(outer.moves_last.unwrap(), Point3::new(0.0, 0.0, 1.0)), "{:?}", outer.moves_last);
+        assert!(coincident(outer.moves_last.unwrap(), Point3::new(0.0, 0.0, 1.0)), "{:?}", outer.moves_last);
         assert!(outer.direction.is_some_and(|d| (d - Vector3::new(1.0, 0.0, 0.0)).magnitude() < EPSILON));
 
         // Not on a curved stroke, and not from a point on no circle.
@@ -495,6 +486,6 @@ mod tests {
         // circle has no tangent to itself.
         let [foot] = snaps.as_slice() else { panic!("expected the far foot: {snaps:?}") };
         assert_eq!(foot.kind, SnapKind::Perpendicular);
-        assert!(close(foot.position, Point3::new(-2.0, 0.0, 0.0)), "{:?}", foot.position);
+        assert!(coincident(foot.position, Point3::new(-2.0, 0.0, 0.0)), "{:?}", foot.position);
     }
 }
